@@ -10,7 +10,10 @@
       "name": "mixdog",
       "description": "Autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing.",
       "category": "productivity",
-      "source": "."
+      "source": {
+        "source": "github",
+        "repo": "trib-plugin/mixdog"
+      }
     }
   ]
 }
