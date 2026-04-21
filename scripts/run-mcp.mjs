@@ -5,10 +5,46 @@
  */
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { spawn } from 'child_process';
+import { existsSync } from 'fs';
+import { execSync, spawn, spawnSync } from 'child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const serverPath = join(__dirname, '..', 'server.mjs');
+const pluginRoot = join(__dirname, '..');
+const serverPath = join(pluginRoot, 'server.mjs');
+const requiredDeps = [
+  join(pluginRoot, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json'),
+  join(pluginRoot, 'node_modules', 'zod', 'package.json'),
+  join(pluginRoot, 'node_modules', 'zod-to-json-schema', 'package.json'),
+  join(pluginRoot, 'node_modules', 'openai', 'package.json'),
+];
+
+function hasRequiredDeps() {
+  return requiredDeps.every((file) => existsSync(file));
+}
+
+function ensureDependencies() {
+  if (hasRequiredDeps()) return;
+  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const args = existsSync(join(pluginRoot, 'package-lock.json'))
+    ? ['ci', '--ignore-scripts', '--omit=optional']
+    : ['install', '--ignore-scripts', '--omit=optional'];
+  process.stderr.write(`[run-mcp] bootstrapping dependencies via ${npmCmd} ${args.join(' ')}\n`);
+  const result = spawnSync(npmCmd, args, {
+    cwd: pluginRoot,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      npm_config_audit: 'false',
+      npm_config_fund: 'false',
+    },
+  });
+  if (result.status !== 0 || !hasRequiredDeps()) {
+    const detail = result.status ?? result.signal ?? 'unknown';
+    throw new Error(`dependency bootstrap failed (${detail})`);
+  }
+}
+
+ensureDependencies();
 
 // Spawn the server with stdio inheritance and reduced CPU priority
 const isWin = process.platform === 'win32';
@@ -21,7 +57,6 @@ const proc = spawn('node', [serverPath], {
 // Lower process priority on Windows to reduce fan noise
 if (isWin && proc.pid) {
   try {
-    const { execSync } = await import('child_process');
     execSync(`wmic process where processid=${proc.pid} call setpriority "below normal"`, { stdio: 'ignore', windowsHide: true });
   } catch {}
 }
@@ -29,7 +64,6 @@ if (isWin && proc.pid) {
 function killChild() {
   if (isWin && proc.pid) {
     try {
-      const { execSync } = await import('child_process');
       execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: 'ignore', windowsHide: true, timeout: 5000 });
     } catch {}
   } else {

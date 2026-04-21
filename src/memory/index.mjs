@@ -53,7 +53,7 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || process.argv[2]
   || (() => {
     const candidates = [
-      path.join(os.homedir(), '.claude', 'plugins', 'data', 'mixdog-mixdog'),
+      path.join(os.homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin'),
     ]
     for (const c of candidates) {
       if (fs.existsSync(path.join(c, 'memory.sqlite'))) return c

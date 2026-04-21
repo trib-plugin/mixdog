@@ -174,7 +174,7 @@ export function loadMcpConfig(configPath) {
 }
 // --- Internal ---
 function resolvePluginCacheScript(pluginName, script) {
-    const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', 'mixdog', pluginName);
+    const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', 'trib-plugin', pluginName);
     if (existsSync(cacheBase)) {
         const versions = readdirSync(cacheBase).filter(d => /^\d+\.\d+\.\d+/.test(d)).sort((a, b) => {
             const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
@@ -189,7 +189,7 @@ function resolvePluginCacheScript(pluginName, script) {
             }
         }
     }
-    const marketplaceDir = join(homedir(), '.claude', 'plugins', 'marketplaces', 'mixdog', 'external_plugins', pluginName);
+    const marketplaceDir = join(homedir(), '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', pluginName);
     const marketplaceScript = join(marketplaceDir, script);
     if (existsSync(marketplaceScript)) {
         return { dir: marketplaceDir, scriptPath: marketplaceScript, source: `marketplace:${pluginName}` };
@@ -212,7 +212,7 @@ async function connectServer(name, cfg) {
             env: {
                 ...process.env,
                 CLAUDE_PLUGIN_ROOT: resolved.dir,
-                CLAUDE_PLUGIN_DATA: join(homedir(), '.claude', 'plugins', 'data', 'mixdog-mixdog'),
+                CLAUDE_PLUGIN_DATA: join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin'),
             },
         });
         process.stderr.write(`[mcp-client] Connecting "${name}" via ${resolved.source}\n`);

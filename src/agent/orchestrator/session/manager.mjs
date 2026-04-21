@@ -46,9 +46,9 @@ function _buildBridgeRules() {
         return _bridgeRulesCache;
     }
     const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT
-        || join(homedir(), '.claude', 'plugins', 'marketplaces', 'mixdog', 'external_plugins', 'mixdog');
+        || join(homedir(), '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', 'mixdog');
     const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-        || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-mixdog');
+        || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
     try {
         const built = _rulesBuilder.buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR });
         _bridgeRulesCache = built;

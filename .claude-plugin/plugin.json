@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "description": "Claude Code all-in-one agent plugin — autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing.",
   "mcpServers": {
-    "mixdog": {
+    "trib-plugin": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/server.mjs"],
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/run-mcp.mjs"],
       "cwd": "${CLAUDE_PLUGIN_ROOT}",
       "env": {
         "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",

@@ -48,7 +48,7 @@ function applyBriefCap(text) {
 
 function pluginRoot() {
     return process.env.CLAUDE_PLUGIN_ROOT
-        || join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'plugins', 'marketplaces', 'mixdog', 'external_plugins', 'mixdog');
+        || join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', 'mixdog');
 }
 
 // Unified-shard policy — every bridge session (Pool B + Pool C) shares the

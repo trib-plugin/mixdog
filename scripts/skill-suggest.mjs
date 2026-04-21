@@ -34,7 +34,7 @@ const PLUGIN_ROOT = join(__dirname, '..');
 
 function resolveDataDir() {
   if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA;
-  return join(homedir(), '.claude', 'plugins', 'data', 'mixdog-mixdog');
+  return join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
 }
 
 // ── Parse CLI args ──────────────────────────────────────────────────

@@ -26,7 +26,7 @@ export function getPluginData() {
         const marketplace = basename(join(root, '..', '..'));
         return join(homedir(), '.claude', 'plugins', 'data', `${dirName}-${marketplace}`);
     }
-    return join(homedir(), '.claude', 'plugins', 'data', 'mixdog-mixdog');
+    return join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
 }
 const ENV_KEY_MAP = {
     openai: 'OPENAI_API_KEY',
@@ -197,19 +197,21 @@ export function loadConfig() {
                 }
             }
             const rawMaint = { ...(raw.maintenance || {}) };
-            // One-time migration: drop legacy self-ref mcpServers.mixdog.
+            // One-time migration: drop legacy self-ref mcpServers.mixdog /
+            // mcpServers["trib-plugin"].
             // Plugin tools are injected in-process via agent's toolExecutor
             // (see orchestrator/internal-tools); a self-ref entry causes
             // self-spawn recursion or partial HTTP loopback, both broken.
             const mcpServers = (raw.mcpServers && typeof raw.mcpServers === 'object') ? { ...raw.mcpServers } : {};
-            if (mcpServers['mixdog']) {
+            if (mcpServers['mixdog'] || mcpServers['trib-plugin']) {
                 delete mcpServers['mixdog'];
+                delete mcpServers['trib-plugin'];
                 raw.mcpServers = mcpServers;
                 try {
                     const tmp = configPath + '.tmp';
                     writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
                     renameSync(tmp, configPath);
-                    process.stderr.write(`[config] migrated: removed legacy self-ref mcpServers.mixdog\n`);
+                    process.stderr.write(`[config] migrated: removed legacy self-ref mcpServers.mixdog / mcpServers["trib-plugin"]\n`);
                 } catch (e) {
                     process.stderr.write(`[config] self-ref migration persist failed: ${e.message}\n`);
                 }

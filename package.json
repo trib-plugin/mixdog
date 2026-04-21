@@ -16,6 +16,7 @@
     "LICENSE",
     "README.md",
     "CHANGELOG.md",
+    "package-lock.json",
     "server.mjs",
     "tools.json",
     "agents/",

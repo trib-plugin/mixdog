@@ -31,7 +31,7 @@ import { homedir } from 'os'
 // injection, so fall back to process.cwd() and the standard data path.
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || process.cwd()
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA
-  || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-mixdog')
+  || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin')
 mkdirSync(PLUGIN_DATA, { recursive: true })
 
 // ── Singleton lock ──────────────────────────────────────────────────

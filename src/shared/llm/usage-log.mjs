@@ -14,7 +14,7 @@ import { homedir } from 'os';
 
 function resolveDataDir() {
     return process.env.CLAUDE_PLUGIN_DATA
-        || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-mixdog');
+        || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
 }
 
 const HISTORY_DIR_NAME = 'history';

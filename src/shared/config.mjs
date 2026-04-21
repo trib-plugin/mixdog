@@ -7,7 +7,7 @@ import { join, dirname } from 'path'
 import { homedir } from 'os'
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-mixdog')
+  || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin')
 
 const CONFIG_PATH = join(DATA_DIR, 'mixdog-config.json')
 

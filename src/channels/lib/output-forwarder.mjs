@@ -487,7 +487,9 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
   ]);
   /** Check if a tool name is recall_memory */
   static isRecallMemory(name) {
-    return name === "recall_memory" || name === "mcp__plugin_mixdog_mixdog__recall_memory";
+    return name === "recall_memory"
+      || name === "mcp__plugin_mixdog_mixdog__recall_memory"
+      || name === "mcp__plugin_mixdog_trib-plugin__recall_memory";
   }
   /** Check if a file path points to a memory file */
   static isMemoryFile(filePath) {

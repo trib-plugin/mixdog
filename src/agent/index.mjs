@@ -368,7 +368,8 @@ export async function init() {
   await initProviders(config.providers);
   seedDefaults();
   initTrajectoryStore(getPluginData());
-  // External MCP servers only. Self-MCP loopback (mcpServers.mixdog)
+  // External MCP servers only. Self-MCP loopback (mcpServers.mixdog /
+  // mcpServers["trib-plugin"])
   // is rejected — agent exposes the plugin's own tools (search,
   // search_memories, ...) in-process via the context injected by server.mjs;
   // no network round-trip, no self-spawn. search/search_memories are
@@ -377,8 +378,8 @@ export async function init() {
   const rawServers = (config.mcpServers && typeof config.mcpServers === 'object') ? config.mcpServers : {};
   const externalServers = {};
   for (const [name, cfg] of Object.entries(rawServers)) {
-    if (name === 'mixdog') {
-      process.stderr.write(`[mcp] dropping legacy self-ref mcpServers.mixdog entry (in-process tool bridge is used instead)\n`);
+    if (name === 'mixdog' || name === 'trib-plugin') {
+      process.stderr.write(`[mcp] dropping legacy self-ref mcpServers.mixdog / mcpServers["trib-plugin"] entry (in-process tool bridge is used instead)\n`);
       continue;
     }
     externalServers[name] = cfg;

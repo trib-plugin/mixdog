@@ -29,7 +29,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-mixdog');
+  || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
 
 const PROFILE_PATH = join(DATA_DIR, 'history', 'model-profile.jsonl');
 

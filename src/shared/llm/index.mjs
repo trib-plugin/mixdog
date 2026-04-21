@@ -18,7 +18,7 @@ import { DEFAULT_MAINTENANCE } from '../../agent/orchestrator/config.mjs'
 
 const AGENT_CONFIG_PATH = process.env.CLAUDE_PLUGIN_DATA
   ? join(process.env.CLAUDE_PLUGIN_DATA, 'agent-config.json')
-  : join(homedir(), '.claude', 'plugins', 'data', 'mixdog-mixdog', 'agent-config.json')
+  : join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin', 'agent-config.json')
 
 function loadAgentConfig() {
   try {
