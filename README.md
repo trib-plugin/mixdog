@@ -31,10 +31,11 @@ configuration surface readable as JSON you can diff.
 ## Install
 
 ```
-/plugin install mixdog@github:trib-plugin/mixdog
+/plugin marketplace add trib-plugin/mixdog
+/plugin install mixdog@mixdog
 ```
 
-Claude Code will clone the repository into its plugin marketplace,
+Claude Code will register the repository as a marketplace, clone it,
 run `npm install`, and register the MCP server declared in
 `.mcp.json`. Node.js >= 20.10 is required.
 

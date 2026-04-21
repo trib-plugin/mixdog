@@ -1,0 +1,16 @@
+{
+  "name": "mixdog",
+  "description": "mixdog — Claude Code all-in-one agent plugin",
+  "owner": {
+    "name": "mixdog contributors",
+    "email": "dev@tribgames.com"
+  },
+  "plugins": [
+    {
+      "name": "mixdog",
+      "description": "Autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing.",
+      "category": "productivity",
+      "source": "."
+    }
+  ]
+}
