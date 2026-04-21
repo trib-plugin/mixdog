@@ -1,0 +1,24 @@
+{
+  "__comment": "Copy to agent-config.json (in the plugin data directory) and fill in. Provider credentials for the agent orchestrator. Never commit a filled copy.",
+  "providers": {
+    "anthropic": {
+      "__comment": "Anthropic API key. REQUIRED for Anthropic models. Leave empty string to disable.",
+      "apiKey": ""
+    },
+    "openai": {
+      "__comment": "OpenAI API key. REQUIRED for OpenAI models. Leave empty string to disable.",
+      "apiKey": "",
+      "baseUrl": "https://api.openai.com/v1"
+    },
+    "google": {
+      "__comment": "Google Generative AI key for Gemini models. Leave empty string to disable.",
+      "apiKey": ""
+    },
+    "openai-compat": {
+      "__comment": "OpenAI-compatible endpoint (LM Studio, Ollama, vLLM, LiteLLM, etc.). Fill in base URL + key, leave empty to disable.",
+      "apiKey": "",
+      "baseUrl": ""
+    }
+  },
+  "defaultProvider": "__REQUIRED__ — set to one of the keys above once its credentials are filled in."
+}

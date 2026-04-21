@@ -1,0 +1,34 @@
+# Force LF line endings across all platforms.
+# Overrides user core.autocrlf. Applies on every clone/pull.
+
+* text=auto eol=lf
+
+# Shell scripts must remain LF (break on CRLF)
+*.sh text eol=lf
+
+# Windows-only scripts stay CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binaries: no conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.sqlite binary
+*.db binary
+
+# Lockfiles / package manifests
+package-lock.json text eol=lf
+yarn.lock text eol=lf

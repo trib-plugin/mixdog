@@ -1,0 +1,86 @@
+/**
+ * Internal hidden roles — plugin-managed, user-untouchable.
+ *
+ * Unlike user-workflow.json roles (worker/reviewer/debugger/researcher/tester),
+ * these roles are NEVER exposed to callers of the `bridge` MCP tool. They are
+ * invoked only by internal MCP handlers (explore / recall / search) and carry
+ * their own system prompt + tool-set policy.
+ *
+ * Lookup order (bridge-llm.resolvePresetName):
+ *   1. explicit preset arg
+ *   2. opts.preset
+ *   3. BUILTIN_HIDDEN_ROLES[role]         ← plugin-internal, this file
+ *   4. user-workflow.json[role]           ← user-owned
+ *
+ * Adding or renaming entries here is a plugin-code change, not a user-config
+ * change, so users cannot accidentally break the internal dispatch path by
+ * editing their workflow JSON.
+ *
+ * The preset names (`HAIKU`) refer to entries seeded in agent-config.json via
+ * DEFAULT_PRESETS (see config.mjs). If the user deletes the HAIKU preset from
+ * their config the hidden roles degrade gracefully — `resolvePresetName`
+ * returns a name, but session creation will fail with a clear "preset not
+ * found" error rather than silently mis-dispatching.
+ */
+
+// The `slot` field is the maintenance-config key used to look up the preset
+// at runtime: loadConfig().maintenance[slot]. By sharing the slot with the
+// maintenance tasks (explore / recall / search), the user changes one setting
+// and both the hidden-role path and the synth that it may invoke move to the
+// new model in lockstep. Preset is NEVER hard-coded here.
+export const BUILTIN_HIDDEN_ROLES = Object.freeze({
+  'explorer': Object.freeze({
+    slot: 'explore',
+    systemFile: 'rules/bridge/10-explorer.md',
+    description: 'Filesystem navigation agent invoked by the `explore` MCP tool',
+    invokedBy: 'explore',
+  }),
+  'recall-agent': Object.freeze({
+    slot: 'recall',
+    systemFile: 'rules/bridge/20-recall-agent.md',
+    description: 'Memory retrieval agent invoked by the `recall` MCP tool',
+    invokedBy: 'recall',
+  }),
+  'search-agent': Object.freeze({
+    slot: 'search',
+    systemFile: 'rules/bridge/30-search-agent.md',
+    description: 'External info agent invoked by the `search` MCP tool',
+    invokedBy: 'search',
+  }),
+  'cycle1-agent': Object.freeze({
+    slot: 'cycle1',
+    systemFile: 'rules/bridge/40-cycle1-agent.md',
+    description: 'Chunker/classifier invoked by memory-cycle runCycle1',
+    invokedBy: 'cycle1',
+  }),
+  'cycle2-agent': Object.freeze({
+    slot: 'cycle2',
+    systemFile: 'rules/bridge/41-cycle2-agent.md',
+    description: 'Root re-scorer invoked by memory-cycle runCycle2',
+    invokedBy: 'cycle2',
+  }),
+})
+
+/**
+ * Return the hidden-role definition, or null if the name is not internal.
+ */
+export function getHiddenRole(name) {
+  if (!name) return null
+  return BUILTIN_HIDDEN_ROLES[name] || null
+}
+
+/**
+ * Boolean check — useful for branching inside bridge-llm / session-manager.
+ */
+export function isHiddenRole(name) {
+  if (!name) return false
+  return Object.prototype.hasOwnProperty.call(BUILTIN_HIDDEN_ROLES, name)
+}
+
+/**
+ * List all hidden role names. Used by diagnostics / setup UI guards to ensure
+ * a user-defined role doesn't collide with an internal one.
+ */
+export function listHiddenRoleNames() {
+  return Object.keys(BUILTIN_HIDDEN_ROLES)
+}

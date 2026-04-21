@@ -1,0 +1,5 @@
+{
+  "name": "mixdog",
+  "version": "0.1.0",
+  "description": "Claude Code all-in-one agent plugin — autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing."
+}

@@ -1,0 +1,3443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MIXDOG CONFIG</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #18181b;
+    --bg-raised: #222228;
+    --bg-input: #18181b;
+    --border: rgba(255,255,255,0.15);
+    --border-focus: rgba(255,255,255,0.4);
+    --text-1: #fff;
+    --text-2: #ccc;
+    --text-3: #aaa;
+    --text-4: #777;
+    --accent: #8b91f0;
+    --green: #3fb950;
+    --green-dim: rgba(63,185,80,0.12);
+    --red: #e5534b;
+    --red-dim: rgba(229,83,75,0.12);
+    --orange: #d29922;
+    --orange-dim: rgba(210,153,34,0.12);
+    --radius: 8px;
+    --cat-w: 150px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg); color: var(--text-2);
+    -webkit-font-smoothing: antialiased;
+    margin: 0; overflow: hidden; height: 100vh;
+  }
+
+  .layout { display: flex; height: 100vh; }
+
+  /* Sidebar */
+  .cat-bar {
+    width: var(--cat-w); flex-shrink: 0;
+    background: #141416;
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 16px 0; overflow-y: auto;
+  }
+  .cat-item {
+    padding: 8px 14px; cursor: pointer;
+    transition: all 0.15s; font-size: 13px;
+    color: var(--text-3); font-weight: 500;
+    border-left: 2px solid transparent;
+  }
+  .cat-item:hover { background: rgba(255,255,255,0.03); color: var(--text-2); }
+  .cat-item.active {
+    background: rgba(139,145,240,0.08);
+    color: var(--text-1);
+    border-left-color: var(--accent);
+  }
+  .cat-sep {
+    height: 1px; background: var(--border);
+    margin: 14px 14px 2px;
+  }
+  .cat-label {
+    padding: 10px 14px 6px;
+    font-size: 11px; font-weight: 700;
+    color: var(--text-3); text-transform: uppercase;
+    letter-spacing: 0.8px;
+  }
+  .cat-label:first-child {
+    padding-top: 4px;
+  }
+
+  /* Main */
+  .main {
+    flex: 1; overflow-y: auto; padding: 28px 24px 20px;
+  }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .hdr { margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; }
+  .hdr h1 { font-size: 20px; font-weight: 600; color: var(--text-1); letter-spacing: -0.3px; }
+
+  /* Sections */
+  .sec { margin-bottom: 20px; }
+  .sec-title {
+    font-size: 12px; font-weight: 600; color: var(--text-2);
+    margin-bottom: 8px; padding: 0 2px;
+  }
+  .sec-body {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: visible;
+    min-height: 1px;
+  }
+
+  /* Rows */
+  .r {
+    display: flex; align-items: center;
+    padding: 0 14px; min-height: 44px;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+  .r:last-child { border-bottom: none; }
+  .r:hover { background: rgba(255,255,255,0.015); cursor: default; }
+  .r.dragging { opacity: 0.4; }
+  .r.drag-over { border-top: 2px solid var(--accent); }
+  .r.r-opt {
+    align-items: flex-start;
+    min-height: auto;
+    padding: 14px 16px;
+  }
+
+  .r-name {
+    width: 130px; font-size: 13px; color: var(--text-1);
+    font-weight: 500; flex-shrink: 0; white-space: nowrap;
+  }
+  .r-name-wide {
+    width: 140px; font-size: 13px; color: var(--text-1);
+    font-weight: 500; flex-shrink: 0; white-space: nowrap;
+  }
+  .r-name-wide .tip { vertical-align: middle; margin-left: 4px; }
+
+  /* Inputs */
+  .r-input {
+    flex: 1; height: 34px; padding: 0 10px;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-radius: 5px; color: var(--text-1);
+    font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', monospace;
+    transition: border-color 0.15s;
+  }
+  .r-input:focus { outline: none; border-color: var(--border-focus); }
+  .r-input::placeholder { color: #777; }
+  .r-input.warn { border-color: var(--red); }
+  .r-input.valid { border-color: var(--green); }
+
+  /* Selects */
+  .r-select {
+    flex: 1; height: 34px; padding: 0 8px;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-radius: 5px; color: var(--text-1);
+    font-size: 12px; font-family: 'Inter', sans-serif;
+    transition: border-color 0.15s; cursor: pointer;
+    -webkit-appearance: none; appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23666'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 28px;
+  }
+  .r-select:focus { outline: none; border-color: var(--border-focus); }
+  .r-select option { background: var(--bg-raised); color: var(--text-1); }
+  .r-select:disabled { opacity: 0.5; cursor: not-allowed; }
+  .r-select.md { width: 140px; flex: none; }
+
+  /* Toggle */
+  .r-toggle {
+    width: 40px; height: 22px; border-radius: 11px;
+    background: rgba(255,255,255,0.12); cursor: pointer; position: relative;
+    transition: background 0.2s; flex-shrink: 0;
+  }
+  .r-toggle.on { background: var(--accent); }
+  .r-toggle::after {
+    content: ''; position: absolute;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--text-3); top: 3px; left: 3px;
+    transition: all 0.2s;
+  }
+  .r-toggle.on::after { transform: translateX(18px); background: #fff; }
+
+  /* Radio */
+  .r-radio {
+    width: 17px; height: 17px; border-radius: 50%;
+    border: 1.5px solid var(--text-4); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s; flex-shrink: 0;
+  }
+  .r-radio.on { border-color: var(--accent); }
+  .r-radio.on::after {
+    content: ''; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--accent);
+  }
+
+  /* General panel — injection mode picker */
+  .sec-desc {
+    font-size: 12px; color: var(--text-3);
+    margin-bottom: 8px; padding: 0 2px; line-height: 1.5;
+  }
+  .opt {
+    display: flex; align-items: flex-start; gap: 12px;
+    cursor: pointer; width: 100%;
+  }
+  .opt-body { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+  .opt-title {
+    font-size: 13px; font-weight: 500; color: var(--text-1);
+    line-height: 1.3;
+  }
+  .opt-sub { font-size: 12px; color: var(--text-3); line-height: 1.5; }
+  .opt-sub code { font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 11px; padding: 1px 6px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 4px; color: var(--text-2); vertical-align: middle; display: inline-block; line-height: 1.4; }
+  .r.is-centered { align-items: center; }
+  .r-value {
+    flex: 1; height: 34px; padding: 0 10px;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-radius: 5px; color: var(--text-2);
+    font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', monospace;
+    display: flex; align-items: center; user-select: text;
+  }
+  .note-box {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 12px 16px;
+    background: rgba(210,153,34,0.12);
+    font-size: 12px; line-height: 1.5; color: #d29922;
+  }
+  .note-box .note-icon {
+    flex-shrink: 0; font-weight: 700; width: 16px; text-align: center;
+  }
+
+  /* Slider */
+  .r-slider {
+    flex: 1; -webkit-appearance: none; appearance: none;
+    height: 4px; background: var(--text-4); border-radius: 2px;
+    outline: none;
+  }
+  .r-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 16px; height: 16px;
+    border-radius: 50%; background: var(--accent); cursor: pointer;
+  }
+  .slider-val {
+    width: 24px; text-align: center; font-size: 13px;
+    color: var(--text-1); font-weight: 600; flex-shrink: 0;
+  }
+  .slider-labels {
+    display: flex; justify-content: space-between;
+    font-size: 13px; color: var(--text-3);
+    padding: 2px 4px 0;
+  }
+
+  /* Password */
+  .pw-wrap {
+    flex: 1; display: flex; align-items: center;
+    position: relative;
+  }
+  .pw-wrap .r-input { flex: 1; padding-right: 34px; }
+  .pw-toggle {
+    position: absolute; right: 8px; cursor: pointer;
+    font-size: 14px; color: var(--text-3);
+    transition: color 0.15s; user-select: none;
+  }
+  .pw-toggle:hover { color: var(--text-1); }
+
+  /* Tags */
+  .tag-container {
+    flex: 1; display: flex; flex-wrap: wrap; gap: 4px;
+    min-height: 34px; padding: 4px 8px;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-radius: 5px; align-items: center; cursor: text;
+  }
+  .tag-container:focus-within { border-color: var(--border-focus); }
+  .tag-item {
+    display: flex; align-items: center; gap: 4px;
+    background: rgba(139,145,240,0.15); color: var(--accent);
+    padding: 2px 8px; border-radius: 4px; font-size: 12px;
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+  }
+  .tag-item .tag-x {
+    cursor: pointer; font-size: 13px; color: var(--text-3);
+    transition: color 0.15s;
+  }
+  .tag-item .tag-x:hover { color: var(--red); }
+  .tag-input {
+    border: none; background: none; color: var(--text-1);
+    font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', monospace;
+    outline: none; min-width: 60px; flex: 1;
+  }
+  .tag-input::placeholder { color: #777; }
+
+  /* Save */
+  .save-area { margin-top: 12px; }
+  .save {
+    width: 100%; height: 44px;
+    background: var(--accent); color: #fff;
+    border: none; border-radius: var(--radius);
+    font-family: 'Inter', sans-serif;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .save:hover { filter: brightness(1.1); }
+  .save.done { background: var(--bg-raised); color: var(--green); pointer-events: none; }
+  .warn-msg {
+    text-align: center; font-size: 12px; color: var(--red);
+    margin-bottom: 4px; height: 16px;
+  }
+
+  /* Dynamic list */
+  .dyn-list { padding: 8px 14px; }
+  .dyn-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+    flex-wrap: nowrap;
+  }
+  .dyn-item:last-child { border-bottom: none; }
+  .dyn-item .r-input { height: 34px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+  .dyn-item .r-select { height: 34px; font-size: 12px; }
+  .dyn-add {
+    font-size: 13px; color: var(--accent); cursor: pointer;
+    padding: 4px 0; transition: color 0.15s;
+  }
+  .dyn-add:hover { filter: brightness(1.1); }
+  .dyn-remove {
+    font-size: 13px; color: var(--text-4); cursor: pointer;
+    transition: color 0.15s; flex-shrink: 0; width: 20px;
+    text-align: center;
+  }
+  .dyn-remove:hover { color: var(--red); }
+
+  /* Tooltip */
+  .tip {
+    position: relative; display: inline-flex; align-items: center;
+    cursor: help; color: var(--text-4); font-size: 12px;
+    width: 16px; height: 16px; justify-content: center;
+    border-radius: 50%; border: 1px solid var(--text-4);
+    flex-shrink: 0; font-weight: 600;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tip:hover { color: var(--text-1); border-color: var(--text-3); }
+  .tip .tip-text {
+    display: none; position: absolute; top: calc(100% + 8px); left: 0;
+    background: var(--bg-raised); color: var(--text-1);
+    font-size: 12px; font-weight: 400; padding: 10px 14px;
+    border-radius: 5px; z-index: 9999;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5); pointer-events: none;
+    max-width: 280px; min-width: 180px; white-space: normal; line-height: 1.5;
+    border: 1px solid var(--border);
+  }
+  .tip:hover .tip-text { display: block; }
+
+  /* Cards */
+  .card-list { padding: 0; display: flex; flex-direction: column; gap: 0; }
+  .card {
+    background: var(--bg-raised); border: 1px solid var(--border);
+    border-radius: var(--radius); position: relative;
+    transition: border-color 0.15s; margin: 8px 14px;
+    overflow: hidden;
+  }
+  .card:hover { border-color: rgba(255,255,255,0.25); }
+  .card .r { padding: 0 14px; min-height: 44px; border-bottom: 1px solid var(--border); display: flex; align-items: center; }
+  .card .r:last-child { border-bottom: none; }
+  .card-hdr {
+    display: flex; align-items: center; padding: 12px 14px;
+    cursor: pointer; user-select: none;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+  .card-hdr:hover { background: rgba(255,255,255,0.02); }
+  .card-hdr::before {
+    content: '\25B8'; color: var(--text-2); margin-right: 10px;
+    font-size: 12px; transition: transform 0.15s;
+  }
+  .card:not(.collapsed) .card-hdr::before { content: '\25BE'; }
+  .card.collapsed .card-hdr::before { transform: none; }
+  .card-title { font-size: 14px; font-weight: 600; color: var(--text-1); flex: 1; }
+  .card-hdr-right { display: flex; align-items: center; gap: 10px; }
+  .card-hdr-right .card-remove {
+    position: static; font-size: 18px; color: var(--text-3);
+    cursor: pointer; transition: color 0.15s; line-height: 1;
+  }
+  .card-hdr-right .card-remove:hover { color: var(--red); }
+  .card-content { transition: none; }
+  .card.collapsed .card-content { display: none; }
+  .card.collapsed .card-hdr { border-bottom: none; }
+  .card-remove {
+    position: absolute; top: 10px; right: 10px;
+    font-size: 14px; color: var(--text-4); cursor: pointer;
+    transition: color 0.15s; z-index: 1; line-height: 1;
+    width: 20px; height: 20px; display: flex;
+    align-items: center; justify-content: center;
+  }
+  .card-remove:hover { color: var(--red); }
+
+  /* Header button */
+  .hdr-btn {
+    height: 30px; padding: 0 14px;
+    background: var(--accent); color: #fff;
+    border: none; border-radius: 5px;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: filter 0.15s;
+  }
+  .hdr-btn:hover { filter: brightness(1.1); }
+
+  /* Empty state */
+  .empty {
+    padding: 24px; text-align: center;
+    font-size: 12px; color: var(--text-4);
+  }
+
+  /* CLI status */
+  .cli-status {
+    padding: 14px; display: flex; align-items: center; gap: 10px;
+    font-size: 13px; line-height: 1.6;
+  }
+  .cli-status.ok { color: var(--green); }
+  .cli-status.warn { color: var(--orange); }
+  .cli-status a {
+    color: var(--accent); text-decoration: none;
+    transition: color 0.15s;
+  }
+  .cli-status a:hover { color: var(--text-1); }
+
+  /* Time inputs */
+  .time-row {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .time-row .r-input { width: 70px; flex: none; text-align: center; }
+  .time-sep { color: var(--text-3); font-size: 13px; }
+
+  /* Scrollbar */
+  .main::-webkit-scrollbar, .cat-bar::-webkit-scrollbar { width: 6px; }
+  .main::-webkit-scrollbar-track, .cat-bar::-webkit-scrollbar-track { background: transparent; }
+  .main::-webkit-scrollbar-thumb, .cat-bar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+  .main::-webkit-scrollbar-thumb:hover, .cat-bar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+  /* Collapsible */
+  .collapsible-toggle {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 14px; cursor: pointer; user-select: none;
+    font-size: 13px; color: var(--text-1);
+    transition: background 0.15s;
+  }
+  .collapsible-toggle:hover { background: rgba(255,255,255,0.015); }
+  .collapsible-toggle .arrow {
+    font-size: 10px; color: var(--text-3); transition: transform 0.2s;
+  }
+  .collapsible-toggle.open .arrow { transform: rotate(90deg); }
+  .collapsible-body { display: none; }
+  .collapsible-body.open { display: block; }
+
+  .hidden { display: none !important; }
+
+  /* Close confirmation modal */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    display: none; align-items: center; justify-content: center;
+    z-index: 1000; backdrop-filter: blur(4px);
+  }
+  .modal-box {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 28px 24px 20px;
+    max-width: 380px; width: 90%;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+  }
+  .modal-title {
+    font-size: 15px; font-weight: 600; color: var(--text-1);
+    margin-bottom: 6px;
+  }
+  .modal-msg {
+    font-size: 12px; color: var(--text-3);
+    margin-bottom: 20px; line-height: 1.5;
+  }
+  .modal-actions {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .modal-actions .mbtn {
+    height: 36px; width: 100%;
+    border: none; border-radius: 6px;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .modal-actions .mbtn.primary { background: var(--accent); color: #fff; }
+  .modal-actions .mbtn.primary:hover { filter: brightness(1.1); }
+  .modal-actions .mbtn.secondary { background: rgba(255,255,255,0.05); color: var(--text-2); border: 1px solid var(--border); }
+  .modal-actions .mbtn.danger-outline {
+    background: transparent; color: var(--red, #e5534b);
+    border: 1px solid rgba(229,83,75,0.3);
+  }
+  .modal-actions .mbtn.danger-outline:hover {
+    background: rgba(229,83,75,0.12); border-color: var(--red, #e5534b);
+  }
+
+  /* -- Agent module styles -- */
+  .r-tag {
+    font-size: 11px; padding: 3px 0; border-radius: 4px;
+    font-weight: 500; margin-left: auto; flex-shrink: 0;
+    width: 64px; text-align: center; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .r-tag.ok { background: var(--green-dim); color: var(--green); }
+  .r-tag.no { background: var(--red-dim); color: var(--red); }
+  .r-tag.oauth { background: var(--orange-dim); color: var(--orange); }
+  .r-tag.env { background: rgba(139,145,240,0.08); color: var(--accent); }
+  .r-tag.running { background: var(--green-dim); color: var(--green); }
+  .r-tag.not-running { background: var(--red-dim); color: var(--red); }
+
+  .input-group {
+    display: flex; width: 280px; flex: 0 0 280px; align-items: center; gap: 0;
+  }
+  .input-group .r-input {
+    flex: 1; width: auto;
+    border-top-right-radius: 0; border-bottom-right-radius: 0;
+    border-right: none;
+  }
+  .input-group .eye-btn {
+    height: 34px; width: 36px; flex-shrink: 0;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-left: none;
+    border-radius: 0 5px 5px 0;
+    color: var(--text-3); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; transition: color 0.15s;
+  }
+  .input-group .eye-btn:hover { color: var(--text-1); }
+
+  .r-link {
+    margin-left: auto; font-size: 11px; color: #bbb;
+    text-decoration: none; white-space: nowrap; flex-shrink: 0;
+    transition: color 0.15s; display: inline-flex; align-items: center; justify-content: center;
+    width: 64px;
+  }
+  .r-link:hover { color: #fff; }
+
+  #panel-agent-providers .r-tag,
+  #panel-agent-providers .r-link {
+    margin-right: -6px;
+  }
+
+  .r-validation {
+    font-size: 11px; flex-shrink: 0;
+    white-space: nowrap; transition: opacity 0.2s;
+  }
+  .r-validation:empty { display: none; }
+  .r-validation:not(:empty) { margin-left: 8px; }
+  .r-validation.checking { color: var(--text-3); }
+  .r-validation.ok { color: var(--green); }
+  .r-validation.fail { color: var(--red); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .r-validation .spinner {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid var(--text-4); border-top-color: var(--text-2);
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+    vertical-align: middle; margin-right: 4px;
+  }
+
+  .r-detail {
+    font-size: 11px; color: var(--text-3);
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+    margin-left: 8px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+
+  .radio-group { display: flex; gap: 4px; flex: 1; }
+  .radio-btn {
+    flex: 1; height: 30px; padding: 0 10px;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-radius: 5px; color: var(--text-3);
+    font-size: 12px; font-weight: 500; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .radio-btn:hover { color: var(--text-2); }
+  .radio-btn.on {
+    background: rgba(139,145,240,0.15);
+    border-color: var(--accent);
+    color: var(--text-1);
+  }
+
+  .preset-card {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+    min-height: 48px;
+  }
+  .preset-card:last-child { border-bottom: none; }
+  .preset-card:hover { background: rgba(255,255,255,0.015); }
+  .preset-card[draggable] { cursor: grab; }
+  .preset-card.dragging { opacity: 0.4; }
+  .preset-card.drag-over { border-top: 2px solid var(--accent); }
+  .preset-info { flex: 1; min-width: 0; }
+  .preset-id { font-size: 13px; font-weight: 600; color: var(--text-1); }
+  .preset-meta {
+    font-size: 11px; color: var(--text-3); margin-top: 2px;
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .preset-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .icon-btn {
+    height: 28px; padding: 0 10px; min-width: 64px;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text-2);
+    font-size: 11px; font-weight: 500; cursor: pointer;
+    transition: all 0.15s;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .icon-btn:hover { color: var(--text-1); border-color: var(--border-focus); }
+  .icon-btn.edit-btn { border-color: rgba(139,145,240,0.3); color: var(--accent); }
+  .icon-btn.edit-btn:hover { background: rgba(139,145,240,0.1); border-color: var(--accent); color: var(--accent); }
+  .icon-btn.danger { border-color: rgba(229,83,75,0.3); color: var(--red); }
+  .icon-btn.danger:hover { background: var(--red-dim); border-color: var(--red); }
+  .icon-btn.builtin { color: var(--green); border-color: var(--green); cursor: default; opacity: 0.7; }
+
+  .form-row {
+    display: flex; align-items: center;
+    padding: 0 14px; min-height: 48px;
+    border-bottom: 1px solid var(--border);
+  }
+  .form-row:last-child { border-bottom: none; }
+  .form-row .r-name { width: 90px; }
+  .form-row .r-input { flex: 1; width: auto; }
+  .form-actions {
+    display: flex; gap: 8px; padding: 12px 14px;
+    border-top: 1px solid var(--border);
+    background: rgba(0,0,0,0.15);
+  }
+  .form-actions .btn {
+    flex: 1; height: 36px;
+    border: none; border-radius: 5px;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn.secondary { background: rgba(255,255,255,0.05); color: var(--text-2); border: 1px solid var(--border); }
+  .btn.secondary:hover { color: var(--text-1); }
+
+  .advanced-toggle {
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 14px; min-height: 40px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer; user-select: none;
+    font-size: 12px; color: var(--text-3);
+    transition: color 0.15s;
+  }
+  .advanced-toggle:hover { color: var(--text-2); }
+  .advanced-toggle .arrow { transition: transform 0.2s; display: inline-block; font-size: 10px; }
+  .advanced-toggle .arrow.open { transform: rotate(90deg); }
+  .advanced-content { display: none; }
+  .advanced-content.open { display: block; }
+
+  /* -- Search module styles -- */
+  .r .drag-handle {
+    width: 16px; margin-right: 6px; cursor: grab; color: #888;
+    font-size: 12px; text-align: center; flex-shrink: 0;
+    user-select: none;
+  }
+  .r .drag-handle:active { cursor: grabbing; }
+
+  .r-check {
+    width: 17px; height: 17px; border-radius: 4px;
+    border: 1.5px solid #666;
+    margin-right: 10px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s; flex-shrink: 0;
+    background: transparent;
+  }
+  .r-check.on { background: var(--accent); border-color: var(--accent); }
+  .r-check.on::after {
+    content: '';
+    width: 8px; height: 5px;
+    border-left: 1.5px solid #fff; border-bottom: 1.5px solid #fff;
+    transform: rotate(-45deg) translateY(-1px);
+  }
+
+  .modes { display: flex; overflow: hidden; }
+  .mode {
+    flex: 1; padding: 11px 14px;
+    cursor: pointer; transition: background 0.15s;
+    border-right: 1px solid var(--border);
+  }
+  .mode:last-child { border-right: none; }
+  .mode:hover { background: rgba(255,255,255,0.015); }
+  .mode.on { background: rgba(139,145,240,0.12); }
+  .mode .m-title { font-size: 13px; font-weight: 600; color: #999; }
+  .mode.on .m-title { color: #fff; }
+  .mode .m-desc { font-size: 11px; color: #777; margin-top: 2px; }
+  .mode .m-badge {
+    display: inline-block; font-size: 10px; font-weight: 600;
+    color: var(--accent); margin-left: 4px;
+  }
+  .priority-hint {
+    font-size: 11px; color: var(--text-4);
+    padding: 5px 2px 0; margin-top: 0;
+  }
+
+  /* -- Memory module styles -- */
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; }
+  .toggle { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-track {
+    position: absolute; inset: 0; cursor: pointer;
+    background: rgba(255,255,255,0.12); border-radius: 11px; transition: background 0.2s;
+  }
+  .toggle-track::after {
+    content: ''; position: absolute; left: 3px; top: 3px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--text-3); transition: all 0.2s;
+  }
+  .toggle input:checked + .toggle-track { background: var(--accent); }
+  .toggle input:checked + .toggle-track::after { transform: translateX(18px); background: #fff; }
+  .r-unit { font-size: 11px; color: var(--text-4); margin-left: 8px; flex-shrink: 0; min-width: 30px; text-align: right; }
+  .settings-body.disabled { opacity: 0.35; pointer-events: none; }
+  .readonly-info {
+    color: var(--text-3); font-size: 13px; padding: 8px 12px;
+    background: var(--bg-raised); border-radius: 6px; border: 1px solid var(--border);
+  }
+  .file-label { font-size: 13px; font-weight: 600; color: var(--text-1); margin-bottom: 6px; display: flex; align-items: center; }
+  .file-label .file-hint { font-weight: 400; color: var(--text-3); font-size: 11px; margin-left: 6px; }
+  .file-open { margin-left: auto; font-size: 11px; color: var(--accent); cursor: pointer; font-weight: 500; text-decoration: none; }
+  .file-open:hover { color: #fff; }
+  .file-area {
+    width: 100%; height: 200px; padding: 10px;
+    background: var(--bg-input); border: 1px solid var(--border);
+    border-radius: 5px; color: var(--text-1);
+    font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', monospace;
+    line-height: 1.5; resize: vertical; transition: border-color 0.15s;
+  }
+  .file-area:focus { outline: none; border-color: var(--border-focus); }
+  .file-group { margin-bottom: 16px; }
+  .cm-item {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .cm-item:last-child { border-bottom: none; }
+  .cm-item.archived { opacity: 0.4; }
+  .cm-header {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 4px;
+  }
+  .cm-topic {
+    font-size: 14px; font-weight: 600; color: var(--text-1);
+    flex: 1; min-width: 0;
+  }
+  .cm-element {
+    font-size: 12px; color: var(--text-3);
+    line-height: 1.4; word-break: break-word;
+  }
+  .cm-actions { flex-shrink: 0; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- Category sidebar -->
+  <div class="cat-bar">
+    <div class="cat-label">General</div>
+    <div class="cat-item" data-panel="general-modules" onclick="switchCat(this)">Modules</div>
+    <div class="cat-item" data-panel="general-injection" onclick="switchCat(this)">Injection Mode</div>
+    <div class="cat-item" data-panel="general-security" onclick="switchCat(this)">Security</div>
+    <div class="cat-sep"></div>
+    <div class="cat-label">Channels</div>
+    <div class="cat-item active" data-panel="connection" onclick="switchCat(this)">Connection</div>
+    <div class="cat-item" data-panel="channels" onclick="switchCat(this)">Channels</div>
+    <div class="cat-item" data-panel="access" onclick="switchCat(this)">Access</div>
+    <div class="cat-item" data-panel="bot" onclick="switchCat(this)">Bot</div>
+    <div class="cat-item" data-panel="autotalk" onclick="switchCat(this)">Proactive</div>
+    <div class="cat-item" data-panel="schedules" onclick="switchCat(this)">Schedules</div>
+    <div class="cat-item" data-panel="webhooks" onclick="switchCat(this)">Webhooks</div>
+    <div class="cat-item" data-panel="advanced" onclick="switchCat(this)">Advanced</div>
+    <div class="cat-sep"></div>
+    <div class="cat-label">Agent</div>
+    <div class="cat-item" data-panel="workflow-custom" onclick="switchCat(this)">Custom Workflow</div>
+    <div class="cat-item" data-panel="agent-providers" onclick="switchCat(this)">Providers</div>
+    <div class="cat-item" data-panel="agent-presets" onclick="switchCat(this)">Presets</div>
+    <div class="cat-item" data-panel="agent-status" onclick="switchCat(this)">Status</div>
+    <div class="cat-item" data-panel="agent-maintenance" onclick="switchCat(this)">Maintenance</div>
+    <div class="cat-item" data-panel="agent-learning" onclick="switchCat(this)">Learning</div>
+    <div class="cat-sep"></div>
+    <div class="cat-label">Memory</div>
+    <div class="cat-item" data-panel="mem-settings" onclick="switchCat(this)">Settings</div>
+    <div class="cat-item" data-panel="mem-files" onclick="switchCat(this)">Files</div>
+    <div class="cat-sep"></div>
+    <div class="cat-label">Search</div>
+    <div class="cat-item" data-panel="search-apikeys" onclick="switchCat(this)">API Keys</div>
+    <div class="cat-item" data-panel="search-behavior" onclick="switchCat(this)">Behavior</div>
+    <div class="cat-item" data-panel="search-crawl" onclick="switchCat(this)">Crawl</div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- ============ CHANNELS MODULE ============ -->
+
+    <!-- CONNECTION -->
+    <div class="panel active" id="panel-connection">
+      <div class="hdr"><h1>Connection</h1></div>
+      <div class="sec">
+        <div class="sec-title">Discord</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Bot token <span class="tip">?<span class="tip-text">Bot token from the Discord Developer Portal</span></span></span>
+            <div class="pw-wrap">
+              <input class="r-input" id="ch-discord-token" type="password" placeholder="Bot token">
+              <span class="pw-toggle" onclick="togglePw(this)">&#128065;</span>
+            </div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Application ID <span class="tip">?<span class="tip-text">Application ID from the Discord Developer Portal</span></span></span>
+            <input class="r-input" id="ch-discord-appid" type="text" placeholder="Application ID">
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-connection"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- CHANNELS -->
+    <div class="panel" id="panel-channels">
+      <div class="hdr"><h1>Channels</h1></div>
+      <div class="sec">
+        <div class="sec-title">Channel list <span class="tip" style="vertical-align:middle;">?<span class="tip-text">Add Discord channels for the bot to operate in. Select the radio button to set the main channel</span></span></div>
+        <div class="sec-body">
+          <div id="ch-channel-list" class="dyn-list"></div>
+          <div style="padding: 0 16px 10px;">
+            <span class="dyn-add" onclick="addChannel()">+ Add channel</span>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-channels"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- ACCESS -->
+    <div class="panel" id="panel-access">
+      <div class="hdr"><h1>Access</h1></div>
+      <div class="sec">
+        <div class="sec-title">DM & mentions</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">DM policy <span class="tip">?<span class="tip-text">pairing: request then approve / allowlist: only listed users / disabled: block all DMs</span></span></span>
+            <select class="r-select" id="ch-dm-policy">
+              <option value="pairing">pairing</option>
+              <option value="allowlist">allowlist</option>
+              <option value="disabled">disabled</option>
+            </select>
+          </div>
+          <div class="r" style="min-height:auto;padding:10px 14px;">
+            <span class="r-name-wide">Allow from <span class="tip">?<span class="tip-text">Leave empty to allow all users. Add user IDs to restrict responses</span></span></span>
+            <div class="tag-container" id="ch-allowfrom"></div>
+          </div>
+          <div class="r" style="min-height:auto;padding:10px 14px;">
+            <span class="r-name-wide">Mention patterns <span class="tip">?<span class="tip-text">Additional keywords the bot responds to (e.g. mixdog, hey bot)</span></span></span>
+            <div class="tag-container" id="ch-mentionpatterns"></div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Ack reaction <span class="tip">?<span class="tip-text">React with an emoji to acknowledge received messages</span></span></span>
+            <div class="r-toggle" id="ch-ackreaction" onclick="this.classList.toggle('on')"></div>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-access"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- BOT -->
+    <div class="panel" id="panel-bot">
+      <div class="hdr"><h1>Bot</h1></div>
+      <div class="sec">
+        <div class="sec-title">Quiet hours</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Do not disturb <span class="tip">?<span class="tip-text">Bot will not send automatic messages during this time window</span></span></span>
+            <select class="r-select" id="bot-quiet-preset" style="width:160px;flex:none;" onchange="onQuietPresetChange()">
+              <option value="none">None</option>
+              <option value="23:00-07:00">23:00 - 07:00</option>
+              <option value="22:00-08:00">22:00 - 08:00</option>
+              <option value="00:00-09:00">00:00 - 09:00</option>
+              <option value="custom">Custom</option>
+            </select>
+            <div class="time-row hidden" id="bot-quiet-custom">
+              <input class="r-input" id="bot-quiet-start" type="text" placeholder="HH:MM">
+              <span class="time-sep">-</span>
+              <input class="r-input" id="bot-quiet-end" type="text" placeholder="HH:MM">
+            </div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Holidays <span class="tip">?<span class="tip-text">Skip scheduled tasks on public holidays</span></span></span>
+            <div class="r-toggle" id="bot-holidays" onclick="this.classList.toggle('on')"></div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Sleep Mode <span class="tip">?<span class="tip-text">Auto-sleep the bot at a set time</span></span></span>
+            <select class="r-select" id="bot-sleep-preset" onchange="onSleepPresetChange()">
+              <option value="off">Off</option>
+              <option value="23:00">23:00</option>
+              <option value="00:00">00:00</option>
+              <option value="01:00">01:00</option>
+              <option value="custom">Custom...</option>
+            </select>
+            <input class="r-input" id="bot-sleep-custom" type="text" placeholder="HH:MM" style="width:80px;flex:none;margin-left:8px;display:none">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Model <span class="tip">?<span class="tip-text">Model preset for bot responses</span></span></span>
+            <select class="r-select" id="bot-model"></select>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Display Mode <span class="tip">?<span class="tip-text">view: show bot activity / hide: hide bot activity</span></span></span>
+            <select class="r-select" id="bot-display-mode">
+              <option value="view">view</option>
+              <option value="hide">hide</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-bot"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- AUTOTALK -->
+    <div class="panel" id="panel-autotalk">
+      <div class="hdr">
+        <h1>Proactive</h1>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Settings</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Interval <span class="tip">?<span class="tip-text">How often proactive ticks fire</span></span></span>
+            <div style="display:flex;align-items:center;flex:1;gap:6px">
+              <select class="r-select" id="proactive-interval" onchange="proactiveIntervalChanged()">
+                <option value="15">15 min</option>
+                <option value="30">30 min</option>
+                <option value="60" selected>1 hour</option>
+                <option value="120">2 hours</option>
+                <option value="180">3 hours</option>
+                <option value="360">6 hours</option>
+                <option value="custom">Custom</option>
+              </select>
+              <input class="r-input" id="proactive-interval-custom" type="number" placeholder="min" style="flex:1;display:none">
+            </div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Model <span class="tip">?<span class="tip-text">Model preset for source research (e.g. GPT5.4-MINI)</span></span></span>
+            <select class="r-select" id="proactive-model"></select>
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Feedback <span class="tip">?<span class="tip-text">Auto-accumulated feedback entries. Edit or remove as needed.</span></span></div>
+        <div class="sec-body" id="proactive-feedback"></div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-autotalk"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- SCHEDULES -->
+    <div class="panel" id="panel-schedules">
+      <div class="hdr">
+        <h1>Schedules</h1>
+        <button class="hdr-btn" onclick="addScheduleCard()">+ New Schedule</button>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Scheduled Tasks</div>
+        <div class="sec-body">
+          <div id="sched-tasks" class="card-list"></div>
+          <div class="empty" id="sched-empty">No schedules yet. Click <strong>+ New Schedule</strong> to create one.</div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-schedules"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- WEBHOOKS -->
+    <div class="panel" id="panel-webhooks">
+      <div class="hdr">
+        <h1>Webhooks</h1>
+        <button class="hdr-btn" onclick="addEventCard()">+ New Webhook</button>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Webhook Endpoints</div>
+        <div class="sec-body">
+          <div id="event-rules" class="card-list"></div>
+          <div class="empty" id="webhook-empty">No webhooks yet. Click <strong>+ New Webhook</strong> to create one.</div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-webhooks"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- ADVANCED -->
+    <div class="panel" id="panel-advanced">
+      <div class="hdr"><h1>Advanced</h1></div>
+      <div class="sec">
+        <div class="sec-title">Voice</div>
+        <div class="sec-body" id="voice-section"></div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Webhook</div>
+        <div class="sec-body" id="webhook-section"></div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-advanced"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- ============ AGENT MODULE ============ -->
+
+    <!-- AGENT PROVIDERS -->
+    <div class="panel" id="panel-agent-providers">
+      <div class="hdr"><h1>Providers</h1></div>
+
+      <div class="sec">
+        <div class="sec-title">API Key</div>
+        <div class="sec-body" id="ag-api-sec"></div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">OAuth</div>
+        <div class="sec-body" id="ag-oauth-sec"></div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Local</div>
+        <div class="sec-body" id="ag-local-sec"></div>
+      </div>
+
+      <div class="save-area">
+        <div class="warn-msg" id="warn-agent-providers"></div>
+        <button class="save" onclick="agSaveProviders()">Save</button>
+      </div>
+    </div>
+
+    <!-- AGENT PRESETS -->
+    <div class="panel" id="panel-agent-presets">
+      <div class="hdr">
+        <h1>Presets</h1>
+        <button class="hdr-btn" onclick="agOpenPresetForm(null)">+ New Preset</button>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Saved Presets</div>
+        <div class="sec-body" id="ag-preset-list">
+          <div class="empty">Loading...</div>
+        </div>
+      </div>
+
+      <div class="sec" id="ag-preset-form-sec" style="display:none">
+        <div class="sec-title" id="ag-preset-form-title">New Preset</div>
+        <div class="sec-body">
+          <div class="form-row">
+            <span class="r-name">Name</span>
+            <input class="r-input" id="ag-pf-name" placeholder="my-preset" maxlength="40">
+          </div>
+          <div class="form-row">
+            <span class="r-name">Provider</span>
+            <select class="r-select" id="ag-pf-provider" onchange="agOnProviderChange()"></select>
+          </div>
+          <div class="form-row">
+            <span class="r-name">Model</span>
+            <select class="r-select" id="ag-pf-model" disabled><option value="">Select a provider first</option></select>
+          </div>
+          <div class="form-row" id="ag-pf-effort-row">
+            <span class="r-name">Effort</span>
+            <select class="r-select" id="ag-pf-effort"></select>
+          </div>
+          <div class="form-row" id="ag-pf-fast-row" style="display:none">
+            <span class="r-name">Fast Mode</span>
+            <div class="r-toggle" id="ag-pf-fast" onclick="this.classList.toggle('on')"></div>
+            <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">Speed optimized output (premium)</span>
+          </div>
+          <div class="advanced-toggle" onclick="toggleAdvanced(this)">
+            <span class="arrow">&#9654;</span> Advanced Options
+          </div>
+          <div class="advanced-content" id="ag-pf-access-section">
+            <div class="form-row">
+              <span class="r-name">Access</span>
+              <div class="radio-group" id="ag-pf-tools">
+                <div class="radio-btn on" data-v="full" onclick="agSelectTools(this)">Read & Write</div>
+                <div class="radio-btn" data-v="readonly" onclick="agSelectTools(this)">Read Only</div>
+                <div class="radio-btn" data-v="mcp" onclick="agSelectTools(this)">None</div>
+              </div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn secondary" onclick="agClosePresetForm()">Cancel</button>
+            <button class="btn primary" onclick="agSavePreset()">Save Preset</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="warn-msg" id="warn-agent-presets"></div>
+    </div>
+
+    <!-- AGENT STATUS -->
+    <div class="panel" id="panel-agent-status">
+      <div class="hdr"><h1>Status</h1></div>
+
+      <div class="sec">
+        <div class="sec-title">Provider Status</div>
+        <div class="sec-body" id="ag-status-sec"></div>
+      </div>
+    </div>
+
+    <!-- AGENT MAINTENANCE -->
+    <div class="panel" id="panel-agent-maintenance">
+      <div class="hdr"><h1>Maintenance Presets</h1></div>
+      <div class="sec">
+        <div class="sec-title">Task Presets</div>
+        <div class="sec-desc">Assign which model preset handles each background maintenance task.</div>
+        <div class="sec-body" id="ag-maint-tasks"></div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-ag-maint"></div>
+        <button class="save" onclick="saveAgMaintenance()">Save</button>
+      </div>
+    </div>
+
+    <!-- AGENT LEARNING -->
+    <div class="panel" id="panel-agent-learning">
+      <div class="hdr"><h1>Agent Learning</h1></div>
+
+      <div class="sec">
+        <div class="sec-title">Trajectory Recording</div>
+        <div class="sec-desc">Record execution metadata for every bridge call. Enables pattern analysis and skill suggestions.</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Enabled</span>
+            <label class="toggle">
+              <input type="checkbox" id="traj-enabled" checked onchange="saveLearningConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Agent Maintenance Cycle</div>
+        <div class="sec-desc">Periodic agent trajectory analysis and maintenance tasks.</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Enabled</span>
+            <label class="toggle">
+              <input type="checkbox" id="am-enabled" onchange="saveLearningConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Interval</span>
+            <select class="r-select" id="am-interval" onchange="amIntervalChanged()">
+              <option value="15m">15 min</option>
+              <option value="30m">30 min</option>
+              <option value="1h" selected>1 hour</option>
+              <option value="2h">2 hour</option>
+              <option value="custom">Custom</option>
+            </select>
+            <input class="r-input" id="am-interval-custom" type="text" placeholder="e.g. 20m, 2h" style="flex:1;display:none;margin-left:8px" onchange="saveLearningConfig()">
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Auto Skill Detection</div>
+        <div class="sec-desc">Automatically detect repeating patterns and suggest skill creation.</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Enabled</span>
+            <label class="toggle">
+              <input type="checkbox" id="skill-auto" onchange="saveLearningConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ MEMORY MODULE ============ -->
+
+    <!-- MEMORY SETTINGS -->
+    <div class="panel" id="panel-mem-settings">
+      <div class="hdr"><h1>Settings</h1></div>
+      <div class="sec">
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Memory</span>
+            <label class="toggle">
+              <input type="checkbox" id="mem-set-enabled" checked onchange="memToggleMemory()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div id="mem-settings-body" class="settings-body">
+        <div class="sec">
+          <div class="sec-title">Extraction</div>
+          <div class="sec-body">
+            <div class="r">
+              <span class="r-name-wide">Interval</span>
+              <select class="r-select" id="mem-set-retention">
+                <option value="1m">1 min</option>
+                <option value="5m">5 min</option>
+                <option value="10m" selected>10 min</option>
+                <option value="30m">30 min</option>
+                <option value="1h">1 hour</option>
+              </select>
+            </div>
+            <div class="r">
+              <span class="r-name-wide">Timeout</span>
+              <input class="r-input" id="mem-set-timeout" type="number" placeholder="30" style="flex:1">
+              <span class="r-unit">sec</span>
+            </div>
+            <div class="r">
+              <span class="r-name-wide">Batch Size</span>
+              <input class="r-input" id="mem-set-batch-size" type="number" placeholder="50" style="flex:1">
+            </div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="sec-title">Consolidation</div>
+          <div class="sec-body">
+            <div class="r">
+              <span class="r-name-wide">Interval</span>
+              <input class="r-input" id="mem-set-interval" type="text" placeholder="1h">
+            </div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="sec-title">Backfill</div>
+          <div class="sec-body">
+            <div class="r">
+              <span class="r-name-wide">Window</span>
+              <select class="r-select" id="mem-set-backfill-window" style="flex:1">
+                <option value="1d">1 day</option>
+                <option value="3d">3 days</option>
+                <option value="7d" selected>7 days</option>
+                <option value="30d">30 days</option>
+                <option value="all">Unlimited</option>
+              </select>
+              <button class="save" id="mem-btn-backfill" onclick="memRunBackfill()" style="width:auto;height:34px;padding:0 16px;margin-left:8px;font-size:12px">Run</button>
+            </div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="sec-title" style="color:#e5534b">Danger zone</div>
+          <div class="sec-body">
+            <div class="r" style="flex-direction:column;align-items:stretch;gap:8px">
+              <div style="font-size:12px;color:var(--text-3);line-height:1.5">Delete ALL memory entries (active + archived + pending). This is irreversible. Type <code>DELETE ALL MEMORY</code> below to enable the button.</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input class="r-input" id="mem-del-confirm" type="text" placeholder="DELETE ALL MEMORY" style="flex:1" oninput="memDeleteConfirmCheck()">
+                <button class="save" id="mem-btn-delete" onclick="memDeleteAll()" disabled style="width:auto;height:34px;padding:0 16px;font-size:12px;background:#e5534b;opacity:0.4;cursor:not-allowed">Delete all</button>
+              </div>
+              <div class="warn-msg" id="warn-mem-delete"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-mem-settings"></div>
+        <button class="save" onclick="memSaveConfig()">Save</button>
+      </div>
+    </div>
+
+    <!-- MEMORY FILES -->
+    <div class="panel" id="panel-mem-files">
+      <div class="hdr"><h1>Files</h1></div>
+
+      <div class="sec">
+        <div class="sec-title">User</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Name</span>
+            <input class="r-input" id="mem-set-user-name" type="text" placeholder="John">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Title</span>
+            <input class="r-input" id="mem-set-user-title" type="text" placeholder="Boss">
+          </div>
+        </div>
+      </div>
+      <div class="file-group">
+        <div class="file-label">bot.md<span class="file-hint">Bot persona and behavior</span><span class="file-open" onclick="memOpenFile('bot.md')">Open</span></div>
+        <textarea class="file-area" id="mem-file-bot"></textarea>
+      </div>
+      <div class="file-group">
+        <div class="file-label">user.md<span class="file-hint">User information</span><span class="file-open" onclick="memOpenFile('user.md')">Open</span></div>
+        <textarea class="file-area" id="mem-file-user-profile"></textarea>
+      </div>
+      <div class="sec">
+        <div class="sec-title" style="display:flex;align-items:center;justify-content:space-between">
+          <span>Core Memory <span style="font-weight:400;color:var(--text-4);font-size:11px">(auto-generated context)</span></span>
+          <button class="hdr-btn" style="font-size:11px;padding:3px 10px" onclick="memAddCoreMemory()">+ Add</button>
+        </div>
+        <div class="sec-body" id="mem-core-memory-list">
+          <div class="empty">Loading...</div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-mem-files"></div>
+        <button class="save" onclick="memSaveFiles()">Save</button>
+      </div>
+    </div>
+
+    <!-- ============ SEARCH MODULE ============ -->
+
+    <!-- SEARCH API KEYS -->
+    <div class="panel" id="panel-search-apikeys">
+      <div class="hdr">
+        <h1>API Keys</h1>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Search providers</div>
+        <div class="sec-body" id="sr-search-sec"></div>
+        <div class="priority-hint">&#10303; Drag to reorder priority &middot; checked = enabled</div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">GitHub</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name" style="width:90px">GitHub</span>
+            <div class="input-group" style="flex:1;width:auto;">
+              <input class="r-input" id="sr-gh-token" type="password" placeholder="GITHUB TOKEN">
+              <button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button>
+            </div>
+            <a class="r-link" href="https://github.com/settings/tokens" target="_blank">Get &#8599;</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="save-area">
+        <div class="warn-msg" id="warn-search-apikeys"></div>
+        <button class="save" onclick="srSavePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- SEARCH PROVIDERS -->
+    <!-- SEARCH BEHAVIOR -->
+    <div class="panel" id="panel-search-behavior">
+      <div class="hdr">
+        <h1>Behavior</h1>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Limits</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Max results</span>
+            <input class="r-input" id="sr-beh-maxresults" type="number" placeholder="10">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Request timeout</span>
+            <div style="display:flex;align-items:center;flex:1;gap:6px">
+              <input class="r-input" id="sr-beh-timeout" type="number" placeholder="30000">
+              <span style="font-size:11px;color:var(--text-4);flex-shrink:0">ms</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="save-area">
+        <div class="warn-msg" id="warn-search-behavior"></div>
+        <button class="save" onclick="srSavePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- SEARCH CRAWL -->
+    <div class="panel" id="panel-search-crawl">
+      <div class="hdr">
+        <h1>Crawl</h1>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Crawl settings</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Max pages</span>
+            <input class="r-input" id="sr-crawl-maxpages" type="number" placeholder="10">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Max depth</span>
+            <input class="r-input" id="sr-crawl-maxdepth" type="number" placeholder="2">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Same domain only</span>
+            <div class="r-toggle on" id="sr-crawl-samedomain" onclick="this.classList.toggle('on')"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="save-area">
+        <div class="warn-msg" id="warn-search-crawl"></div>
+        <button class="save" onclick="srSavePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- ============ GENERAL MODULE ============ -->
+
+    <!-- GENERAL MODULES (B6) -->
+    <div class="panel" id="panel-general-modules">
+      <div class="hdr"><h1>Modules</h1></div>
+      <div class="sec">
+        <div class="sec-desc">Enable or disable each mixdog module independently. Modules without static dependencies keep working alone; cross-module runtime features (core-memory injection, synthetic bridge tools) degrade cleanly when their upstream is off.</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Channels</span>
+            <label class="toggle">
+              <input type="checkbox" id="mod-channels-enabled" checked onchange="saveModulesConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="sec-desc" style="padding:0 14px 10px">Discord I/O, scheduler, webhook, proactive chat.</div>
+
+          <div class="r toggle-row">
+            <span class="r-name-wide">Memory</span>
+            <label class="toggle">
+              <input type="checkbox" id="mod-memory-enabled" checked onchange="saveModulesConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="sec-desc" style="padding:0 14px 10px">Persistent memory DB + core-memory context injection. (Required for channels' core-memory inject and agent's <code>memory_search</code> tool.)</div>
+
+          <div class="r toggle-row">
+            <span class="r-name-wide">Search</span>
+            <label class="toggle">
+              <input type="checkbox" id="mod-search-enabled" checked onchange="saveModulesConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="sec-desc" style="padding:0 14px 10px">Web search + URL scrape + GitHub. (Required for agent's <code>web_search</code> tool.)</div>
+
+          <div class="r toggle-row">
+            <span class="r-name-wide">Agent</span>
+            <label class="toggle">
+              <input type="checkbox" id="mod-agent-enabled" checked onchange="saveModulesConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="sec-desc" style="padding:0 14px 10px">External model orchestration (<code>bridge</code>, sessions). Disabling this turns off <code>memory_search</code>/<code>web_search</code> synthetic tools too — they are registered through agent.</div>
+
+          <div class="note-box">
+            <span class="note-icon">!</span>
+            <span>Changing these toggles requires a full plugin restart (exit Claude Code and reopen) to take effect. The setting is saved immediately.</span>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-general-modules"></div>
+      </div>
+    </div>
+
+    <!-- GENERAL INJECTION -->
+    <div class="panel" id="panel-general-injection">
+      <div class="hdr"><h1>Injection Mode</h1></div>
+      <div class="sec">
+        <div class="sec-desc">Choose how mixdog injects its managed instructions. Hook mode applies immediately via SessionStart. CLAUDE.md mode writes a managed block into your global CLAUDE.md for strongest enforcement, but applies from the next session.</div>
+        <div class="sec-body">
+          <div class="r r-opt">
+            <label class="opt" onclick="genSelectMode('hook')">
+              <div class="r-radio" id="gen-radio-hook" style="margin-top:2px"></div>
+              <div class="opt-body">
+                <div class="opt-title">Hook (default, immediate)</div>
+                <div class="opt-sub">Injects via SessionStart hook. Applies immediately, no restart required. Lower enforcement strength.</div>
+              </div>
+            </label>
+          </div>
+          <div class="r r-opt">
+            <label class="opt" onclick="genSelectMode('claude_md')">
+              <div class="r-radio" id="gen-radio-claude-md" style="margin-top:2px"></div>
+              <div class="opt-body">
+                <div class="opt-title">CLAUDE.md (strong enforcement, next session)</div>
+                <div class="opt-sub">Writes a managed block into <code id="gen-target-path">~/.claude/CLAUDE.md</code>. Strongest enforcement; the first activation requires a Claude Code restart.</div>
+              </div>
+            </label>
+          </div>
+          <div class="note-box">
+            <span class="note-icon">!</span>
+            <span>After enabling CLAUDE.md mode, restart Claude Code once so the first session picks up the managed block.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="save-area">
+        <div class="warn-msg" id="warn-general-injection"></div>
+        <button class="save" onclick="genSavePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- GENERAL SECURITY (B2) -->
+    <div class="panel" id="panel-general-security">
+      <div class="hdr"><h1>Security</h1></div>
+      <div class="sec">
+        <div class="sec-title">Security</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Allow HOME-wide write access</span>
+            <label class="toggle">
+              <input type="checkbox" id="sec-home-access" onchange="saveSecurityConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="sec-desc" style="padding:0 14px 12px">When OFF (default), file tools are limited to the working directory. When ON, tools may edit anywhere under your home folder. This only controls the in-process path gate; sub-agent Edit/Write to HOME paths always go through Discord approval regardless.</div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-general-security"></div>
+      </div>
+    </div>
+
+
+    <!-- CUSTOM WORKFLOW -->
+    <div class="panel" id="panel-workflow-custom">
+      <div class="hdr"><h1>Custom Workflow</h1></div>
+      <div class="sec">
+        <div class="sec-desc">Define your own role→preset mapping and a free-form description. Injected into every session after the system workflow rules.</div>
+        <div class="sec-body">
+          <div style="padding:12px 14px;border-top:1px solid var(--border)">
+            <div style="display:flex;align-items:center;margin-bottom:6px">
+              <span style="font-size:11px;color:var(--text-3)">Description</span>
+              <span class="file-open" onclick="wfOpenDescription()">Open</span>
+            </div>
+            <textarea id="wf-description" class="r-input" placeholder="Free-form workflow description (markdown)." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5"></textarea>
+          </div>
+          <div class="r r-opt">
+            <div class="opt-body" style="width:100%">
+              <div class="opt-title">Roles</div>
+              <div id="wf-roles" style="display:flex;flex-direction:column;gap:6px;margin-top:6px;"></div>
+              <button onclick="wfAddRole()" style="margin-top:8px;height:30px;padding:0 14px;background:rgba(139,145,240,0.15);border:1px solid var(--accent);border-radius:5px;color:var(--accent);font-size:12px;cursor:pointer;">+ Add Role</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-workflow-custom"></div>
+        <button class="save" onclick="wfSavePanel()">Save</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ============================================================
+// SHARED GLOBALS
+// ============================================================
+let isDirty = false;
+let myGeneration = 0;
+
+document.addEventListener('input', () => { isDirty = true; });
+document.addEventListener('change', () => { isDirty = true; });
+window.addEventListener('beforeunload', () => {
+  if (isDirty) {
+    const data = buildChannelsData();
+    // Strip invalid schedule items (no name)
+    if (data.schedules?.items) data.schedules.items = data.schedules.items.filter(s => s.name?.trim());
+    navigator.sendBeacon('/config', JSON.stringify(data));
+  }
+  navigator.sendBeacon('/close', '');
+});
+
+function requestClose() {
+  if (isDirty) {
+    document.getElementById('close-modal').style.display = 'flex';
+  } else {
+    navigator.sendBeacon('/close', '');
+    window.close();
+  }
+}
+
+async function saveAndClose() {
+  await saveConfig();
+  isDirty = false;
+  navigator.sendBeacon('/close', '');
+  window.close();
+}
+
+function discardAndClose() {
+  isDirty = false;
+  navigator.sendBeacon('/close', '');
+  window.close();
+}
+
+function cancelClose() {
+  document.getElementById('close-modal').style.display = 'none';
+}
+
+// Shared data containers
+let chConfig = null;
+let chExtraData = { bot: {} };
+let cliStatus = { whisper: { installed: false }, ngrok: { installed: false } };
+
+let agConfig = {}, agAuth = {}, agPresets = [];
+let agEditingPresetId = null;
+
+let memConfig = {}, memAuth = {};
+
+let srConfig = null;
+let srSaveCounter = 0;
+
+// ============================================================
+// SHARED UTILITIES
+// ============================================================
+
+function switchCat(el) {
+  document.querySelectorAll('.cat-item').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + el.dataset.panel).classList.add('active');
+}
+
+function togglePw(el) {
+  const inp = el.previousElementSibling;
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+function toggleVis(btn) {
+  const inp = btn.parentElement.querySelector('.r-input');
+  if (inp.type === 'password') { inp.type = 'text'; btn.innerHTML = '&#128065;&#8205;&#128488;'; }
+  else { inp.type = 'password'; btn.innerHTML = '&#128065;'; }
+}
+
+function toggleAdvanced(el) {
+  const arrow = el.querySelector('.arrow');
+  const content = el.nextElementSibling;
+  arrow.classList.toggle('open');
+  content.classList.toggle('open');
+}
+
+function escapeAttr(v) {
+  return String(v ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+
+function escapeHtml(v) {
+  return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.r-toggle, .r-radio, .dyn-add, .dyn-remove, .card-remove, .tag-x, .mode, .r-check')) {
+    isDirty = true;
+  }
+});
+
+// ============================================================
+// INIT
+// ============================================================
+
+// ============================================================
+// GENERAL MODULE — Prompt Injection
+// ============================================================
+
+let genConfig = { mode: 'hook', targetPath: '~/.claude/CLAUDE.md' };
+
+async function genLoadConfig() {
+  try {
+    const r = await fetch('/general/config').then(r => r.json());
+    const pi = (r && r.promptInjection) || {};
+    genConfig.mode = (pi.mode === 'claude_md') ? 'claude_md' : 'hook';
+    genConfig.targetPath = pi.targetPath || '~/.claude/CLAUDE.md';
+  } catch {
+    genConfig.mode = 'hook';
+    genConfig.targetPath = '~/.claude/CLAUDE.md';
+  }
+  genRenderRadios();
+  const tp = document.getElementById('gen-target-path');
+  if (tp) tp.textContent = genConfig.targetPath;
+}
+
+function genSelectMode(mode) {
+  genConfig.mode = mode;
+  isDirty = true;
+  genRenderRadios();
+}
+
+function genRenderRadios() {
+  const rh = document.getElementById('gen-radio-hook');
+  const rc = document.getElementById('gen-radio-claude-md');
+  if (rh) rh.classList.toggle('on', genConfig.mode === 'hook');
+  if (rc) rc.classList.toggle('on', genConfig.mode === 'claude_md');
+}
+
+async function genSavePanel() {
+  const btn = document.querySelector('#panel-general-injection .save');
+  const warnEl = document.getElementById('warn-general-injection');
+  warnEl.textContent = '';
+  btn.textContent = 'Saving...';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/general/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: genConfig.mode, targetPath: genConfig.targetPath }),
+    });
+    if (!res.ok) throw new Error('save failed');
+    btn.textContent = '\u2713 Saved';
+    btn.classList.add('done');
+    isDirty = false;
+    setTimeout(() => {
+      btn.textContent = 'Save';
+      btn.classList.remove('done');
+      btn.disabled = false;
+    }, 1500);
+  } catch (e) {
+    warnEl.textContent = 'Save failed';
+    btn.textContent = 'Save';
+    btn.disabled = false;
+  }
+}
+
+// ============================================================
+// GENERAL MODULES (B6) — enable/disable per-module
+// ============================================================
+async function loadModulesConfig() {
+  try {
+    const r = await fetch('/modules').then(r => r.json());
+    for (const name of ['channels', 'memory', 'search', 'agent']) {
+      const el = document.getElementById('mod-' + name + '-enabled');
+      if (el) el.checked = !(r && r[name] && r[name].enabled === false);
+    }
+  } catch {
+    // On load failure, leave all toggles at their default (checked).
+  }
+}
+
+async function saveModulesConfig() {
+  const warnEl = document.getElementById('warn-general-modules');
+  if (warnEl) warnEl.textContent = '';
+  const payload = {};
+  for (const name of ['channels', 'memory', 'search', 'agent']) {
+    const el = document.getElementById('mod-' + name + '-enabled');
+    payload[name] = { enabled: el ? !!el.checked : true };
+  }
+  try {
+    const res = await fetch('/modules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('save failed');
+    isDirty = false;
+  } catch (e) {
+    if (warnEl) warnEl.textContent = 'Save failed — check setup-server log.';
+  }
+}
+
+// ============================================================
+// GENERAL SECURITY (B2) — capability toggles
+// ============================================================
+async function loadSecurityConfig() {
+  try {
+    const r = await fetch('/capabilities').then(r => r.json());
+    const el = document.getElementById('sec-home-access');
+    if (el) el.checked = !!(r && r.homeAccess === true);
+  } catch {
+    // On load failure, leave toggle at default (off).
+  }
+}
+
+async function saveSecurityConfig() {
+  const warnEl = document.getElementById('warn-general-security');
+  if (warnEl) warnEl.textContent = '';
+  const el = document.getElementById('sec-home-access');
+  const payload = { homeAccess: el ? !!el.checked : false };
+  try {
+    const res = await fetch('/capabilities', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('save failed');
+    isDirty = false;
+  } catch (e) {
+    if (warnEl) warnEl.textContent = 'Save failed — check setup-server log.';
+  }
+}
+
+// MD Library module removed — role MD editing is now in the Custom
+// Workflow panel, Common MD is plugin-fixed (rules/agent.md) and not
+// user-editable, and Project MDs are no longer part of the UI.
+
+// ============================================================
+// CUSTOM WORKFLOW MODULE
+// ============================================================
+
+let wfConfig = { roles: [] };
+let wfMdContent = "";
+
+async function wfLoadConfig() {
+  try {
+    const [jsonRes, mdRes, rolesMdRes] = await Promise.all([
+      fetch('/workflow/load'),
+      fetch('/workflow/md'),
+      fetch('/md/role'),
+      agPresets.length ? Promise.resolve() : agLoadPresets(),
+    ]);
+    const data = await jsonRes.json();
+    wfConfig.roles = Array.isArray(data.roles) ? data.roles : [];
+    wfMdContent = mdRes.ok ? await mdRes.text() : "";
+    const rolesMdData = rolesMdRes.ok ? await rolesMdRes.json() : { items: [] };
+    const mdByName = {};
+    for (const it of (rolesMdData.items || [])) mdByName[it.name] = it.body || '';
+    for (const r of wfConfig.roles) {
+      r.md = mdByName[(r.name || '').trim().toLowerCase()] || '';
+    }
+  } catch {
+    wfConfig.roles = [];
+    wfMdContent = "";
+  }
+  document.getElementById('wf-description').value = wfMdContent;
+  wfRenderRoles();
+}
+
+function wfRenderRoles() {
+  const host = document.getElementById('wf-roles');
+  host.innerHTML = '';
+  wfConfig.roles.forEach((role, idx) => {
+    const card = document.createElement('div');
+    card.style.cssText = 'border:1px solid var(--border);border-radius:6px;background:rgba(255,255,255,0.02);';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;gap:6px;align-items:center;padding:6px;';
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.textContent = role._open ? '▼' : '▶';
+    toggleBtn.style.cssText = 'width:24px;height:30px;background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text-3);cursor:pointer;font-size:10px;';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = role.name || '';
+    nameInput.placeholder = 'role name';
+    nameInput.className = 'r-input';
+    nameInput.style.cssText = 'flex:1;height:30px;';
+    nameInput.oninput = (e) => { wfConfig.roles[idx].name = e.target.value; isDirty = true; };
+
+    const presetSelect = document.createElement('select');
+    presetSelect.className = 'r-select md';
+    presetSelect.style.cssText = 'width:160px;height:30px;';
+    agPresets.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name || p.id;
+      if (p.id === role.preset) opt.selected = true;
+      presetSelect.appendChild(opt);
+    });
+    presetSelect.onchange = (e) => { wfConfig.roles[idx].preset = e.target.value; isDirty = true; };
+
+    const delBtn = document.createElement('button');
+    delBtn.textContent = '×';
+    delBtn.style.cssText = 'width:30px;height:30px;background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text-3);cursor:pointer;font-size:14px;';
+    delBtn.onclick = () => wfDeleteRole(idx);
+
+    header.appendChild(toggleBtn);
+    header.appendChild(nameInput);
+    header.appendChild(presetSelect);
+    header.appendChild(delBtn);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:0 6px 6px 6px;display:' + (role._open ? 'block' : 'none') + ';';
+    const mdTextarea = document.createElement('textarea');
+    mdTextarea.className = 'r-input';
+    mdTextarea.placeholder = 'Role-specific MD (injected into Tier 3 # agent-role slot)';
+    mdTextarea.style.cssText = 'width:100%;min-height:120px;font-family:monospace;font-size:12px;resize:vertical;';
+    mdTextarea.value = role.md || '';
+    mdTextarea.oninput = (e) => { wfConfig.roles[idx].md = e.target.value; isDirty = true; };
+    body.appendChild(mdTextarea);
+
+    toggleBtn.onclick = () => {
+      wfConfig.roles[idx]._open = !wfConfig.roles[idx]._open;
+      wfRenderRoles();
+    };
+
+    card.appendChild(header);
+    card.appendChild(body);
+    host.appendChild(card);
+  });
+}
+
+function wfAddRole() {
+  wfConfig.roles.push({ name: '', preset: agPresets[0]?.id || 'opus-max', md: '', _open: true });
+  isDirty = true;
+  wfRenderRoles();
+}
+
+function wfDeleteRole(idx) {
+  const name = (wfConfig.roles[idx].name || '').trim().toLowerCase();
+  wfConfig.roles.splice(idx, 1);
+  isDirty = true;
+  // Best-effort: remove the role MD file on disk too.
+  if (name) {
+    fetch('/md/role?name=' + encodeURIComponent(name), { method: 'DELETE' }).catch(() => {});
+  }
+  wfRenderRoles();
+}
+
+async function wfSavePanel() {
+  const btn = document.querySelector('#panel-workflow-custom .save');
+  const warnEl = document.getElementById('warn-workflow-custom');
+  warnEl.textContent = '';
+  const mdText = document.getElementById('wf-description').value;
+  try {
+    // Drop blank-name rows entirely so nothing partially persists:
+    // user-workflow.json gets only named roles, and per-role MD posts
+    // only run for the same set. This avoids silent data loss where a
+    // user typed an MD body before naming the role.
+    const validRoles = wfConfig.roles.filter(r => (r.name || '').trim());
+    const rolesPayload = validRoles.map(r => {
+      const { _open, md, ...rest } = r;
+      return rest;
+    });
+    const roleMdPosts = validRoles.map(r => fetch('/md/role', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: r.name, body: r.md || '' }),
+    }));
+    const [r1, r2, ...mdResults] = await Promise.all([
+      fetch('/workflow/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roles: rolesPayload })
+      }),
+      fetch('/workflow/md', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: mdText
+      }),
+      ...roleMdPosts,
+    ]);
+    if (!r1.ok) throw new Error(await r1.text());
+    if (!r2.ok) throw new Error(await r2.text());
+    for (const mr of mdResults) {
+      if (!mr.ok) throw new Error(await mr.text());
+    }
+    wfMdContent = mdText;
+    btn.classList.add('done');
+    btn.textContent = 'Saved';
+    setTimeout(() => { btn.classList.remove('done'); btn.textContent = 'Save'; }, 1500);
+    isDirty = false;
+  } catch (e) {
+    warnEl.textContent = 'Save failed: ' + (e.message || e);
+  }
+}
+
+async function wfOpenDescription() {
+  try {
+    await fetch('/workflow/md', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: document.getElementById('wf-description').value });
+    await fetch('/workflow/file');
+  } catch (e) {
+    alert('Open failed: ' + (e.message || e));
+  }
+}
+
+window.addEventListener('load', async () => {
+  try {
+    const g = await fetch('/generation').then(r => r.json());
+    myGeneration = g.generation || 0;
+  } catch {}
+
+  // Init channels UI helpers
+  initTagInputs();
+  initSliders();
+
+  // Load all configs in parallel
+  const results = await Promise.allSettled([
+    loadChannelsConfig(),
+    loadChannelsCliCheck(),
+    loadAgentData(),
+    loadMemoryData(),
+    loadSearchConfig(),
+    genLoadConfig(),
+    loadModulesConfig(),
+    loadSecurityConfig(),
+    wfLoadConfig(),
+    loadLearningConfig(),
+  ]);
+  results.forEach((r, i) => { if (r.status === 'rejected') console.error('[mixdog] loader', i, 'failed:', r.reason); });
+
+  // Post-load init — populate preset dropdowns after agConfig is ready
+  populatePresetDropdowns();
+  renderAdvanced();
+  isDirty = false;
+
+  // Poll for newer window
+  setInterval(async () => {
+    try {
+      const g = await fetch('/generation').then(r => r.json());
+      if (g.generation > myGeneration) { isDirty = false; window.close(); }
+    } catch {}
+  }, 2000);
+});
+
+// ============================================================
+// CHANNELS MODULE
+// ============================================================
+
+// -- Tag input system --
+function initTagInputs() {
+  document.querySelectorAll('.tag-container').forEach(container => {
+    if (container.querySelector('.tag-input')) return;
+    const inp = document.createElement('input');
+    inp.className = 'tag-input';
+    inp.placeholder = 'Type and press Enter';
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && inp.value.trim()) {
+        e.preventDefault();
+        addTag(container, inp.value.trim());
+        inp.value = '';
+      } else if (e.key === 'Backspace' && !inp.value) {
+        const last = container.querySelector('.tag-item:last-of-type');
+        if (last) last.remove();
+      }
+    });
+    container.appendChild(inp);
+    container.addEventListener('click', () => inp.focus());
+  });
+}
+
+function addTag(container, text) {
+  const tag = document.createElement('span');
+  tag.className = 'tag-item';
+  tag.innerHTML = text + '<span class="tag-x" onclick="this.parentElement.remove()">&times;</span>';
+  tag.dataset.value = text;
+  const inp = container.querySelector('.tag-input');
+  container.insertBefore(tag, inp);
+}
+
+function getTagValues(containerId) {
+  return Array.from(document.getElementById(containerId).querySelectorAll('.tag-item'))
+    .map(t => t.dataset.value);
+}
+
+function setTagValues(containerId, values) {
+  const container = document.getElementById(containerId);
+  container.querySelectorAll('.tag-item').forEach(t => t.remove());
+  (values || []).forEach(v => addTag(container, v));
+}
+
+// -- Slider init --
+function initSliders() {
+  document.querySelectorAll('.r-slider').forEach(slider => {
+    const valEl = document.getElementById(slider.id + '-val');
+    if (valEl) {
+      slider.addEventListener('input', () => { valEl.textContent = slider.value; });
+    }
+  });
+}
+
+// -- Quiet hours --
+function onQuietPresetChange() {
+  const sel = document.getElementById('bot-quiet-preset');
+  const custom = document.getElementById('bot-quiet-custom');
+  if (sel.value === 'custom') custom.classList.remove('hidden');
+  else custom.classList.add('hidden');
+}
+
+function onSleepPresetChange() {
+  const sel = document.getElementById('bot-sleep-preset');
+  const custom = document.getElementById('bot-sleep-custom');
+  custom.style.display = sel.value === 'custom' ? '' : 'none';
+}
+
+
+// -- Channel list --
+function getChannelOptions() {
+  const opts = [];
+  document.querySelectorAll('#ch-channel-list .dyn-item').forEach(item => {
+    const label = item.querySelector('[data-f="ch-label"]')?.value.trim();
+    if (label) opts.push(label);
+  });
+  return opts;
+}
+
+function makeChannelSelect(selected) {
+  const opts = getChannelOptions();
+  let html = '<select class="r-select" data-f="channel" style="width:110px;flex:none;">';
+  opts.forEach(o => {
+    html += '<option value="' + o + '"' + (o === selected ? ' selected' : '') + '>' + o + '</option>';
+  });
+  if (!opts.length) html += '<option value="">--</option>';
+  html += '</select>';
+  return html;
+}
+
+function addChannel(label, channelId, mode, isMain) {
+  const list = document.getElementById('ch-channel-list');
+  const item = document.createElement('div');
+  item.className = 'dyn-item';
+  item.innerHTML =
+    '<div class="r-radio' + (isMain ? ' on' : '') + '" title="Main channel" onclick="setMainChannel(this)"></div>' +
+    '<input class="r-input" type="text" placeholder="label" value="' + (label || '') + '" style="width:90px;flex:none;" data-f="ch-label">' +
+    '<input class="r-input" type="text" placeholder="Channel ID" value="' + (channelId || '') + '" style="min-width:140px;" data-f="ch-id">' +
+    '<select class="r-select" style="width:110px;flex:none;" data-f="ch-mode">' +
+    '  <option value="interactive"' + (mode === 'interactive' ? ' selected' : '') + '>interactive</option>' +
+    '  <option value="monitor"' + (mode === 'monitor' ? ' selected' : '') + '>monitor</option>' +
+    '</select>' +
+    '<span class="tip" style="margin:0 2px;">?<span class="tip-text">interactive: listen and reply / monitor: listen only and report to main</span></span>' +
+    '<span class="dyn-remove" onclick="this.parentElement.remove()">&times;</span>';
+  list.appendChild(item);
+}
+
+function setMainChannel(radio) {
+  document.querySelectorAll('#ch-channel-list .r-radio').forEach(r => r.classList.remove('on'));
+  radio.classList.add('on');
+}
+
+function populateProactiveFeedback(cfg) {
+  const sec = document.getElementById('proactive-feedback');
+  const feedbackPath = cfg?.promptsDir ? cfg.promptsDir + '/proactive-feedback.md' : null;
+  // Feedback is loaded from server if available
+  fetch('/proactive-feedback').then(r => r.json()).then(data => {
+    if (!data.entries || !data.entries.length) {
+      sec.innerHTML = '<div style="padding:12px 14px;color:var(--text-4);font-size:12px">No feedback entries yet</div>';
+      return;
+    }
+    sec.innerHTML = '';
+    data.entries.forEach((entry, i) => {
+      const div = document.createElement('div');
+      div.className = 'r';
+      div.style.flexDirection = 'column';
+      div.style.alignItems = 'stretch';
+      div.style.padding = '8px 14px';
+      div.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="font-size:11px;color:var(--text-4)">#${i + 1}</span>
+          <span style="flex:1"></span>
+          <span class="card-remove" style="cursor:pointer;color:var(--text-4);font-size:14px" data-fi="${i}" onclick="removeFeedback(${i})">&times;</span>
+        </div>
+        <textarea class="r-input" data-fi="${i}" style="height:60px;resize:vertical;font-size:11px">${entry}</textarea>
+      `;
+      sec.appendChild(div);
+    });
+  }).catch(() => {
+    sec.innerHTML = '<div style="padding:12px 14px;color:var(--text-4);font-size:12px">Could not load feedback</div>';
+  });
+}
+
+function removeFeedback(index) {
+  fetch('/proactive-feedback', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ index }),
+  }).then(() => {
+    const cfg = config || {};
+    populateProactiveFeedback(cfg);
+  });
+}
+
+function getProactiveInterval() {
+  const sel = document.getElementById('proactive-interval');
+  if (sel.value === 'custom') {
+    return parseInt(document.getElementById('proactive-interval-custom').value) || 60;
+  }
+  return parseInt(sel.value) || 60;
+}
+
+function proactiveIntervalChanged() {
+  const sel = document.getElementById('proactive-interval');
+  const customInput = document.getElementById('proactive-interval-custom');
+  if (sel.value === 'custom') {
+    customInput.style.display = '';
+    customInput.focus();
+  } else {
+    customInput.style.display = 'none';
+  }
+}
+
+function buildProactiveData() {
+  const interval = getProactiveInterval();
+  return {
+    interval,
+    model: document.getElementById('proactive-model').value || undefined,
+    feedback: true,
+    frequency: Math.max(1, Math.min(5, Math.round(1440 / interval))),
+  };
+}
+
+// -- Schedule cards --
+function addScheduleCard(data) {
+  const list = document.getElementById('sched-tasks');
+  const emptyEl = document.getElementById('sched-empty');
+  if (emptyEl) emptyEl.style.display = 'none';
+  const card = document.createElement('div');
+  card.className = 'card';
+  const d = data || {};
+  const daysVal = d.days || 'daily';
+  const nameVal = d.name || 'Untitled';
+  card.innerHTML =
+    '<div class="card-hdr" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
+      '<span class="card-title" data-f="sc-title">' + nameVal + '</span>' +
+      '<div class="card-hdr-right">' +
+        '<div class="r-toggle' + (d.enabled !== false ? ' on' : '') + '" onclick="event.stopPropagation();this.classList.toggle(\'on\')" data-f="sc-enabled"></div>' +
+        '<span class="card-remove" onclick="event.stopPropagation();this.closest(\'.card\').remove()">&times;</span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="card-content">' +
+      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Schedule name" value="' + (d.name || '') + '" data-f="sc-name" style="flex:1;"></div>' +
+      '<div class="r"><span class="r-name-wide">Frequency</span>' +
+        '<select class="r-select" data-f="sc-freq" onchange="onSchedFreqChange(this)">' +
+        '<option value="interval"' + (['every5m','every10m','every30m','hourly'].includes(d.time) || !d.time ? ' selected' : '') + '>Interval</option>' +
+        '<option value="daily"' + (daysVal === 'daily' && d.time && !['every5m','every10m','every30m','hourly'].includes(d.time) ? ' selected' : '') + '>Daily</option>' +
+        '<option value="weekday"' + (daysVal === 'weekday' ? ' selected' : '') + '>Weekdays</option>' +
+        '<option value="weekly"' + (daysVal === 'weekend' || (!['daily','weekday'].includes(daysVal) && daysVal !== 'daily') ? ' selected' : '') + '>Weekly</option>' +
+        '</select></div>' +
+      '<div class="r" data-interval-row><span class="r-name-wide">Every</span>' +
+        '<input class="r-input" type="text" placeholder="01:30" value="' + ({'every5m':'00:05','every10m':'00:10','every30m':'00:30','hourly':'01:00'}[d.time] || d.time || '01:00') + '" data-f="sc-interval" style="width:80px">' +
+        '<span style="font-size:11px;color:var(--text-4);margin-left:8px">HH:MM</span></div>' +
+      '<div class="r" data-at-row style="display:none"><span class="r-name-wide">At</span>' +
+        '<input class="r-input" type="text" placeholder="09:00" value="' + (d.time && !['every5m','every10m','every30m','hourly'].includes(d.time) ? d.time : '09:00') + '" data-f="sc-at" style="width:80px"></div>' +
+      '<div class="r"><span class="r-name-wide">Type</span>' +
+        '<select class="r-select" data-f="sc-type" onchange="onSchedTypeChange(this)">' +
+        '<option value="interactive"' + (d.type === 'interactive' || !d.type ? ' selected' : '') + '>Interactive</option>' +
+        '<option value="non-interactive"' + (d.type === 'non-interactive' ? ' selected' : '') + '>Non-interactive</option>' +
+        '</select>' +
+        '<span style="flex:1;font-size:11px;color:var(--text-4);margin-left:8px" data-f="sc-type-hint">' + (d.type === 'non-interactive' ? 'Sends result to channel' : 'Injects into current session') + '</span></div>' +
+      '<div class="r" data-channel-row style="' + (d.type === 'non-interactive' ? '' : 'display:none') + '"><span class="r-name-wide">Channel</span>' + makeChannelSelect(d.channel) + '</div>' +
+      '<div class="r"><span class="r-name-wide">Model</span><select class="r-select" data-f="sc-model" data-initial="' + (d.model || 'sonnet-mid') + '"></select></div>' +
+      '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
+        '<div style="display:flex;align-items:center;margin-bottom:6px">' +
+          '<span style="font-size:11px;color:var(--text-3)">Instructions</span>' +
+          '<span class="file-open" onclick="schedOpenPrompt(\'' + encodeURIComponent(d.name || '') + '\')">Open</span>' +
+        '</div>' +
+        '<textarea class="r-input" data-f="sc-prompt" placeholder="Describe what the bot should do." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.prompt || '') + '</textarea>' +
+      '</div>' +
+    '</div>';
+  list.appendChild(card);
+  const nameInput = card.querySelector('[data-f="sc-name"]');
+  const titleEl = card.querySelector('[data-f="sc-title"]');
+  nameInput?.addEventListener('input', () => { titleEl.textContent = nameInput.value || 'Untitled'; });
+  if (d.name) card.classList.add('collapsed');
+  const freqSel = card.querySelector('[data-f="sc-freq"]');
+  if (freqSel) onSchedFreqChange(freqSel);
+  // Fill model dropdown immediately
+  const modelSel = card.querySelector('[data-f="sc-model"]');
+  if (modelSel) {
+    const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
+    const initial = modelSel.dataset.initial || 'sonnet-mid';
+    modelSel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (initial === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+  }
+}
+
+function webhookOpenInstructions(encodedName) {
+  const name = decodeURIComponent(encodedName);
+  if (!name) { alert('Save the webhook first.'); return; }
+  fetch('/webhooks/file/' + encodedName);
+}
+
+function schedOpenPrompt(encodedName) {
+  const name = decodeURIComponent(encodedName);
+  if (!name) { alert('Save the schedule first.'); return; }
+  fetch('/schedules/file/' + encodedName);
+}
+
+function onSchedFreqChange(sel) {
+  const card = sel.closest('.card');
+  const intervalRow = card.querySelector('[data-interval-row]');
+  const atRow = card.querySelector('[data-at-row]');
+  if (sel.value === 'interval') { intervalRow.style.display = ''; atRow.style.display = 'none'; }
+  else { intervalRow.style.display = 'none'; atRow.style.display = ''; }
+}
+
+function onSchedTypeChange(sel) {
+  const card = sel.closest('.card');
+  const channelRow = card.querySelector('[data-channel-row]');
+  const hint = card.querySelector('[data-f="sc-type-hint"]');
+  if (sel.value === 'interactive') {
+    if (channelRow) channelRow.style.display = 'none';
+    if (hint) hint.textContent = 'Injects into current session';
+  } else {
+    if (channelRow) channelRow.style.display = '';
+    if (hint) hint.textContent = 'Sends result to channel';
+  }
+}
+
+// -- Event cards --
+function addEventCard(data) {
+  const list = document.getElementById('event-rules');
+  const emptyEl = document.getElementById('webhook-empty');
+  if (emptyEl) emptyEl.style.display = 'none';
+  const card = document.createElement('div');
+  card.className = 'card';
+  const d = data || {};
+  const nameVal = d.name || 'Untitled';
+  const isExisting = !!d.name;
+  card.dataset.originalName = d.name || '';
+  card.innerHTML =
+    '<div class="card-hdr" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
+      '<span class="card-title" data-f="ev-title">' + nameVal + '</span>' +
+      '<div class="card-hdr-right">' +
+        '<span class="card-remove" onclick="event.stopPropagation();deleteWebhook(this.closest(\'.card\'))">&times;</span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="card-content">' +
+      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Endpoint name (e.g. github-issues)" value="' + (d.name || '') + '" data-f="ev-name" style="flex:1;" oninput="this.closest(\'.card\').querySelector(\'[data-f=ev-title]\').textContent=this.value||\'Untitled\'">' + '</div>' +
+      '<div class="r"><span class="r-name-wide">Channel</span><input class="r-input" type="text" placeholder="main" value="' + (d.channel || 'main') + '" data-f="ev-channel" style="flex:1;"></div>' +
+      '<div class="r"><span class="r-name-wide">Exec</span>' +
+        '<select class="r-select" data-f="ev-exec">' +
+        '<option value="interactive"' + (d.exec === 'interactive' ? ' selected' : '') + '>Interactive</option>' +
+        '<option value="non-interactive"' + (d.exec === 'non-interactive' || !d.exec ? ' selected' : '') + '>Non-interactive</option>' +
+        '</select></div>' +
+      '<div class="r"><span class="r-name-wide">Model</span>' +
+        '<select class="r-select" data-f="ev-model" data-initial="' + (d.model || 'sonnet-mid') + '"></select></div>' +
+      '<div class="r"><span class="r-name-wide">Secret</span><input class="r-input" type="password" value="' + (d.secret || '') + '" placeholder="Optional" data-f="ev-secret"></div>' +
+      '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
+        '<div style="display:flex;align-items:center;margin-bottom:6px">' +
+          '<span style="font-size:11px;color:var(--text-3)">Instructions</span>' +
+          '<span class="file-open" onclick="webhookOpenInstructions(\'' + encodeURIComponent(d.name || '') + '\')">Open</span>' +
+        '</div>' +
+        '<textarea class="r-input" data-f="ev-instructions" placeholder="Describe how to handle this webhook payload." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.instructions || '') + '</textarea>' +
+      '</div>' +
+    '</div>';
+  list.appendChild(card);
+  const evNameInput = card.querySelector('[data-f="ev-name"]');
+  const evTitleEl = card.querySelector('[data-f="ev-title"]');
+  evNameInput?.addEventListener('input', () => { evTitleEl.textContent = evNameInput.value || 'Untitled'; });
+  if (isExisting) card.classList.add('collapsed');
+  // Fill model dropdown immediately
+  const evModelSel = card.querySelector('[data-f="ev-model"]');
+  if (evModelSel) {
+    const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
+    const initial = evModelSel.dataset.initial || 'sonnet-mid';
+    evModelSel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (initial === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+  }
+}
+
+async function deleteWebhook(card) {
+  const name = card.querySelector('[data-f="ev-name"]')?.value;
+  if (name) { await fetch('/webhooks?name=' + encodeURIComponent(name), { method: 'DELETE' }); }
+  card.remove();
+  const list = document.getElementById('event-rules');
+  const emptyEl = document.getElementById('webhook-empty');
+  if (emptyEl && !list.querySelector('.card')) emptyEl.style.display = '';
+}
+
+// -- Advanced --
+async function loadChannelsCliCheck() {
+  try { cliStatus = await fetch('/cli-check').then(r => r.json()); } catch {}
+}
+
+function populatePresetDropdowns() {
+  const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
+  console.log('[mixdog] populatePresetDropdowns:', presets.length, 'presets');
+  if (!presets.length) return;
+  ['bot-model', 'proactive-model'].forEach(selId => {
+    const sel = document.getElementById(selId);
+    if (!sel) return;
+    sel.innerHTML = '';
+    presets.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id || p.name;
+      opt.textContent = (p.name || p.id) + ' (' + p.model + ')';
+      sel.appendChild(opt);
+    });
+  });
+  const bot = chExtraData.bot || {};
+  document.getElementById('bot-model').value = bot.model || 'sonnet-mid';
+  const proactive = chConfig?.proactive || {};
+  document.getElementById('proactive-model').value = proactive.model || 'sonnet-mid';
+
+  // Webhook event cards — fill model dropdowns
+  document.querySelectorAll('#event-rules .card [data-f="ev-model"]').forEach(sel => {
+    const current = sel.value || sel.dataset.initial || 'sonnet-mid';
+    sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+  });
+
+  // Schedule + Webhook cards — fill model dropdowns
+  document.querySelectorAll('#sched-tasks .card [data-f="sc-model"], #event-rules .card [data-f="ev-model"]').forEach(sel => {
+    const current = sel.value || sel.dataset.initial || 'sonnet-mid';
+    sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+  });
+}
+
+function renderAdvanced() {
+  renderVoiceSection();
+  renderWebhookSection();
+}
+
+function renderVoiceSection() {
+  const el = document.getElementById('voice-section');
+  if (!cliStatus.whisper?.installed) {
+    el.innerHTML =
+      '<div class="cli-status warn">' +
+        '<span style="font-size:16px;">&#9888;</span>' +
+        '<div>whisper not found<br>' +
+        '<span style="font-size:11px;color:var(--text-4)">Converts voice messages to text (openai-whisper)</span></div>' +
+        '<button class="save" id="btn-install-whisper" onclick="installTool(\'whisper\')" style="width:auto;height:30px;padding:0 14px;margin-left:auto;font-size:11px">Install</button>' +
+      '</div>';
+  } else {
+    const v = chConfig?.voice || {};
+    el.innerHTML =
+      '<div class="r"><span style="color:var(--green);font-size:13px;">&#10003; Installed</span><span style="color:var(--text-4);font-size:12px;margin-left:8px;">Auto-configured</span></div>';
+  }
+}
+
+function toggleCollapsible(toggleEl) {
+  toggleEl.classList.toggle('open');
+  const body = toggleEl.nextElementSibling;
+  body.classList.toggle('open');
+}
+
+function renderWebhookSection() {
+  const el = document.getElementById('webhook-section');
+  if (!cliStatus.ngrok?.installed) {
+    el.innerHTML =
+      '<div class="cli-status warn">' +
+        '<span style="font-size:16px;">&#9888;</span>' +
+        '<div>ngrok not found<br>' +
+        '<span style="font-size:11px;color:var(--text-4)">Receives external events (GitHub, Sentry, etc.)</span></div>' +
+        '<button class="save" id="btn-install-ngrok" onclick="installTool(\'ngrok\')" style="width:auto;height:30px;padding:0 14px;margin-left:auto;font-size:11px">Install</button>' +
+      '</div>';
+  } else {
+    const w = chConfig?.webhook || {};
+    el.innerHTML =
+      '<div class="r"><span class="r-name-wide">Enabled</span><div class="r-toggle' + (w.enabled ? ' on' : '') + '" onclick="this.classList.toggle(\'on\')" id="ch-webhook-enabled"></div></div>' +
+      '<div class="r"><span class="r-name-wide">Auth Token</span><div class="input-group" style="flex:1;width:auto;"><input class="r-input" id="ch-webhook-authtoken" type="password" placeholder="2x..." value="' + (w.authtoken || '') + '"><button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button></div>' +
+        (!w.authtoken ? '<a href="https://dashboard.ngrok.com/get-started/your-authtoken" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;margin-left:8px;white-space:nowrap">Get &#8599;</a>' : '') + '</div>' +
+      '<div class="r"><span class="r-name-wide">Domain</span><input class="r-input" id="ch-webhook-domain" type="text" placeholder="your-name.ngrok-free.dev" value="' + (w.domain || '') + '">' +
+        (!w.domain ? '<a href="https://dashboard.ngrok.com/domains" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;margin-left:8px;white-space:nowrap">Get &#8599;</a>' : '') + '</div>';
+  }
+}
+
+async function installTool(tool) {
+  const btn = document.getElementById('btn-install-' + tool);
+  if (!btn) return;
+  btn.textContent = 'Installing...'; btn.disabled = true;
+  try {
+    const r = await fetch('/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool }) }).then(r => r.json());
+    if (r.ok) { btn.textContent = '\u2713 Done'; btn.classList.add('done'); await loadChannelsCliCheck(); renderAdvanced(); }
+    else { btn.textContent = 'Failed'; setTimeout(() => { btn.textContent = 'Install'; btn.disabled = false; }, 3000); }
+  } catch { btn.textContent = 'Failed'; setTimeout(() => { btn.textContent = 'Install'; btn.disabled = false; }, 3000); }
+}
+
+// -- Channels load / populate --
+async function loadChannelsConfig() {
+  const cfgRes = await fetch('/config').then(r => r.json()).catch(() => ({}));
+  chConfig = cfgRes;
+  if (cfgRes._bot) { chExtraData.bot = cfgRes._bot; delete cfgRes._bot; }
+  await populateChannels(cfgRes);
+}
+
+async function populateChannels(cfg) {
+  // Connection
+  const discord = cfg?.discord || {};
+  if (discord.token) document.getElementById('ch-discord-token').value = discord.token;
+  if (discord.applicationId) document.getElementById('ch-discord-appid').value = discord.applicationId;
+
+  // Channels
+  const chCfg = cfg?.channelsConfig || {};
+  const mainCh = cfg?.mainChannel;
+  let first = true;
+  for (const [name, ch] of Object.entries(chCfg)) {
+    const isMain = mainCh ? (name === mainCh) : first;
+    addChannel(name, ch.channelId, ch.mode || 'interactive', isMain);
+    first = false;
+  }
+  if (Object.keys(chCfg).length === 0) addChannel('main', '', 'interactive', true);
+
+  // Access
+  const access = cfg?.access || {};
+  if (access.dmPolicy) document.getElementById('ch-dm-policy').value = access.dmPolicy;
+  setTagValues('ch-allowfrom', access.allowFrom);
+  setTagValues('ch-mentionpatterns', access.mentionPatterns);
+  if (access.ackReaction) document.getElementById('ch-ackreaction').classList.add('on');
+  if (access.replyToMode) document.getElementById('ch-replytomode').value = access.replyToMode;
+  if (access.textChunkLimit) document.getElementById('ch-textchunklimit').value = access.textChunkLimit;
+  if (access.chunkMode) document.getElementById('ch-chunkmode').value = access.chunkMode;
+
+  // Bot
+  const bot = chExtraData.bot || {};
+  const quiet = bot.quiet || {};
+  populateQuietHours(quiet.schedule);
+  if (quiet.holidays) document.getElementById('bot-holidays').classList.add('on');
+  // Sleep Cycle UI removed in v0.6.47 (Ship 4). bot.sleepEnabled / bot.sleepTime
+  // are no longer persisted; use quiet.schedule for quiet hours.
+  if (bot.displayMode) document.getElementById('bot-display-mode').value = bot.displayMode;
+
+  // Proactive (non-preset fields)
+  const proactive = cfg?.proactive || {};
+  if (proactive.interval) {
+    const sel = document.getElementById('proactive-interval');
+    const customInput = document.getElementById('proactive-interval-custom');
+    const val = String(proactive.interval);
+    if ([...sel.options].some(o => o.value === val)) {
+      sel.value = val;
+      customInput.style.display = 'none';
+    } else {
+      sel.value = 'custom';
+      customInput.value = val;
+      customInput.style.display = '';
+    }
+  }
+  populateProactiveFeedback(cfg);
+
+  // Schedules
+  const schedules = cfg?.schedules || {};
+  const allSchedules = [
+    ...(schedules.interactive || []).map(s => ({ ...s, type: 'interactive' })),
+    ...(schedules.nonInteractive || []).map(s => ({ ...s, type: 'non-interactive' })),
+    ...(schedules.items || []),
+  ];
+  allSchedules.forEach(s => addScheduleCard(s));
+
+  // Webhooks (folder-based)
+  try { const whs = await fetch('/webhooks').then(r => r.json()); whs.forEach(w => addEventCard(w)); } catch {}
+}
+
+function populateQuietHours(schedule) {
+  if (!schedule) return;
+  const presets = ['23:00-07:00', '22:00-08:00', '00:00-09:00'];
+  const sel = document.getElementById('bot-quiet-preset');
+  if (presets.includes(schedule)) { sel.value = schedule; }
+  else { sel.value = 'custom'; document.getElementById('bot-quiet-custom').classList.remove('hidden'); const parts = schedule.split('-'); if (parts.length === 2) { document.getElementById('bot-quiet-start').value = parts[0]; document.getElementById('bot-quiet-end').value = parts[1]; } }
+}
+
+// -- Channels build data --
+function buildChannelsData() {
+  const channelsConfig = {};
+  let mainChannel = null;
+  document.querySelectorAll('#ch-channel-list .dyn-item').forEach(item => {
+    const label = item.querySelector('[data-f="ch-label"]')?.value.trim() || 'main';
+    const chId = item.querySelector('[data-f="ch-id"]')?.value.trim();
+    const mode = item.querySelector('[data-f="ch-mode"]')?.value || 'interactive';
+    const isMain = item.querySelector('.r-radio')?.classList.contains('on');
+    if (chId) { channelsConfig[label] = { channelId: chId, mode }; if (isMain) mainChannel = label; }
+  });
+
+  const quietPreset = document.getElementById('bot-quiet-preset').value;
+  let quietSchedule = '';
+  if (quietPreset === 'custom') { const s = document.getElementById('bot-quiet-start').value.trim(); const e = document.getElementById('bot-quiet-end').value.trim(); if (s && e) quietSchedule = s + '-' + e; }
+  else if (quietPreset !== 'none') { quietSchedule = quietPreset; }
+
+  const scheduleItems = [];
+  document.querySelectorAll('#sched-tasks .card').forEach(card => {
+    const freq = card.querySelector('[data-f="sc-freq"]')?.value || 'interval';
+    let time, days;
+    if (freq === 'interval') {
+      const iv = card.querySelector('[data-f="sc-interval"]')?.value.trim() || '01:00';
+      const m = iv.match(/^(\d+):(\d+)$/);
+      const mins = m ? parseInt(m[1]) * 60 + parseInt(m[2]) : 60;
+      if (mins <= 5) time = 'every5m'; else if (mins <= 10) time = 'every10m'; else if (mins <= 30) time = 'every30m'; else time = 'hourly';
+      days = 'daily';
+    } else { time = card.querySelector('[data-f="sc-at"]')?.value.trim() || '09:00'; days = freq === 'weekday' ? 'weekday' : freq === 'weekly' ? 'weekend' : 'daily'; }
+    scheduleItems.push({ name: card.querySelector('[data-f="sc-name"]')?.value.trim() || '', time, days, channel: card.querySelector('[data-f="channel"]')?.value || '', type: card.querySelector('[data-f="sc-type"]')?.value || 'interactive', model: card.querySelector('[data-f="sc-model"]')?.value || '', enabled: card.querySelector('[data-f="sc-enabled"]')?.classList.contains('on') ?? true, prompt: card.querySelector('[data-f="sc-prompt"]')?.value || '' });
+  });
+
+  const voice = {};
+  const voiceCmd = document.getElementById('voice-command');
+  if (voiceCmd) { voice.command = voiceCmd.value; voice.model = document.getElementById('voice-model')?.value || ''; voice.language = document.getElementById('voice-language')?.value || 'auto'; voice.pythonModel = document.getElementById('voice-python-model')?.value || ''; }
+
+  const webhook = {};
+  const webhookAuthtoken = document.getElementById('ch-webhook-authtoken');
+  if (webhookAuthtoken) { webhook.enabled = document.getElementById('ch-webhook-enabled')?.classList.contains('on') || false; webhook.authtoken = webhookAuthtoken.value; webhook.domain = document.getElementById('ch-webhook-domain')?.value || undefined; webhook.port = parseInt(document.getElementById('ch-webhook-port')?.value) || undefined; webhook.batchInterval = parseInt(document.getElementById('ch-webhook-batch-interval')?.value) || undefined; }
+
+  return {
+    discord: { token: document.getElementById('ch-discord-token').value, applicationId: document.getElementById('ch-discord-appid').value },
+    channelsConfig, mainChannel,
+    access: { dmPolicy: document.getElementById('ch-dm-policy').value, allowFrom: getTagValues('ch-allowfrom'), mentionPatterns: getTagValues('ch-mentionpatterns'), ackReaction: document.getElementById('ch-ackreaction').classList.contains('on') },
+    voice, schedules: { items: scheduleItems },
+    proactive: buildProactiveData(),
+    webhook,
+    _bot: { quiet: { schedule: quietSchedule, holidays: document.getElementById('bot-holidays').classList.contains('on') }, sleepEnabled: document.getElementById('bot-sleep-preset').value !== 'off', sleepTime: (function(){ const v = document.getElementById('bot-sleep-preset').value; return v === 'off' ? undefined : v === 'custom' ? document.getElementById('bot-sleep-custom').value || undefined : v; })(), model: document.getElementById('bot-model').value || 'sonnet-mid', displayMode: document.getElementById('bot-display-mode').value },
+  };
+}
+
+// -- Channels save --
+async function savePanel() {
+  const activePanel = document.querySelector('.panel.active');
+  const warnEl = activePanel?.querySelector('.warn-msg') || document.createElement('div');
+  const btn = activePanel?.querySelector('.save');
+  warnEl.textContent = '';
+  if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
+  try {
+    // Save webhooks individually
+    const whCards = document.querySelectorAll('#event-rules .card');
+    for (const card of whCards) {
+      const wh = { name: card.querySelector('[data-f="ev-name"]')?.value.trim() || '', channel: card.querySelector('[data-f="ev-channel"]')?.value || 'main', exec: card.querySelector('[data-f="ev-exec"]')?.value || 'non-interactive', model: card.querySelector('[data-f="ev-model"]')?.value || '', secret: card.querySelector('[data-f="ev-secret"]')?.value || undefined, instructions: card.querySelector('[data-f="ev-instructions"]')?.value || '' };
+      if (wh.name) { await fetch('/webhooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wh) }); card.dataset.originalName = wh.name; }
+    }
+    // Save schedules individually
+    const scCards = document.querySelectorAll('#sched-tasks .card');
+    for (const card of scCards) {
+      const name = card.querySelector('[data-f="sc-name"]')?.value.trim() || '';
+      if (name) {
+        const sc = { name, time: '', days: 'daily', channel: card.querySelector('[data-f="channel"]')?.value || '', type: card.querySelector('[data-f="sc-type"]')?.value || 'interactive', model: card.querySelector('[data-f="sc-model"]')?.value || '', enabled: card.querySelector('[data-f="sc-enabled"]')?.classList.contains('on') ?? true, prompt: card.querySelector('[data-f="sc-prompt"]')?.value || '' };
+        const freq = card.querySelector('[data-f="sc-freq"]')?.value || 'interval';
+        if (freq === 'interval') { const iv = card.querySelector('[data-f="sc-interval"]')?.value.trim() || '01:00'; const m = iv.match(/^(\d+):(\d+)$/); const mins = m ? parseInt(m[1]) * 60 + parseInt(m[2]) : 60; if (mins <= 5) sc.time = 'every5m'; else if (mins <= 10) sc.time = 'every10m'; else if (mins <= 30) sc.time = 'every30m'; else sc.time = 'hourly'; }
+        else { sc.time = card.querySelector('[data-f="sc-at"]')?.value.trim() || '09:00'; sc.days = freq === 'weekday' ? 'weekday' : freq === 'weekly' ? 'weekend' : 'daily'; }
+        await fetch('/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sc) });
+      }
+    }
+    // Save config
+    const data = buildChannelsData();
+    await fetch('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    isDirty = false;
+    if (btn) { btn.textContent = '\u2713 Saved'; btn.classList.add('done'); setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('done'); btn.disabled = false; }, 1500); }
+  } catch (e) { console.error('[mixdog] save error:', e); warnEl.textContent = 'Save failed: ' + (e?.message || e); if (btn) { btn.textContent = 'Save'; btn.disabled = false; } }
+}
+
+async function saveConfig() { await savePanel(); }
+
+// ============================================================
+// AGENT MODULE
+// ============================================================
+
+const AG_API_PROVIDERS = [
+  {id:'openai',name:'OpenAI',env:'OPENAI_API_KEY',url:'https://platform.openai.com/api-keys'},
+  {id:'anthropic',name:'Anthropic',env:'ANTHROPIC_API_KEY',url:'https://console.anthropic.com/settings/keys'},
+  {id:'gemini',name:'Gemini',env:'GEMINI_API_KEY',url:'https://aistudio.google.com/apikey'},
+  {id:'groq',name:'Groq',env:'GROQ_API_KEY',url:'https://console.groq.com/keys'},
+  {id:'openrouter',name:'OpenRouter',env:'OPENROUTER_API_KEY',url:'https://openrouter.ai/keys'},
+  {id:'xai',name:'xAI',env:'XAI_API_KEY',url:'https://console.x.ai'},
+];
+const AG_OAUTH_PROVIDERS = [
+  {id:'openai-oauth',name:'OpenAI (Codex)',desc:'~/.codex/auth.json'},
+  {id:'anthropic-oauth',name:'Anthropic (Claude Max)',desc:'~/.claude/.credentials.json'},
+  {id:'copilot',name:'GitHub Copilot',desc:'hosts.json / GITHUB_TOKEN'},
+];
+const AG_LOCAL_PROVIDERS = [
+  {id:'ollama',name:'Ollama',url:'http://localhost:11434/v1'},
+  {id:'lmstudio',name:'LM Studio',url:'http://localhost:1234/v1'},
+];
+
+const AG_EFFORT_OPTIONS = {
+  openai: [{v:'none',label:'None'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'xhigh',label:'Extra High'}],
+  'openai-oauth': [{v:'none',label:'None'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'xhigh',label:'Extra High'}],
+  anthropic: [{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'max',label:'Max'}],
+  'anthropic-oauth': [{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'max',label:'Max'}],
+};
+// Per-family effort profiles. Lookup order: model.reasoningLevels (provider-
+// declared) → AG_FAMILY_EFFORT[family] → AG_EFFORT_OPTIONS[provider].
+const AG_FAMILY_EFFORT = {
+  opus: ['low', 'medium', 'high', 'xhigh', 'max'],
+  sonnet: ['low', 'medium', 'high'],
+  haiku: [],
+  'gpt-5.4': ['none', 'low', 'medium', 'high', 'xhigh'],
+  'gpt-5.2': ['none', 'low', 'medium', 'high', 'xhigh'],
+  'gpt-5': ['none', 'low', 'medium', 'high', 'xhigh'],
+  'gpt-mini': ['none', 'low', 'medium', 'high', 'xhigh'],
+  'gpt-nano': ['none', 'low', 'medium', 'high'],
+  'gpt-codex': ['none', 'low', 'medium', 'high'],
+};
+const AG_EFFORT_LABEL = { none: 'None', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' };
+// Families that don't support fast mode even when the provider does.
+const AG_FAMILY_NO_FAST = new Set(['haiku', 'gpt-nano', 'gpt-codex']);
+const AG_FAST_PROVIDERS = new Set(['anthropic', 'anthropic-oauth', 'openai', 'openai-oauth']);
+let agModelList = [];
+const AG_ACCESS_LABELS = { full: 'Read & Write', readonly: 'Read Only', mcp: 'None' };
+
+async function loadAgentData() {
+  const r = await fetch('/agent/config').then(r => r.json()).catch(() => ({}));
+  agConfig = r.config || {};
+  agAuth = r.auth || {};
+  agRenderAll();
+  await agLoadPresets();
+  await loadAgMaintenance();
+}
+
+function agRenderAll() {
+  const c = agConfig.providers || {};
+  const apiSec = document.getElementById('ag-api-sec');
+  apiSec.innerHTML = '';
+  for (const p of AG_API_PROVIDERS) {
+    const key = c[p.id]?.apiKey || '';
+    const hasEnv = agAuth.envKeys?.[p.id];
+    let tag, link;
+    if (key) { tag = '<span class="r-tag ok">Set</span>'; link = ''; }
+    else if (hasEnv) { tag = '<span class="r-tag env">Env</span>'; link = ''; }
+    else { tag = ''; link = `<a class="r-link" href="${p.url}" target="_blank">Get Key &#8599;</a>`; }
+    apiSec.innerHTML += `<div class="r"><span class="r-name">${p.name}</span><div class="input-group"><input class="r-input" id="ag-key-${p.id}" type="password" value="${escapeAttr(key)}" placeholder="${p.env}"><button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button></div>${tag}${link}</div>`;
+  }
+  const oauthSec = document.getElementById('ag-oauth-sec');
+  oauthSec.innerHTML = '';
+  for (const p of AG_OAUTH_PROVIDERS) {
+    const detected = agOAuthDetected(p.id);
+    const tag = detected ? '<span class="r-tag ok">Set</span>' : '<span class="r-tag no">Not Set</span>';
+    oauthSec.innerHTML += `<div class="r"><span class="r-name">${p.name}</span><span style="flex:1;font-size:12px;color:var(--text-4)">${p.desc}</span>${tag}</div>`;
+  }
+  const localSec = document.getElementById('ag-local-sec');
+  localSec.innerHTML = '';
+  for (const p of AG_LOCAL_PROVIDERS) {
+    const url = c[p.id]?.baseURL || p.url;
+    const detected = agAuth[p.id];
+    const tag = detected ? '<span class="r-tag ok">Set</span>' : '<span class="r-tag no">Not Set</span>';
+    localSec.innerHTML += `<div class="r"><span class="r-name">${p.name}</span><input class="r-input" id="ag-url-${p.id}" value="${escapeAttr(url)}" placeholder="${p.url}" style="min-width:0">${tag}</div>`;
+  }
+  agRenderStatus();
+}
+
+function agRenderStatus() {
+  const c = agConfig.providers || {};
+  const sec = document.getElementById('ag-status-sec');
+  let h = '';
+  for (const p of AG_API_PROVIDERS) { const hasKey = !!c[p.id]?.apiKey; const hasEnv = agAuth.envKeys?.[p.id]; const tag = hasKey ? '<span class="r-tag ok">API Key</span>' : hasEnv ? '<span class="r-tag env">Env Var</span>' : '<span class="r-tag no">Off</span>'; h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`; }
+  for (const p of AG_OAUTH_PROVIDERS) { const detected = agOAuthDetected(p.id); const tag = detected ? '<span class="r-tag oauth">OAuth</span>' : '<span class="r-tag no">Off</span>'; h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`; }
+  for (const p of AG_LOCAL_PROVIDERS) { const enabled = c[p.id]?.enabled === true; const detected = agAuth[p.id]; let tag; if (enabled && detected) tag = '<span class="r-tag ok">Enabled</span>'; else if (enabled) tag = '<span class="r-tag oauth">Enabled</span>'; else if (detected) tag = '<span class="r-tag not-running">Disabled</span>'; else tag = '<span class="r-tag no">Off</span>'; h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`; }
+  sec.innerHTML = h;
+}
+
+async function agSaveProviders() {
+  const providers = {};
+  for (const p of AG_API_PROVIDERS) { const key = document.getElementById('ag-key-'+p.id)?.value.trim(); if (key) providers[p.id] = { apiKey: key, enabled: true }; }
+  for (const p of AG_LOCAL_PROVIDERS) { const url = document.getElementById('ag-url-'+p.id)?.value.trim(); const detected = agAuth[p.id]; providers[p.id] = { enabled: detected, baseURL: url || p.url }; }
+  await agDoSave({ providers }, 'agent-providers');
+}
+
+async function agDoSave(data, panelId) {
+  const panel = document.getElementById('panel-' + panelId);
+  const btn = panel?.querySelector('.save');
+  const warn = panel?.querySelector('.warn-msg');
+  if (warn) warn.textContent = '';
+  if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
+  try {
+    await fetch('/agent/config', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) });
+    isDirty = false;
+    if (btn) { btn.textContent = '\u2713 Saved'; btn.classList.add('done'); setTimeout(()=>{btn.textContent='Save';btn.classList.remove('done');btn.disabled=false},1500); }
+    await loadAgentData();
+  } catch { if (warn) warn.textContent = 'Save failed'; if (btn) { btn.textContent = 'Save'; btn.disabled = false; } }
+}
+
+function agOAuthDetected(providerId, auth = agAuth) {
+  if (providerId === 'openai-oauth') return !!auth?.codexOAuth;
+  if (providerId === 'anthropic-oauth') return !!auth?.anthropicOAuth;
+  if (providerId === 'copilot') return !!auth?.copilot;
+  return false;
+}
+
+function agGetEnabledProviders() {
+  const out = [];
+  const c = agConfig.providers || {};
+  for (const p of AG_API_PROVIDERS) { if (c[p.id]?.apiKey || agAuth.envKeys?.[p.id]) out.push(p.id); }
+  for (const p of AG_OAUTH_PROVIDERS) { if (agOAuthDetected(p.id)) out.push(p.id); }
+  for (const p of AG_LOCAL_PROVIDERS) { if (c[p.id]?.enabled === true) out.push(p.id); }
+  return out;
+}
+
+async function agLoadPresets() {
+  try { const r = await fetch('/agent/presets').then(r => r.json()); agPresets = r.presets || []; } catch { agPresets = []; }
+  agRenderPresetList();
+}
+
+function agRenderPresetList() {
+  const list = document.getElementById('ag-preset-list');
+  if (agPresets.length === 0) { list.innerHTML = '<div class="empty">No presets yet. Click <strong>+ New Preset</strong> to create one.</div>'; return; }
+  list.innerHTML = agPresets.map(p => {
+    const accessLabel = AG_ACCESS_LABELS[p.tools] || 'Read & Write';
+    const provModel = `${p.provider}/${p.model}`;
+    const meta = [provModel, p.tools && p.tools !== 'full' ? accessLabel : null, p.effort ? `effort=${p.effort}` : null, p.fast ? 'Fast' : null].filter(Boolean).join(' · ');
+    return `<div class="preset-card"><div class="preset-info"><div class="preset-id">${escapeHtml(p.name || p.id)}</div><div class="preset-meta">${escapeHtml(meta)}</div></div><div class="preset-actions"><button class="icon-btn edit-btn" onclick="agOpenPresetForm('${escapeAttr(p.id)}')">Edit</button><button class="icon-btn danger" onclick="agDeletePreset('${escapeAttr(p.id)}')">Delete</button></div></div>`;
+  }).join('');
+}
+
+function agOpenPresetForm(id) {
+  agEditingPresetId = id;
+  const sec = document.getElementById('ag-preset-form-sec');
+  const title = document.getElementById('ag-preset-form-title');
+  sec.style.display = 'block';
+  const advToggle = sec.querySelector('.advanced-toggle');
+  const advContent = document.getElementById('ag-pf-access-section');
+  if (advToggle) advToggle.querySelector('.arrow').classList.remove('open');
+  if (advContent) advContent.classList.remove('open');
+  const providerSel = document.getElementById('ag-pf-provider');
+  const enabled = agGetEnabledProviders();
+  if (enabled.length === 0) { providerSel.innerHTML = '<option value="">No enabled providers</option>'; providerSel.disabled = true; }
+  else { providerSel.disabled = false; providerSel.innerHTML = enabled.map(p => `<option value="${p}">${p}</option>`).join(''); }
+  if (id) {
+    title.textContent = 'Edit Preset';
+    const p = agPresets.find(x => x.id === id);
+    if (p) { document.getElementById('ag-pf-name').value = p.name || p.id; const providerVal = p.provider || ''; providerSel.value = providerVal; agOnProviderChange().then(() => { document.getElementById('ag-pf-model').value = p.model; agUpdateEffortAndFast(providerVal); document.getElementById('ag-pf-effort').value = p.effort || ''; document.getElementById('ag-pf-fast').classList.toggle('on', !!p.fast); document.querySelectorAll('#ag-pf-tools .radio-btn').forEach(b => b.classList.toggle('on', b.dataset.v === (p.tools || 'full'))); if (p.tools && p.tools !== 'full') { if (advToggle) advToggle.querySelector('.arrow').classList.add('open'); if (advContent) advContent.classList.add('open'); } }); return; }
+  }
+  title.textContent = 'New Preset';
+  document.getElementById('ag-pf-name').value = '';
+  document.getElementById('ag-pf-fast').classList.remove('on');
+  document.querySelectorAll('#ag-pf-tools .radio-btn').forEach(b => b.classList.toggle('on', b.dataset.v === 'full'));
+  if (enabled.length > 0) { providerSel.value = enabled[0]; agOnProviderChange(); }
+}
+
+function agClosePresetForm() { document.getElementById('ag-preset-form-sec').style.display = 'none'; agEditingPresetId = null; document.getElementById('warn-agent-presets').textContent = ''; }
+
+async function agOnProviderChange() {
+  const provider = document.getElementById('ag-pf-provider').value;
+  let modelSel = document.getElementById('ag-pf-model');
+  if (modelSel.tagName === 'INPUT') {
+    const sel = document.createElement('select');
+    sel.id = 'ag-pf-model';
+    sel.className = 'r-select';
+    modelSel.replaceWith(sel);
+    modelSel = sel;
+  }
+
+  let models;
+  modelSel.disabled = true;
+  modelSel.innerHTML = '<option value="">Loading...</option>';
+  modelSel.onchange = null;
+  try {
+    const r = await fetch(`/agent/models?provider=${encodeURIComponent(provider)}`).then(r => r.json());
+    models = (r.models || []).map(m => typeof m === 'string' ? { id: m } : m).filter(m => m && m.id);
+  } catch {
+    modelSel.innerHTML = '<option value="">Failed to fetch</option>';
+    agReplaceModelWithInput('');
+    return;
+  }
+  if (!Array.isArray(models) || models.length === 0) {
+    modelSel.innerHTML = '<option value="">No models found</option>';
+    agReplaceModelWithInput('');
+    return;
+  }
+
+  agModelList = models;
+  agRenderModelOptions(modelSel, models, provider);
+  modelSel.disabled = false;
+  modelSel.onchange = () => agUpdateEffortAndFast(provider);
+  agUpdateEffortAndFast(provider);
+}
+
+function agRenderModelOptions(sel, models, provider) {
+  // Surface only chat-capable, non-dated models. LiteLLM's `mode` covers
+  // embedding/image/audio when the id matches its catalog, but openai
+  // /v1/models exposes ids LiteLLM doesn't track (preview snapshots, legacy
+  // completions). Supplement with id-pattern rules so the dropdown stays
+  // focused on conversational models.
+  const DATED_RE = /-\d{4}(-\d{2}-\d{2})?$/;
+  const NON_CHAT_PREFIX = /^(dall-e|tts|whisper|text-embedding|text-moderation|omni-moderation|babbage|davinci|ada-|sora|chatgpt-image|codex-auto)/i;
+  const NON_CHAT_TOKEN = /-(image|audio|realtime|moderation|embedding|instruct|search|transcribe|tts)(-|$)/i;
+  let visible = models.filter(m => {
+    if (m.tier === 'dated') return false;
+    if (m.mode && m.mode !== 'chat') return false;
+    if (NON_CHAT_PREFIX.test(m.id) || NON_CHAT_TOKEN.test(m.id)) return false;
+    if (!m.tier && DATED_RE.test(m.id)) return false;
+    return true;
+  });
+  // Generic freshness trim for providers that expose a /v1/models-style
+  // `created` timestamp (openai, groq, openrouter, xai, ollama, lmstudio,
+  // local). Always sort newest-first when timestamps exist; when the catalog
+  // is large (≥10) also cap at 180 days from the newest release so old
+  // generations drop off. Curated catalogs (openai-oauth Codex, anthropic
+  // STATIC) have no `created` so they pass through untouched.
+  const withDate = visible.filter(m => typeof m.created === 'number' && m.created > 0);
+  if (withDate.length > 0) {
+    visible.sort((a, b) => (b.created || 0) - (a.created || 0));
+  }
+  if (withDate.length >= 10) {
+    const newest = Math.max(...withDate.map(m => m.created));
+    const cutoff = newest - (180 * 24 * 60 * 60);
+    const trimmed = visible.filter(m => typeof m.created === 'number' && m.created >= cutoff);
+    // Fallback: if the freshness window leaves fewer than 6 models (e.g.
+    // provider released nothing recently), widen to the newest 6 so the
+    // dropdown is never empty or near-empty.
+    visible = trimmed.length >= 6 ? trimmed : visible.slice(0, 6);
+  }
+  sel.innerHTML = visible.map(m => `<option value="${escapeAttr(m.id)}">${escapeHtml(m.display || m.id)}</option>`).join('');
+}
+
+function agEffortOptionsFor(provider, model) {
+  if (Array.isArray(model?.reasoningLevels) && model.reasoningLevels.length > 0) {
+    return [...model.reasoningLevels];
+  }
+  if (model?.family && Object.prototype.hasOwnProperty.call(AG_FAMILY_EFFORT, model.family)) {
+    return AG_FAMILY_EFFORT[model.family];
+  }
+  const opts = AG_EFFORT_OPTIONS[provider];
+  if (opts) return opts.map(o => o.v);
+  return null;
+}
+
+function agUpdateEffortAndFast(provider) {
+  const modelEl = document.getElementById('ag-pf-model');
+  const effortRow = document.getElementById('ag-pf-effort-row');
+  const effortSel = document.getElementById('ag-pf-effort');
+  const fastRow = document.getElementById('ag-pf-fast-row');
+  const modelResolved = modelEl && modelEl.tagName !== 'INPUT';
+  const modelId = modelResolved ? modelEl.value : '';
+  const model = modelResolved ? (agModelList.find(m => m.id === modelId) || null) : null;
+  const allowed = modelResolved ? agEffortOptionsFor(provider, model) : null;
+
+  if (!allowed || allowed.length === 0) {
+    effortRow.style.display = 'none';
+    effortSel.innerHTML = '';
+  } else {
+    effortRow.style.display = 'flex';
+    effortSel.innerHTML = allowed.map(v => `<option value="${v}">${AG_EFFORT_LABEL[v] || v}</option>`).join('');
+  }
+
+  const providerFast = AG_FAST_PROVIDERS.has(provider);
+  const familyNoFast = model?.family && AG_FAMILY_NO_FAST.has(model.family);
+  const fastAllowed = modelResolved && providerFast && !familyNoFast;
+  fastRow.style.display = fastAllowed ? 'flex' : 'none';
+  if (!fastAllowed) document.getElementById('ag-pf-fast').classList.remove('on');
+}
+
+function agReplaceModelWithInput(value) { const old = document.getElementById('ag-pf-model'); if (old.tagName === 'INPUT') return; const inp = document.createElement('input'); inp.id = 'ag-pf-model'; inp.className = 'r-input'; inp.placeholder = 'Enter model ID manually'; inp.value = value || ''; old.replaceWith(inp); }
+
+function agSelectTools(el) { el.parentElement.querySelectorAll('.radio-btn').forEach(b => b.classList.remove('on')); el.classList.add('on'); }
+
+async function agSavePreset() {
+  const warn = document.getElementById('warn-agent-presets');
+  warn.textContent = '';
+  const name = document.getElementById('ag-pf-name').value.trim();
+  const provider = document.getElementById('ag-pf-provider').value;
+  const modelEl = document.getElementById('ag-pf-model');
+  const model = (modelEl.tagName === 'INPUT' ? modelEl.value : modelEl.value).trim();
+  const effort = document.getElementById('ag-pf-effort').value;
+  const fast = document.getElementById('ag-pf-fast').classList.contains('on');
+  const tools = document.querySelector('#ag-pf-tools .radio-btn.on')?.dataset.v || 'full';
+  if (!name) { warn.textContent = 'Name is required'; return; }
+  if (!provider) { warn.textContent = 'Provider is required'; return; }
+  if (!model) { warn.textContent = 'Model is required'; return; }
+  const id = agEditingPresetId || name.toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  if (!id) { warn.textContent = 'Name must contain valid characters'; return; }
+  const body = { id, name, model, tools, provider, type: 'bridge' };
+  if (effort) body.effort = effort;
+  const fastRowVisible = document.getElementById('ag-pf-fast-row').style.display !== 'none';
+  if (fast && fastRowVisible) body.fast = true;
+  try { const r = await fetch('/agent/presets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()); if (!r.ok) { warn.textContent = r.error || 'Save failed'; return; } isDirty = false; agClosePresetForm(); await agLoadPresets(); } catch (err) { warn.textContent = 'Save failed: ' + (err?.message || 'network error'); }
+}
+
+async function agDeletePreset(id) {
+  if (!confirm(`Delete preset "${id}"?`)) return;
+  try { await fetch(`/agent/presets?id=${encodeURIComponent(id)}`, { method: 'DELETE' }); await agLoadPresets(); } catch { document.getElementById('warn-agent-presets').textContent = 'Delete failed'; }
+}
+
+// ============================================================
+// MEMORY MODULE
+// ============================================================
+
+const MEM_API_PROVIDERS = AG_API_PROVIDERS;
+const MEM_OAUTH_PROVIDERS = AG_OAUTH_PROVIDERS;
+const MEM_LOCAL_PROVIDERS = AG_LOCAL_PROVIDERS;
+
+async function loadMemoryData() {
+  memConfig = await fetch('/memory/config').then(r => r.json()).catch(() => ({}));
+  memAuth = await fetch('/memory/auth').then(r => r.json()).catch(() => ({}));
+  memPopulateConfig();
+  memRenderAll();
+  await Promise.all([memLoadFiles(), memLoadCoreMemory()]);
+}
+
+function memPopulateConfig() {
+  const enabled = memConfig.enabled !== false;
+  document.getElementById('mem-set-enabled').checked = enabled;
+  memToggleMemory();
+  document.getElementById('mem-set-user-name').value = memConfig.user?.name || '';
+  document.getElementById('mem-set-user-title').value = memConfig.user?.title || '';
+  if (memConfig.cycle1?.interval) document.getElementById('mem-set-retention').value = memConfig.cycle1.interval;
+  if (memConfig.cycle1?.timeout) document.getElementById('mem-set-timeout').value = memConfig.cycle1.timeout;
+  if (memConfig.cycle1?.batchSize) document.getElementById('mem-set-batch-size').value = memConfig.cycle1.batchSize;
+  if (memConfig.cycle2?.interval) document.getElementById('mem-set-interval').value = memConfig.cycle2.interval;
+}
+
+function memToggleMemory() {
+  const enabled = document.getElementById('mem-set-enabled').checked;
+  const body = document.getElementById('mem-settings-body');
+  if (enabled) body.classList.remove('disabled'); else body.classList.add('disabled');
+}
+
+function memRenderAll() {
+  const c = memConfig.providers || {};
+  const apiSec = document.getElementById('mem-api-sec');
+  if (!apiSec) return;
+  apiSec.innerHTML = '';
+  for (const p of MEM_API_PROVIDERS) {
+    const key = c[p.id]?.apiKey || '';
+    const hasEnv = memAuth.envKeys?.[p.id];
+    let tag;
+    if (key) tag = '<span class="r-tag ok">Set</span>';
+    else if (hasEnv) tag = '<span class="r-tag env">Env</span>';
+    else tag = `<a class="r-link" href="${p.url}" target="_blank">Get Key &#8599;</a>`;
+    apiSec.innerHTML += `<div class="r" data-provider="${p.id}"><span class="r-name">${p.name}</span><div class="input-group"><input class="r-input" id="mem-key-${p.id}" type="password" value="${escapeAttr(key)}" placeholder="${p.env}" onblur="memValidateKeyOnBlur('${p.id}')"><button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button></div><span id="mem-tag-${p.id}" style="margin-left:auto">${tag}</span><span class="r-validation" id="mem-val-${p.id}"></span></div>`;
+  }
+  const oauthSec = document.getElementById('mem-oauth-sec');
+  oauthSec.innerHTML = '';
+  for (const p of MEM_OAUTH_PROVIDERS) { const detected = agOAuthDetected(p.id, memAuth); const tag = detected ? '<span class="r-tag ok">Set</span>' : '<span class="r-tag no">Not Set</span>'; oauthSec.innerHTML += `<div class="r"><span class="r-name">${p.name}</span><span style="flex:1;font-size:12px;color:var(--text-4)">${p.desc}</span>${tag}</div>`; }
+  const localSec = document.getElementById('mem-local-sec');
+  localSec.innerHTML = '';
+  for (const p of MEM_LOCAL_PROVIDERS) { const url = c[p.id]?.baseURL || p.url; const detected = memAuth[p.id]; const tag = detected ? '<span class="r-tag running">Running</span>' : '<span class="r-tag not-running">Not Running</span>'; localSec.innerHTML += `<div class="r"><span class="r-name">${p.name}</span><input class="r-input" id="mem-url-${p.id}" value="${escapeAttr(url)}" placeholder="${p.url}">${tag}</div>`; }
+}
+
+const _memOrigTags = {};
+async function memValidateKeyOnBlur(providerId) {
+  const input = document.getElementById('mem-key-' + providerId);
+  const valEl = document.getElementById('mem-val-' + providerId);
+  const tagEl = document.getElementById('mem-tag-' + providerId);
+  if (!input || !valEl || !tagEl) return;
+  const key = input.value.trim();
+  if (!_memOrigTags[providerId]) _memOrigTags[providerId] = tagEl.innerHTML;
+  if (!key) { input.classList.remove('warn','valid'); valEl.className='r-validation'; valEl.innerHTML=''; tagEl.innerHTML=_memOrigTags[providerId]||''; return; }
+  input.classList.remove('warn','valid'); valEl.className='r-validation checking'; valEl.innerHTML='<span class="spinner"></span>Checking...';
+  try {
+    const res = await fetch('/memory/validate', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keys:{[providerId]:key}}) });
+    const data = await res.json();
+    const result = data.validation?.[providerId];
+    if (input.value.trim() !== key) return;
+    if (result === 'valid') { input.classList.remove('warn'); input.classList.add('valid'); valEl.className='r-validation ok'; valEl.textContent=''; tagEl.innerHTML='<span class="r-tag ok">Active</span>'; }
+    else { input.classList.remove('valid'); input.classList.add('warn'); valEl.className='r-validation fail'; valEl.textContent='Invalid key'; tagEl.innerHTML=_memOrigTags[providerId]||''; }
+  } catch { valEl.className='r-validation'; valEl.innerHTML=''; }
+}
+
+async function memSaveProviders() {
+  const providers = {};
+  for (const p of MEM_API_PROVIDERS) { const key = document.getElementById('mem-key-'+p.id)?.value.trim(); if (key) providers[p.id] = { apiKey: key }; }
+  for (const p of MEM_LOCAL_PROVIDERS) { const url = document.getElementById('mem-url-'+p.id)?.value.trim(); providers[p.id] = { baseURL: url || p.url }; }
+  const btn = document.querySelector('#panel-mem-providers .save'); const warn = document.getElementById('warn-mem-providers');
+  warn.textContent = ''; btn.textContent = 'Saving...'; btn.disabled = true;
+  try { await fetch('/memory/config', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({providers}) }); btn.textContent='\u2713 Saved'; btn.classList.add('done'); setTimeout(()=>{btn.textContent='Save';btn.classList.remove('done');btn.disabled=false},1500); await loadMemoryData(); } catch { warn.textContent='Save failed'; btn.textContent='Save'; btn.disabled=false; }
+}
+
+function memBuildConfigData() {
+  return { enabled: document.getElementById('mem-set-enabled').checked, user: { name: document.getElementById('mem-set-user-name').value.trim(), title: document.getElementById('mem-set-user-title').value.trim() }, cycle1: { interval: document.getElementById('mem-set-retention').value, timeout: parseInt(document.getElementById('mem-set-timeout').value)||30, batchSize: parseInt(document.getElementById('mem-set-batch-size').value)||50 }, cycle2: { interval: document.getElementById('mem-set-interval').value.trim() } };
+}
+
+async function memSaveConfig() {
+  const data = memBuildConfigData(); const btn = document.querySelector('#panel-mem-settings .save'); const warn = document.getElementById('warn-mem-settings');
+  warn.textContent = ''; btn.textContent = 'Saving...'; btn.disabled = true;
+  try { await fetch('/memory/config', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) }); btn.textContent='\u2713 Saved'; btn.classList.add('done'); setTimeout(()=>{btn.textContent='Save';btn.classList.remove('done');btn.disabled=false},1500); } catch { warn.textContent='Save failed'; btn.textContent='Save'; btn.disabled=false; }
+}
+
+async function memRunBackfill() {
+  const btn = document.getElementById('mem-btn-backfill'); const window_ = document.getElementById('mem-set-backfill-window').value;
+  btn.textContent = 'Running...'; btn.disabled = true;
+  try { await fetch('/memory/backfill', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({window:window_}) }); btn.textContent='\u2713 Done'; setTimeout(()=>{btn.textContent='Run';btn.disabled=false},2000); } catch { btn.textContent='Failed'; setTimeout(()=>{btn.textContent='Run';btn.disabled=false},2000); }
+}
+
+function memDeleteConfirmCheck() {
+  const input = document.getElementById('mem-del-confirm'); const btn = document.getElementById('mem-btn-delete');
+  const ready = (input.value === 'DELETE ALL MEMORY');
+  btn.disabled = !ready;
+  btn.style.opacity = ready ? '1' : '0.4';
+  btn.style.cursor = ready ? 'pointer' : 'not-allowed';
+}
+
+async function memDeleteAll() {
+  const input = document.getElementById('mem-del-confirm'); const btn = document.getElementById('mem-btn-delete'); const warn = document.getElementById('warn-mem-delete');
+  if (input.value !== 'DELETE ALL MEMORY') return;
+  if (!window.confirm('Delete ALL memory entries? This cannot be undone.')) return;
+  warn.textContent = ''; btn.textContent = 'Deleting...'; btn.disabled = true;
+  try {
+    const r = await fetch('/memory/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ confirm:'DELETE ALL MEMORY' }) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'unknown error');
+    warn.style.color = 'var(--text-3)'; warn.textContent = 'Deleted ' + j.deleted + ' entries.';
+    btn.textContent = '✓ Deleted'; input.value = '';
+    setTimeout(() => { btn.textContent = 'Delete all'; memDeleteConfirmCheck(); }, 2500);
+  } catch (e) {
+    warn.style.color = '#e5534b'; warn.textContent = 'Failed: ' + (e.message || e);
+    btn.textContent = 'Delete all'; btn.disabled = false;
+  }
+}
+
+async function memLoadFiles() { try{const data=await fetch('/memory/files').then(r=>r.json());document.getElementById('mem-file-bot').value=data['bot.md']||'';document.getElementById('mem-file-user-profile').value=data['user.md']||'';}catch{} }
+
+function memOpenFile(name) {
+  fetch('/memory/file/' + encodeURIComponent(name));
+}
+
+async function memSaveFiles() {
+  const btn=document.querySelector('#panel-mem-files .save'); const warn=document.getElementById('warn-mem-files');
+  warn.textContent=''; btn.textContent='Saving...'; btn.disabled=true;
+  try{await fetch('/memory/files',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({'bot.md':document.getElementById('mem-file-bot').value,'user.md':document.getElementById('mem-file-user-profile').value})});btn.textContent='\u2713 Saved';btn.classList.add('done');setTimeout(()=>{btn.textContent='Save';btn.classList.remove('done');btn.disabled=false},1500);}catch{warn.textContent='Save failed';btn.textContent='Save';btn.disabled=false;}
+}
+
+async function memLoadCoreMemory() { try{const r=await fetch('/api/memory/entries/active').then(r=>r.json());memRenderCoreMemory(r.items||[]);}catch{document.getElementById('mem-core-memory-list').innerHTML='<div class="empty">Failed to load</div>';} }
+
+function memRenderCoreMemory(items) {
+  const list=document.getElementById('mem-core-memory-list');
+  if(items.length===0){list.innerHTML='<div class="empty" id="mem-core-empty">No core memory entries yet — click + Add to create one</div>';return;}
+  list.innerHTML=items.map(item=>`<div class="r" style="flex-direction:column;align-items:stretch;padding:10px 14px;gap:6px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:rgba(100,100,200,0.15);color:var(--text-3);font-weight:600;text-transform:uppercase">${escapeHtml(item.category||'')}</span>
+      <span style="flex:1;font-weight:600">${escapeHtml(item.element||'')}</span>
+      <span style="font-size:10px;color:var(--text-4)">${Number(item.score||0).toFixed(2)}</span>
+      <span style="cursor:pointer;color:#e5534b;font-size:13px;font-weight:600;padding:4px 8px;border-radius:4px;background:rgba(229,83,75,0.1);white-space:nowrap" onclick="memDeleteCoreMemory(${item.id})">Delete</span>
+    </div>
+    <div style="font-size:11px;line-height:1.5;color:var(--text-2);padding:4px 2px">${escapeHtml(item.summary||'')}</div>
+  </div>`).join('');
+}
+
+async function memDeleteCoreMemory(id) { try{await fetch('/api/memory/entries/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'archived'})});await memLoadCoreMemory();}catch{alert('Failed to delete');} }
+
+function memAddCoreMemory() {
+  const list=document.getElementById('mem-core-memory-list');
+  const empty=document.getElementById('mem-core-empty');
+  if(empty)empty.remove();
+  const div=document.createElement('div');
+  div.className='r';
+  div.style.cssText='flex-direction:column;align-items:stretch;padding:10px 14px;gap:6px';
+  div.innerHTML=`
+    <div style="display:flex;align-items:center;gap:8px">
+      <select class="r-input" style="width:110px;font-size:11px" data-cm-new="1" data-cm-f="category">
+        <option value="rule">rule</option>
+        <option value="constraint">constraint</option>
+        <option value="decision">decision</option>
+        <option value="fact" selected>fact</option>
+        <option value="goal">goal</option>
+        <option value="preference">preference</option>
+        <option value="task">task</option>
+        <option value="issue">issue</option>
+      </select>
+      <input class="r-input" placeholder="Element (5-10 words)" style="flex:1;font-weight:600" data-cm-new="1" data-cm-f="element">
+      <span style="cursor:pointer;color:var(--text-3);font-size:12px;font-weight:600;padding:4px 10px;border-radius:4px;background:rgba(100,200,100,0.15)" onclick="memSaveNewEntry(this)">Save</span>
+      <span style="cursor:pointer;color:#e5534b;font-size:13px;font-weight:600;padding:4px 8px;border-radius:4px;background:rgba(229,83,75,0.1);white-space:nowrap" onclick="this.closest('.r').remove()">Cancel</span>
+    </div>
+    <textarea class="r-input" style="height:80px;resize:vertical;font-size:11px;line-height:1.5" placeholder="Summary (1-3 sentences)..." data-cm-new="1" data-cm-f="summary"></textarea>
+  `;
+  list.appendChild(div);
+}
+
+async function memSaveNewEntry(btn) {
+  const row=btn.closest('.r');
+  const category=row.querySelector('[data-cm-f="category"]').value;
+  const element=row.querySelector('[data-cm-f="element"]').value.trim();
+  const summary=row.querySelector('[data-cm-f="summary"]').value.trim();
+  if(!element||!summary){alert('Element and summary required');return;}
+  try{
+    const r=await fetch('/api/memory/entries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({element,summary,category})});
+    const j=await r.json();
+    if(!j.ok){alert('Save failed: '+(j.error||'unknown'));return;}
+    await memLoadCoreMemory();
+  }catch(e){alert('Save failed: '+e.message);}
+}
+
+async function memSetCoreMemoryStatus(id, status) { try{await fetch('/api/memory/entries/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});await memLoadCoreMemory();}catch{alert('Failed to update status');} }
+
+// ============================================================
+// SEARCH MODULE
+// ============================================================
+
+const SR_PROVIDERS = [
+  {id:'serper',name:'Serper',url:'https://serper.dev'},
+  {id:'firecrawl',name:'Firecrawl',url:'https://firecrawl.dev'},
+  {id:'brave',name:'Brave',url:'https://brave.com/search/api'},
+  {id:'xai',name:'xAI',url:'https://console.x.ai'},
+  {id:'perplexity',name:'Perplexity',url:'https://docs.perplexity.ai'},
+  {id:'tavily',name:'Tavily',url:'https://tavily.com'},
+];
+const SR_AI = [
+  {id:'codex',name:'Codex',hint:'OpenAI',cli:1},
+  {id:'claude',name:'Claude',hint:'Anthropic',cli:1},
+];
+
+function srMakeSearchRow(p) {
+  const d = document.createElement('div');
+  d.className = 'r'; d.dataset.id = p.id; d.draggable = true;
+  const handle = document.createElement('span'); handle.className = 'drag-handle'; handle.textContent = '\u283F'; d.appendChild(handle);
+  const chk = document.createElement('div'); chk.className = 'r-check'; d.appendChild(chk);
+  const nm = document.createElement('span'); nm.className = 'r-name'; nm.style.width = '90px'; nm.textContent = p.name; d.appendChild(nm);
+  const group = document.createElement('div'); group.className = 'input-group'; group.style.flex = '1'; group.style.width = 'auto';
+  const inp = document.createElement('input'); inp.className = 'r-input'; inp.type = 'password'; inp.placeholder = 'API KEY'; inp.dataset.k = 'sr-' + p.id;
+  inp.addEventListener('input', () => { if (inp.value.trim()) chk.classList.add('on'); else chk.classList.remove('on'); inp.classList.remove('warn', 'valid'); });
+  group.appendChild(inp);
+  const eyeBtn = document.createElement('button'); eyeBtn.className = 'eye-btn'; eyeBtn.type = 'button'; eyeBtn.innerHTML = '&#128065;'; eyeBtn.onclick = function() { toggleVis(this); }; group.appendChild(eyeBtn);
+  d.appendChild(group);
+  chk.onclick = () => { chk.classList.toggle('on'); isDirty = true; };
+  if (p.url) { const a = document.createElement('a'); a.className = 'r-link'; a.href = p.url; a.target = '_blank'; a.textContent = 'Get \u2197'; d.appendChild(a); }
+  return d;
+}
+SR_PROVIDERS.forEach(p => document.getElementById('sr-search-sec').appendChild(srMakeSearchRow(p)));
+
+function srMakeProviderRow(id, name, connType) {
+  const d = document.createElement('div'); d.className = 'r'; d.dataset.id = id; d.draggable = true;
+  const handle = document.createElement('span'); handle.className = 'drag-handle'; handle.textContent = '\u283F'; d.appendChild(handle);
+  const nm = document.createElement('span'); nm.className = 'r-name'; nm.textContent = name; d.appendChild(nm);
+  const tag = document.createElement('span'); tag.className = 'r-tag ' + (connType === 'api' ? 'ok' : 'no'); tag.textContent = connType; tag.style.marginLeft = 'auto'; d.appendChild(tag);
+  return d;
+}
+
+function srBuildProviderPanels() {
+  const rawSec = document.getElementById('sr-raw-priority-sec');
+  const aiSec = document.getElementById('sr-ai-priority-sec');
+  if (!rawSec || !aiSec) return;
+  rawSec.innerHTML = ''; aiSec.innerHTML = '';
+  SR_PROVIDERS.forEach(p => rawSec.appendChild(srMakeProviderRow(p.id, p.name, 'api')));
+  SR_AI.forEach(p => { const conn = p.cli ? 'cli' : 'api'; aiSec.appendChild(srMakeProviderRow(p.id, p.name, conn)); });
+}
+srBuildProviderPanels();
+
+// Search drag & drop
+let srDragEl = null, srDragSec = null;
+document.addEventListener('dragstart', e => {
+  const row = e.target.closest('#sr-search-sec .r[draggable="true"], #sr-raw-priority-sec .r[draggable="true"], #sr-ai-priority-sec .r[draggable="true"]');
+  if (!row) return;
+  srDragEl = row; srDragSec = row.parentElement;
+  setTimeout(() => row.classList.add('dragging'), 0);
+  e.dataTransfer.effectAllowed = 'move';
+});
+document.addEventListener('dragover', e => {
+  if (!srDragEl) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+  const row = e.target.closest('.r');
+  if (!row || row === srDragEl || row.parentElement !== srDragSec) return;
+  srDragSec.querySelectorAll('.r.drag-over').forEach(r => r.classList.remove('drag-over'));
+  row.classList.add('drag-over');
+});
+document.addEventListener('drop', e => {
+  if (!srDragEl) return;
+  e.preventDefault();
+  const row = e.target.closest('.r');
+  if (!row || !srDragEl || row === srDragEl || row.parentElement !== srDragSec) return;
+  const rect = row.getBoundingClientRect();
+  if (e.clientY < rect.top + rect.height / 2) row.before(srDragEl); else row.after(srDragEl);
+  isDirty = true;
+  srClearDrag();
+});
+document.addEventListener('dragend', e => { if (srDragEl) srClearDrag(); });
+function srClearDrag() {
+  if (srDragEl) srDragEl.classList.remove('dragging');
+  document.querySelectorAll('#sr-search-sec .r, #sr-raw-priority-sec .r, #sr-ai-priority-sec .r').forEach(r => { r.classList.remove('drag-over'); r.style.borderTopWidth = ''; r.style.borderBottomWidth = ''; });
+  srDragEl = null; srDragSec = null;
+}
+
+function srSetMode(el) { el.parentElement.querySelectorAll('.mode').forEach(e => e.classList.remove('on')); el.classList.add('on'); isDirty = true; }
+
+async function loadSearchConfig() {
+  const [cfgRes, cliRes] = await Promise.all([
+    fetch('/search/config').then(r => r.json()).catch(() => ({})),
+    fetch('/search/cli-check').then(r => r.json()).catch(() => ({})),
+  ]);
+  srConfig = cfgRes;
+  srPopulateSearch(cfgRes);
+  srPopulateCli(cliRes);
+}
+
+function srPopulateSearch(cfg) {
+  const creds = cfg?.rawSearch?.credentials || {};
+  const priority = cfg?.rawSearch?.priority || [];
+  const aiPriority = cfg?.aiSearch?.priority || [];
+  const aiProfiles = cfg?.aiSearch?.profiles || {};
+
+  SR_PROVIDERS.forEach(p => { const inp = document.querySelector('[data-k="sr-' + p.id + '"]'); const row = inp?.closest('.r'); const chk = row?.querySelector('.r-check'); const key = creds[p.id]?.apiKey || ''; if (inp) inp.value = key; if (chk && key) chk.classList.add('on'); });
+
+  if (priority.length) { const sec = document.getElementById('sr-search-sec'); if (sec) { const rows = Array.from(sec.querySelectorAll('.r')); const ordered = []; priority.forEach(id => { const r = rows.find(r => r.dataset.id === id); if (r) ordered.push(r); }); rows.forEach(r => { if (!ordered.includes(r)) ordered.push(r); }); ordered.forEach(r => sec.appendChild(r)); } }
+  if (priority.length) { const sec = document.getElementById('sr-raw-priority-sec'); if (sec) { const rows = Array.from(sec.querySelectorAll('.r')); const ordered = []; priority.forEach(id => { const r = rows.find(r => r.dataset.id === id); if (r) ordered.push(r); }); rows.forEach(r => { if (!ordered.includes(r)) ordered.push(r); }); ordered.forEach(r => sec.appendChild(r)); } }
+
+  const filteredAiPriority = aiPriority.filter(id => id !== 'grok');
+  if (filteredAiPriority.length) { const sec = document.getElementById('sr-ai-priority-sec'); if (sec) { const rows = Array.from(sec.querySelectorAll('.r')); const ordered = []; filteredAiPriority.forEach(id => { const r = rows.find(r => r.dataset.id === id); if (r) ordered.push(r); }); rows.forEach(r => { if (!ordered.includes(r)) ordered.push(r); }); ordered.forEach(r => sec.appendChild(r)); } }
+
+  SR_AI.forEach(p => { const profile = aiProfiles[p.id]; if (profile) { const row = document.querySelector('#sr-ai-priority-sec .r[data-id="' + p.id + '"]'); if (row) { const tag = row.querySelector('.r-tag'); if (tag) { const conn = profile.connection || (p.cli ? 'cli' : 'api'); tag.textContent = conn; tag.className = 'r-tag ' + (conn === 'api' ? 'ok' : 'no'); } } } });
+
+  const ghKey = creds?.github?.token || '';
+  if (ghKey) document.getElementById('sr-gh-token').value = ghKey;
+
+  const mode = cfg?.defaultMode || 'search_first';
+  document.querySelectorAll('.mode').forEach(m => m.classList.toggle('on', m.dataset.m === mode));
+  if (cfg?.rawSearch?.maxResults) document.getElementById('sr-beh-maxresults').value = cfg.rawSearch.maxResults;
+  if (cfg?.requestTimeoutMs) document.getElementById('sr-beh-timeout').value = cfg.requestTimeoutMs;
+  if (cfg?.aiSearch?.timeoutMs) document.getElementById('sr-beh-ai-timeout').value = cfg.aiSearch.timeoutMs;
+
+  if (cfg?.crawl) {
+    if (cfg.crawl.maxPages != null) document.getElementById('sr-crawl-maxpages').value = cfg.crawl.maxPages;
+    if (cfg.crawl.maxDepth != null) document.getElementById('sr-crawl-maxdepth').value = cfg.crawl.maxDepth;
+    if (cfg.crawl.sameDomainOnly === false) document.getElementById('sr-crawl-samedomain').classList.remove('on');
+  }
+}
+
+function srPopulateCli(cli) {
+  for (const [id, ok] of Object.entries(cli)) {
+    const row = document.querySelector('#sr-ai-priority-sec .r[data-id="' + id + '"]');
+    if (row) { const tag = row.querySelector('.r-tag'); if (tag && tag.textContent === 'cli') { tag.className = 'r-tag ' + (ok ? 'ok' : 'no'); tag.textContent = ok ? 'cli' : 'cli (missing)'; } }
+  }
+}
+
+function srBuildData() {
+  const data = {};
+  const searchProviders = {}; const searchPriority = [];
+  document.querySelectorAll('#sr-search-sec .r').forEach(r => { const inp = r.querySelector('.r-input'); const id = r.dataset.id; if (id && inp) searchProviders[id] = inp.value; const chk = r.querySelector('.r-check'); if (chk?.classList.contains('on') && id) searchPriority.push(id); });
+  data.searchProviders = searchProviders;
+  const rawPriority = [];
+  document.querySelectorAll('#sr-raw-priority-sec .r').forEach(r => { if (r.dataset.id) rawPriority.push(r.dataset.id); });
+  data.searchPriority = searchPriority.length ? searchPriority : rawPriority;
+  const aiPriority = [];
+  document.querySelectorAll('#sr-ai-priority-sec .r').forEach(r => { if (r.dataset.id) aiPriority.push(r.dataset.id); });
+  data.aiPriority = aiPriority;
+  data.mode = document.querySelector('.mode.on')?.dataset.m || 'search_first';
+  data.maxResults = parseInt(document.getElementById('sr-beh-maxresults').value) || undefined;
+  data.requestTimeoutMs = parseInt(document.getElementById('sr-beh-timeout').value) || undefined;
+  data.aiTimeoutMs = parseInt(document.getElementById('sr-beh-ai-timeout').value) || undefined;
+  data.crawl = { maxPages: parseInt(document.getElementById('sr-crawl-maxpages').value) || undefined, maxDepth: parseInt(document.getElementById('sr-crawl-maxdepth').value) || undefined, sameDomainOnly: document.getElementById('sr-crawl-samedomain').classList.contains('on') };
+  data.github = document.getElementById('sr-gh-token').value;
+  return data;
+}
+
+async function srSavePanel() {
+  const activePanel = document.querySelector('.panel.active');
+  const warnEl = activePanel?.querySelector('.warn-msg') || document.createElement('div');
+  const btn = activePanel?.querySelector('.save');
+  warnEl.textContent = '';
+  const data = srBuildData();
+
+  let empty = 0;
+  document.querySelectorAll('#sr-search-sec .r').forEach(r => { const chk = r.querySelector('.r-check'); const inp = r.querySelector('.r-input'); if (chk?.classList.contains('on') && inp && !inp.value.trim()) { inp.classList.add('warn'); empty++; } });
+  if (empty) { warnEl.textContent = 'Please enter API keys for selected providers'; return; }
+
+  btn.textContent = 'Validating...'; btn.disabled = true;
+  try {
+    const valData = { searchProviders: data.searchProviders, aiProviders: {}, github: data.github };
+    const res = await fetch('/search/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(valData) });
+    const result = await res.json();
+    if (result.validation) { let failed = []; for (const [id, status] of Object.entries(result.validation)) { const inp = document.querySelector('[data-k$="-' + id + '"]'); if (inp) inp.classList.add(status === 'valid' ? 'valid' : 'warn'); if (status !== 'valid') failed.push(id); } if (failed.length > 0) { srSaveCounter++; if (srSaveCounter < 2) { warnEl.textContent = 'API key verification failed'; btn.textContent = 'Save'; btn.disabled = false; return; } } }
+  } catch {}
+
+  if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
+  try {
+    await fetch('/search/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    isDirty = false;
+    if (btn) { btn.textContent = '\u2713 Saved'; btn.classList.add('done'); setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('done'); btn.disabled = false; }, 1500); }
+  } catch (e) { console.error('[mixdog] save error:', e); warnEl.textContent = 'Save failed: ' + (e?.message || e); if (btn) { btn.textContent = 'Save'; btn.disabled = false; } }
+}
+
+// ============================================================
+// AGENT LEARNING CONFIG
+// ============================================================
+async function loadLearningConfig() {
+  try {
+    const res = await fetch('/agent/learning');
+    const data = await res.json();
+    document.getElementById('traj-enabled').checked = data.trajectory?.enabled !== false;
+    document.getElementById('am-enabled').checked = data.agentMaintenance?.enabled === true;
+    const interval = data.agentMaintenance?.interval || '1h';
+    const sel = document.getElementById('am-interval');
+    const customInput = document.getElementById('am-interval-custom');
+    if ([...sel.options].some(o => o.value === interval)) {
+      sel.value = interval;
+      customInput.style.display = 'none';
+    } else {
+      sel.value = 'custom';
+      customInput.value = interval;
+      customInput.style.display = '';
+    }
+    document.getElementById('skill-auto').checked = data.skillSuggest?.autoDetect === true;
+  } catch {}
+}
+
+function amIntervalChanged() {
+  const sel = document.getElementById('am-interval');
+  const customInput = document.getElementById('am-interval-custom');
+  if (sel.value === 'custom') {
+    customInput.style.display = '';
+    customInput.focus();
+  } else {
+    customInput.style.display = 'none';
+    saveLearningConfig();
+  }
+}
+
+function getAmInterval() {
+  const sel = document.getElementById('am-interval');
+  if (sel.value === 'custom') {
+    return document.getElementById('am-interval-custom').value.trim() || '1h';
+  }
+  return sel.value;
+}
+
+async function saveLearningConfig() {
+  try {
+    await fetch('/agent/learning', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        trajectory: { enabled: document.getElementById('traj-enabled').checked },
+        agentMaintenance: {
+          enabled: document.getElementById('am-enabled').checked,
+          interval: getAmInterval(),
+        },
+        skillSuggest: { autoDetect: document.getElementById('skill-auto').checked },
+      }),
+    });
+  } catch {}
+}
+
+// -- Agent Maintenance --
+const AG_MAINT_TASKS = [
+  { id: 'cycle1', label: 'Cycle 1', desc: 'Episode classification (every 10 min)' },
+  { id: 'cycle2', label: 'Cycle 2', desc: 'Memory consolidation (every 1h)' },
+  { id: 'search', label: 'Search', desc: 'External lookup synthesis' },
+  { id: 'recall', label: 'Recall', desc: 'Memory recall synthesis' },
+  { id: 'explore', label: 'Explore', desc: 'Combined recall+search fan-out synthesis' },
+];
+let agMaintenance = {};
+let agMaintenanceDefaults = {};
+
+async function loadAgMaintenance() {
+  try {
+    const r = await fetch('/agent/maintenance').then(r => r.json());
+    agMaintenance = r.maintenance || {};
+    agMaintenanceDefaults = r.defaults || {};
+  } catch { agMaintenance = {}; agMaintenanceDefaults = {}; }
+  renderAgMaintenance();
+}
+
+function renderAgMaintenance() {
+  const container = document.getElementById('ag-maint-tasks');
+  if (!container) return;
+  container.innerHTML = '';
+  for (const task of AG_MAINT_TASKS) {
+    const current = agMaintenance[task.id] || '';
+    container.innerHTML += `<div class="r">
+      <span class="r-name">${task.label}</span>
+      <select class="r-select" id="ag-maint-${task.id}" style="width:200px;flex:0 0 200px">
+        ${agPresets.map(p => `<option value="${escapeAttr(p.id)}"${p.id === current ? ' selected' : ''}>${p.name || p.id}</option>`).join('')}
+      </select>
+      <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">${task.desc}</span>
+    </div>`;
+  }
+}
+
+async function saveAgMaintenance() {
+  const warn = document.getElementById('warn-ag-maint');
+  warn.textContent = '';
+  const data = {};
+  for (const task of AG_MAINT_TASKS) {
+    const v = document.getElementById('ag-maint-' + task.id)?.value;
+    if (v) data[task.id] = v;
+  }
+  try {
+    const r = await fetch('/agent/maintenance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(r => r.json());
+    if (!r.ok) { warn.textContent = r.error || 'Save failed'; return; }
+    const btn = document.querySelector('#panel-agent-maintenance .save');
+    btn.classList.add('done'); btn.textContent = 'Saved';
+    setTimeout(() => { btn.classList.remove('done'); btn.textContent = 'Save'; }, 1500);
+  } catch {
+    warn.textContent = 'Save failed';
+  }
+}
+</script>
+
+<div class="modal-overlay" id="close-modal">
+  <div class="modal-box">
+    <div class="modal-title">Unsaved Changes</div>
+    <div class="modal-msg">You have unsaved changes. What would you like to do?</div>
+    <div class="modal-actions">
+      <button class="mbtn primary" onclick="saveAndClose()">Save & Close</button>
+      <button class="mbtn danger-outline" onclick="discardAndClose()">Close Without Saving</button>
+      <button class="mbtn secondary" onclick="cancelClose()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

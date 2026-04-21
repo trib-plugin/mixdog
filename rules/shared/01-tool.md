@@ -1,0 +1,45 @@
+# Tool Use
+
+First move — NARROW THE SCOPE before calling. A tool aimed at "the module responsible for X" finds it; a tool aimed at "X" returns noise.
+
+## Batching — #1 iter saver
+
+Every serial repeat of the same tool wastes a full turn. Use array / multi form FIRST:
+
+- `recall` / `search` / `explore` → `query` as ARRAY; internal agent fans out in parallel.
+- `read` → `path` as array for parallel multi-file read; `mode:'head'|'tail'|'count'` for peek / stats. NEVER serial `read`.
+- `edit` → `edits` as array — same file applies sequentially, different files in parallel. Covers old `multi_edit` / `batch_edit` in one call. NEVER serial `edit`.
+- `apply_patch` → prefer for non-trivial multi-file or large-context edits. One patch turn beats repeated `read` → `edit` loops.
+- `grep` → `pattern` and/or `glob` as array (OR-joined).
+- `glob` → `pattern` as array (OR-joined).
+- `bash` → chain dependent commands with `&&` / `;` in ONE call. NEVER split dependent work.
+- `list` → single call; switch `mode:'list'|'tree'|'find'` for the view.
+- Independent calls on DIFFERENT tools with no data dependency — send in ONE message, not sequential turns.
+
+## General Iter Budget
+
+- Work in **2 rounds max per sub-problem** (locate → confirm). Repeated retrieval → ask what NEW information the next call adds; enough evidence → stop probing and move to the edit / answer.
+
+## Routing
+
+**Information-retrieval tools are top priority. Always prefer `recall` / `search` / `explore` (and `read` / `glob` / `list` / `grep` for known-path / pattern work) over `bash` for any lookup. Using `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup is a rule violation — `bash` is shell-only work (git, build, test, run).**
+
+- **Order when unsure: recall → search → explore → grep+read. This order is mandatory, not a suggestion. Skip a step only when you already know which tool the query belongs to.**
+- Past context → `recall`. External web / URL / GitHub → `search`. Local filesystem → `explore`.
+- Known path → `read` directly. Unknown location → `grep` / `glob` first, then targeted `read`.
+- Code structure (imports, dependents, symbols, references, callers): `code_graph` before raw `grep`.
+- Multi-file or already-clear edits: `apply_patch` before repeated `read` → `edit`.
+- Shell work across turns: `bash_session` reuses shell state — don't replay setup in repeated `bash` calls.
+- Large tool outputs may be saved to a path with a preview; only `read` that path if the preview is insufficient.
+- `explore` — one natural-language query fans glob + grep out in parallel; ideal for multi-angle questions ("how does X work, and where is it configured?") where several patterns need to land in one shot.
+
+## Scope boundaries
+
+- `recall` — past context only. Not codebase, not web.
+- `search` — external / web only. Not codebase, not memory.
+- `explore` — local filesystem only. Not web, not memory.
+- Pick the right tool; no silent cross-scope fan-out.
+
+## Stop-and-reroute
+
+Tool returns empty / wrong after 2 tries → don't loop. Change approach or ask.

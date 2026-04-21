@@ -1,0 +1,18 @@
+# Explore
+
+- `explore` — internal codebase navigation. Each natural-language query is translated into glob + grep patterns and executed in parallel; one call can cover several angles.
+
+## Explore-first (default move)
+
+Start with `explore` for any local-filesystem question where one of these is true:
+- the file location is uncertain,
+- the answer needs structure + surrounding context ("how does X work AND where is it configured?"),
+- the question spans multiple files or multiple angles.
+
+`read` directly ONLY when both the exact absolute path AND the line range are already known. A single `grep` for a precise literal symbol is also fine. But if you catch yourself in a `grep` → `read` → `grep` → `read` loop, **stop immediately and switch to `explore`** — one fan-out call replaces three rounds and wastes no iters on location-finding.
+
+This rule applies equally to Lead and to every delegated role. Grep+read loops on a known topic are the single biggest source of wasted iters in this workflow; `explore` is the cure.
+
+## Root control
+
+The `cwd` argument is the authoritative search root. Absolute path or `~` expansion supported. When omitted, the launch workspace is used — pass `cwd: "~/.claude/..."` explicitly to target the plugin install tree or other directories outside the workspace. No silent fan-out between roots.

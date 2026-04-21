@@ -1,0 +1,11 @@
+{
+  "__comment": "Copy to bot.json (in the plugin data directory) and fill in. Required only when config.channels.enabled = true. Never commit a filled copy.",
+  "token": "__REQUIRED__ — Discord bot token from the Developer Portal.",
+  "clientId": "__REQUIRED__ — Discord application client ID.",
+  "guildId": "__REQUIRED__ — Discord server (guild) ID.",
+  "channels": {
+    "__comment": "Map logical channel names to Discord channel IDs. Both keys are required if the corresponding feature is used.",
+    "primary": "",
+    "voice": ""
+  }
+}

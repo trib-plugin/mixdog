@@ -1,0 +1,127 @@
+#!/usr/bin/env node
+// bridge — CLI prompt store + lightweight bridge for mixdog
+// Usage:
+//   bridge store <key> <file>   Store file content with key
+//   bridge store <key>          Read from stdin
+//   bridge list                 List stored keys
+//   bridge get <key>            Print stored content
+//   bridge delete <key>         Remove a key
+//   bridge <role> <prompt...>   Send prompt via owner HTTP (no server boot)
+//   bridge <role> -             Read prompt from stdin
+
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { request } from 'http';
+
+const STORE_PATH = join(
+  process.env.CLAUDE_PLUGIN_DATA || join(process.env.HOME || process.env.USERPROFILE, '.claude', 'plugins', 'data', 'mixdog-mixdog'),
+  'prompt-store.json'
+);
+
+function load() {
+  if (!existsSync(STORE_PATH)) return {};
+  try { return JSON.parse(readFileSync(STORE_PATH, 'utf-8')); } catch { return {}; }
+}
+
+function save(store) {
+  mkdirSync(join(STORE_PATH, '..'), { recursive: true });
+  writeFileSync(STORE_PATH, JSON.stringify(store, null, 2) + '\n', 'utf-8');
+}
+
+function getOwnerPort() {
+  const activeFile = join(tmpdir(), 'mixdog', 'active-instance.json');
+  if (!existsSync(activeFile)) return null;
+  try {
+    const state = JSON.parse(readFileSync(activeFile, 'utf-8'));
+    return state.httpPort || null;
+  } catch { return null; }
+}
+
+function httpPost(port, path, body) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const req = request({ hostname: '127.0.0.1', port, path, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString())); }
+        catch { resolve({ raw: Buffer.concat(chunks).toString() }); }
+      });
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+const [,, cmd, ...rest] = process.argv;
+
+switch (cmd) {
+  case 'store': {
+    const [key, file] = rest;
+    if (!key) { console.error('Usage: bridge store <key> [file]'); process.exit(1); }
+    let content;
+    if (file) {
+      content = readFileSync(file, 'utf-8');
+    } else {
+      content = readFileSync('/dev/stdin', 'utf-8');
+    }
+    const store = load();
+    store[key] = content;
+    save(store);
+    console.log(`Stored '${key}' (${content.length} chars)`);
+    break;
+  }
+  case 'list': {
+    const store = load();
+    const keys = Object.keys(store);
+    if (keys.length === 0) { console.log('(empty)'); break; }
+    for (const k of keys) console.log(`${k} (${store[k].length} chars)`);
+    break;
+  }
+  case 'get': {
+    const [key2] = rest;
+    if (!key2) { console.error('Usage: bridge get <key>'); process.exit(1); }
+    const store = load();
+    if (!(key2 in store)) { console.error(`Key '${key2}' not found`); process.exit(1); }
+    console.log(store[key2]);
+    break;
+  }
+  case 'delete': {
+    const [key3] = rest;
+    if (!key3) { console.error('Usage: bridge delete <key>'); process.exit(1); }
+    const store = load();
+    if (!(key3 in store)) { console.error(`Key '${key3}' not found`); process.exit(1); }
+    delete store[key3];
+    save(store);
+    console.log(`Deleted '${key3}'`);
+    break;
+  }
+  default: {
+    const role = cmd;
+    if (!role || role.startsWith('-')) { console.error('Usage: bridge <role> <prompt...> | bridge <role> - (stdin)'); process.exit(1); }
+    const port = getOwnerPort();
+    if (!port) { console.error('No running mixdog instance found'); process.exit(1); }
+    const body = { role };
+    if (rest[0] === '-') {
+      const chunks = [];
+      for await (const chunk of process.stdin) chunks.push(chunk);
+      body.prompt = Buffer.concat(chunks).toString('utf-8').trim();
+    } else if (rest.length) {
+      body.prompt = rest.join(' ');
+    } else {
+      console.error('Usage: bridge <role> <prompt...> | bridge <role> - (stdin)');
+      process.exit(1);
+    }
+    try {
+      const result = await httpPost(port, '/bridge', body);
+      const text = result?.content?.[0]?.text || JSON.stringify(result);
+      console.log(text);
+    } catch (e) {
+      console.error(`bridge failed: ${e.message}`);
+      process.exit(1);
+    }
+    break;
+  }
+}

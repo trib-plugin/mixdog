@@ -1,0 +1,24 @@
+{
+  "__comment": "Copy to user-workflow.json (in the plugin data directory) and edit. Defines per-role prompts and provider bindings for delegated agents.",
+  "roles": {
+    "worker": {
+      "__comment": "Role 'worker' — code implementation with read-write filesystem access.",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5",
+      "systemPromptFile": "agents/worker.md",
+      "toolPreset": "full"
+    },
+    "reviewer": {
+      "__comment": "Role 'reviewer' — read-only code review.",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5",
+      "systemPromptFile": "agents/reviewer.md",
+      "toolPreset": "readonly"
+    }
+  },
+  "defaults": {
+    "__comment": "Fallback provider/model if a role does not override them. REQUIRED — set to a provider registered in agent-config.json.",
+    "provider": "",
+    "model": ""
+  }
+}

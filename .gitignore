@@ -1,0 +1,77 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Python service runtime
+services/.venv/
+services/__pycache__/
+
+# Runtime state (user-specific, never commit)
+bot.json
+user-workflow.json
+agent-config.json
+config.json
+memory-config.json
+cycle-state.json
+memory-cycle.json
+holidays-cache.json
+litellm-catalog.json
+aiwrapped-query-cache.json
+anthropic-oauth-models.json
+code-graph-cache.json
+cache-registry.json
+cache.local.json
+
+# SQLite databases
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite.bak
+*.db
+
+# Logs
+*.log
+boot.log
+crash.log
+event.log
+mcp-debug.log
+
+# Locks
+*.lock
+mcp.lock
+mixdog-scheduler.lock
+
+# Runtime dirs
+cli-home/
+sessions/
+history/
+events/
+locks/
+discord/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Local tests (ship-excluded, kept for local dev)
+scripts/test-*.mjs
+scripts/bench-*.mjs
+scripts/smoke-*.mjs
+test/
+tests/
+__tests__/
+
+# Benchmark output
+dev/
+.bench-*.json
+.bp1-*.json
+
+# Build scratch
+_build/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

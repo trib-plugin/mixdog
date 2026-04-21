@@ -1,0 +1,17 @@
+# Bundled ast-grep configuration passed via `--config` from the sg_search /
+# sg_rewrite tool wrappers. Ensures that `.mjs` and `.cjs` files are parsed
+# as JavaScript regardless of the calling cwd — ast-grep's default extension
+# table only recognises `.js` / `.jsx` / `.ts` / `.tsx`, so unadorned tree
+# walks over a plugin source tree miss every ESM module the project ships.
+#
+# `ruleDirs` is required by ast-grep even when we don't ship rule files; the
+# empty list is the minimal valid value and keeps the parser happy.
+#
+# `languageGlobs` takes precedence over the built-in extension mapping, so
+# adding entries here reassigns parsers without shadowing the defaults for
+# extensions we don't list.
+ruleDirs: []
+languageGlobs:
+  javascript:
+    - '*.mjs'
+    - '*.cjs'

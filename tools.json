@@ -1,0 +1,1676 @@
+[
+  {
+    "name": "reply",
+    "title": "Discord Reply",
+    "annotations": {
+      "title": "Discord Reply",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "description": "Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "description": "Channel ID where the message will be sent"
+        },
+        "text": {
+          "type": "string",
+          "description": "Message text content (markdown supported)"
+        },
+        "reply_to": {
+          "type": "string",
+          "description": "Message ID to thread under. Use message_id from the inbound <channel> block, or an id from fetch."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Absolute file paths to attach (images, logs, etc). Max 10 files, 25MB each."
+        },
+        "embeds": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Discord embed objects. Fields: title, description, color (int), fields [{name, value, inline}], footer {text}, timestamp."
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Discord message components. Use Action Rows containing Buttons, Select Menus, etc. See Discord Components V2 docs."
+        }
+      },
+      "required": [
+        "chat_id",
+        "text"
+      ]
+    },
+    "module": "channels"
+  },
+  {
+    "name": "react",
+    "title": "Reaction",
+    "annotations": {
+      "title": "Reaction",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "description": "Add an emoji reaction to a message. Unicode emoji work directly; custom emoji need the <:name:id> form.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "description": "Channel ID containing the message"
+        },
+        "message_id": {
+          "type": "string",
+          "description": "ID of the message to react to"
+        },
+        "emoji": {
+          "type": "string",
+          "description": "Unicode emoji (e.g. \"👍\") or custom emoji in <:name:id> format"
+        }
+      },
+      "required": [
+        "chat_id",
+        "message_id",
+        "emoji"
+      ]
+    },
+    "module": "channels"
+  },
+  {
+    "name": "edit_message",
+    "title": "Edit Message",
+    "annotations": {
+      "title": "Edit Message",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "description": "Edit a message the bot previously sent. Supports text, embeds, and components.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "description": "Channel ID containing the message"
+        },
+        "message_id": {
+          "type": "string",
+          "description": "ID of the bot message to edit"
+        },
+        "text": {
+          "type": "string",
+          "description": "New message text content"
+        },
+        "embeds": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Discord embed objects."
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Discord message components."
+        }
+      },
+      "required": [
+        "chat_id",
+        "message_id",
+        "text"
+      ]
+    },
+    "module": "channels"
+  },
+  {
+    "name": "download_attachment",
+    "title": "Download Attachment",
+    "annotations": {
+      "title": "Download Attachment",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "description": "Download attachments from a message to the local inbox. Use after fetch shows a message has attachments (marked with +Natt). Returns file paths ready to Read.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "description": "Channel ID containing the message"
+        },
+        "message_id": {
+          "type": "string",
+          "description": "ID of the message with attachments"
+        }
+      },
+      "required": [
+        "chat_id",
+        "message_id"
+      ]
+    },
+    "module": "channels"
+  },
+  {
+    "name": "fetch",
+    "title": "Fetch",
+    "annotations": {
+      "title": "Fetch",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "description": "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "channel": {
+          "type": "string",
+          "description": "Channel name label (e.g. \"main\", \"general\") as configured in channelsConfig"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max messages (default 20, capped at 100)."
+        }
+      },
+      "required": [
+        "channel"
+      ]
+    },
+    "module": "channels"
+  },
+  {
+    "name": "schedule_status",
+    "title": "Schedule Status",
+    "annotations": {
+      "title": "Schedule Status",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Show all configured schedules, their next fire time, and whether they are currently running.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "module": "channels"
+  },
+  {
+    "name": "trigger_schedule",
+    "title": "Trigger Schedule",
+    "annotations": {
+      "title": "Trigger Schedule",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Manually trigger a named schedule immediately, ignoring time/day constraints.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Schedule name to trigger"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "module": "channels"
+  },
+  {
+    "name": "schedule_control",
+    "title": "Schedule Control",
+    "annotations": {
+      "title": "Schedule Control",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Defer or skip a schedule. Use \"defer\" to suppress for N minutes (default 30), or \"skip_today\" to suppress for the rest of the day.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Schedule name (e.g. \"mail-briefing\" or \"proactive:chat\")"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "defer",
+            "skip_today"
+          ],
+          "description": "Action to take"
+        },
+        "minutes": {
+          "type": "number",
+          "description": "Defer duration in minutes (default 30, only for defer action)"
+        }
+      },
+      "required": [
+        "name",
+        "action"
+      ]
+    },
+    "module": "channels"
+  },
+  {
+    "name": "activate_channel_bridge",
+    "title": "Activate Channel Bridge",
+    "annotations": {
+      "title": "Activate Channel Bridge",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Activate or deactivate the channel bridge. When active, inbound messages trigger typing indicators, emoji reactions, and auto-forwarding of transcript output to Discord. When inactive, only direct MCP tool calls (reply, fetch) work.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "active": {
+          "type": "boolean",
+          "description": "true to activate, false to deactivate"
+        }
+      },
+      "required": [
+        "active"
+      ]
+    },
+    "module": "channels"
+  },
+  {
+    "name": "reload_config",
+    "title": "Reload Config",
+    "annotations": {
+      "title": "Reload Config",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Reload config from disk and re-register all schedules, webhooks, and event rules without restarting.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "module": "channels"
+  },
+  {
+    "name": "memory",
+    "title": "Memory Cycle",
+    "annotations": {
+      "title": "Memory Cycle",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild, prune, cycle1, backfill, status, remember (store fact), forget (archive a root), delete (wipe all entries; requires confirm).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "sleep",
+            "cycle2",
+            "flush",
+            "rebuild",
+            "rebuild_classifications",
+            "prune",
+            "cycle1",
+            "backfill",
+            "status",
+            "remember",
+            "forget",
+            "delete"
+          ],
+          "description": "Operation to run"
+        },
+        "topic": {
+          "type": "string",
+          "description": "Topic for remember"
+        },
+        "element": {
+          "type": "string",
+          "description": "Content for remember; also accepted as a substring match target for forget"
+        },
+        "importance": {
+          "type": "string",
+          "description": "Importance for remember (default: fact)"
+        },
+        "maxDays": {
+          "type": "number",
+          "description": "Age threshold in days for the `prune` action. Unclassified entries older than this are deleted. Default 30, minimum 1. Ignored by other actions."
+        },
+        "window": {
+          "type": "string",
+          "description": "Time window: 1d, 3d, 7d, 30d, all"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max episodes to backfill (default 100)"
+        },
+        "id": {
+          "type": "number",
+          "description": "Entry id for forget action."
+        },
+        "confirm": {
+          "type": "string",
+          "description": "Required for delete action. Must be exactly \"DELETE ALL MEMORY\"."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    },
+    "module": "memory"
+  },
+  {
+    "name": "recall",
+    "title": "Recall",
+    "aiWrapped": true,
+    "annotations": {
+      "title": "Recall",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Past context from the memory store. `query`: string or array (parallel fan-out). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. External web → `search`, codebase → `explore`.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Natural language query or array (parallel fan-out)."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Optional workspace hint. Absolute path; `~` and forward slashes supported."
+        },
+        "background": {
+          "type": "boolean",
+          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "module": "memory"
+  },
+  {
+    "name": "explore",
+    "title": "Explore",
+    "aiWrapped": true,
+    "annotations": {
+      "title": "Explore",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "description": "Internal codebase search. `query`: string or array (parallel fan-out). `cwd` is authoritative search root (no silent fan-out). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Natural language query or array (parallel fan-out)."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Authoritative search root. Absolute path; `~` and forward slashes supported. Omit → launch workspace. Target plugin tree via `cwd: \"~/.claude/...\"`. No silent fan-out."
+        },
+        "background": {
+          "type": "boolean",
+          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "module": "memory"
+  },
+  {
+    "name": "search",
+    "title": "Search",
+    "aiWrapped": true,
+    "description": "External web search, URL scrape, GitHub code/issues/repos. `query`: string or array (parallel fan-out); URL → scrape, `owner/repo` → GitHub. Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, codebase → `explore`.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Natural language query or array (parallel fan-out)."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Optional workspace hint. Rarely needed."
+        },
+        "background": {
+          "type": "boolean",
+          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Search",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "module": "search"
+  },
+  {
+    "name": "create_session",
+    "title": "Create Session",
+    "annotations": {
+      "title": "Create Session",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "description": "Create external AI session with tool access. Auto-injects context. Use preset: full/readonly/mcp. Use agent: Worker/Reviewer.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "openai, anthropic, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local"
+        },
+        "model": {
+          "type": "string",
+          "description": "Provider-specific model id (e.g. \"gpt-5\", \"claude-opus-4\", \"gemini-2.5-pro\"). Must be valid for the chosen provider."
+        },
+        "systemPrompt": {
+          "type": "string",
+          "description": "Optional system prompt prepended to the session. When omitted, the plugin injects the default Pool B/C prefix based on role/preset."
+        },
+        "agent": {
+          "type": "string",
+          "description": "Agent template: Worker, Reviewer"
+        },
+        "preset": {
+          "type": "string",
+          "enum": [
+            "full",
+            "readonly",
+            "mcp"
+          ],
+          "description": "Tool permission preset: `full` grants read+write+shell, `readonly` restricts to read-only tools, `mcp` exposes only MCP-bridged tools."
+        },
+        "files": {
+          "type": "array",
+          "description": "Optional virtual files seeded into the session's working context (path+content pairs). The agent can read these immediately without fs access.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ]
+          }
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for tool execution"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ]
+    },
+    "module": "agent"
+  },
+  {
+    "name": "list_sessions",
+    "title": "List Sessions",
+    "annotations": {
+      "title": "List Sessions",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "List active orchestrator sessions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "module": "agent"
+  },
+  {
+    "name": "close_session",
+    "title": "Close Session",
+    "annotations": {
+      "title": "Close Session",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Close an orchestrator session.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "description": "Id of the session to close (as returned by `create_session` or `list_sessions`). Plants a tombstone and aborts any in-flight work; re-closing the same id is a no-op."
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
+    "module": "agent"
+  },
+  {
+    "name": "list_models",
+    "title": "List Models",
+    "annotations": {
+      "title": "List Models",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "List available models from all providers.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "module": "agent"
+  },
+  {
+    "name": "bridge",
+    "title": "Bridge to External Model",
+    "annotations": {
+      "title": "Bridge to External Model",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (e.g. worker→OPUS XHIGH, reviewer→GPT5.4). Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "The task instruction for the agent."
+        },
+        "role": {
+          "type": "string",
+          "description": "Agent role as defined in user-workflow.json. Default roles: worker, researcher, reviewer, debugger, tester. Users may customize — check user-workflow.json for the actual set."
+        },
+        "preset": {
+          "type": "string",
+          "description": "Advanced: explicit preset name (bypass role mapping)."
+        },
+        "context": {
+          "type": "string",
+          "description": "Extra context appended to the prompt."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Prompt store key (populated by prompt_store)."
+        },
+        "file": {
+          "type": "string",
+          "description": "Read prompt from a file path."
+        }
+      },
+      "required": [
+        "prompt",
+        "role"
+      ]
+    },
+    "module": "agent"
+  },
+  {
+    "name": "read",
+    "title": "Read",
+    "annotations": {
+      "title": "Read",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Big files auto-return a head+tail summary unless `full:true` or offset/limit given — for in-file content search use `grep`, not a full read.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "File path, or array of paths for parallel read."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "full",
+            "head",
+            "tail",
+            "count"
+          ],
+          "description": "full (default) | head | tail | count."
+        },
+        "n": {
+          "type": "number",
+          "description": "Lines for head / tail mode. Default 20."
+        },
+        "offset": {
+          "type": "number",
+          "description": "Start line for full mode (0-based)."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max lines for full mode (default 2000)."
+        },
+        "full": {
+          "type": "boolean",
+          "description": "Opt out of the big-file head/tail cap. Default false."
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "edit",
+    "title": "Edit",
+    "annotations": {
+      "title": "Edit",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Replace text in file(s). PREFER MULTI-EDIT FORM — pass `edits` array to batch N edits in one call; same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path (single-edit form)."
+        },
+        "old_string": {
+          "type": "string",
+          "description": "Text to find (single-edit form, unique unless replace_all)."
+        },
+        "new_string": {
+          "type": "string",
+          "description": "Replacement (single-edit form)."
+        },
+        "replace_all": {
+          "type": "boolean",
+          "description": "Replace every occurrence instead of requiring unique match."
+        },
+        "edits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Per-edit path. Omit to reuse the top-level path."
+              },
+              "old_string": {
+                "type": "string"
+              },
+              "new_string": {
+                "type": "string"
+              },
+              "replace_all": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "old_string",
+              "new_string"
+            ]
+          },
+          "minItems": 1,
+          "description": "Multi-edit form: array of edits. Each item may specify its own path; if omitted, falls back to the top-level `path`."
+        }
+      },
+      "required": []
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "edit_lines",
+    "title": "Edit Lines (line-number based)",
+    "annotations": {
+      "title": "Edit Lines",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Replace lines [start_line, end_line] inclusive (1-based) with new_content. Use this when unique-string match in `edit` / `multi_edit` is awkward — large files, repeated substrings, or pure line-replace. Pair with `read` (note line numbers) -> `edit_lines`. mtime drift is enforced like `edit`: must `read` first; concurrent external writes return errorCode 7.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path. Supports `~` expansion."
+        },
+        "start_line": {
+          "type": "number",
+          "description": "First line to replace (1-based, inclusive)."
+        },
+        "end_line": {
+          "type": "number",
+          "description": "Last line to replace (1-based, inclusive). Must be >= start_line."
+        },
+        "new_content": {
+          "type": "string",
+          "description": "Replacement content. Newlines inside are preserved. Set empty string to delete the range."
+        }
+      },
+      "required": [
+        "path",
+        "start_line",
+        "end_line",
+        "new_content"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "write",
+    "title": "Write",
+    "annotations": {
+      "title": "Write",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Create or overwrite a file.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path."
+        },
+        "content": {
+          "type": "string",
+          "description": "UTF-8 content."
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "bash",
+    "title": "Bash",
+    "annotations": {
+      "title": "Bash",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "description": "Execute a shell command. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. If you need shell state across turns (cwd, env, sourced venv), use `bash_session` instead of replaying setup in repeated `bash` calls. Set `run_in_background:true` for long builds/tests/servers, then inspect with `job_status` / `job_wait` / `job_read` / `jobs_list`. Destructive patterns (rm -rf /, force-push, format) are blocked.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command."
+        },
+        "timeout": {
+          "type": "number",
+          "description": "ms, default 30000, max 600000."
+        },
+        "merge_stderr": {
+          "type": "boolean",
+          "description": "Merge stderr into stdout (legacy 2>&1 behaviour). Default false: stderr is surfaced as a separate `[stderr]` block."
+        },
+        "run_in_background": {
+          "type": "boolean",
+          "description": "Run command in the background and return a job id immediately. Use for long builds/tests/servers."
+        }
+      },
+      "required": [
+        "command"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "jobs_list",
+    "title": "List Background Jobs",
+    "annotations": {
+      "title": "List Background Jobs",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "List recent background shell jobs with status, pid, and start time.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "job_status",
+    "title": "Background Job Status",
+    "annotations": {
+      "title": "Background Job Status",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Get status for a background shell job. Returns pid, command, output paths, and completion state.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "description": "Background job id returned by bash with run_in_background:true."
+        }
+      },
+      "required": [
+        "job_id"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "job_wait",
+    "title": "Wait For Background Job",
+    "annotations": {
+      "title": "Wait For Background Job",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Wait for a background shell job to finish and return its latest status/summary in one call. Prefer this over repeated job_status polling.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "description": "Background job id returned by bash with run_in_background:true."
+        },
+        "timeout_ms": {
+          "type": "number",
+          "description": "Maximum time to wait before returning the current running state. Default 30000."
+        },
+        "poll_ms": {
+          "type": "number",
+          "description": "Polling interval while waiting. Default 250 ms."
+        }
+      },
+      "required": [
+        "job_id"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "job_read",
+    "title": "Read Background Job Output",
+    "annotations": {
+      "title": "Read Background Job Output",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Read stdout/stderr from a background shell job using the same line-oriented behavior as read/tail.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "description": "Background job id."
+        },
+        "stream": {
+          "type": "string",
+          "enum": [
+            "stdout",
+            "stderr"
+          ],
+          "description": "Which stream to read. Default stdout."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "full",
+            "head",
+            "tail",
+            "count"
+          ],
+          "description": "Read mode. Default tail."
+        },
+        "n": {
+          "type": "number",
+          "description": "Lines for head/tail mode. Default 40."
+        },
+        "offset": {
+          "type": "number",
+          "description": "Start line for full mode (0-based)."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max lines for full mode."
+        }
+      },
+      "required": [
+        "job_id"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "job_cancel",
+    "title": "Cancel Background Job",
+    "annotations": {
+      "title": "Cancel Background Job",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Terminate a running background shell job.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "description": "Background job id."
+        }
+      },
+      "required": [
+        "job_id"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "grep",
+    "title": "Grep",
+    "annotations": {
+      "title": "Grep",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Regex pattern(s). String or array (OR-joined)."
+        },
+        "path": {
+          "type": "string",
+          "description": "Search root. Default: cwd."
+        },
+        "glob": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Glob filter(s). String or array."
+        },
+        "output_mode": {
+          "type": "string",
+          "enum": [
+            "files_with_matches",
+            "content",
+            "count"
+          ]
+        },
+        "head_limit": {
+          "type": "number",
+          "description": "Default 250; 0 = unlimited."
+        },
+        "offset": {
+          "type": "number",
+          "description": "Skip N entries before head_limit."
+        },
+        "-i": {
+          "type": "boolean",
+          "description": "Case-insensitive match."
+        },
+        "-n": {
+          "type": "boolean",
+          "description": "Show line numbers (content mode, default true)."
+        },
+        "-A": {
+          "type": "number",
+          "description": "Lines after each match (content mode)."
+        },
+        "-B": {
+          "type": "number",
+          "description": "Lines before each match (content mode)."
+        },
+        "-C": {
+          "type": "number",
+          "description": "Lines before+after (content mode)."
+        },
+        "context": {
+          "type": "number",
+          "description": "Alias for -C."
+        },
+        "multiline": {
+          "type": "boolean",
+          "description": "Allow patterns to span lines (rg -U --multiline-dotall)."
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "glob",
+    "title": "Glob",
+    "annotations": {
+      "title": "Glob",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "File path search via `rg --files`. PREFER ARRAY `pattern` — OR-joined multi-pattern search in ONE call instead of serial globs. Use `grep` for in-file content search.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Glob pattern(s)."
+        },
+        "path": {
+          "type": "string",
+          "description": "Base dir. Default: cwd. Capped at 100."
+        },
+        "head_limit": {
+          "type": "number",
+          "description": "Max file paths to return. Default 100; 0 = unlimited."
+        },
+        "offset": {
+          "type": "number",
+          "description": "Skip N file paths before applying head_limit."
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "list",
+    "title": "List Directory",
+    "annotations": {
+      "title": "List Directory",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use `glob` for pure path patterns and `grep` for content.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Root directory. Defaults to cwd. Supports `~` expansion."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "list",
+            "tree",
+            "find"
+          ],
+          "description": "list (default) | tree | find."
+        },
+        "depth": {
+          "type": "number",
+          "description": "Recursion depth. list: 1 default, max 10. tree: 3 default, max 6."
+        },
+        "hidden": {
+          "type": "boolean",
+          "description": "Include dotfiles (`.foo`). Default false."
+        },
+        "sort": {
+          "type": "string",
+          "enum": [
+            "name",
+            "mtime",
+            "size"
+          ],
+          "description": "list mode sort key. Default name."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "any",
+            "file",
+            "dir"
+          ],
+          "description": "Filter by entry type. Default any."
+        },
+        "head_limit": {
+          "type": "number",
+          "description": "Max rows/lines. 0 = unlimited."
+        },
+        "offset": {
+          "type": "number",
+          "description": "Skip N rows/entries before applying head_limit."
+        },
+        "name": {
+          "type": "string",
+          "description": "find mode: filename glob (e.g. `*.mjs`)."
+        },
+        "min_size": {
+          "type": "number",
+          "description": "find mode: minimum size in bytes (file only)."
+        },
+        "max_size": {
+          "type": "number",
+          "description": "find mode: maximum size in bytes (file only)."
+        },
+        "modified_after": {
+          "type": "string",
+          "description": "find mode: ISO 8601 date or relative `Nh`/`Nd` (e.g. `24h`, `7d`)."
+        },
+        "modified_before": {
+          "type": "string",
+          "description": "find mode: ISO 8601 date or relative `Nh`/`Nd`."
+        }
+      },
+      "required": []
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "diff",
+    "title": "Unified Diff",
+    "annotations": {
+      "title": "Unified Diff",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Unified diff between two files (or two raw strings). Useful for explaining a change before applying it via `edit` / `multi_edit`. Output is standard `--- from\n+++ to\n@@ ... @@` format. Pass `from_text:true` and/or `to_text:true` to treat the value as inline text instead of a path.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Path of the \"before\" file, or raw text when `from_text:true`."
+        },
+        "to": {
+          "type": "string",
+          "description": "Path of the \"after\" file, or raw text when `to_text:true`."
+        },
+        "from_text": {
+          "type": "boolean",
+          "description": "Treat `from` as inline text. Default false."
+        },
+        "to_text": {
+          "type": "boolean",
+          "description": "Treat `to` as inline text. Default false."
+        },
+        "context": {
+          "type": "number",
+          "description": "Context lines around hunks. Default 3, clamp [0, 10]."
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "code_graph",
+    "title": "Code Graph",
+    "annotations": {
+      "title": "Code Graph",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/references/callers using the same graph-oriented workflow across languages.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "overview",
+            "imports",
+            "dependents",
+            "related",
+            "impact",
+            "symbols",
+            "references",
+            "callers"
+          ],
+          "description": "Graph query mode."
+        },
+        "file": {
+          "type": "string",
+          "description": "Path to the target file. Required for non-overview modes."
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Symbol name. Required for references/callers."
+        }
+      },
+      "required": [
+        "mode"
+      ]
+    },
+    "module": "code_graph"
+  },
+  {
+    "name": "rename_file_refs",
+    "title": "Rename File Refs",
+    "annotations": {
+      "title": "Rename File Refs",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Rename or move a file and rewrite resolvable file references in the moved file and its local importers using the common code graph. Preview by default; set `apply:true` to write through apply_patch atomically.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Existing file to rename or move."
+        },
+        "new_path": {
+          "type": "string",
+          "description": "New path for the file."
+        },
+        "apply": {
+          "type": "boolean",
+          "description": "Apply the generated patch to disk. Default false = preview only."
+        }
+      },
+      "required": [
+        "file",
+        "new_path"
+      ]
+    },
+    "module": "code_graph"
+  },
+  {
+    "name": "rename_symbol_refs",
+    "title": "Rename Symbol Refs",
+    "annotations": {
+      "title": "Rename Symbol Refs",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Rename a symbol reference across same-language files using the common code graph and exact token-boundary rewrites. Preview by default; set `apply:true` to write through apply_patch.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Current symbol name to rename."
+        },
+        "file": {
+          "type": "string",
+          "description": "File containing or importing the symbol."
+        },
+        "new_name": {
+          "type": "string",
+          "description": "New symbol name."
+        },
+        "apply": {
+          "type": "boolean",
+          "description": "Apply the rename to disk. Default false = preview only."
+        }
+      },
+      "required": [
+        "symbol",
+        "file",
+        "new_name"
+      ]
+    },
+    "module": "code_graph"
+  },
+  {
+    "name": "sg_search",
+    "title": "AST-Grep Search",
+    "annotations": {
+      "title": "AST-Grep Search",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Structural (AST-level) code search via ast-grep. Matches syntax shapes, not text — e.g. `function $NAME($$$)` finds every function declaration regardless of whitespace / comments / arg count. Prefer over `grep` for code constructs (class declarations, try-catch blocks, `foo(...).then(...)` chains) rather than literal strings. Args: `pattern`, `path`, optional `lang` (auto-detect from extension; .mjs/.cjs mapped to JavaScript via bundled sgconfig.yml).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "ast-grep pattern. Use `$NAME` for single captures, `$$$` for sequences, `$$_` for single anonymous. Example: `function $NAME($$$) { $$$ }`."
+        },
+        "path": {
+          "type": "string",
+          "description": "File or directory to search. Absolute or cwd-relative."
+        },
+        "lang": {
+          "type": "string",
+          "description": "Language override (typescript|javascript|python|rust|go|c|cpp|java|ruby|php|html|css|json|yaml|...). Omit to let ast-grep auto-detect from the file extension."
+        },
+        "globs": {
+          "description": "gitignore-style include / exclude glob(s). Prefix with `!` to exclude. Later globs take precedence over earlier ones.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "context": {
+          "type": "number",
+          "description": "Lines of context around each match (equivalent to ripgrep -C). Default 0."
+        },
+        "head_limit": {
+          "type": "number",
+          "description": "Max output lines. Default 100, 0 = unlimited."
+        }
+      },
+      "required": [
+        "pattern",
+        "path"
+      ]
+    },
+    "module": "astgrep"
+  },
+  {
+    "name": "sg_rewrite",
+    "title": "AST-Grep Rewrite",
+    "annotations": {
+      "title": "AST-Grep Rewrite",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Structural rewrite via ast-grep. Match a syntax pattern + substitute rewrite template — safer than text search-and-replace because matches respect the language AST (no string literals / comments / unrelated-scope rebinding). **Dry-run by default**; pass `apply:true` to write. Example: `pattern: \"$OBJ.foo($$$)\"` + `rewrite: \"$OBJ?.foo($$$)\"` converts every `x.foo(...)` call site to optional chaining.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "ast-grep pattern to match (same syntax as sg_search)."
+        },
+        "rewrite": {
+          "type": "string",
+          "description": "Rewrite template. Metavariables from the pattern (`$NAME`, `$$$`) are substituted. Empty string deletes the match."
+        },
+        "path": {
+          "type": "string",
+          "description": "File or directory to rewrite. Absolute or cwd-relative."
+        },
+        "lang": {
+          "type": "string",
+          "description": "Language override. See sg_search."
+        },
+        "globs": {
+          "description": "Include / exclude glob(s). See sg_search.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "apply": {
+          "type": "boolean",
+          "description": "Apply the rewrite and write to disk. Default false (dry-run preview only)."
+        }
+      },
+      "required": [
+        "pattern",
+        "rewrite",
+        "path"
+      ]
+    },
+    "module": "astgrep"
+  },
+  {
+    "name": "apply_patch",
+    "title": "Apply Unified Diff",
+    "annotations": {
+      "title": "Apply Unified Diff",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Apply a unified-diff patch in ONE turn — inverse of `diff`. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Skips `read` → `edit` round-trip for non-trivial edits; patch context lines self-verify. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "patch": {
+          "type": "string",
+          "description": "Unified diff content. Single-file or multi-file. Supports git-style `a/` / `b/` header prefixes and `/dev/null` for create/delete entries."
+        },
+        "base_path": {
+          "type": "string",
+          "description": "Directory to resolve relative paths from the diff headers against. Default: current working directory."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Preview which files would change without writing. Shows first failed hunk per failing file. Default false."
+        },
+        "reject_partial": {
+          "type": "boolean",
+          "description": "If any file's hunk fails, reject the whole patch and write nothing (atomic). Default true. Set false to apply every successful file even when others failed."
+        }
+      },
+      "required": [
+        "patch"
+      ]
+    },
+    "module": "patch"
+  },
+  {
+    "name": "bash_session",
+    "title": "Persistent Bash Session",
+    "annotations": {
+      "title": "Persistent Bash Session",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "description": "Execute a shell command in a long-lived bash session that preserves state (cwd, env, functions, aliases, sourced virtualenvs) across calls until closed or idle-reaped (5 min). Omit `session_id` on first call — response header `[session: <id>]` gives the id to reuse. Pass `close:true` to terminate. Max 10 concurrent sessions; oldest idle evicted when pool fills. Same safety as `bash` (`rm -rf /` / `git push --force` blocked). Use INSTEAD of `bash` for multi-command state-sharing (e.g. `cd project` then `source .venv/bin/activate` then `pytest`) — one call per command, reusing `session_id`.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to execute in the session."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Existing session to reuse. Omit to create a new one; the id is returned in the response header as `[session: <id>]`. Unknown ids are minted (stable resume)."
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Command timeout. Values ≤ 600 are treated as seconds; larger values as ms. Default 30 s, max 600 s. On timeout the session is killed (caller should mint a new one)."
+        },
+        "close": {
+          "type": "boolean",
+          "description": "Close the session after this command returns. Default false."
+        }
+      },
+      "required": [
+        "command"
+      ]
+    },
+    "module": "bash_session"
+  }
+]
