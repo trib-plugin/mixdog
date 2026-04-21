@@ -1,5 +1,17 @@
 {
   "name": "mixdog",
   "version": "0.1.0",
-  "description": "Claude Code all-in-one agent plugin — autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing."
+  "description": "Claude Code all-in-one agent plugin — autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing.",
+  "mcpServers": {
+    "mixdog": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server.mjs"],
+      "cwd": "${CLAUDE_PLUGIN_ROOT}",
+      "env": {
+        "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",
+        "CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"
+      },
+      "timeout": 120000
+    }
+  }
 }
