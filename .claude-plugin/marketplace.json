@@ -1,6 +1,6 @@
 {
-  "name": "mixdog",
-  "description": "mixdog — Claude Code all-in-one agent plugin",
+  "name": "trib-plugin",
+  "description": "trib-plugin — marketplace for mixdog",
   "owner": {
     "name": "mixdog contributors",
     "email": "dev@tribgames.com"
@@ -13,6 +13,19 @@
       "source": {
         "source": "url",
         "url": "https://github.com/trib-plugin/mixdog.git"
+      },
+      "strict": false,
+      "mcpServers": {
+        "mixdog": {
+          "command": "node",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/server.mjs"],
+          "cwd": "${CLAUDE_PLUGIN_ROOT}",
+          "env": {
+            "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",
+            "CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"
+          },
+          "timeout": 120000
+        }
       }
     }
   ]

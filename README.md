@@ -32,7 +32,7 @@ configuration surface readable as JSON you can diff.
 
 ```
 /plugin marketplace add trib-plugin/mixdog
-/plugin install mixdog@mixdog
+/plugin install mixdog@trib-plugin
 ```
 
 Claude Code will register the repository as a marketplace, clone it,
