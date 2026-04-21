@@ -23,13 +23,15 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, watch as fsWatc
 import { join, resolve as pathResolve } from 'path'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
+import { homedir } from 'os'
 
-// ── Environment (required) ───────────────────────────────────────────
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT
+// ── Environment ──────────────────────────────────────────────────────
+// Claude Code normally injects CLAUDE_PLUGIN_ROOT / CLAUDE_PLUGIN_DATA
+// for relative-path plugin sources. For URL-based sources it may skip
+// injection, so fall back to process.cwd() and the standard data path.
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || process.cwd()
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA
-if (!PLUGIN_ROOT || !PLUGIN_DATA) {
-  throw new Error('mixdog: CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_DATA must be set')
-}
+  || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-mixdog')
 mkdirSync(PLUGIN_DATA, { recursive: true })
 
 // ── Singleton lock ──────────────────────────────────────────────────
