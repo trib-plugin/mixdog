@@ -1594,7 +1594,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       promptInjection: {
-        mode: pi.mode === 'claude_md' ? 'claude_md' : 'hook',
+        mode: pi.mode === 'hook' ? 'hook' : 'claude_md',
         targetPath: typeof pi.targetPath === 'string' && pi.targetPath ? pi.targetPath : '~/.claude/CLAUDE.md',
       },
     }));
@@ -1613,7 +1613,7 @@ const server = http.createServer(async (req, res) => {
     if (data && typeof data.targetPath === 'string' && data.targetPath.trim()) {
       merged.targetPath = data.targetPath.trim();
     }
-    if (!merged.mode) merged.mode = 'hook';
+    if (!merged.mode) merged.mode = 'claude_md';
     if (!merged.targetPath) merged.targetPath = '~/.claude/CLAUDE.md';
     next.promptInjection = merged;
     writeConfig(next);

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import http from 'http';
@@ -17,6 +17,32 @@ function ping() {
     req.on('error', () => resolve(false));
     req.setTimeout(1500, () => { req.destroy(); resolve(false); });
   });
+}
+
+// Walk up the process tree from our immediate parent (the shell wrapping
+// `node launch.mjs`) to find the grandparent — the Claude Code CLI that
+// actually owns this session. process.ppid here is the shell, which exits
+// the moment launch.mjs returns; tracking it makes setup-server commit
+// suicide 5s after spawn. The grandparent is the long-lived process whose
+// death should actually reap the UI server.
+function findAncestorPid() {
+  const immediate = process.ppid;
+  if (!Number.isFinite(immediate) || immediate <= 0) return 0;
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync(
+        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${immediate}').ParentProcessId"`,
+        { encoding: 'utf8', timeout: 3000, windowsHide: true },
+      ).trim();
+      const pid = parseInt(out, 10);
+      if (Number.isFinite(pid) && pid > 0) return pid;
+    } else {
+      const out = execSync(`ps -o ppid= -p ${immediate}`, { encoding: 'utf8', timeout: 3000 }).trim();
+      const pid = parseInt(out, 10);
+      if (Number.isFinite(pid) && pid > 0) return pid;
+    }
+  } catch {}
+  return immediate;
 }
 
 function requestOpen() {
@@ -44,7 +70,7 @@ if (!alive) {
     env: {
       ...process.env,
       MIXDOG_SETUP_OPEN_ON_START: '1',
-      MIXDOG_SETUP_PARENT_PID: String(process.ppid || ''),
+      MIXDOG_SETUP_PARENT_PID: String(findAncestorPid() || ''),
     },
     windowsHide: true,
     shell: false,

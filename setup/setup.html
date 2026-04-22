@@ -746,19 +746,19 @@
   <!-- Category sidebar -->
   <div class="cat-bar">
     <div class="cat-label">General</div>
-    <div class="cat-item" data-panel="general-modules" onclick="switchCat(this)">Modules</div>
+    <div class="cat-item active" data-panel="general-modules" onclick="switchCat(this)">Modules</div>
     <div class="cat-item" data-panel="general-injection" onclick="switchCat(this)">Injection Mode</div>
     <div class="cat-item" data-panel="general-security" onclick="switchCat(this)">Security</div>
     <div class="cat-sep"></div>
     <div class="cat-label">Channels</div>
-    <div class="cat-item active" data-panel="connection" onclick="switchCat(this)">Connection</div>
+    <div class="cat-item" data-panel="connection" onclick="switchCat(this)">Connection</div>
     <div class="cat-item" data-panel="channels" onclick="switchCat(this)">Channels</div>
     <div class="cat-item" data-panel="access" onclick="switchCat(this)">Access</div>
     <div class="cat-item" data-panel="bot" onclick="switchCat(this)">Bot</div>
     <div class="cat-item" data-panel="autotalk" onclick="switchCat(this)">Proactive</div>
     <div class="cat-item" data-panel="schedules" onclick="switchCat(this)">Schedules</div>
     <div class="cat-item" data-panel="webhooks" onclick="switchCat(this)">Webhooks</div>
-    <div class="cat-item" data-panel="advanced" onclick="switchCat(this)">Advanced</div>
+    <div class="cat-item" data-panel="advanced" onclick="switchCat(this)">Voice</div>
     <div class="cat-sep"></div>
     <div class="cat-label">Agent</div>
     <div class="cat-item" data-panel="workflow-custom" onclick="switchCat(this)">Custom Workflow</div>
@@ -784,7 +784,7 @@
     <!-- ============ CHANNELS MODULE ============ -->
 
     <!-- CONNECTION -->
-    <div class="panel active" id="panel-connection">
+    <div class="panel" id="panel-connection">
       <div class="hdr"><h1>Connection</h1></div>
       <div class="sec">
         <div class="sec-title">Discord</div>
@@ -986,6 +986,10 @@
           <div class="empty" id="webhook-empty">No webhooks yet. Click <strong>+ New Webhook</strong> to create one.</div>
         </div>
       </div>
+      <div class="sec">
+        <div class="sec-title">Webhook</div>
+        <div class="sec-body" id="webhook-section"></div>
+      </div>
       <div class="save-area">
         <div class="warn-msg" id="warn-webhooks"></div>
         <button class="save" onclick="savePanel()">Save</button>
@@ -994,14 +998,10 @@
 
     <!-- ADVANCED -->
     <div class="panel" id="panel-advanced">
-      <div class="hdr"><h1>Advanced</h1></div>
+      <div class="hdr"><h1>Voice</h1></div>
       <div class="sec">
         <div class="sec-title">Voice</div>
         <div class="sec-body" id="voice-section"></div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">Webhook</div>
-        <div class="sec-body" id="webhook-section"></div>
       </div>
       <div class="save-area">
         <div class="warn-msg" id="warn-advanced"></div>
@@ -1402,7 +1402,7 @@
     <!-- ============ GENERAL MODULE ============ -->
 
     <!-- GENERAL MODULES (B6) -->
-    <div class="panel" id="panel-general-modules">
+    <div class="panel active" id="panel-general-modules">
       <div class="hdr"><h1>Modules</h1></div>
       <div class="sec">
         <div class="sec-desc">Enable or disable each mixdog module independently. Modules without static dependencies keep working alone; cross-module runtime features (core-memory injection, synthetic bridge tools) degrade cleanly when their upstream is off.</div>
@@ -1653,16 +1653,16 @@ document.addEventListener('click', (e) => {
 // GENERAL MODULE — Prompt Injection
 // ============================================================
 
-let genConfig = { mode: 'hook', targetPath: '~/.claude/CLAUDE.md' };
+let genConfig = { mode: 'claude_md', targetPath: '~/.claude/CLAUDE.md' };
 
 async function genLoadConfig() {
   try {
     const r = await fetch('/general/config').then(r => r.json());
     const pi = (r && r.promptInjection) || {};
-    genConfig.mode = (pi.mode === 'claude_md') ? 'claude_md' : 'hook';
+    genConfig.mode = (pi.mode === 'hook') ? 'hook' : 'claude_md';
     genConfig.targetPath = pi.targetPath || '~/.claude/CLAUDE.md';
   } catch {
-    genConfig.mode = 'hook';
+    genConfig.mode = 'claude_md';
     genConfig.targetPath = '~/.claude/CLAUDE.md';
   }
   genRenderRadios();
@@ -1843,7 +1843,7 @@ function wfRenderRoles() {
       const opt = document.createElement('option');
       opt.value = p.id;
       opt.textContent = p.name || p.id;
-      if (p.id === role.preset) opt.selected = true;
+      if (p.id === role.preset || p.name === role.preset) opt.selected = true;
       presetSelect.appendChild(opt);
     });
     presetSelect.onchange = (e) => { wfConfig.roles[idx].preset = e.target.value; isDirty = true; };
@@ -2237,7 +2237,7 @@ function addScheduleCard(data) {
   if (modelSel) {
     const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
     const initial = modelSel.dataset.initial || 'sonnet-mid';
-    modelSel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (initial === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+    modelSel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (initial === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + '</option>').join('');
   }
 }
 
@@ -2321,7 +2321,7 @@ function addEventCard(data) {
   if (evModelSel) {
     const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
     const initial = evModelSel.dataset.initial || 'sonnet-mid';
-    evModelSel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (initial === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+    evModelSel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (initial === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + '</option>').join('');
   }
 }
 
@@ -2350,7 +2350,7 @@ function populatePresetDropdowns() {
     presets.forEach(p => {
       const opt = document.createElement('option');
       opt.value = p.id || p.name;
-      opt.textContent = (p.name || p.id) + ' (' + p.model + ')';
+      opt.textContent = (p.name || p.id);
       sel.appendChild(opt);
     });
   });
@@ -2362,13 +2362,13 @@ function populatePresetDropdowns() {
   // Webhook event cards — fill model dropdowns
   document.querySelectorAll('#event-rules .card [data-f="ev-model"]').forEach(sel => {
     const current = sel.value || sel.dataset.initial || 'sonnet-mid';
-    sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+    sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + '</option>').join('');
   });
 
   // Schedule + Webhook cards — fill model dropdowns
   document.querySelectorAll('#sched-tasks .card [data-f="sc-model"], #event-rules .card [data-f="ev-model"]').forEach(sel => {
     const current = sel.value || sel.dataset.initial || 'sonnet-mid';
-    sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+    sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + '</option>').join('');
   });
 }
 
@@ -2613,8 +2613,8 @@ const AG_API_PROVIDERS = [
   {id:'xai',name:'xAI',env:'XAI_API_KEY',url:'https://console.x.ai'},
 ];
 const AG_OAUTH_PROVIDERS = [
-  {id:'openai-oauth',name:'OpenAI (Codex)',desc:'~/.codex/auth.json'},
-  {id:'anthropic-oauth',name:'Anthropic (Claude Max)',desc:'~/.claude/.credentials.json'},
+  {id:'openai-oauth',name:'Codex',desc:'~/.codex/auth.json'},
+  {id:'anthropic-oauth',name:'Claude Code',desc:'~/.claude/.credentials.json'},
   {id:'copilot',name:'GitHub Copilot',desc:'hosts.json / GITHUB_TOKEN'},
 ];
 const AG_LOCAL_PROVIDERS = [
