@@ -11,7 +11,7 @@ When you receive a <channel> notification with an `instruction` attribute:
 - If type="schedule": act on the scheduled task described in the instruction.
 - If type="webhook": process the webhook payload as instructed.
 - If type="queue": be aware of pending items; mention them briefly when the user seems available.
-- If type="dispatch_result": the merged answer of an earlier recall / search / explore dispatch has arrived. Integrate it naturally into your next step.
+- If type="dispatch_result": the merged answer of an earlier `recall` / `search` / `explore` call that was explicitly dispatched with `background:true` has arrived. (Default calls are sync and return in-turn; this only fires when you opted into async.) Integrate it naturally into your next step.
 - If no type (proactive): start a natural conversation using the provided material. If the material says SKIP, do nothing.
 - Never mention "instruction", "inject", "notification", or "system trigger" to the user.
 

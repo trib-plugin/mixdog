@@ -401,7 +401,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Past context from the memory store. `query`: string or array (parallel fan-out). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. External web → `search`, codebase → `explore`.",
+    "description": "Past context from the memory store. `query`: string or array (parallel fan-out). Answer returns in-turn as the MCP tool response. Pass `background:true` for heavy queries that may exceed the ~14s MCP timeout — a handle is returned and the answer then arrives via channel notification. External web → `search`, codebase → `explore`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -428,7 +428,7 @@
         },
         "background": {
           "type": "boolean",
-          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
+          "description": "Default: false — sync, merged answer returned directly as the tool response. Set true to dispatch async and receive the answer via channel notification; use this for heavy queries that may exceed the ~14s MCP timeout."
         }
       },
       "required": [
@@ -449,7 +449,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Internal codebase search. `query`: string or array (parallel fan-out). `cwd` is authoritative search root (no silent fan-out). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.",
+    "description": "Internal codebase search. `query`: string or array (parallel fan-out). `cwd` is authoritative search root (no silent fan-out). Answer returns in-turn as the MCP tool response. Pass `background:true` for heavy multi-angle queries that may exceed the ~14s MCP timeout — a handle is returned and the answer then arrives via channel notification. Past context → `recall`, external web → `search`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -476,7 +476,7 @@
         },
         "background": {
           "type": "boolean",
-          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
+          "description": "Default: false — sync, merged answer returned directly as the tool response. Set true to dispatch async and receive the answer via channel notification; use this for heavy queries that may exceed the ~14s MCP timeout."
         }
       },
       "required": [
@@ -490,7 +490,7 @@
     "name": "search",
     "title": "Search",
     "aiWrapped": true,
-    "description": "External web search, URL scrape, GitHub code/issues/repos. `query`: string or array (parallel fan-out); URL → scrape, `owner/repo` → GitHub. Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, codebase → `explore`.",
+    "description": "External web search, URL scrape, GitHub code/issues/repos. `query`: string or array (parallel fan-out); URL → scrape, `owner/repo` → GitHub. Answer returns in-turn as the MCP tool response. Pass `background:true` for heavy queries that may exceed the ~14s MCP timeout — a handle is returned and the answer then arrives via channel notification. Past context → `recall`, codebase → `explore`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -517,7 +517,7 @@
         },
         "background": {
           "type": "boolean",
-          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
+          "description": "Default: false — sync, merged answer returned directly as the tool response. Set true to dispatch async and receive the answer via channel notification; use this for heavy queries that may exceed the ~14s MCP timeout."
         }
       },
       "required": [

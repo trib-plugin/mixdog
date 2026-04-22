@@ -30,6 +30,31 @@ const ROLE_BY_TOOL = Object.freeze({
   explore: { role: 'explorer',      build: buildExplorerPrompt, label: 'explorer agent' },
 })
 
+// Web search provider credentials live in search-config.json. When none of
+// them are populated the downstream sub-agent spawns, burns tokens, and
+// returns a polite "provider not configured" apology that the user can
+// mistake for a real answer. Precheck here to fail the MCP call directly
+// with guidance instead. Runs only for `search` — `recall`/`explore` need
+// no external credentials.
+function searchProviderKeysMissing() {
+  try {
+    const path = join(getPluginData(), 'search-config.json')
+    if (!existsSync(path)) return true
+    const raw = JSON.parse(readFileSync(path, 'utf8'))
+    const creds = raw?.rawSearch?.credentials || {}
+    for (const entry of Object.values(creds)) {
+      if (!entry || typeof entry !== 'object') continue
+      const v = entry.apiKey ?? entry.token ?? ''
+      if (typeof v === 'string' && v.trim().length > 0) return false
+    }
+    return true
+  } catch {
+    // On read/parse failure treat as missing so the user is told to fix it
+    // rather than silently spawning an agent that will also fail.
+    return true
+  }
+}
+
 // Background dispatch registry. Entries live in-memory for the plugin server
 // process lifetime — the merged answer is auto-pushed via the channel,
 // and the registry is kept around for observability only. Pruned
@@ -218,6 +243,15 @@ export async function dispatchAiWrapped(name, args, ctx) {
   const spec = ROLE_BY_TOOL[name]
   if (!spec) throw new Error(`Unknown aiWrapped tool: ${name}`)
 
+  if (name === 'search' && searchProviderKeysMissing()) {
+    return fail(
+      'Search is not configured. Open the Config UI (run `/mixdog:config`) → Search tab '
+      + 'and register at least one provider API key (Serper / Brave / Perplexity / '
+      + 'Firecrawl / Tavily / xAI). The `search` tool stays disabled until then so '
+      + 'the agent does not silently fall back to hallucinated answers.',
+    )
+  }
+
   // Recursion break — the tool schema stays full across every session so
   // that all roles share one cache shard. The counterweight lives here:
   // when a hidden-role session (recall-agent / search-agent / explorer /
@@ -249,15 +283,14 @@ export async function dispatchAiWrapped(name, args, ctx) {
   const brief = args.brief !== false;
   const resolvedCwd = resolveCwd(args.cwd)
 
-  // Sync vs background. Lead (external MCP client, no callerSessionId)
-  // defaults to background=true to avoid Claude Code's ~14s MCP request
-  // timeout. Role sessions (callerSessionId set — worker / reviewer / ...)
-  // default to background=false so the merged answer lands in the SAME
-  // turn; otherwise a role can't use the result for its next step and
-  // falls back to ad-hoc shell search (the bash_session loop failure).
+  // Sync by default — the merged sub-agent answer lands in-turn as the MCP
+  // tool response, no channel round-trip, no turn fragmentation. Opt into
+  // background=true for heavy multi-angle queries that risk exceeding the
+  // ~14s MCP request timeout; in that case a handle is returned immediately
+  // and the merged answer is pushed via the channel bridge when ready.
   const background = typeof args.background === 'boolean'
     ? args.background
-    : !ctx?.callerSessionId
+    : false
 
   if (!background) {
     const settled = await Promise.allSettled(
