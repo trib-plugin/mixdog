@@ -23,15 +23,14 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, watch as fsWatc
 import { join, resolve as pathResolve } from 'path'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
-import { homedir } from 'os'
+import { resolvePluginData } from './src/shared/plugin-paths.mjs'
 
 // ── Environment ──────────────────────────────────────────────────────
 // Claude Code normally injects CLAUDE_PLUGIN_ROOT / CLAUDE_PLUGIN_DATA
 // for relative-path plugin sources. For URL-based sources it may skip
 // injection, so fall back to process.cwd() and the standard data path.
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || process.cwd()
-const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA
-  || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin')
+const PLUGIN_DATA = resolvePluginData()
 mkdirSync(PLUGIN_DATA, { recursive: true })
 
 // ── Singleton lock ──────────────────────────────────────────────────

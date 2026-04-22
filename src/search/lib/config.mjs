@@ -1,15 +1,15 @@
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
 import { fileURLToPath } from 'url'
+import { resolvePluginData } from '../../shared/plugin-paths.mjs'
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url))
 export const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(currentDir, '..')
 
-// Unified mode: search uses its own data dir, not the shared CLAUDE_PLUGIN_DATA
-const SEARCH_DATA_DIR = path.join(os.homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin')
-export const DATA_DIR = fs.existsSync(SEARCH_DATA_DIR) ? SEARCH_DATA_DIR
-  : (process.env.CLAUDE_PLUGIN_DATA || path.join(PLUGIN_ROOT, '.mixdog-search-data'))
+// Unified mode: search shares the plugin data dir with the rest of mixdog.
+const SHARED_DATA_DIR = resolvePluginData()
+export const DATA_DIR = fs.existsSync(SHARED_DATA_DIR) ? SHARED_DATA_DIR
+  : path.join(PLUGIN_ROOT, '.mixdog-search-data')
 export const CONFIG_PATH = path.join(DATA_DIR, 'search-config.json')
 export const USAGE_PATH = path.join(DATA_DIR, 'usage.local.json')
 export const CACHE_PATH = path.join(DATA_DIR, 'cache.local.json')

@@ -26,6 +26,7 @@ import { join } from 'path';
 import { loadConfig } from '../config.mjs';
 import { resolveRuntimeSpec } from '../config.mjs';
 import { getHiddenRole } from '../internal-roles.mjs';
+import { DEFAULT_PLUGIN, DEFAULT_MARKETPLACE } from '../../../shared/plugin-paths.mjs';
 import { prepareBridgeSession } from './session-builder.mjs';
 import {
     askSession,
@@ -48,7 +49,7 @@ function applyBriefCap(text) {
 
 function pluginRoot() {
     return process.env.CLAUDE_PLUGIN_ROOT
-        || join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', 'mixdog');
+        || join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'plugins', 'marketplaces', DEFAULT_MARKETPLACE, 'external_plugins', DEFAULT_PLUGIN);
 }
 
 // Unified-shard policy — every bridge session (Pool B + Pool C) shares the

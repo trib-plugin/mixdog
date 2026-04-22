@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { DatabaseSync } = require('node:sqlite');
+const { resolvePluginData } = require(path.join(__dirname, '..', 'lib', 'plugin-paths.cjs'));
 
 let _event = {};
 try {
@@ -15,7 +16,7 @@ if (_event.isSidechain) process.exit(0);
 if (_event.agentId) process.exit(0);
 if (_event.kind && _event.kind !== 'interactive') process.exit(0);
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
+const DATA_DIR = resolvePluginData();
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 if (!DATA_DIR || !PLUGIN_ROOT) process.exit(0);
 

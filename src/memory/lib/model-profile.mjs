@@ -26,10 +26,9 @@
 
 import { appendFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { resolvePluginData } from '../../shared/plugin-paths.mjs';
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
+const DATA_DIR = resolvePluginData();
 
 const PROFILE_PATH = join(DATA_DIR, 'history', 'model-profile.jsonl');
 

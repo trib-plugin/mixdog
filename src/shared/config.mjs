@@ -4,10 +4,9 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs'
 import { join, dirname } from 'path'
-import { homedir } from 'os'
+import { resolvePluginData } from './plugin-paths.mjs'
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin')
+const DATA_DIR = resolvePluginData()
 
 const CONFIG_PATH = join(DATA_DIR, 'mixdog-config.json')
 

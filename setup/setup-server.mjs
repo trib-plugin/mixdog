@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import http from 'http';
 import https from 'https';
 import { DEFAULT_MAINTENANCE, getPluginData } from '../src/agent/orchestrator/config.mjs';
+import { resolvePluginData } from '../src/shared/plugin-paths.mjs';
 import { ensureDataSeeds } from '../src/shared/seed.mjs';
 import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memory-cycle.mjs';
 import { runFullBackfill } from '../src/memory/lib/memory-ops-policy.mjs';
@@ -18,10 +19,9 @@ try { ({ DatabaseSync } = await import('node:sqlite')); } catch {}
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isWin = process.platform === 'win32';
 const home = homedir();
-const pluginsData = join(home, '.claude', 'plugins', 'data');
 
 // -- Channels paths --
-const DATA_DIR = join(pluginsData, 'mixdog-mixdog');
+const DATA_DIR = resolvePluginData();
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
 const BOT_PATH = join(DATA_DIR, 'bot.json');
 

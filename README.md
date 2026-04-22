@@ -113,7 +113,7 @@ context.
 ## Configuration
 
 All user-editable config lives in the plugin data directory
-(`<claude-data>/plugins/data/mixdog-mixdog/`), NOT in the repository.
+(`<claude-data>/plugins/data/mixdog-trib-plugin/`), NOT in the repository.
 The repository ships `.example.json` templates under `config/`:
 
 | Template                              | Copy to                | Purpose                                   |

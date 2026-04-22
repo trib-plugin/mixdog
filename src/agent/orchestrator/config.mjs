@@ -1,32 +1,16 @@
 import { readFileSync, existsSync, renameSync, writeFileSync, mkdirSync } from 'fs';
-import { join, dirname, basename } from 'path';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { loadGitHubToken } from './providers/copilot-auth.mjs';
+import { resolvePluginData } from '../../shared/plugin-paths.mjs';
 
 /**
- * Resolve CLAUDE_PLUGIN_DATA directory.
- * If the env var is set (MCP server context), use it directly.
- * Otherwise derive from CLAUDE_PLUGIN_ROOT (CLI command context):
- *   CLAUDE_PLUGIN_ROOT = .../marketplaces/{marketplace}/external_plugins/{plugin}
- *   CLAUDE_PLUGIN_DATA = ~/.claude/plugins/data/{plugin}-{marketplace}
+ * Back-compat alias. Delegates to the shared `resolvePluginData()` helper
+ * so every caller converges on the same resolution rules (env → ROOT-derived
+ * → static fallback).
  */
 export function getPluginData() {
-    if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA;
-    const root = process.env.CLAUDE_PLUGIN_ROOT;
-    if (root) {
-        const dirName = basename(root);
-        // Cache path: .../cache/{marketplace}/{plugin}/{version}/
-        // → basename = version, parent = plugin, grandparent = marketplace
-        if (/^\d+\.\d+\.\d+/.test(dirName)) {
-            const pluginName = basename(join(root, '..'));
-            const marketplace = basename(join(root, '..', '..'));
-            return join(homedir(), '.claude', 'plugins', 'data', `${pluginName}-${marketplace}`);
-        }
-        // Marketplace path: .../marketplaces/{marketplace}/external_plugins/{plugin}/
-        const marketplace = basename(join(root, '..', '..'));
-        return join(homedir(), '.claude', 'plugins', 'data', `${dirName}-${marketplace}`);
-    }
-    return join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
+    return resolvePluginData();
 }
 const ENV_KEY_MAP = {
     openai: 'OPENAI_API_KEY',

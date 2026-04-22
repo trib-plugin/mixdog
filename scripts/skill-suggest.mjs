@@ -25,6 +25,7 @@ import { join, basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { extractPatterns3Axis, get3AxisReport, promoteQualifyingDrafts, getSkillCatalog } from '../src/agent/orchestrator/skill-suggest.mjs';
+import { resolvePluginData } from '../src/shared/plugin-paths.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -33,8 +34,7 @@ const PLUGIN_ROOT = join(__dirname, '..');
 // ── Resolve data directory ──────────────────────────────────────────
 
 function resolveDataDir() {
-  if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA;
-  return join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
+  return resolvePluginData();
 }
 
 // ── Parse CLI args ──────────────────────────────────────────────────

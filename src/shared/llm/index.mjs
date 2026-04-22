@@ -13,12 +13,10 @@
 
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { DEFAULT_MAINTENANCE } from '../../agent/orchestrator/config.mjs'
+import { resolvePluginData } from '../plugin-paths.mjs'
 
-const AGENT_CONFIG_PATH = process.env.CLAUDE_PLUGIN_DATA
-  ? join(process.env.CLAUDE_PLUGIN_DATA, 'agent-config.json')
-  : join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin', 'agent-config.json')
+const AGENT_CONFIG_PATH = join(resolvePluginData(), 'agent-config.json')
 
 function loadAgentConfig() {
   try {

@@ -49,11 +49,12 @@ import { resetEmbeddingIndex, pruneOldEntries } from './lib/memory-maintenance-s
 import { computeEntryScore } from './lib/memory-score.mjs'
 import { runFullBackfill } from './lib/memory-ops-policy.mjs'
 
+import { resolvePluginData } from '../shared/plugin-paths.mjs'
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || process.argv[2]
   || (() => {
     const candidates = [
-      path.join(os.homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin'),
+      resolvePluginData(),
     ]
     for (const c of candidates) {
       if (fs.existsSync(path.join(c, 'memory.sqlite'))) return c

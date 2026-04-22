@@ -10,11 +10,10 @@
 
 import { appendFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { resolvePluginData } from '../plugin-paths.mjs';
 
 function resolveDataDir() {
-    return process.env.CLAUDE_PLUGIN_DATA
-        || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
+    return resolvePluginData();
 }
 
 const HISTORY_DIR_NAME = 'history';

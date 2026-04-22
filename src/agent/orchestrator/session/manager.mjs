@@ -15,6 +15,7 @@ import { collectSkillsCached, buildSkillToolDefs, loadAgentTemplate, loadRoleTem
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
+import { resolvePluginData, DEFAULT_PLUGIN, DEFAULT_MARKETPLACE } from '../../../shared/plugin-paths.mjs';
 
 // Phase B: Pool B Tier 2 content builder (common rules only).
 // Loaded once per process via createRequire so the CJS module reaches us.
@@ -46,9 +47,8 @@ function _buildBridgeRules() {
         return _bridgeRulesCache;
     }
     const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT
-        || join(homedir(), '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', 'mixdog');
-    const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-        || join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
+        || join(homedir(), '.claude', 'plugins', 'marketplaces', DEFAULT_MARKETPLACE, 'external_plugins', DEFAULT_PLUGIN);
+    const DATA_DIR = resolvePluginData();
     try {
         const built = _rulesBuilder.buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR });
         _bridgeRulesCache = built;
