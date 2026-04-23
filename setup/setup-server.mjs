@@ -988,6 +988,45 @@ const server = http.createServer(async (req, res) => {
         } catch { /* trace unreadable */ }
       }
 
+      // ── 4. Jobs count (jobs/state.json — status='running') ───────────────
+      let jobsCount = 0;
+      const JOBS_STATE_PATH = join(DATA_DIR, 'jobs', 'state.json');
+      if (existsSync(JOBS_STATE_PATH)) {
+        try {
+          const jobsState = JSON.parse(readFileSync(JOBS_STATE_PATH, 'utf-8'));
+          if (Array.isArray(jobsState)) {
+            jobsCount = jobsState.filter(j => j.status === 'running').length;
+          }
+        } catch { /* unreadable */ }
+      }
+
+      // ── 5. Ngrok online (probe local ngrok API at 127.0.0.1:4040) ────────
+      // We do a best-effort HTTP GET to the ngrok local dashboard API.
+      // Times out in 300 ms. Only reports true if >=1 tunnel is active.
+      let ngrokOnline = false;
+      await new Promise((resolve) => {
+        const timer = setTimeout(() => { req_ng && req_ng.destroy(); resolve(); }, 300);
+        let req_ng;
+        try {
+          req_ng = http.get('http://127.0.0.1:4040/api/tunnels', (r) => {
+            clearTimeout(timer);
+            let body = '';
+            r.on('data', d => { body += d; });
+            r.on('end', () => {
+              try {
+                const parsed = JSON.parse(body);
+                if (Array.isArray(parsed.tunnels) && parsed.tunnels.length > 0) {
+                  ngrokOnline = true;
+                }
+              } catch { /* ignore */ }
+              resolve();
+            });
+          });
+          req_ng.on('error', () => { clearTimeout(timer); resolve(); });
+          req_ng.setTimeout(300, () => { clearTimeout(timer); req_ng.destroy(); resolve(); });
+        } catch { clearTimeout(timer); resolve(); }
+      });
+
       // ── Assemble JSON payload ─────────────────────────────────────────
       const sessionSegment = running.length > 0
         ? { active: running.length, roles: runningRoles }
@@ -1018,6 +1057,8 @@ const server = http.createServer(async (req, res) => {
         lastCompleted: lastCompletedSegment,
         schedule: scheduleSegment,
         recallLastHour: recallCount,
+        jobs: { count: jobsCount },
+        ngrok: { online: ngrokOnline },
         generatedAt: new Date(now).toISOString(),
       };
 
@@ -1075,6 +1116,16 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: String(e?.message || e) }));
     }
+    return;
+  }
+
+  // ── GET /api/plugin-path ─────────────────────────────────────────────────
+  // Returns the absolute directory of the plugin install (parent of setup/).
+  // Used by setup.html to render the correct statusline.sh path in the snippet.
+  if (req.method === 'GET' && path === '/api/plugin-path') {
+    const pluginRoot = join(__dirname, '..');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ path: pluginRoot }));
     return;
   }
 

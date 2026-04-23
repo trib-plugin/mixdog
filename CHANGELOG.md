@@ -4,6 +4,15 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.18] - Unreleased
+
+### Added
+
+- **`bin/statusline.sh`** — bash wrapper that reads Claude Code stdin JSON (cost, model, context) and fetches `GET /bridge/status?format=json` to produce a 2-line width-responsive statusline. Three tiers: ≥120 cols (wide), 80–119 (medium), <80 (narrow). Uses `jq` when available; falls back to `grep`/`sed` parsing. Graceful degradation: missing jq, endpoint down, or absent stdin all handled without error.
+- **`/bridge/status` JSON extended** — two new fields: `jobs.count` (active background jobs from `jobs/state.json`) and `ngrok.online` (boolean, probes ngrok local API at `127.0.0.1:4040` with 300 ms timeout).
+- **`GET /api/plugin-path`** — new read-only endpoint returns `{ path: <plugin-root> }` so setup.html can render the correct absolute path in the statusline snippet.
+- **Setup UI Statusline panel updated** — snippet now shows `bash <plugin-root>/bin/statusline.sh` (path resolved dynamically via `/api/plugin-path`); preview renders a 2-line layout from the JSON endpoint with a note that the cost segment requires Claude Code stdin.
+
 ## [0.1.17] - Unreleased
 
 ### Added
