@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const http = require('http');
 const { spawn } = require('child_process');
 const { DatabaseSync } = require('node:sqlite');
 const { resolvePluginData } = require(path.join(__dirname, '..', 'lib', 'plugin-paths.cjs'));
@@ -138,8 +139,7 @@ try {
   if (fs.existsSync(activePath)) {
     const active = JSON.parse(fs.readFileSync(activePath, 'utf8'));
     if (active.httpPort) {
-      const http2 = require('http');
-      const req2 = http2.request({
+      const req2 = http.request({
         hostname: '127.0.0.1',
         port: active.httpPort,
         path: '/rebind',
@@ -197,7 +197,7 @@ function buildContext(db) {
   }
 }
 
-function buildRecap(db) {
+function buildRecapEntriesText(db) {
   try {
     const rows = db.prepare(`
       SELECT id, ts, role, content, chunk_root, is_root,
@@ -222,7 +222,7 @@ function buildRecap(db) {
       return `[${tsStr}] ${prefix}: ${cleanText(String(r.content || '')).slice(0, 1000)}`;
     });
     const text = lines.reverse().join('\n');
-    return text.length > 20 ? '## Session Recap\n\n' + text : '';
+    return text.length > 20 ? text : '';
   } catch (e) {
     process.stderr.write(`[session-start] recap build failed: ${e.message}\n`);
     return '';
@@ -233,34 +233,90 @@ function buildMemoryBlocks() {
   let db = null;
   try {
     db = openMemoryDb();
-    if (!db) return { context: '', recap: '' };
-    return { context: buildContext(db), recap: buildRecap(db) };
+    if (!db) return { context: '', recapEntries: '' };
+    return { context: buildContext(db), recapEntries: buildRecapEntriesText(db) };
   } finally {
     if (db) { try { db.close(); } catch {} }
   }
 }
 
-const mainConfig = readJson(path.join(DATA_DIR, 'config.json'));
-const claudeMdMode = mainConfig.promptInjection && mainConfig.promptInjection.mode === 'claude_md';
+function requestLlmRecap(entriesText, timeoutMs) {
+  return new Promise((resolve) => {
+    try {
+      const activePath = path.join(os.tmpdir(), 'mixdog', 'active-instance.json');
+      if (!fs.existsSync(activePath)) return resolve(null);
+      const active = JSON.parse(fs.readFileSync(activePath, 'utf8'));
+      const port = active?.httpPort;
+      if (!port) return resolve(null);
 
-let additionalContext = '';
-
-if (!claudeMdMode) {
-  try {
-    const { buildInjectionContent } = require(path.join(PLUGIN_ROOT, 'lib', 'rules-builder.cjs'));
-    additionalContext = buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) || '';
-  } catch {}
+      const payload = JSON.stringify({ prompt: entriesText });
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port,
+        path: '/recap',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+        timeout: timeoutMs,
+      }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          try {
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            const summary = body?.summary;
+            if (res.statusCode === 200 && typeof summary === 'string' && summary.trim()) {
+              resolve(summary.trim());
+            } else {
+              resolve(null);
+            }
+          } catch {
+            resolve(null);
+          }
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.end(payload);
+    } catch {
+      resolve(null);
+    }
+  });
 }
 
-const memoryBlocks = buildMemoryBlocks();
-const blocks = [additionalContext, memoryBlocks.context, memoryBlocks.recap].filter(Boolean);
-additionalContext = blocks.join('\n\n');
+(async () => {
+  const mainConfig = readJson(path.join(DATA_DIR, 'config.json'));
+  const claudeMdMode = mainConfig.promptInjection && mainConfig.promptInjection.mode === 'claude_md';
 
-if (additionalContext) {
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'SessionStart',
-      additionalContext,
-    },
-  }));
-}
+  let additionalContext = '';
+
+  if (!claudeMdMode) {
+    try {
+      const { buildInjectionContent } = require(path.join(PLUGIN_ROOT, 'lib', 'rules-builder.cjs'));
+      additionalContext = buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) || '';
+    } catch {}
+  }
+
+  const memoryBlocks = buildMemoryBlocks();
+  let recapBlock = '';
+  if (memoryBlocks.recapEntries) {
+    const llmSummary = await requestLlmRecap(memoryBlocks.recapEntries, 30000);
+    recapBlock = llmSummary
+      ? '## Session Recap\n\n' + llmSummary
+      : '## Session Recap\n\n' + memoryBlocks.recapEntries;
+  }
+
+  const blocks = [additionalContext, memoryBlocks.context, recapBlock].filter(Boolean);
+  additionalContext = blocks.join('\n\n');
+
+  if (additionalContext) {
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext,
+      },
+    }));
+  }
+})();

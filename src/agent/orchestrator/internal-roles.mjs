@@ -59,6 +59,12 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     description: 'Root re-scorer invoked by memory-cycle runCycle2',
     invokedBy: 'cycle2',
   }),
+  'recap-agent': Object.freeze({
+    slot: 'recap',
+    systemFile: 'rules/bridge/50-recap-agent.md',
+    description: 'Session-start handoff summarizer invoked by session-start hook',
+    invokedBy: 'recap',
+  }),
 })
 
 /**

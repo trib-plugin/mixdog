@@ -28,6 +28,7 @@ export const DEFAULT_MAINTENANCE = Object.freeze({
     search: 'HAIKU',
     recall: 'HAIKU',
     explore: 'HAIKU',
+    recap: 'HAIKU',
 });
 
 // Map short Anthropic family labels to the full model ids used by the API.

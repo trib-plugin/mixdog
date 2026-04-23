@@ -17,6 +17,7 @@ const _require = createRequire(import.meta.url);
 import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR } from "./lib/config.mjs";
 import { loadConfig as loadAgentConfig } from "../agent/orchestrator/config.mjs";
 import { initProviders } from "../agent/orchestrator/providers/registry.mjs";
+import { makeBridgeLlm } from "../agent/orchestrator/smart-bridge/bridge-llm.mjs";
 import { Scheduler } from "./lib/scheduler.mjs";
 import { startSnapshotWriter, updateSnapshotScheduler, stopSnapshotWriter, recordFetchedMessages } from "./lib/status-snapshot.mjs";
 import { hasPending as dispatchHasPending } from "../agent/orchestrator/dispatch-persist.mjs";
@@ -552,6 +553,20 @@ async function startOwnerHttpServer() {
           } else {
             res.writeHead(405);
             res.end(JSON.stringify({ error: "Method not allowed" }));
+          }
+          return;
+        }
+        case "/recap": {
+          if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
+          const recapPrompt = String(body?.prompt || "");
+          if (!recapPrompt) { res.writeHead(400); res.end(JSON.stringify({ error: "prompt required" })); return; }
+          try {
+            const recapLlm = makeBridgeLlm({ role: "recap-agent", taskType: "maintenance" });
+            const summary = await recapLlm({ prompt: recapPrompt });
+            res.writeHead(200);
+            res.end(JSON.stringify({ summary: String(summary || "").trim() }));
+          } catch (e) {
+            res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
           }
           return;
         }
