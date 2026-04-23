@@ -4,6 +4,13 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.30] - Unreleased
+
+### Fixed
+
+- **StatusLine still invisible after 0.1.29 short-path fix** — 0.1.29 injected `C:/PROGRA~1/Git/bin/bash.exe "C:/Users/.../statusline.sh"` as `statusLine.command`. Verified by reproduction: when Claude Code wraps this in `cmd /c "..."`, the outer quote stripping rule re-joins the two tokens and the line fails to launch entirely (exit 1, garbled stderr bytes, statusline.sh never invoked — confirmed via a filesystem probe that showed zero calls for the lifetime of the session). The `statusLine.command` field must therefore be a single-token path that cmd.exe can dispatch directly. `hooks/session-start.cjs` now emits a `bin/statusline.bat` wrapper (regenerated each session with the detected Git Bash executable baked in) and points `statusLine.command` at that .bat's absolute path only. The .bat internally invokes `"<bashExe>" "%~dp0statusline.sh" %*`, which cmd parses correctly because the quotes live inside a batch file, not on the launcher command line. Non-Windows platforms are unchanged.
+- **Claude Code does not hot-reload `statusLine.command`** — side-finding during the 0.1.30 investigation: modifying `~/.claude/settings.json` while Claude Code is running does not re-arm the statusline launcher; the command string is captured at process start and reused until restart. A broken command injected at session start therefore stays broken for the whole session even after the settings file is corrected. The hook now resolves everything to a single-token .bat path so a correct config survives subsequent restarts permanently.
+
 ## [0.1.29] - Unreleased
 
 ### Fixed
