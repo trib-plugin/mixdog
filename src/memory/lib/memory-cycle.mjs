@@ -130,12 +130,12 @@ export async function runCycle1(db, config = {}, options = {}) {
   // showed zero NULL rows in the live DB. If legacy NULLs ever reappear,
   // they will accumulate harmlessly until someone backfills session_id.
   const sessions = db.prepare(`
-    SELECT session_id, count(*) AS n
+    SELECT session_id, count(*) AS n, max(ts) AS last_ts
     FROM entries
     WHERE chunk_root IS NULL AND session_id IS NOT NULL
     GROUP BY session_id
     HAVING n >= ?
-    ORDER BY n DESC
+    ORDER BY last_ts DESC
     LIMIT ?
   `).all(minBatch, sessionCap)
 

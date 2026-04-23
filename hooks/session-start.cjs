@@ -203,6 +203,8 @@ function buildRecap(db) {
       SELECT id, ts, role, content, chunk_root, is_root,
              element, category, summary
       FROM entries
+      WHERE (is_root = 1 AND (status IS NULL OR status != 'archived'))
+         OR chunk_root IS NULL
       ORDER BY ts DESC, id DESC
       LIMIT 20
     `).all();
