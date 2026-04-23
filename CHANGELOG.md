@@ -4,6 +4,16 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.12] - Unreleased
+
+### Added
+- **`scripts/bump-version.mjs`** — one-command version sync across `package.json`, `package-lock.json`, and `.claude-plugin/plugin.json`. Validates semver, skips absent files gracefully, prints a summary of touched files.
+- **`scripts/check-version.mjs`** — reads all version fields and exits 1 on any mismatch with a formatted table showing which field differs. Usable in CI pipelines and as a pre-commit hook.
+- **`scripts/install-git-hooks.mjs`** — installs a pre-commit hook at `.git/hooks/pre-commit` that blocks commits when versions are out of sync. Idempotent: appends to existing hooks rather than overwriting; no-ops when the guard is already present; skips gracefully in non-git environments.
+- **Auto-install pre-commit hook on first boot**: `hooks/session-start.cjs` now spawns `install-git-hooks.mjs` in the background on first boot (same guard as ngrok install), but only when the plugin directory is inside a git repo.
+- **`npm run bump`** — alias for `node scripts/bump-version.mjs`.
+- **`npm run check:version`** — alias for `node scripts/check-version.mjs`.
+
 ## [0.1.11] - Unreleased
 
 ### Added

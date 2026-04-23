@@ -51,6 +51,21 @@ try {
     } catch (e) {
       process.stderr.write(`[session-start] ngrok auto-install check failed: ${e.message}\n`);
     }
+
+    // Auto-install git pre-commit version-sync hook if inside a git repo (non-blocking, non-fatal).
+    try {
+      const gitDir = path.join(PLUGIN_ROOT, '.git');
+      if (fs.existsSync(gitDir)) {
+        spawn('node', [path.join(PLUGIN_ROOT, 'scripts', 'install-git-hooks.mjs')], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+        }).unref();
+        process.stderr.write('[session-start] installing version-sync git hook in background\n');
+      }
+    } catch (e) {
+      process.stderr.write(`[session-start] git hook install failed: ${e.message}\n`);
+    }
   }
 } catch {}
 
