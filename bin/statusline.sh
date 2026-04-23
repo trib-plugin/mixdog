@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mixdog statusline wrapper — v0.1.39
+# mixdog statusline wrapper — v0.1.41
 # Line 1 (runtime): model + effort, cost, context window bar, 5h / 7d rate limit, block reset.
 # Line 2 (incoming, from mixdog /bridge/status): sessions, last completed, jobs, schedule, discord, ngrok, recall.
 #
@@ -147,12 +147,6 @@ fi
 
 # ── Format helpers (all inline; no function calls) ──────────────────────────
 
-# Cost — 2 decimal places. printf is a bash builtin (no fork).
-COST_STR=""
-if [ -n "$CC_COST" ]; then
-  printf -v COST_STR '$%.2f' "$CC_COST" 2>/dev/null || COST_STR=""
-fi
-
 # Model short form — bash parameter expansion (no spawn).
 # Collapse "(1M context)" → "(1M)" and normalise punctuation.
 MODEL_STR=""
@@ -261,17 +255,14 @@ if [ -n "$MODEL_STR" ]; then
   unset _m
 fi
 
-# Cost — green, money-ish.
-[ -n "$COST_STR" ] && add_l1 "${_ANSI_GREEN}${COST_STR}${_ANSI_RESET}"
-
 # Context — coloured bar fill: green<40, yellow<70, red>=70; empty cells dim.
 if [ -n "$CTX_INT" ]; then
   if   [ "$CTX_INT" -ge 70 ] 2>/dev/null; then _fill="$_ANSI_RED"
   elif [ "$CTX_INT" -ge 40 ] 2>/dev/null; then _fill="$_ANSI_YELLOW"
   else _fill="$_ANSI_GREEN"
   fi
-  if   [ "$COLS" -ge 120 ]; then make_bar "$CTX_INT" 10
-  elif [ "$COLS" -ge 80 ];  then make_bar "$CTX_INT" 6
+  if   [ "$COLS" -ge 120 ]; then make_bar "$CTX_INT" 14
+  elif [ "$COLS" -ge 80 ];  then make_bar "$CTX_INT" 8
   else BAR_OUT=""
   fi
   # Recolour the bar: split into filled (▓) and empty (░) by substitution.
