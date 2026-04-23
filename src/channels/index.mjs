@@ -18,7 +18,7 @@ import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR }
 import { loadConfig as loadAgentConfig } from "../agent/orchestrator/config.mjs";
 import { initProviders } from "../agent/orchestrator/providers/registry.mjs";
 import { Scheduler } from "./lib/scheduler.mjs";
-import { startSnapshotWriter, updateSnapshotScheduler, stopSnapshotWriter } from "./lib/status-snapshot.mjs";
+import { startSnapshotWriter, updateSnapshotScheduler, stopSnapshotWriter, recordFetchedMessages } from "./lib/status-snapshot.mjs";
 import { hasPending as dispatchHasPending } from "../agent/orchestrator/dispatch-persist.mjs";
 import { setListener as setActivityBusListener } from "../agent/orchestrator/activity-bus.mjs";
 import { WebhookServer } from "./lib/webhook.mjs";
@@ -446,6 +446,7 @@ async function startOwnerHttpServer() {
           const channelId = url.searchParams.get("channel") ?? "";
           const limit = parseInt(url.searchParams.get("limit") ?? "20", 10);
           const msgs = await backend.fetchMessages(channelId, limit);
+          recordFetchedMessages(channelId, labelForChannelId(channelId), msgs);
           res.writeHead(200);
           res.end(JSON.stringify({ messages: msgs }));
           return;
@@ -1545,7 +1546,9 @@ function createHttpMcpServer() {
           return { content: [{ type: "text", text: JSON.stringify({ id: editId }) }] };
         }
         case "fetch": {
-          const msgs = await backend.fetchMessages(args.channel, args.limit ?? 20);
+          const _fetchChannelId = resolveChannelLabel(config.channelsConfig, args.channel);
+          const msgs = await backend.fetchMessages(_fetchChannelId, args.limit ?? 20);
+          recordFetchedMessages(_fetchChannelId, args.channel !== _fetchChannelId ? args.channel : labelForChannelId(_fetchChannelId), msgs);
           return { content: [{ type: "text", text: JSON.stringify({ messages: msgs }) }] };
         }
         case "fetch_many": {
@@ -1732,6 +1735,7 @@ ${lines.join("\n")}` }] };
             channelId,
             args.limit ?? 20
           );
+          recordFetchedMessages(channelId, args.channel !== channelId ? args.channel : labelForChannelId(channelId), msgs);
           const text = msgs.length === 0 ? "(no messages)" : msgs.map((m) => {
             const atts = m.attachmentCount > 0 ? ` +${m.attachmentCount}att` : "";
             return `[${m.ts}] ${m.user}: ${m.text}  (id: ${m.id}${atts})`;
@@ -1962,6 +1966,15 @@ const inboundQueue = (() => {
     tail = tail.then(fn, fn);
   };
 })();
+// ── Reverse-lookup channelId → human label from channelsConfig ──────────────
+function labelForChannelId(channelId) {
+  if (!channelId || !config.channelsConfig) return channelId;
+  for (const [label, entry] of Object.entries(config.channelsConfig)) {
+    if (entry?.channelId === channelId) return label;
+  }
+  return channelId;
+}
+
 backend.onMessage = (msg) => {
   if (!bridgeRuntimeConnected || !getBridgeOwnershipSnapshot().owned) {
     void refreshBridgeOwnership();
@@ -1969,6 +1982,7 @@ backend.onMessage = (msg) => {
   }
   if (!channelBridgeActive) return;
   if (shouldDropDuplicateInbound(msg)) return;
+  recordFetchedMessages(msg.chatId, labelForChannelId(msg.chatId), [{ id: msg.messageId }]);
   if (!claimChannelOwner(msg.chatId)) return;
   const route = resolveInboundRoute(msg.chatId);
   scheduler.noteActivity();

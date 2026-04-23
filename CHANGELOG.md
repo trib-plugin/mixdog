@@ -4,6 +4,13 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.21] - Unreleased
+
+### Changed
+
+- **Discord unread hook wired** — the `recordFetchedMessages` tracker exported in 0.1.19 is now called from every Discord message fetch / receive path in `src/channels/index.mjs`: the HTTP `/fetch` handler, the `createHttpMcpServer` fetch case, the direct-mode MCP fetch case, and the realtime `messageCreate` handler. The snapshot's `discord.totalUnread` now reflects actual state. Label resolution: `labelForChannelId(channelId)` reverse-looks up the human-readable label from `config.channelsConfig`; falls back to raw channel ID.
+- **`createHttpMcpServer` fetch pre-existing bug** — that path was passing a label string directly to `backend.fetchMessages` without resolving to a channelId. Fixed as a prerequisite for tracker hook; return shape unchanged.
+
 ## [0.1.20] - Unreleased
 
 ### Added
