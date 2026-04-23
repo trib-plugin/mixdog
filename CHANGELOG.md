@@ -4,6 +4,24 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.20] - Unreleased
+
+### Added
+
+- **`find_symbol` MCP tool** — code-graph-backed symbol lookup across the workspace. Implementation in `src/agent/orchestrator/tools/code-graph.mjs` (`_findSymbolAcrossGraph` + new tool def); registered as a builtin in `src/agent/orchestrator/tools/builtin.mjs`. Added to every agent role doc (`agents/worker.md`, `agents/reviewer.md`, `agents/debugger.md`, `agents/tester.md`, `agents/researcher.md`) and the shared tool-routing rules (`rules/shared/01-tool.md`, `rules/bridge/00-common.md`).
+- **Explore fast-path** — `runExploreFastPath` in `src/agent/orchestrator/ai-wrapped-dispatch.mjs`. When the query yields a clean identifier candidate, answer directly via `executeBuiltinTool` / `executeCodeGraphTool` without going through the LLM bridge. Layered on top of main's existing `searchProviderKeysMissing` gate and sync-by-default behaviour (0.1.19).
+- **`fetch_many` channels MCP tool** — multi-channel fetch in a single call. Defined in `src/channels/index.mjs` alongside existing `fetch`.
+- **Bridge eager-dispatch hooks** — `src/agent/orchestrator/session/loop.mjs` and `src/agent/orchestrator/session/manager.mjs` expose fast-path helper surface (`_extractBridgeIdentifier`, `_parseFindSymbolBestCandidate`, etc.).
+- **GitHub search metadata** — `src/search/lib/formatter.mjs` renders repo / issue metadata; `src/search/lib/providers.mjs` extracts it from GitHub API responses.
+- **`openai-oauth` token grace window** — `_refreshFallbackUntil` in `src/agent/orchestrator/providers/openai-oauth.mjs` keeps the still-valid previous access token usable for a short window if a refresh fails, reducing transient auth failures.
+- **`tools.json`** — new tool entries (find_symbol, fetch_many, related). Unchanged for recall / search / explore descriptions.
+- **Rule refinements** — `rules/bridge/00-common.md`, `rules/bridge/10-explorer.md`, `rules/shared/01-tool.md`, `rules/shared/04-explore.md` tool-preference and explorer-role guidance.
+
+### Changed
+
+- `server.mjs` dispatch branch now routes `code_graph` tool invocations to the new executor.
+- `src/agent/orchestrator/tools/patch.mjs` description tweaked.
+
 ## [0.1.19] - Unreleased
 
 ### Added

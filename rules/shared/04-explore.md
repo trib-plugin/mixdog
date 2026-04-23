@@ -11,6 +11,8 @@ Start with `explore` for any local-filesystem question where one of these is tru
 
 `read` directly ONLY when both the exact absolute path AND the line range are already known. A single `grep` for a precise literal symbol is also fine. But if you catch yourself in a `grep` → `read` → `grep` → `read` loop, **stop immediately and switch to `explore`** — one fan-out call replaces three rounds and wastes no iters on location-finding.
 
+If you know the identifier / constant / function / class name but not the file, prefer `find_symbol` before `grep`.
+
 This rule applies equally to Lead and to every delegated role. Grep+read loops on a known topic are the single biggest source of wasted iters in this workflow; `explore` is the cure.
 
 ## Root control

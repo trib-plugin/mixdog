@@ -1,11 +1,12 @@
 import { createRequire } from 'module';
 import { randomBytes } from 'crypto';
-import { join } from 'path';
+import { existsSync, statSync } from 'fs';
+import { join, resolve as pathResolve } from 'path';
 import { homedir } from 'os';
 import { getProvider } from '../providers/registry.mjs';
 import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
-import { getInternalTools } from '../internal-tools.mjs';
+import { getInternalTools, executeInternalTool } from '../internal-tools.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
 import { BASH_SESSION_TOOL_DEFS } from '../tools/bash-session.mjs';
 import { PATCH_TOOL_DEFS } from '../tools/patch.mjs';
@@ -317,6 +318,269 @@ const PROVIDER_ALIAS = {
 function providerCacheKey(provider) {
     if (!provider) return 'mixdog-default';
     return `mixdog-${PROVIDER_ALIAS[provider] || provider}`;
+}
+
+function _extractBridgeIdentifier(prompt) {
+    const text = String(prompt || '');
+    const backticked = text.match(/`([^`]{2,120})`/);
+    if (backticked?.[1] && /^[A-Za-z_][A-Za-z0-9_]{1,}$/.test(backticked[1].trim())) return backticked[1].trim();
+    const candidates = text.match(/\b[A-Za-z_][A-Za-z0-9_]{2,}\b/g) || [];
+    const STOPWORDS = new Set([
+        'Where', 'What', 'Which', 'Find', 'Return', 'Summarize', 'Read',
+        'Use', 'Your', 'This', 'That', 'These', 'Those', 'The', 'A', 'An',
+        'How', 'Why', 'When', 'Who',
+    ]);
+    let best = null;
+    let bestScore = -Infinity;
+    for (const token of candidates) {
+        if (STOPWORDS.has(token)) continue;
+        let score = 0;
+        if (/^[A-Z][A-Z0-9_]+$/.test(token)) score += 10;
+        if (/^[a-z]+(?:[A-Z][A-Za-z0-9]*)+$/.test(token)) score += 7;
+        if (/^[A-Z][A-Za-z0-9]*_[A-Za-z0-9_]+$/.test(token)) score += 8;
+        if (/^[A-Z][a-z]+$/.test(token)) score -= 4;
+        score += Math.min(token.length, 24) / 10;
+        if (score > bestScore) {
+            best = token;
+            bestScore = score;
+        }
+    }
+    return best;
+}
+
+function _isDefinitionQuery(prompt) {
+    const text = String(prompt || '').toLowerCase();
+    return /where\b.*\bdefined|where\b.*\bdeclare|definition|defined\b|declared\b|정의|선언/.test(text);
+}
+
+function _isUsageQuery(prompt) {
+    const text = String(prompt || '').toLowerCase();
+    return /where\b.*\bused|used\b|what does .* do|summarize what it does|어디.*쓰|사용|무엇.*하는지/.test(text);
+}
+
+function _extractGithubRepoSlug(prompt) {
+    const text = String(prompt || '');
+    const m = text.match(/\b([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/);
+    if (!m) return null;
+    return { owner: m[1], repo: m[2] };
+}
+
+function _isGithubRepoQuery(prompt) {
+    const text = String(prompt || '').toLowerCase();
+    return /\brepo\b|\brepository\b|github/.test(text);
+}
+
+function _extractKnownFilePaths(prompt, cwd, maxFiles = 4) {
+    const text = String(prompt || '');
+    const matches = text.match(/\b(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+\b/g) || [];
+    const out = [];
+    const seen = new Set();
+    for (const raw of matches) {
+        if (seen.has(raw)) continue;
+        seen.add(raw);
+        const abs = pathResolve(cwd || process.cwd(), raw);
+        try {
+            const st = statSync(abs);
+            if (!st.isFile()) continue;
+            out.push(raw);
+            if (out.length >= maxFiles) break;
+        } catch {
+            continue;
+        }
+    }
+    return out;
+}
+
+function _isCompareOrSummarizeFilesQuery(prompt) {
+    const text = String(prompt || '').toLowerCase();
+    return /\bcompare\b|\bdiff\b|\bdifference\b|\bcontrast\b|\bsummarize\b|\bsummary\b|\bbullets?\b|비교|차이|요약/.test(text);
+}
+
+function _parseFindSymbolBestCandidate(rawText) {
+    const lines = String(rawText || '').split('\n').map((line) => line.trim()).filter(Boolean);
+    const marker = lines.indexOf('# best declaration candidate');
+    if (marker === -1 || marker + 2 >= lines.length) return null;
+    const loc = lines[marker + 1];
+    const decl = lines[marker + 2];
+    const match = loc.match(/^(.+?):(\d+):(\d+)/);
+    if (!match) return null;
+    const [, filePath, lineStr] = match;
+    const contextLine = lines.find((line, idx) => idx > marker + 2 && line.startsWith('context:'));
+    return {
+        filePath,
+        line: Number(lineStr),
+        declaration: decl,
+        context: contextLine ? contextLine.replace(/^context:\s*/, '') : '',
+    };
+}
+
+function _parseGrepBestCandidate(rawText) {
+    const lines = String(rawText || '').split('\n').map((line) => line.trim()).filter(Boolean);
+    const topHeader = lines.indexOf('# top candidates');
+    if (topHeader !== -1) {
+        const candidate = lines[topHeader + 1];
+        const m = candidate?.match(/^\d+\.\s+(.+?):(\d+)\s+\[(decl|hit)\]\s+(.+)$/);
+        if (m) {
+            return { filePath: m[1], line: Number(m[2]), kind: m[3], content: m[4] };
+        }
+    }
+    for (const line of lines) {
+        const m = line.match(/^(.+?):(\d+):(.+)$/);
+        if (!m) continue;
+        return { filePath: m[1], line: Number(m[2]), kind: 'hit', content: m[3].trim() };
+    }
+    return null;
+}
+
+function _summarizeFastPath(identifier, prompt, candidate, readOut) {
+    const promptText = String(prompt || '');
+    const nearby = String(readOut || '').split('\n').slice(0, 8).join('\n').trim();
+    if (_isDefinitionQuery(promptText)) {
+        const parts = [
+            `\`${identifier}\` is defined in \`${candidate.filePath}:${candidate.line}\`.`,
+        ];
+        if (candidate.declaration) parts.push(`Declaration: ${candidate.declaration}`);
+        if (candidate.context) parts.push(`Context: ${candidate.context}`);
+        if (nearby) parts.push(`Nearby lines:\n${nearby}`);
+        return parts.join('\n\n');
+    }
+    const parts = [
+        `\`${identifier}\` is used in \`${candidate.filePath}:${candidate.line}\`.`,
+    ];
+    if (candidate.content) parts.push(`Best match: ${candidate.content}`);
+    if (nearby) parts.push(`Nearby lines:\n${nearby}`);
+    return parts.join('\n\n');
+}
+
+function _summarizeRepoSearchText(owner, repo, searchText) {
+    const lines = String(searchText || '').split('\n').map((line) => line.trim()).filter(Boolean);
+    const title = lines[0]?.replace(/^\d+\.\s*/, '') || `${owner}/${repo}`;
+    const summaryLine = lines.find((line, idx) => idx > 0 && !/^https?:\/\//.test(line) && !/^(stars|language|license|default|forks)\b/i.test(line));
+    const metaLine = lines.find((line) => /(stars|language|license|default|forks)\b/i.test(line));
+    const parts = [`${title} is ${summaryLine || 'a GitHub repository.'}`];
+    if (metaLine) parts.push(metaLine);
+    return parts.join('\n\n');
+}
+
+async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
+    if (session?.owner !== 'bridge') return null;
+    const repoSlug = _extractGithubRepoSlug(prompt);
+    if (repoSlug && _isGithubRepoQuery(prompt)) {
+        const searchArgs = {
+            github_type: 'repo',
+            owner: repoSlug.owner,
+            repo: repoSlug.repo,
+            site: 'github.com',
+            maxResults: 5,
+            keywords: `${repoSlug.owner}/${repoSlug.repo}`,
+        };
+        let searchOut = null;
+        try {
+            const searchMod = await import('../../../search/index.mjs');
+            const raw = await searchMod.handleToolCall('search', searchArgs);
+            searchOut = Array.isArray(raw?.content)
+                ? raw.content.map((c) => c?.type === 'text' ? c.text || '' : JSON.stringify(c)).join('\n')
+                : null;
+        } catch {
+            searchOut = await executeInternalTool('search', searchArgs).catch(() => null);
+        }
+        if (searchOut && !String(searchOut).startsWith('Error:')) {
+            onToolCall?.(1, [{ name: 'search', arguments: searchArgs }]);
+            return {
+                content: _summarizeRepoSearchText(repoSlug.owner, repoSlug.repo, searchOut),
+                iterations: 2,
+                toolCallsTotal: 1,
+                usage: null,
+            };
+        }
+    }
+
+    const identifier = _extractBridgeIdentifier(prompt);
+    if (!identifier) return null;
+
+    if (_isDefinitionQuery(prompt)) {
+        const symbolText = await executeInternalTool('find_symbol', { symbol: identifier }).catch(() => null);
+        const candidate = symbolText ? _parseFindSymbolBestCandidate(symbolText) : null;
+        if (!candidate?.filePath || !Number.isFinite(candidate.line)) return null;
+        onToolCall?.(1, [{ name: 'find_symbol', arguments: { symbol: identifier } }]);
+        const readArgs = { path: candidate.filePath, offset: Math.max(0, candidate.line - 1), limit: 12 };
+        const readOut = await executeInternalTool('read', readArgs).catch(() => '');
+        onToolCall?.(2, [{ name: 'read', arguments: readArgs }]);
+        return {
+            content: _summarizeFastPath(identifier, prompt, candidate, readOut),
+            iterations: 3,
+            toolCallsTotal: 2,
+            usage: null,
+        };
+    }
+
+    if (_isUsageQuery(prompt)) {
+        const grepArgs = {
+            pattern: identifier,
+            path: effectiveCwd || session.cwd || process.cwd(),
+            glob: ['**/*.*'],
+            output_mode: 'content',
+            head_limit: 20,
+            '-n': true,
+            '-C': 1,
+        };
+        const grepOut = await executeInternalTool('grep', grepArgs).catch(() => null);
+        const candidate = grepOut ? _parseGrepBestCandidate(grepOut) : null;
+        if (!candidate?.filePath || !Number.isFinite(candidate.line)) return null;
+        onToolCall?.(1, [{ name: 'grep', arguments: grepArgs }]);
+        const readArgs = { path: candidate.filePath, offset: Math.max(0, candidate.line - 1), limit: 12 };
+        const readOut = await executeInternalTool('read', readArgs).catch(() => '');
+        onToolCall?.(2, [{ name: 'read', arguments: readArgs }]);
+        return {
+            content: _summarizeFastPath(identifier, prompt, candidate, readOut),
+            iterations: 3,
+            toolCallsTotal: 2,
+            usage: null,
+        };
+    }
+
+    return null;
+}
+
+async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCall) {
+    if (session?.owner !== 'bridge') return null;
+    const repoSlug = _extractGithubRepoSlug(prompt);
+    if (repoSlug && _isGithubRepoQuery(prompt)) {
+        const searchArgs = {
+            github_type: 'repo',
+            owner: repoSlug.owner,
+            repo: repoSlug.repo,
+            site: 'github.com',
+            maxResults: 5,
+            keywords: `${repoSlug.owner}/${repoSlug.repo}`,
+        };
+        let searchOut = null;
+        try {
+            const searchMod = await import('../../../search/index.mjs');
+            const raw = await searchMod.handleToolCall('search', searchArgs);
+            searchOut = Array.isArray(raw?.content)
+                ? raw.content.map((c) => c?.type === 'text' ? c.text || '' : JSON.stringify(c)).join('\n')
+                : null;
+        } catch {
+            searchOut = await executeInternalTool('search', searchArgs).catch(() => null);
+        }
+        if (searchOut && !String(searchOut).startsWith('Error:')) {
+            onToolCall?.(1, [{ name: 'search', arguments: searchArgs }]);
+            return `Prefetched repository context for this request. Answer directly from this unless it is clearly insufficient. Do NOT call \`search\` again for the same repository unless the provided result is missing the requested information.\n\n${searchOut}`;
+        }
+    }
+
+    const knownFiles = _extractKnownFilePaths(prompt, effectiveCwd || session.cwd || process.cwd());
+    if (knownFiles.length < 2 || !_isCompareOrSummarizeFilesQuery(prompt)) return null;
+    const reads = knownFiles.map((filePath) => ({
+        path: filePath,
+        mode: 'head',
+        n: 120,
+    }));
+    const readOut = await executeInternalTool('multi_read', { reads }).catch(() => null);
+    if (!readOut || String(readOut).startsWith('Error:')) return null;
+    onToolCall?.(1, [{ name: 'multi_read', arguments: { reads } }]);
+    return `Prefetched files for this request. Answer directly from these excerpts unless they are clearly insufficient. Do NOT re-read the same files unless the excerpts are missing the specific detail you need.\n\n${readOut}`;
 }
 // --- create_session ---
 // opts can pass either a `preset` object (from config.presets) or raw provider/model.
@@ -741,6 +1005,11 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 session.messages.push({ role: 'user', content: `Additional context:\n\n${context}` });
                 session.messages.push({ role: 'assistant', content: 'Noted.' });
             }
+            const prefetchedContext = await _tryBridgePrefetchContext(session, prompt, cwdOverride || session.cwd, onToolCall);
+            if (prefetchedContext) {
+                session.messages.push({ role: 'user', content: `Additional context:\n\n${prefetchedContext}` });
+                session.messages.push({ role: 'assistant', content: 'Noted.' });
+            }
             const beforeCount = session.messages.length + 1;
             // Soft warning only; real size management (compaction primary,
             // byte-budget trim as safety net) lives in agentLoop. Selecting a
@@ -750,8 +1019,20 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             if (promptTokenEstimate > softBudget * 0.7) {
                 process.stderr.write(`[session] Warning: prompt is very large (est. ${Math.round(promptTokenEstimate)} tokens vs ${softBudget} soft budget)\n`);
             }
-            const outgoing = [...session.messages, { role: 'user', content: prompt }];
             const effectiveCwd = cwdOverride || session.cwd;
+            const fastPath = await _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall);
+            if (fastPath) {
+                session.messages = [...session.messages, { role: 'user', content: prompt }];
+                if (fastPath.content) {
+                    session.messages.push({ role: 'assistant', content: fastPath.content });
+                }
+                session.updatedAt = Date.now();
+                session.lastUsedAt = Date.now();
+                saveSession(session);
+                unlock();
+                return fastPath;
+            }
+            const outgoing = [...session.messages, { role: 'user', content: prompt }];
             const result = await _api_call_with_interrupt(sessionId, (signal) =>
                 agentLoop(provider, outgoing, session.model, session.tools, onToolCall, effectiveCwd, {
                     effort: session.effort || null,
@@ -1100,3 +1381,14 @@ export function stopIdleCleanup() {
         _cleanupTimer = null;
     }
 }
+
+// Test-only exports for local smoke harnesses.
+export const _internals = {
+    _extractBridgeIdentifier,
+    _extractGithubRepoSlug,
+    _isGithubRepoQuery,
+    _isDefinitionQuery,
+    _isUsageQuery,
+    _tryBridgeFastPath,
+    _tryBridgePrefetchContext,
+};

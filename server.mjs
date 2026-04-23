@@ -548,6 +548,14 @@ async function dispatchTool(name, args, callerCtx = {}) {
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
+  if (def.module === 'code_graph') {
+    const { executeCodeGraphTool } = await import(
+      pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/code-graph.mjs')).href,
+    )
+    const text = await executeCodeGraphTool(name, args ?? {}, process.cwd())
+    return { content: [{ type: 'text', text: String(text) }] }
+  }
+
   if (def.module === 'patch') {
     // Unified-diff apply tool — inverse of `diff`. One-turn multi-file
     // edits without Read-before-Edit (the patch's context lines are the

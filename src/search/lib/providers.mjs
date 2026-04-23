@@ -412,11 +412,20 @@ async function runGithubRepoInfo({ owner, repo }) {
   await handleGithubError(response, 'repo info')
 
   const r = await response.json()
+  const metaBits = [
+    Number.isFinite(Number(r.stargazers_count)) ? `stars ${r.stargazers_count}` : null,
+    Number.isFinite(Number(r.forks_count)) ? `forks ${r.forks_count}` : null,
+    r.language ? `language ${r.language}` : null,
+    r.default_branch ? `default ${r.default_branch}` : null,
+    r.license?.spdx_id ? `license ${r.license.spdx_id}` : null,
+    Array.isArray(r.topics) && r.topics.length ? `topics ${r.topics.slice(0, 6).join(', ')}` : null,
+    r.archived ? 'archived' : null,
+  ].filter(Boolean)
   return {
     results: [{
       title: r.full_name || `${owner}/${repo}`,
       url: r.html_url || '',
-      snippet: r.description || '',
+      snippet: [r.description || '', metaBits.join(' · ')].filter(Boolean).join('\n'),
       source: 'github',
       publishedDate: r.updated_at || null,
       provider: 'github',
@@ -446,11 +455,19 @@ async function runGithubIssueDetail({ owner, repo, number }) {
   await handleGithubError(response, 'issue detail')
 
   const issue = await response.json()
+  const metaBits = [
+    issue.state ? `state ${issue.state}` : null,
+    Number.isFinite(Number(issue.comments)) ? `comments ${issue.comments}` : null,
+    issue.user?.login ? `author ${issue.user.login}` : null,
+    issue.closed_at ? `closed ${issue.closed_at}` : null,
+    Array.isArray(issue.labels) && issue.labels.length ? `labels ${(issue.labels || []).map(l => l.name || l).slice(0, 6).join(', ')}` : null,
+    issue.pull_request ? 'pull request' : 'issue',
+  ].filter(Boolean)
   return {
     results: [{
       title: issue.title || '',
       url: issue.html_url || '',
-      snippet: issue.body || '',
+      snippet: [metaBits.join(' · '), issue.body || ''].filter(Boolean).join('\n'),
       source: 'github',
       publishedDate: issue.created_at || null,
       provider: 'github',
@@ -483,7 +500,18 @@ async function runGithubPulls({ owner, repo, state = 'open' }) {
     results: pulls.map(pr => ({
       title: pr.title || '',
       url: pr.html_url || '',
-      snippet: (pr.body || '').slice(0, 200),
+      snippet: [
+        [
+          Number.isFinite(Number(pr.number)) ? `#${pr.number}` : null,
+          pr.state ? `state ${pr.state}` : null,
+          pr.user?.login ? `author ${pr.user.login}` : null,
+          pr.head?.ref ? `head ${pr.head.ref}` : null,
+          pr.base?.ref ? `base ${pr.base.ref}` : null,
+          pr.draft ? 'draft' : null,
+          pr.merged_at ? `merged ${pr.merged_at}` : null,
+        ].filter(Boolean).join(' · '),
+        (pr.body || '').slice(0, 200),
+      ].filter(Boolean).join('\n'),
       source: 'github',
       publishedDate: pr.created_at || null,
       provider: 'github',

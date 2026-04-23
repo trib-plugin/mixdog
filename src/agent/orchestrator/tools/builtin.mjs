@@ -230,6 +230,55 @@ function normalizeGrepLine(line) {
     return line.slice(0, colonIdx).replace(/\\/g, '/') + line.slice(colonIdx);
 }
 
+function _primaryIdentifierPattern(patterns) {
+    if (!Array.isArray(patterns) || patterns.length !== 1) return null;
+    const token = String(patterns[0] || '').trim();
+    return /^[A-Za-z_][A-Za-z0-9_]{2,}$/.test(token) ? token : null;
+}
+
+function _parseGrepContentLine(line) {
+    const text = String(line || '');
+    if (!text || text === '--' || text.startsWith('... [')) return null;
+    const searchFrom = /^[A-Za-z]:/.test(text) ? 2 : 0;
+    const firstColon = text.indexOf(':', searchFrom);
+    if (firstColon === -1) return null;
+    const secondColon = text.indexOf(':', firstColon + 1);
+    if (secondColon === -1) return null;
+    const path = text.slice(0, firstColon);
+    const lineNo = Number(text.slice(firstColon + 1, secondColon));
+    if (!Number.isFinite(lineNo)) return null;
+    const content = text.slice(secondColon + 1).trim();
+    return { path, lineNo, content };
+}
+
+function _buildGrepContentSummary(lines, patterns) {
+    const token = _primaryIdentifierPattern(patterns);
+    if (!token) return '';
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const declRe = new RegExp(`\\b(?:const|let|var|function|class|interface|type|enum|export)\\b[^\\n]*\\b${escaped}\\b`);
+    const exactRe = new RegExp(`\\b${escaped}\\b`);
+    const scored = [];
+    for (const line of lines) {
+        const parsed = _parseGrepContentLine(line);
+        if (!parsed) continue;
+        if (!exactRe.test(parsed.content)) continue;
+        let score = 0;
+        if (declRe.test(parsed.content)) score += 5;
+        if (parsed.content.startsWith('export ')) score += 2;
+        if (parsed.content.startsWith('import ')) score -= 1;
+        if (parsed.content.length <= 140) score += 1;
+        if (/\/(?:scripts?|test|tests|__tests__|bench|dev)\//i.test(parsed.path.replace(/\\/g, '/'))) score -= 3;
+        scored.push({ ...parsed, score });
+    }
+    if (!scored.length) return '';
+    scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.lineNo - b.lineNo);
+    const top = scored.slice(0, 3).map((hit, idx) => {
+        const kind = declRe.test(hit.content) ? 'decl' : 'hit';
+        return `${idx + 1}. ${hit.path}:${hit.lineNo} [${kind}] ${hit.content.slice(0, 180)}`;
+    });
+    return ['# top candidates', ...top].join('\n');
+}
+
 // Suggest a sibling file the caller may have meant when the requested
 // path is missing: same stem with a different extension, or a same-name
 // sibling differing only in case. Pure best-effort; any fs error returns
@@ -558,7 +607,7 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Big files auto-return a head+tail summary unless `full:true` or offset/limit given — for in-file content search use `grep`, not a full read.',
+        description: 'Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Big files auto-return a head+tail summary unless `full:true` or offset/limit given — for in-file content search use `grep`, not a full read.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -570,6 +619,35 @@ export const BUILTIN_TOOLS = [
                 full: { type: 'boolean', description: 'Opt out of the big-file head/tail cap. Default false.' },
             },
             required: ['path'],
+        },
+    },
+    {
+        name: 'multi_read',
+        title: 'Multi Read',
+        annotations: { title: 'Multi Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'Read multiple files in ONE call. Use this when 2+ file paths are already known. Each entry supports the same options as `read` (`mode`, `n`, `offset`, `limit`, `full`) and runs in parallel.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                reads: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            path: { type: 'string', description: 'File path.' },
+                            mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'], description: 'full (default) | head | tail | count.' },
+                            n: { type: 'number', description: 'Lines for head / tail mode. Default 20.' },
+                            offset: { type: 'number', description: 'Start line for full mode (0-based).' },
+                            limit: { type: 'number', description: 'Max lines for full mode (default 2000).' },
+                            full: { type: 'boolean', description: 'Opt out of the big-file head/tail cap. Default false.' },
+                        },
+                        required: ['path'],
+                    },
+                    minItems: 1,
+                    description: 'List of file reads to execute in parallel.',
+                },
+            },
+            required: ['reads'],
         },
     },
     {
@@ -604,6 +682,60 @@ export const BUILTIN_TOOLS = [
         },
     },
     {
+        name: 'multi_edit',
+        title: 'Multi Edit',
+        annotations: { title: 'Multi Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+        description: 'Apply multiple ordered replacements to ONE file in one call. Use this when the file is already known and you need several edits without serial `edit` turns. All-or-nothing on that file.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Target file path.' },
+                edits: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            old_string: { type: 'string' },
+                            new_string: { type: 'string' },
+                            replace_all: { type: 'boolean' },
+                        },
+                        required: ['old_string', 'new_string'],
+                    },
+                    minItems: 1,
+                    description: 'Ordered replacements for the same file.',
+                },
+            },
+            required: ['path', 'edits'],
+        },
+    },
+    {
+        name: 'batch_edit',
+        title: 'Batch Edit',
+        annotations: { title: 'Batch Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+        description: 'Apply edits across MULTIPLE files in one call. Different files run in parallel; repeated edits within the same file are grouped and executed as `multi_edit`. Use this instead of serial `edit` across several files.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                edits: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            path: { type: 'string', description: 'Target file path.' },
+                            old_string: { type: 'string' },
+                            new_string: { type: 'string' },
+                            replace_all: { type: 'boolean' },
+                        },
+                        required: ['path', 'old_string', 'new_string'],
+                    },
+                    minItems: 1,
+                    description: 'Edits across one or more files.',
+                },
+            },
+            required: ['edits'],
+        },
+    },
+    {
         name: 'edit_lines',
         title: 'Edit Lines (line-number based)',
         annotations: { title: 'Edit Lines', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -623,14 +755,52 @@ export const BUILTIN_TOOLS = [
         name: 'write',
         title: 'Write',
         annotations: { title: 'Write', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Create or overwrite a file.',
+        description: 'Create or overwrite a file. Prefer `apply_patch` for multi-file or context-heavy edits; use `write` when you are creating a new file or replacing the whole contents intentionally. For multiple whole-file writes in one turn, pass `writes` array.',
         inputSchema: {
             type: 'object',
             properties: {
                 path: { type: 'string', description: 'File path.' },
                 content: { type: 'string', description: 'UTF-8 content.' },
+                writes: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            path: { type: 'string', description: 'Target file path.' },
+                            content: { type: 'string', description: 'UTF-8 content.' },
+                        },
+                        required: ['path', 'content'],
+                    },
+                    minItems: 1,
+                    description: 'Batch whole-file writes. Each item writes one file. Use this when you need to create/replace several files in one call.',
+                },
             },
-            required: ['path', 'content'],
+            required: [],
+        },
+    },
+    {
+        name: 'write_many',
+        title: 'Write Many',
+        annotations: { title: 'Write Many', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+        description: 'Create or overwrite multiple files in one call. Use this for batch whole-file writes; prefer `apply_patch` for multi-file edits that depend on surrounding context.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                writes: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            path: { type: 'string', description: 'Target file path.' },
+                            content: { type: 'string', description: 'UTF-8 content.' },
+                        },
+                        required: ['path', 'content'],
+                    },
+                    minItems: 1,
+                    description: 'Batch whole-file writes. Each item writes one file.',
+                },
+            },
+            required: ['writes'],
         },
     },
     {
@@ -655,14 +825,14 @@ export const BUILTIN_TOOLS = [
         name: 'jobs_list',
         title: 'List Background Jobs',
         annotations: { title: 'List Background Jobs', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'List recent background shell jobs with status, pid, and start time.',
+        description: 'List recent background shell jobs with status, pid, and start time. Use this to discover job ids before `job_wait`, `job_status`, or `job_read`.',
         inputSchema: { type: 'object', properties: {} },
     },
     {
         name: 'job_status',
         title: 'Background Job Status',
         annotations: { title: 'Background Job Status', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Get status for a background shell job. Returns pid, command, output paths, and completion state.',
+        description: 'Get one snapshot for a background shell job: pid, command, output paths, and completion state. Do NOT poll this in a loop — prefer `job_wait` while the job is still running.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -690,7 +860,7 @@ export const BUILTIN_TOOLS = [
         name: 'job_read',
         title: 'Read Background Job Output',
         annotations: { title: 'Read Background Job Output', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read stdout/stderr from a background shell job using the same line-oriented behavior as read/tail.',
+        description: 'Read stdout/stderr from a background shell job using the same line-oriented behavior as read/tail. Prefer `job_wait` first; use `job_read` when you need the actual log text after completion or when the status summary is insufficient.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -721,7 +891,7 @@ export const BUILTIN_TOOLS = [
         name: 'grep',
         title: 'Grep',
         annotations: { title: 'Grep', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.',
+        description: 'ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` first; use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -762,7 +932,7 @@ export const BUILTIN_TOOLS = [
         name: 'list',
         title: 'List Directory',
         annotations: { title: 'List Directory', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use `glob` for pure path patterns and `grep` for content.',
+        description: 'Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). Use `glob` for pure path patterns, `find_symbol` for identifier lookup, and `grep` for content.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -2446,6 +2616,9 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return `### ${normalizeOutputPath(r.path)}${suffix}\n${r.body}`;
             }).join('\n\n');
         }
+        case 'write_many': {
+            return executeBuiltinTool('write', { writes: args.writes }, workDir);
+        }
         case 'multi_edit': {
             // Claude Code native MultiEdit semantics: one file, many ordered
             // replacements, all-or-nothing. We apply the chain in memory
@@ -2561,6 +2734,42 @@ export async function executeBuiltinTool(name, args, cwd) {
             return [...groupResults, ...missingLines].join('\n');
         }
         case 'write': {
+            if (Array.isArray(args.writes) && args.writes.length > 0) {
+                const items = args.writes.map((entry) => ({
+                    path: normalizeInputPath(entry?.path),
+                    content: entry?.content,
+                }));
+                const missing = items.filter((entry) => !entry.path || entry.content === undefined);
+                if (missing.length > 0) {
+                    return 'Error: each write entry requires path and content';
+                }
+                const results = [];
+                const dirtyPaths = [];
+                for (const entry of items) {
+                    const filePath = entry.path;
+                    const content = entry.content;
+                    if (!isSafePath(filePath, workDir, pathOpts)) {
+                        results.push(`FAIL ${normalizeOutputPath(filePath)}: path outside allowed scope`);
+                        continue;
+                    }
+                    try {
+                        const fullPath = resolveAgainstCwd(filePath, workDir);
+                        mkdirSync(dirname(fullPath), { recursive: true });
+                        await atomicWrite(fullPath, content);
+                        dirtyPaths.push(fullPath);
+                        _recordReadSnapshot(fullPath);
+                        results.push(`OK ${normalizeOutputPath(filePath)}`);
+                    }
+                    catch (err) {
+                        results.push(`FAIL ${normalizeOutputPath(filePath)}: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`);
+                    }
+                }
+                if (dirtyPaths.length > 0) {
+                    invalidateBuiltinResultCache(dirtyPaths);
+                    markCodeGraphDirtyPaths(workDir, dirtyPaths);
+                }
+                return results.join('\n');
+            }
             args.path = normalizeInputPath(args.path);
             const filePath = args.path;
             const content = args.content;
@@ -2823,11 +3032,16 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // Unify separators in the path portion so Windows results
                 // don't surface mixed `C:/.../foo\bar.mjs` lines.
                 const normalized = lines.map(normalizeGrepLine);
+                const summarySource = (headLimit === Infinity ? windowed : windowed.slice(0, Math.max(lines.length, 120))).map(normalizeGrepLine);
+                const summary = outputMode === 'content'
+                    ? _buildGrepContentSummary(summarySource, patterns)
+                    : '';
                 const remaining = windowed.length - lines.length;
                 const truncated = remaining > 0
                     ? `\n... [${remaining} more entries]`
                     : '';
-                const out = capShellOutput((normalized.join('\n') + truncated) || '(no matches)');
+                const body = (normalized.join('\n') + truncated) || '(no matches)';
+                const out = capShellOutput((summary ? `${summary}\n\n${body}` : body));
                 _cacheSet(cacheKey, out, { scopes: [resolveAgainstCwd(searchPath, workDir)] });
                 return out;
             }

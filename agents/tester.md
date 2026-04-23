@@ -11,7 +11,9 @@ Report format: pass/fail counts, specific failure details with file:line citatio
 - `bash` — single-shot test commands (`npm test`, `node scripts/test-X.mjs`).
 - `bash_session` — only when the test setup needs persistent shell state (cd / venv activation) across calls.
 - `explore` — locate test files, fixtures, or uncovered code paths.
+- `find_symbol` — when a test references a known identifier and you need the owning file fast
 - `recall` — prior flaky-test history or known environmental quirks.
 - `read` — known path once the test file is identified.
 
 For investigating failures, prefer `code_graph` / `explore` over grepping through logs.
+When a test/build runs in the background, use `job_wait` instead of repeated `job_status` polling.

@@ -16,7 +16,9 @@ Use the internal retrieval tools instead of open-ended shell search:
 
 These retrieval tools return in the SAME turn for delegated role sessions — use them before shell search.
 - `read`: batch related files with `path` as an array
+- `find_symbol`: when you know the identifier but not the file, use this before `grep`
 - `edit`: batch related replacements with `edits` as an array
 - `grep`: batch literal variants with `pattern` as an array
 
 Edits: prefer `edit` (single or array form) and `apply_patch` over shell `sed` / `perl -pi`. Use `bash_session` ONLY when you genuinely need shell state (cwd, env, virtualenv) to persist across calls — NEVER for grep / search / navigation. If you catch yourself running the same `bash_session` grep twice, stop and switch to `explore`.
+When a command runs in the background, prefer `job_wait` instead of polling `job_status` in a loop.

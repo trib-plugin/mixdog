@@ -21,6 +21,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { loadConfig, getPluginData } from './config.mjs'
 import { resolvePresetName } from './smart-bridge/bridge-llm.mjs'
 import { smartReadTruncate } from './tools/builtin.mjs'
+import { executeBuiltinTool } from './tools/builtin.mjs'
+import { executeCodeGraphTool } from './tools/code-graph.mjs'
 import { addPending, removePending } from './dispatch-persist.mjs'
 import { notifyActivity } from './activity-bus.mjs'
 
@@ -98,6 +100,180 @@ function buildQueryCacheKey(tool, query, cwd, brief) {
     cwd || '',
     normalizeQueryForCache(query),
   ].join('|')
+}
+
+function extractIdentifierCandidate(query) {
+  const text = String(query || '')
+  const backticked = text.match(/`([^`]{2,120})`/)
+  if (backticked?.[1] && /^[A-Za-z_][A-Za-z0-9_]{1,}$/.test(backticked[1].trim())) {
+    return backticked[1].trim()
+  }
+  const STOPWORDS = new Set([
+    'Where', 'What', 'Which', 'Find', 'Return', 'Summarize', 'Read',
+    'Use', 'Your', 'This', 'That', 'These', 'Those', 'The', 'A', 'An',
+    'How', 'Why', 'When', 'Who',
+  ])
+  const candidates = text.match(/\b[A-Za-z_][A-Za-z0-9_]{2,}\b/g) || []
+  let best = null
+  let bestScore = -Infinity
+  for (const token of candidates) {
+    if (STOPWORDS.has(token)) continue
+    let score = 0
+    if (/^[A-Z][A-Z0-9_]+$/.test(token)) score += 10
+    if (/^[a-z]+(?:[A-Z][A-Za-z0-9]*)+$/.test(token)) score += 7
+    if (/^[A-Z][A-Za-z0-9]*_[A-Za-z0-9_]+$/.test(token)) score += 8
+    if (/^[A-Z][a-z]+$/.test(token)) score -= 4
+    score += Math.min(token.length, 24) / 10
+    if (score > bestScore) {
+      best = token
+      bestScore = score
+    }
+  }
+  return best
+}
+
+function isDefinitionLookupQuery(query) {
+  const text = String(query || '').toLowerCase()
+  if (!text.trim()) return false
+  return /where\b.*\bdefined|where\b.*\bdeclare|definition|defined\b|declared\b|located\b|정의|선언|어디/.test(text)
+}
+
+function isUsageLookupQuery(query) {
+  const text = String(query || '').toLowerCase()
+  if (!text.trim()) return false
+  return /where\b.*\bused|used\b|what does .* do|summarize what it does|어디.*쓰|사용|무엇.*하는지/.test(text)
+}
+
+function parseFindSymbolBestCandidate(rawText) {
+  const lines = String(rawText || '').split('\n').map((line) => line.trim()).filter(Boolean)
+  const marker = lines.indexOf('# best declaration candidate')
+  if (marker === -1 || marker + 2 >= lines.length) return null
+  const loc = lines[marker + 1]
+  const decl = lines[marker + 2]
+  const match = loc.match(/^(.+?):(\d+):(\d+)\s+\(([^,]+),/)
+  if (!match) return null
+  const [, filePath, lineStr, colStr, lang] = match
+  const contextLine = lines.find((line, idx) => idx > marker + 2 && line.startsWith('context:'))
+  return {
+    filePath,
+    line: Number(lineStr),
+    col: Number(colStr),
+    lang,
+    declaration: decl,
+    context: contextLine ? contextLine.replace(/^context:\s*/, '') : '',
+  }
+}
+
+function summarizeDeclarationShape(identifier, declaration) {
+  const line = String(declaration || '')
+  if (/\bObject\.freeze\(\[/.test(line)) return `${identifier} starts a frozen array definition.`
+  if (/\bObject\.freeze\(\{/.test(line)) return `${identifier} starts a frozen object definition.`
+  if (/\bexport\s+const\b/.test(line)) return `${identifier} is exported as a constant.`
+  if (/\bconst\b/.test(line)) return `${identifier} is defined as a constant.`
+  if (/\bfunction\b/.test(line)) return `${identifier} is defined as a function.`
+  if (/\bclass\b/.test(line)) return `${identifier} is defined as a class.`
+  if (/\binterface\b/.test(line)) return `${identifier} is defined as an interface.`
+  if (/\btype\b/.test(line)) return `${identifier} is defined as a type alias.`
+  return `${identifier} is defined here.`
+}
+
+function parseGrepBestCandidate(rawText) {
+  const lines = String(rawText || '').split('\n').map((line) => line.trim()).filter(Boolean)
+  const topHeader = lines.indexOf('# top candidates')
+  if (topHeader !== -1) {
+    const candidate = lines[topHeader + 1]
+    const m = candidate?.match(/^\d+\.\s+(.+?):(\d+)\s+\[(decl|hit)\]\s+(.+)$/)
+    if (m) {
+      return { filePath: m[1], line: Number(m[2]), kind: m[3], content: m[4] }
+    }
+  }
+  for (const line of lines) {
+    const m = line.match(/^(.+?):(\d+):(.+)$/)
+    if (!m) continue
+    return { filePath: m[1], line: Number(m[2]), kind: 'hit', content: m[3].trim() }
+  }
+  return null
+}
+
+async function runExploreFastPath(query, cwd) {
+  if (!cwd) return null
+  const identifier = extractIdentifierCandidate(query)
+  if (!identifier) return null
+  if (isDefinitionLookupQuery(query)) {
+    let symbolResult
+    try {
+      symbolResult = await executeCodeGraphTool('find_symbol', { symbol: identifier }, cwd)
+    } catch {
+      return null
+    }
+    const candidate = parseFindSymbolBestCandidate(symbolResult)
+    if (!candidate?.filePath || !Number.isFinite(candidate.line)) return null
+
+    let readOut = ''
+    try {
+      readOut = await executeBuiltinTool('read', {
+        path: candidate.filePath,
+        offset: Math.max(0, candidate.line - 1),
+        limit: 12,
+      }, cwd)
+    } catch {
+      readOut = ''
+    }
+
+    const pieces = [
+      `\`${identifier}\` is defined in \`${candidate.filePath}:${candidate.line}\`.`,
+      summarizeDeclarationShape(identifier, candidate.declaration),
+      `Declaration: ${candidate.declaration}`,
+    ]
+    if (candidate.context) {
+      pieces.push(`Context: ${candidate.context}`)
+    }
+    if (readOut && !String(readOut).startsWith('Error:')) {
+      const compactRead = String(readOut).split('\n').slice(0, 8).join('\n')
+      pieces.push(`Nearby lines:\n${compactRead}`)
+    }
+    return pieces.join('\n\n')
+  }
+
+  if (isUsageLookupQuery(query)) {
+    let grepOut = ''
+    try {
+      grepOut = await executeBuiltinTool('grep', {
+        pattern: identifier,
+        path: cwd,
+        glob: ['**/*.*'],
+        output_mode: 'content',
+        head_limit: 20,
+        '-n': true,
+        '-C': 1,
+      }, cwd)
+    } catch {
+      return null
+    }
+    const candidate = parseGrepBestCandidate(grepOut)
+    if (!candidate?.filePath || !Number.isFinite(candidate.line)) return null
+    let readOut = ''
+    try {
+      readOut = await executeBuiltinTool('read', {
+        path: candidate.filePath,
+        offset: Math.max(0, candidate.line - 1),
+        limit: 12,
+      }, cwd)
+    } catch {
+      readOut = ''
+    }
+    const parts = [
+      `\`${identifier}\` is used in \`${candidate.filePath}:${candidate.line}\`.`,
+    ]
+    if (candidate.content) parts.push(`Best match: ${candidate.content}`)
+    if (readOut && !String(readOut).startsWith('Error:')) {
+      const compactRead = String(readOut).split('\n').slice(0, 8).join('\n')
+      parts.push(`Nearby lines:\n${compactRead}`)
+    }
+    return parts.join('\n\n')
+  }
+
+  return null
 }
 
 function getDiskCachePath() {
@@ -297,6 +473,10 @@ export async function dispatchAiWrapped(name, args, ctx) {
       queries.map((q) => {
         const key = buildQueryCacheKey(name, q, resolvedCwd, brief)
         return runCachedQuery(name, key, async () => {
+          if (name === 'explore') {
+            const fast = await runExploreFastPath(q, resolvedCwd)
+            if (fast) return fast
+          }
           const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief })
           return llm({ prompt: spec.build(q, resolvedCwd) })
         })
@@ -344,6 +524,10 @@ export async function dispatchAiWrapped(name, args, ctx) {
     queries.map((q) => {
       const key = buildQueryCacheKey(name, q, resolvedCwd, brief)
       return runCachedQuery(name, key, async () => {
+        if (name === 'explore') {
+          const fast = await runExploreFastPath(q, resolvedCwd)
+          if (fast) return fast
+        }
         const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief })
         return llm({ prompt: spec.build(q, resolvedCwd) })
       })
@@ -409,13 +593,20 @@ function buildExplorerPrompt(query, cwd) {
     : ''
   return `${rootLine}Query: ${query}
 
-Use your read-only tools (\`glob\` / \`grep\` / \`read\` / \`multi_read\`) to find grounded answers.
+Use your read-only tools (\`code_graph\` / \`glob\` / \`grep\` / \`read\` / \`multi_read\` / \`list\`) to find grounded answers.
 
 Rules:
+- Default to ONE retrieval round. A second round is allowed only when round 1 is clearly too sparse to answer.
 - Work in 2 rounds max: locate -> confirm. If round 2 already grounds the answer, stop and synthesize.
+- For symbol / constant / identifier questions, prefer ONE \`find_symbol\` call before falling back to raw \`grep\`.
+- For caller / reference questions, prefer \`code_graph\` with \`mode:"references"\` or \`mode:"callers"\`.
+- If \`find_symbol\` returns a \`decl\` hit with file:line and declaration text, treat that as grounded location evidence. Prefer reading that file directly instead of issuing a follow-up grep.
+- Never call \`find_symbol\` and \`grep\` for the same identifier in the same round unless \`find_symbol\` returned no declaration candidate.
+- Prefer one broad batched probe over several narrow probes in sequence.
 - When 2+ exact file paths are known, prefer one \`multi_read\` / array \`path\` call instead of serial reads.
 - Do NOT use shell search or \`bash_session\` for navigation.
 - If you catch yourself planning another \`grep -> read\` loop on the same topic, stop and answer from the evidence you already have.
+- If the first probe already finds likely files, switch immediately to confirm/summarize instead of trying alternate phrasings.
 
 Return concise prose with concrete file paths.`
 }
@@ -423,13 +614,37 @@ Return concise prose with concrete file paths.`
 function buildRecallPrompt(query, _cwd) {
   // cwd has no effect on memory_search semantics; second arg accepted for
   // builder signature uniformity (caller always passes resolvedCwd).
-  return `Query: ${query}\n\nUse the \`memory_search\` tool to retrieve ranked entries. Return concise prose citing entry ids inline.`
+  return `Query: ${query}
+
+Use the \`memory_search\` tool to retrieve ranked entries.
+
+Rules:
+- Default to exactly ONE \`memory_search\` call.
+- A second \`memory_search\` call is allowed only if the first returns no useful hits and you are widening time scope or dropping an over-tight filter.
+- Never do a third retrieval call.
+- If the first call yields relevant entries, synthesize immediately instead of probing alternate phrasings.
+- Cite entry ids inline.
+
+Return concise prose.`
 }
 
 function buildSearchPrompt(query, _cwd) {
   // cwd has no effect on web_search semantics; second arg accepted for
   // builder signature uniformity.
-  return `Query: ${query}\n\nUse the \`web_search\` tool to retrieve ranked results. Return concise prose with cited URLs.`
+  return `Query: ${query}
+
+Use the \`web_search\` tool to retrieve ranked results.
+
+Rules:
+- Default to exactly ONE \`web_search\` call.
+- A second \`web_search\` call is allowed only if the first call is clearly sparse and you widen scope in a meaningful way.
+- Never do a third search call.
+- If the first call already returns enough evidence, synthesize immediately.
+- If the first call returns a single GitHub read result (repo / file / issue / pulls) with concrete metadata, treat it as authoritative and answer immediately.
+- Prefer narrower \`site\` / \`type\` / GitHub-specific arguments over retrying with near-identical free text.
+- Cite URLs inline.
+
+Return concise prose.`
 }
 
 /**

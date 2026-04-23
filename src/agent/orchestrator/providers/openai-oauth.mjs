@@ -278,6 +278,7 @@ export class OpenAIOAuthProvider {
     name = 'openai-oauth';
     tokens = null;
     _refreshPromise = null;
+    _refreshFallbackUntil = 0;
     config;
     constructor(config) {
         this.config = config || {};
@@ -286,6 +287,9 @@ export class OpenAIOAuthProvider {
     async ensureAuth() {
         if (!this.tokens)
             throw new Error('OpenAI OAuth not authenticated. Run codex login first.');
+        if (this._refreshFallbackUntil > Date.now() && this.tokens?.access_token) {
+            return this.tokens;
+        }
         // Always refresh if expired or close to expiring (5min buffer)
         if (this.tokens.expires_at < Date.now() + 300_000) {
             process.stderr.write(`[openai-oauth] Token expired/expiring, refreshing...\n`);
@@ -316,6 +320,17 @@ export class OpenAIOAuthProvider {
                         const refreshed2 = await refreshTokens(this.tokens.refresh_token);
                         if (refreshed2) { this.tokens = refreshed2; return this.tokens; }
                     } catch { /* fall through */ }
+                }
+                // Some Codex auth.json states carry a still-valid access token
+                // alongside a refresh token that has already been rotated.
+                // In that case, using the current access token is better than
+                // failing closed up front — the subsequent request will surface
+                // a real 401 if the token is truly dead, and send() already
+                // retries once on that path.
+                if (this.tokens?.access_token) {
+                    this._refreshFallbackUntil = Date.now() + 5 * 60_000;
+                    process.stderr.write(`[openai-oauth] Falling back to existing access token after refresh failure\n`);
+                    return this.tokens;
                 }
                 throw new Error('OpenAI OAuth token refresh failed. Run codex login to re-authenticate.');
             }
@@ -377,6 +392,7 @@ export class OpenAIOAuthProvider {
             if (status === 401) {
                 process.stderr.write(`[openai-oauth-ws] 401 — forcing refresh and retrying once over WS\n`);
                 this.tokens.expires_at = 0;
+                this._refreshFallbackUntil = 0;
                 auth = await this.ensureAuth();
                 const result = await sendViaWebSocket({
                     auth,

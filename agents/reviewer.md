@@ -18,6 +18,7 @@ Use the internal retrieval tools for navigation:
 - `recall` — past decisions, prior review context
 - `search` — external docs / standards / upstream references
 - `code_graph` — imports, references, callers (prefer over raw `grep` for symbol resolution)
+- `find_symbol` — identifier lookup when the symbol name is known but the file is not
 - `read` — known path
 
 These retrieval tools return in the SAME turn for delegated role sessions — don't shell out first.

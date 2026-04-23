@@ -28,10 +28,39 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 - Past context → `recall`. External web / URL / GitHub → `search`. Local filesystem → `explore`.
 - Known path → `read` directly. Unknown location → `grep` / `glob` first, then targeted `read`.
 - Code structure (imports, dependents, symbols, references, callers): `code_graph` before raw `grep`.
+- If you know an identifier / constant / function / class name but not the file, use `find_symbol` before `grep`.
 - Multi-file or already-clear edits: `apply_patch` before repeated `read` → `edit`.
 - Shell work across turns: `bash_session` reuses shell state — don't replay setup in repeated `bash` calls.
+- For long background commands, prefer `job_wait` over repeated `job_status` polling.
 - Large tool outputs may be saved to a path with a preview; only `read` that path if the preview is insufficient.
 - `explore` — one natural-language query fans glob + grep out in parallel; ideal for multi-angle questions ("how does X work, and where is it configured?") where several patterns need to land in one shot.
+
+## Decision Table
+
+Use these rules regardless of the current role name. Role-specific prompts may add nuance, but the first tool choice should follow this table unless the user explicitly asks otherwise.
+
+- "I know the identifier name, but not the file" → `find_symbol`
+- "Who imports / calls / references / depends on this?" → `code_graph`
+- "I know the file already" → `read`
+- "I need 2+ known files" → one `read` call with array `path`
+- "I need to create/replace several whole files" → `write_many`
+- "I need broad text search / regex / config phrase lookup" → `grep`
+- "I need file path discovery / filename patterns" → `glob`
+- "I need quick directory shape / recent files / mtime clues" → `list`
+- "I need external docs / GitHub / web" → `search`
+- "I need prior project/session memory" → `recall`
+- "I know the exact edit across multiple files" → `apply_patch`
+- "I need a small local replacement in one file" → `edit`
+- "I need shell state across turns" → `bash_session`
+- "I launched a long-running command in background" → `job_wait`, then `job_read` only if needed
+
+## Anti-patterns
+
+- Do not call `find_symbol` and `grep` for the same identifier in the same round unless `find_symbol` returned no declaration candidate.
+- Do not poll `job_status` repeatedly when `job_wait` would answer in one call.
+- Do not serially `read` files one by one when the candidate list is already known.
+- Do not serially `write` several whole files when `write_many` can do it in one call.
+- Do not `read` a whole large file when `find_symbol`, `code_graph`, or `grep` can narrow the line window first.
 
 ## Scope boundaries
 

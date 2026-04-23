@@ -17,7 +17,8 @@ import {
     THRESHOLD_PERCENT,
 } from './compressor.mjs';
 const SAFETY_TRIM_PERCENT = 0.90;
-const MAX_ITERATIONS = 100;
+const SOFT_ITERATION_WARN_THRESHOLDS = Object.freeze([24, 48, 96]);
+const EMERGENCY_ITERATION_FUSE = 1000;
 // Write-class tools that a permission=read session must not execute. The
 // schema still advertises them to keep one unified shard; this runtime set
 // is the fail-safe reject at call time.
@@ -30,6 +31,16 @@ function isEagerDispatchable(name) { return EAGER_TOOLS.has(name); }
 const SKILL_TOOL_NAMES = new Set(['skills_list', 'skill_view', 'skill_execute']);
 const SPECIAL_TOOL_NAMES = new Set(['bash_session', 'apply_patch', 'code_graph']);
 const BASH_SESSION_HEADER_RE = /\[session: ([^\]\r\n]+)\]/;
+function buildIterationWarnText({ iteration, threshold, toolCallsTotal, role }) {
+    const scope = role ? ` for role \`${role}\`` : '';
+    return [
+        `⚠ Iteration soft-warn: this session has reached ${iteration} iterations${scope}.`,
+        `- You crossed the soft iteration marker (${threshold}). Do not brute-force another loop by default.`,
+        `- Synthesize from the evidence you already have unless the next call is materially narrower or uses a better tool.`,
+        `- Total tool calls so far: ${toolCallsTotal}.`,
+        `(Advisory only — the session continues.)`,
+    ].join('\n');
+}
 /**
  * Execute a single tool call — routes to MCP or builtin.
  */
@@ -142,6 +153,13 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     const sessionId = opts.sessionId || null;
     const signal = opts.signal || null;
     const loopGuard = createGuard();
+    const softIterationWarnThresholds = Array.isArray(opts.iterationWarnThresholds) && opts.iterationWarnThresholds.length
+        ? [...opts.iterationWarnThresholds].filter((n) => Number.isFinite(Number(n))).map((n) => Number(n)).sort((a, b) => a - b)
+        : [...SOFT_ITERATION_WARN_THRESHOLDS];
+    const emergencyIterationFuse = Number.isFinite(Number(opts.iterationEmergencyFuse))
+        ? Number(opts.iterationEmergencyFuse)
+        : EMERGENCY_ITERATION_FUSE;
+    const warnedIterationThresholds = new Set();
     // Opaque providerState passthrough. The loop never inspects it; only the
     // originating provider does. Seed from sendOpts.providerState if the
     // manager restored one. No provider currently emits state (Codex OAuth is
@@ -266,15 +284,35 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         // No tool calls — done
         if (!response.toolCalls?.length)
             break;
-        // Safety limit
-        if (iterations > MAX_ITERATIONS) {
+        // Non-negotiable runaway fuse. Soft iteration caps warn below;
+        // this remains only as an emergency brake for a genuinely broken loop.
+        if (iterations > emergencyIterationFuse) {
             response.content = (response.content || '') +
-                `\n\n[Agent loop stopped: reached ${MAX_ITERATIONS} iterations]`;
+                `\n\n[Agent loop emergency fuse: reached ${emergencyIterationFuse} iterations]`;
             break;
         }
         const calls = response.toolCalls;
         toolCallsTotal += calls.length;
         onToolCall?.(iterations, calls);
+        let iterationWarnText = null;
+        for (const threshold of softIterationWarnThresholds) {
+            if (iterations >= threshold && !warnedIterationThresholds.has(threshold)) {
+                warnedIterationThresholds.add(threshold);
+                iterationWarnText = buildIterationWarnText({
+                    iteration: iterations,
+                    threshold,
+                    toolCallsTotal,
+                    role: sessionRef?.role || null,
+                });
+                traceToolLoopWarn({
+                    sessionId,
+                    iteration: iterations,
+                    warnType: 'iteration',
+                    info: { count: iterations, threshold, toolCallsTotal, role: sessionRef?.role || null },
+                });
+                break;
+            }
+        }
         // Append assistant message with tool calls
         messages.push({
             role: 'assistant',
@@ -327,7 +365,9 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 content: result,
                 toolCallId: call.id,
             });
-            // Loop guard: check for repeated identical failures. 3 in a row -> abort.
+            // Loop guard: repeated identical failure signatures still abort as a
+            // safety fuse, but repetition / family / budget caps are advisory
+            // only and prepend soft-warn sidecars onto the tool result.
             const guardResult = checkToolCall(loopGuard, {
                 toolName: call.name,
                 args: call.arguments,
@@ -383,6 +423,15 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             // Soft-cancel after each tool: if close landed during execution,
             // discard the rest of the batch and skip the next provider.send.
             throwIfAborted();
+        }
+        if (iterationWarnText) {
+            for (let i = messages.length - 1; i >= 0; i -= 1) {
+                const msg = messages[i];
+                if (msg && msg.role === 'tool') {
+                    msg.content = `${iterationWarnText}\n\n${msg.content}`;
+                    break;
+                }
+            }
         }
         // About to re-send with tool results — transition back to connecting for the next turn.
         if (sessionId) updateSessionStage(sessionId, 'connecting');

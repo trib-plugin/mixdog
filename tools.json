@@ -9,7 +9,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).",
+    "description": "Reply on the messaging channel. Use `fetch` first to inspect recent messages, then `reply` with `chat_id`/`reply_to`. Prefer plain `text` for normal replies; add `files`, `embeds`, or `components` only when needed.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -148,7 +148,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Download attachments from a message to the local inbox. Use after fetch shows a message has attachments (marked with +Natt). Returns file paths ready to Read.",
+    "description": "Download attachments from a message to the local inbox. Use `fetch` first to find the message, then `download_attachment` when attachments are present (`+Natt`). Returns local file paths ready for `read`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -178,7 +178,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
+    "description": "Fetch recent messages from a channel. Returns oldest-first with message IDs. Use this before `reply`, `download_attachment`, or `react` when you need message ids or attachment context. The platform's search API isn't exposed to bots, so this is the only way to look back.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -719,7 +719,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Big files auto-return a head+tail summary unless `full:true` or offset/limit given — for in-file content search use `grep`, not a full read.",
+    "description": "Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Big files auto-return a head+tail summary unless `full:true` or offset/limit given — for in-file content search use `grep`, not a full read.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -767,6 +767,70 @@
       },
       "required": [
         "path"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "multi_read",
+    "title": "Multi Read",
+    "annotations": {
+      "title": "Multi Read",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Read multiple files in ONE call. Use this when 2+ file paths are already known. Each entry supports the same options as `read` (`mode`, `n`, `offset`, `limit`, `full`) and runs in parallel.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "File path."
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "head",
+                  "tail",
+                  "count"
+                ],
+                "description": "full (default) | head | tail | count."
+              },
+              "n": {
+                "type": "number",
+                "description": "Lines for head / tail mode. Default 20."
+              },
+              "offset": {
+                "type": "number",
+                "description": "Start line for full mode (0-based)."
+              },
+              "limit": {
+                "type": "number",
+                "description": "Max lines for full mode (default 2000)."
+              },
+              "full": {
+                "type": "boolean",
+                "description": "Opt out of the big-file head/tail cap. Default false."
+              }
+            },
+            "required": [
+              "path"
+            ]
+          },
+          "minItems": 1,
+          "description": "List of file reads to execute in parallel."
+        }
+      },
+      "required": [
+        "reads"
       ]
     },
     "module": "builtin"
@@ -834,6 +898,104 @@
     "module": "builtin"
   },
   {
+    "name": "multi_edit",
+    "title": "Multi Edit",
+    "annotations": {
+      "title": "Multi Edit",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Apply multiple ordered replacements to ONE file in one call. Use this when the file is already known and you need several edits without serial `edit` turns. All-or-nothing on that file.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Target file path."
+        },
+        "edits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "old_string": {
+                "type": "string"
+              },
+              "new_string": {
+                "type": "string"
+              },
+              "replace_all": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "old_string",
+              "new_string"
+            ]
+          },
+          "minItems": 1,
+          "description": "Ordered replacements for the same file."
+        }
+      },
+      "required": [
+        "path",
+        "edits"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "batch_edit",
+    "title": "Batch Edit",
+    "annotations": {
+      "title": "Batch Edit",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Apply edits across MULTIPLE files in one call. Different files run in parallel; repeated edits within the same file are grouped and executed as `multi_edit`. Use this instead of serial `edit` across several files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "edits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Target file path."
+              },
+              "old_string": {
+                "type": "string"
+              },
+              "new_string": {
+                "type": "string"
+              },
+              "replace_all": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "old_string",
+              "new_string"
+            ]
+          },
+          "minItems": 1,
+          "description": "Edits across one or more files."
+        }
+      },
+      "required": [
+        "edits"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
     "name": "edit_lines",
     "title": "Edit Lines (line-number based)",
     "annotations": {
@@ -883,7 +1045,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Create or overwrite a file.",
+    "description": "Create or overwrite a file. Prefer `apply_patch` for multi-file or context-heavy edits; use `write` when you are creating a new file or replacing the whole contents intentionally. For multiple whole-file writes in one turn, pass `writes` array.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -894,11 +1056,73 @@
         "content": {
           "type": "string",
           "description": "UTF-8 content."
+        },
+        "writes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Target file path."
+              },
+              "content": {
+                "type": "string",
+                "description": "UTF-8 content."
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ]
+          },
+          "minItems": 1,
+          "description": "Batch whole-file writes. Each item writes one file. Use this when you need to create/replace several files in one call."
+        }
+      },
+      "required": []
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "write_many",
+    "title": "Write Many",
+    "annotations": {
+      "title": "Write Many",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Create or overwrite multiple files in one call. Use this for batch whole-file writes; prefer `apply_patch` for multi-file edits that depend on surrounding context.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "writes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Target file path."
+              },
+              "content": {
+                "type": "string",
+                "description": "UTF-8 content."
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ]
+          },
+          "minItems": 1,
+          "description": "Batch whole-file writes. Each item writes one file."
         }
       },
       "required": [
-        "path",
-        "content"
+        "writes"
       ]
     },
     "module": "builtin"
@@ -950,7 +1174,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "List recent background shell jobs with status, pid, and start time.",
+    "description": "List recent background shell jobs with status, pid, and start time. Use this to discover job ids before `job_wait`, `job_status`, or `job_read`.",
     "inputSchema": {
       "type": "object",
       "properties": {}
@@ -967,7 +1191,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Get status for a background shell job. Returns pid, command, output paths, and completion state.",
+    "description": "Get one snapshot for a background shell job: pid, command, output paths, and completion state. Do NOT poll this in a loop — prefer `job_wait` while the job is still running.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1025,7 +1249,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read stdout/stderr from a background shell job using the same line-oriented behavior as read/tail.",
+    "description": "Read stdout/stderr from a background shell job using the same line-oriented behavior as read/tail. Prefer `job_wait` first; use `job_read` when you need the actual log text after completion or when the status summary is insufficient.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1105,7 +1329,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.",
+    "description": "ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` first; use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1252,7 +1476,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use `glob` for pure path patterns and `grep` for content.",
+    "description": "Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). Use `glob` for pure path patterns, `find_symbol` for identifier lookup, and `grep` for content.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1380,7 +1604,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/references/callers using the same graph-oriented workflow across languages.",
+    "description": "Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. Use `find_symbol` first when you know an identifier (constant, function, class, variable) but not the file.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1393,6 +1617,7 @@
             "related",
             "impact",
             "symbols",
+            "find_symbol",
             "references",
             "callers"
           ],
@@ -1404,11 +1629,52 @@
         },
         "symbol": {
           "type": "string",
-          "description": "Symbol name. Required for references/callers."
+          "description": "Symbol name. Required for find_symbol/references/callers."
+        },
+        "language": {
+          "type": "string",
+          "description": "Optional language filter for find_symbol (e.g. javascript, typescript, python)."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Optional result cap for find_symbol. Default 20, max 50."
         }
       },
       "required": [
         "mode"
+      ]
+    },
+    "module": "code_graph"
+  },
+  {
+    "name": "find_symbol",
+    "title": "Find Symbol",
+    "annotations": {
+      "title": "Find Symbol",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Find a symbol/identifier across the repository and return the best declaration/reference candidates with file:line and nearby code. Prefer this over grep when you know the symbol name but not the file. If a best declaration candidate is returned, read that file directly instead of running another grep on the same identifier.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Symbol or identifier to find."
+        },
+        "language": {
+          "type": "string",
+          "description": "Optional language filter (e.g. javascript, typescript, python)."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Optional result cap. Default 20, max 50."
+        }
+      },
+      "required": [
+        "symbol"
       ]
     },
     "module": "code_graph"
@@ -1609,7 +1875,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Apply a unified-diff patch in ONE turn — inverse of `diff`. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Skips `read` → `edit` round-trip for non-trivial edits; patch context lines self-verify. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.",
+    "description": "Apply a unified-diff patch in ONE turn — inverse of `diff`. Prefer this over repeated `read` → `edit` loops when 2+ files change or the exact edit is already clear. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Patch context lines self-verify, so it skips the normal read-before-edit round-trip. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.",
     "inputSchema": {
       "type": "object",
       "properties": {

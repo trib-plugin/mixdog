@@ -13,6 +13,7 @@ Root-cause tracing:
 - `recall` — similar past bugs, prior fixes, known workarounds
 - `search` — external issue trackers / upstream bug reports / release notes
 - `code_graph` — imports, references, callers (prefer over raw `grep` for symbol-level tracing)
+- `find_symbol` — use when the failing identifier / constant / function name is known but the defining file is not
 - `read` — specific file:line once the origin is located
 
 These retrieval tools return in the SAME turn for delegated role sessions — use them before shell probing.

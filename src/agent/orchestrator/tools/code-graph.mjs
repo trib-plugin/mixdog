@@ -1237,6 +1237,93 @@ function _cheapReferenceSearch(graph, symbol, cwd, { language = null } = {}) {
   return result;
 }
 
+function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 20 } = {}) {
+  const cleanSymbol = String(symbol || '').trim();
+  if (!cleanSymbol) return '(no symbol matches)';
+  _ensureSymbolTokenIndex(graph);
+
+  const indexKey = `${language || '*'}|${cleanSymbol}`;
+  const indexedFiles = graph?._symbolTokenIndex?.get(indexKey);
+  const candidateNodes = indexedFiles
+    ? indexedFiles.map((rel) => graph.nodes.get(rel)).filter(Boolean)
+    : [...graph.nodes.values()].filter((node) => !language || node.lang === language);
+
+  const escaped = cleanSymbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`\\b${escaped}\\b`, 'g');
+  const declRe = new RegExp(`\\b(?:const|let|var|function|class|interface|type|enum|def|export)\\b[^\\n]*\\b${escaped}\\b`);
+  const hits = [];
+
+  for (const node of candidateNodes) {
+    const sourceText = _getSourceTextForNode(graph, node);
+    if (!sourceText.includes(cleanSymbol)) continue;
+    const sourceLines = sourceText.split(/\r?\n/);
+    const lines = _getMaskedLinesForNode(graph, node);
+    let firstLine = null;
+    let firstCol = null;
+    let matchCount = 0;
+    let firstContent = '';
+    let contextLines = [];
+    let declarationLike = Array.isArray(node.topLevelTypes) && node.topLevelTypes.includes(cleanSymbol);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+      re.lastIndex = 0;
+      let localHit = false;
+      let match = null;
+      while ((match = re.exec(line))) {
+        matchCount += 1;
+        localHit = true;
+        if (firstLine == null) {
+          firstLine = i + 1;
+          firstCol = match.index + 1;
+          firstContent = String(sourceLines[i] || '').trim();
+          contextLines = sourceLines.slice(i, i + 3).map((line) => String(line || '').trim()).filter(Boolean);
+        }
+      }
+      if (localHit && declRe.test(line)) declarationLike = true;
+    }
+    if (firstLine == null) continue;
+    hits.push({
+      rel: node.rel,
+      lang: node.lang,
+      line: firstLine,
+      col: firstCol || 1,
+      declarationLike,
+      matchCount,
+      content: firstContent,
+      context: contextLines,
+    });
+  }
+
+  if (!hits.length) return '(no symbol matches)';
+
+  hits.sort((a, b) =>
+    Number(b.declarationLike) - Number(a.declarationLike)
+    || a.rel.localeCompare(b.rel)
+    || a.line - b.line
+  );
+
+  const topHits = hits.slice(0, Math.max(1, limit));
+  const primary = topHits[0];
+  const lines = [];
+  if (primary?.declarationLike) {
+    lines.push('# best declaration candidate');
+    lines.push(`${primary.rel}:${primary.line}:${primary.col} (${primary.lang}, matches=${primary.matchCount})`);
+    if (primary.content) lines.push(primary.content.slice(0, 180));
+    if (Array.isArray(primary.context) && primary.context.length > 1) {
+      lines.push(`context: ${primary.context.slice(0, 3).join(' | ').slice(0, 240)}`);
+    }
+    lines.push('');
+  }
+  lines.push('# candidates');
+  lines.push(...topHits.map((hit, idx) => {
+    const kind = hit.declarationLike ? 'decl' : 'ref';
+    const suffix = hit.content ? ` — ${hit.content.slice(0, 140)}` : '';
+    return `${idx + 1}. ${hit.rel}:${hit.line}:${hit.col} [${kind}, ${hit.lang}, matches=${hit.matchCount}]${suffix}`;
+  }));
+  return lines.join('\n');
+}
+
 function _collapseReferenceLinesToCallers(referenceText) {
   if (typeof referenceText !== 'string' || !referenceText.trim() || referenceText === '(no references)') {
     return '(no callers)';
@@ -1554,6 +1641,14 @@ async function codeGraph(args, cwd) {
     return _extractSymbolsCheap(text, node.lang);
   }
 
+  if (mode === 'find_symbol') {
+    const symbol = String(args?.symbol || '').trim();
+    if (!symbol) throw new Error('code_graph find_symbol: "symbol" is required');
+    const language = String(args?.language || '').trim() || null;
+    const limit = Math.max(1, Math.min(50, Number(args?.limit || 20)));
+    return _findSymbolAcrossGraph(graph, symbol, cwd, { language, limit });
+  }
+
   if (mode === 'references') {
     const symbol = String(args?.symbol || '').trim();
     if (!symbol) throw new Error('code_graph references: "symbol" is required');
@@ -1570,6 +1665,15 @@ async function codeGraph(args, cwd) {
   }
 
   throw new Error(`code_graph: unknown mode "${mode}"`);
+}
+
+async function findSymbolTool(args, cwd) {
+  const graph = _buildCodeGraph(cwd);
+  const symbol = String(args?.symbol || '').trim();
+  if (!symbol) throw new Error('find_symbol: "symbol" is required');
+  const language = String(args?.language || '').trim() || null;
+  const limit = Math.max(1, Math.min(50, Number(args?.limit || 20)));
+  return _findSymbolAcrossGraph(graph, symbol, cwd, { language, limit });
 }
 
 async function renameFileRefs(args, cwd) {
@@ -1969,15 +2073,32 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'code_graph',
     title: 'Code Graph',
     annotations: { title: 'Code Graph', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/references/callers using the same graph-oriented workflow across languages.',
+    description: 'Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. Use `find_symbol` first when you know an identifier (constant, function, class, variable) but not the file.',
     inputSchema: {
       type: 'object',
       properties: {
-        mode: { type: 'string', enum: ['overview', 'imports', 'dependents', 'related', 'impact', 'symbols', 'references', 'callers'], description: 'Graph query mode.' },
+        mode: { type: 'string', enum: ['overview', 'imports', 'dependents', 'related', 'impact', 'symbols', 'find_symbol', 'references', 'callers'], description: 'Graph query mode.' },
         file: { type: 'string', description: 'Path to the target file. Required for non-overview modes.' },
-        symbol: { type: 'string', description: 'Symbol name. Required for references/callers.' },
+        symbol: { type: 'string', description: 'Symbol name. Required for find_symbol/references/callers.' },
+        language: { type: 'string', description: 'Optional language filter for find_symbol (e.g. javascript, typescript, python).' },
+        limit: { type: 'number', description: 'Optional result cap for find_symbol. Default 20, max 50.' },
       },
       required: ['mode'],
+    },
+  },
+  {
+    name: 'find_symbol',
+    title: 'Find Symbol',
+    annotations: { title: 'Find Symbol', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Find a symbol/identifier across the repository and return the best declaration/reference candidates with file:line and nearby code. Prefer this over grep when you know the symbol name but not the file. If a best declaration candidate is returned, read that file directly instead of running another grep on the same identifier.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol or identifier to find.' },
+        language: { type: 'string', description: 'Optional language filter (e.g. javascript, typescript, python).' },
+        limit: { type: 'number', description: 'Optional result cap. Default 20, max 50.' },
+      },
+      required: ['symbol'],
     },
   },
   {
@@ -2017,6 +2138,7 @@ export async function executeCodeGraphTool(name, args, cwd) {
   const effectiveCwd = cwd || process.cwd();
   switch (name) {
     case 'code_graph': return codeGraph(args, effectiveCwd);
+    case 'find_symbol': return findSymbolTool(args, effectiveCwd);
     case 'rename_file_refs': return renameFileRefs(args, effectiveCwd);
     case 'rename_symbol_refs': return renameSymbolRefs(args, effectiveCwd);
     default: throw new Error(`Unknown code-graph tool: ${name}`);

@@ -15,6 +15,7 @@ Primary:
 
 Secondary:
 - `explore` — only when the local codebase itself is the reference.
+- `find_symbol` — when a codebase question names a specific identifier and you want the owning file fast.
 - `read` — a specific local document is named.
 
 Avoid `bash_session` entirely.

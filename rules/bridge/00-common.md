@@ -3,6 +3,23 @@
 - `bridge` is Lead's tool — agents cannot delegate to other bridges.
 - Tool permissions are enforced at call time. If a tool returns a denied error, don't loop — report back.
 
+## First Tool Heuristic
+
+Before free-form planning, map the request to the most decisive first tool:
+
+- exact file names already given → one `read` call with array `path`
+- identifier / constant / env var name known, file unknown → `find_symbol`
+- imports / callers / references / dependents / impact → `code_graph`
+- broad text or config phrase lookup → `grep`
+- pure filename/path discovery → `glob`
+- quick directory shape / recent file clue → `list`
+- external docs / GitHub / web → `search`
+- prior session/project memory → `recall`
+- clear multi-file edit already known → `apply_patch`
+- long-running background command already started → `job_wait`
+
+Do not spend a turn "thinking about which tool to use" when the query already matches one of the cases above.
+
 ## Large tasks: split, don't grind
 
 - If a task spans many files, many renames, many rewrites, or many verifications — do NOT attempt to finish it in one turn. Tool-budget aborts (120× bash, 32× read, etc.) are a signal the scope was too big for one pass, not a signal to retry.
