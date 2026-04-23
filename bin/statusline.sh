@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mixdog statusline wrapper — v0.1.35
+# mixdog statusline wrapper — v0.1.39
 # Line 1 (runtime): model + effort, cost, context window bar, 5h / 7d rate limit, block reset.
 # Line 2 (incoming, from mixdog /bridge/status): sessions, last completed, jobs, schedule, discord, ngrok, recall.
 #
@@ -46,8 +46,17 @@ if [ -n "$CC_JSON" ]; then
   # used_percentage/resets_at in the suffix. Bash parameter expansion = no fork,
   # and this handles nested objects (e.g. context_window.current_usage) that the
   # old `[^}]*` anchor could not skip.
+  #
+  # Scope the context_window slice: cap it at the next sibling key "rate_limits"
+  # so a cold-start payload (where context_window has no used_percentage yet)
+  # cannot accidentally pick up the five_hour used_percentage. Missing field →
+  # CC_CTX_USED stays empty → the bar is omitted instead of showing a wrong value.
   _CTX_TAIL="${CC_JSON#*\"context_window\"}"
-  [ "$_CTX_TAIL" != "$CC_JSON" ] && [[ $_CTX_TAIL =~ \"used_percentage\"[[:space:]]*:[[:space:]]*([0-9.]+) ]] && CC_CTX_USED="${BASH_REMATCH[1]}"
+  if [ "$_CTX_TAIL" != "$CC_JSON" ]; then
+    _CTX_SCOPE="${_CTX_TAIL%%\"rate_limits\"*}"
+    [[ $_CTX_SCOPE =~ \"used_percentage\"[[:space:]]*:[[:space:]]*([0-9.]+) ]] && CC_CTX_USED="${BASH_REMATCH[1]}"
+    unset _CTX_SCOPE
+  fi
   _5H_TAIL="${CC_JSON#*\"five_hour\"}"
   if [ "$_5H_TAIL" != "$CC_JSON" ]; then
     [[ $_5H_TAIL =~ \"used_percentage\"[[:space:]]*:[[:space:]]*([0-9.]+) ]] && CC_RL_5H="${BASH_REMATCH[1]}"
