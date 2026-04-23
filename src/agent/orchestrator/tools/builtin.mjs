@@ -1,5 +1,5 @@
 import { exec, spawn, spawnSync } from 'child_process';
-import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, readdirSync, mkdirSync, openSync, readSync, closeSync, renameSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, readdirSync, mkdirSync, openSync, readSync, closeSync, renameSync, unlinkSync, realpathSync } from 'fs';
 import * as fsPromises from 'fs/promises';
 import { readFile } from 'fs/promises';
 import { createInterface } from 'readline';
@@ -442,6 +442,29 @@ function capShellOutput(content) {
 const READ_MAX_SIZE_BYTES = 256 * 1024;
 const READ_MAX_OUTPUT_BYTES = 100 * 1024;
 
+// Binary detection: reading a PNG / ELF / zip / compressed blob as utf-8
+// pollutes the context with U+FFFD characters and wastes tokens. Sample the
+// first 4 KB and look for a null byte — the canonical signal that the file
+// is not plain text. The sampling is synchronous (small) and only runs on
+// files that have already passed the size cap and safe-path checks.
+function isBinaryFile(fullPath, bytesToSample = 4096) {
+    let fd = null;
+    try {
+        fd = openSync(fullPath, 'r');
+        const buf = Buffer.alloc(Math.min(bytesToSample, 4096));
+        const n = readSync(fd, buf, 0, buf.length, 0);
+        if (n === 0) return false;
+        for (let i = 0; i < n; i++) {
+            if (buf[i] === 0) return true;
+        }
+        return false;
+    } catch {
+        return false;
+    } finally {
+        if (fd !== null) { try { closeSync(fd); } catch {} }
+    }
+}
+
 // Streaming path for large files when offset/limit is provided. Mirrors
 // Claude Code's FileReadTool large-file branch: instead of loading the
 // whole file into memory (which blows the 256KB cap for legitimate
@@ -536,6 +559,11 @@ async function openForRead(filePath, workDir, opts = {}) {
         throw Object.assign(
             new Error(`file size ${st.size} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap`),
             { code: 'ETOOBIG', size: st.size, fullPath, st });
+    }
+    if (isBinaryFile(fullPath)) {
+        throw Object.assign(
+            new Error(`file appears to be binary (contains null bytes): ${normalizeOutputPath(norm)}`),
+            { code: 'EBINARY' });
     }
     const content = await readFile(fullPath, 'utf-8');
     return { fullPath, content, displayPath: normalizeOutputPath(norm), st };
@@ -891,7 +919,7 @@ export const BUILTIN_TOOLS = [
         name: 'grep',
         title: 'Grep',
         annotations: { title: 'Grep', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` first; use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.',
+        description: 'ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -932,7 +960,7 @@ export const BUILTIN_TOOLS = [
         name: 'list',
         title: 'List Directory',
         annotations: { title: 'List Directory', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). Use `glob` for pure path patterns, `find_symbol` for identifier lookup, and `grep` for content.',
+        description: 'Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). Use `find` mode to filter by filename pattern within a directory tree; for repository-wide filename pattern search use `glob` instead, and for in-file content search use `grep`. Use `find_symbol` for identifier lookup.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -1438,6 +1466,22 @@ export function isSafePath(filePath, cwd, { allowHome = false } = {}) {
         if (home && isInside(normalized, normalize(home))) return true;
         return false;
     }
+    // Symlink scope re-check. A symlink inside cwd (or any intermediate
+    // symlink in the path) can point outside cwd; without this resolve step
+    // the containment check above passes on the link path while the
+    // downstream readFile / writeFile follows the link to the outside
+    // target, bypassing the sandbox. realpathSync throws on nonexistent
+    // paths — in that case we defer to the natural failure of the caller
+    // (no escape is possible since the path never resolves).
+    try {
+        const real = normalize(realpathSync(normalized));
+        if (real !== normalized && !isInside(real, baseCwd)) {
+            if (!allowHome) return false;
+            const home = process.env.HOME || process.env.USERPROFILE || '';
+            if (home && isInside(real, normalize(home))) return true;
+            return false;
+        }
+    } catch { /* path doesn't resolve — let caller fail naturally */ }
     return true;
 }
 function resolveAgainstCwd(filePath, cwd) {
@@ -2554,6 +2598,9 @@ export async function executeBuiltinTool(name, args, cwd) {
                 if (!hasRangeArgs) {
                     return `Error: file size ${st.size} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap. Use offset+limit to read a range.`;
                 }
+                if (isBinaryFile(fullPath)) {
+                    return `Error: file appears to be binary (contains null bytes): ${normalizeOutputPath(filePath)}`;
+                }
                 try {
                     const out = await streamReadRange(fullPath, offset, limit);
                     _cacheSet(cacheKey, out, { paths: [fullPath] });
@@ -2562,6 +2609,9 @@ export async function executeBuiltinTool(name, args, cwd) {
                 } catch (err) {
                     return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
                 }
+            }
+            if (isBinaryFile(fullPath)) {
+                return `Error: file appears to be binary (contains null bytes): ${normalizeOutputPath(filePath)}`;
             }
             try {
                 const content = await readFile(fullPath, 'utf-8');

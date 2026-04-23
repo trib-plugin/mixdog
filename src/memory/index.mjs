@@ -728,6 +728,9 @@ async function handleMemoryAction(args) {
   }
 
   if (action === 'rebuild') {
+    if (args.confirm !== 'REBUILD MEMORY') {
+      return { text: 'rebuild requires confirm: "REBUILD MEMORY" (truncates classification columns and re-runs cycles)', isError: true }
+    }
     db.prepare(`UPDATE entries SET chunk_root = NULL, is_root = 0 WHERE chunk_root = id`).run()
     db.prepare(`UPDATE entries SET chunk_root = NULL WHERE is_root = 0`).run()
     db.prepare(`
@@ -745,6 +748,9 @@ async function handleMemoryAction(args) {
   }
 
   if (action === 'prune') {
+    if (args.confirm !== 'PRUNE OLD ENTRIES') {
+      return { text: 'prune requires confirm: "PRUNE OLD ENTRIES" (permanently deletes unclassified entries older than maxDays)', isError: true }
+    }
     const days = Math.max(1, Number(args.maxDays ?? 30))
     const result = pruneOldEntries(db, days)
     return { text: `prune: deleted ${result.deleted} unclassified entries older than ${days} days` }
@@ -879,8 +885,8 @@ const TOOL_DEFS = [
   {
     name: 'memory',
     title: 'Memory Cycle',
-    annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: 'Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild, prune, cycle1, backfill, status, remember (store fact), forget (archive a root), delete (wipe all entries; requires confirm).',
+    annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    description: 'Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild (requires confirm: "REBUILD MEMORY"), prune (requires confirm: "PRUNE OLD ENTRIES"), cycle1, backfill, status, remember (store fact), forget (archive a root), delete (requires confirm: "DELETE ALL MEMORY" — wipes all entries).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -892,7 +898,7 @@ const TOOL_DEFS = [
         window: { type: 'string', description: 'Time window: 1d, 3d, 7d, 30d, all' },
         limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
         id: { type: 'number', description: 'Entry id for forget action.' },
-        confirm: { type: 'string', description: 'Required for delete action. Must be exactly "DELETE ALL MEMORY".' },
+        confirm: { type: 'string', description: 'Required for destructive actions: "DELETE ALL MEMORY" for delete, "PRUNE OLD ENTRIES" for prune, "REBUILD MEMORY" for rebuild. Must match exactly.' },
       },
       required: ['action'],
     },
@@ -919,7 +925,7 @@ const TOOL_DEFS = [
     title: 'Explore',
     aiWrapped: true,
     annotations: { title: 'Explore', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: 'Internal codebase search. `query`: string or array (parallel fan-out). `cwd` is authoritative search root (no silent fan-out). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.',
+    description: 'Internal codebase search. Local filesystem only — not web, not memory. `query`: string or array (parallel fan-out). `cwd` is authoritative search root (no silent fan-out). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.',
     inputSchema: {
       type: 'object',
       properties: {

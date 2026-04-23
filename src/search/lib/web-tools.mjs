@@ -239,6 +239,48 @@ function extractReadableArticle(url, html) {
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 const MAX_REDIRECTS = 5
+// Hard cap on response body size (10 MB) to prevent memory DoS from a
+// hostile / misconfigured URL returning a huge body. Applied in two places:
+//   1. Content-Length pre-check (cheap reject before reading bytes).
+//   2. Streaming byte counter (covers chunked transfer / missing header).
+const MAX_BODY_BYTES = 10 * 1024 * 1024
+
+async function readBodyWithCap(response, maxBytes) {
+  const contentLength = Number(response.headers.get('content-length') || 0)
+  if (contentLength > maxBytes) {
+    throw new Error(`response body too large: Content-Length=${contentLength} > cap=${maxBytes}`)
+  }
+  const reader = response.body?.getReader?.()
+  if (!reader) {
+    // Fallback for environments without a readable stream — post-check length.
+    const text = await response.text()
+    if (text.length > maxBytes) {
+      throw new Error(`response body too large: ${text.length} bytes > cap=${maxBytes}`)
+    }
+    return text
+  }
+  const chunks = []
+  let total = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        try { await reader.cancel() } catch {}
+        throw new Error(`response body too large: received ${total}+ bytes > cap=${maxBytes}`)
+      }
+      chunks.push(value)
+    }
+  } finally {
+    try { reader.releaseLock() } catch {}
+  }
+  const decoder = new TextDecoder('utf-8', { fatal: false })
+  let text = ''
+  for (const chunk of chunks) text += decoder.decode(chunk, { stream: true })
+  text += decoder.decode()
+  return text
+}
 
 async function fetchHtml(url, timeoutMs) {
   const controller = new AbortController()
@@ -267,7 +309,7 @@ async function fetchHtml(url, timeoutMs) {
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }
-      return await response.text()
+      return await readBodyWithCap(response, MAX_BODY_BYTES)
     }
   } finally {
     clearTimeout(timer)
@@ -321,6 +363,9 @@ async function scrapeWithPuppeteer(url, timeoutMs) {
     assertPublicUrl(finalUrl)
     await assertResolvedIps(new URL(finalUrl).hostname)
     const html = await page.content()
+    if (html.length > MAX_BODY_BYTES) {
+      throw new Error(`puppeteer page content too large: ${html.length} bytes > cap=${MAX_BODY_BYTES}`)
+    }
     try {
       return {
         ...extractReadableArticle(url, html),

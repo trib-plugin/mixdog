@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mixdog statusline wrapper — v0.1.41
+# mixdog statusline wrapper — v0.1.42
 # Line 1 (runtime): model + effort, cost, context window bar, 5h / 7d rate limit, block reset.
 # Line 2 (incoming, from mixdog /bridge/status): sessions, last completed, jobs, schedule, discord, ngrok, recall.
 #
@@ -170,9 +170,11 @@ if [ -n "$CC_EFFORT" ]; then
 fi
 
 # Context int — bash arithmetic trims fractional part (no awk).
-CTX_INT=""
+# Default to 0 when the payload hasn't populated context_window yet, so the
+# bar starts at 0% instead of being hidden.
+CTX_INT="0"
 if [ -n "$CC_CTX_USED" ]; then
-  printf -v CTX_INT "%.0f" "$CC_CTX_USED" 2>/dev/null || CTX_INT=""
+  printf -v CTX_INT "%.0f" "$CC_CTX_USED" 2>/dev/null || CTX_INT="0"
 fi
 
 RL_5H_INT=""
@@ -304,49 +306,30 @@ if [ "$B_SESS_ACTIVE" -gt 0 ] 2>/dev/null; then
   fi
 fi
 
-# Last completed
-if [ -n "$B_LAST_ROLE" ]; then
-  _ago="${B_LAST_AGO:-0}"
-  if [ "$_ago" -le 0 ] 2>/dev/null; then
-    add_l2 "Last $B_LAST_ROLE just now"
-  else
-    add_l2 "Last $B_LAST_ROLE ${_ago}m"
-  fi
-  unset _ago
-fi
+# L2 is now agents-only. Jobs / Schedule / Roster / Discord / Recall segments
+# were removed — the sessions segment is the only one the user tracks.
 
-# Jobs
-[ "$B_JOBS" -gt 0 ] 2>/dev/null && add_l2 "$B_JOBS Jobs"
-
-# Schedule next
-if [ -n "$SCHED_NEXT_HHMM" ]; then
-  _n="${B_SCHED_NEXT_NAME:0:15}"
-  if [ -n "$_n" ]; then
-    add_l2 "Next $SCHED_NEXT_HHMM $_n"
-  else
-    add_l2 "Next $SCHED_NEXT_HHMM"
-  fi
-  unset _n
-fi
-
-# Roster
-if [ "$B_SCHED_ACTIVE" -gt 0 ] 2>/dev/null; then
-  if [ "$B_SCHED_DEFERRED" -gt 0 ] 2>/dev/null; then
-    add_l2 "$B_SCHED_ACTIVE Scheduled ($B_SCHED_DEFERRED def)"
-  else
-    add_l2 "$B_SCHED_ACTIVE Scheduled"
-  fi
-fi
-
-# Discord
-[ -n "$B_DISCORD_UNREAD" ] && [ "$B_DISCORD_UNREAD" -gt 0 ] 2>/dev/null && add_l2 "$B_DISCORD_UNREAD Unread"
-
-# Recall
-[ "$B_RECALL" -gt 0 ] 2>/dev/null && add_l2 "$B_RECALL Recall"
 
 # If L2 is just "Idle", suppress — runtime line already conveys idle state.
 if [ "$L2" = "Idle" ]; then
   L2=""
+fi
+
+# ── Debug trace: capture moments when the bridge status endpoint doesn't
+# respond. Most common cause of L2 suddenly going blank while agents are
+# clearly running. Minimal overhead — only writes when BRIDGE_JSON is empty.
+if [ -z "$BRIDGE_JSON" ]; then
+  _TRACE_DIR="$HOME/.claude/plugins/data/mixdog-trib-plugin"
+  if [ -d "$_TRACE_DIR" ]; then
+    if [ -r "$STATUS_ADVERT" ]; then _advert=present; else _advert=missing; fi
+    printf '%s NOBRIDGE port=%s advert=%s\n' \
+      "$(date '+%Y-%m-%d %H:%M:%S')" \
+      "${STATUS_PORT:-?}" \
+      "$_advert" \
+      >> "$_TRACE_DIR/statusline-trace.log" 2>/dev/null
+    unset _advert
+  fi
+  unset _TRACE_DIR
 fi
 
 printf '%s\n' "${L1:-mixdog}"

@@ -1351,7 +1351,7 @@ const TOOL_DEFS = [
   {
     name: "reply",
     title: "Discord Reply",
-    annotations: { title: "Discord Reply", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { title: "Discord Reply", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     description: "Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).",
     inputSchema: {
       type: "object",
@@ -1399,7 +1399,7 @@ const TOOL_DEFS = [
   {
     name: "edit_message",
     title: "Edit Message",
-    annotations: { title: "Edit Message", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { title: "Edit Message", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     description: "Edit a message the bot previously sent. Supports text, embeds, and components.",
     inputSchema: {
       type: "object",

@@ -263,7 +263,7 @@ const TOOLS = [
   {
     name: 'list_models',
     title: 'List Models',
-    annotations: { title: 'List Models', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: { title: 'List Models', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'List available models from all providers.',
     inputSchema: { type: 'object', properties: {} },
   },
@@ -342,7 +342,7 @@ const TOOLS = [
     name: 'bridge',
     title: 'Bridge to External Model',
     annotations: { title: 'Bridge to External Model', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (default bindings: worker→SONNET HIGH, reviewer→OPUS XHIGH, debugger→OPUS XHIGH, tester→SONNET HIGH). Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early.',
+    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (default bindings: worker→SONNET HIGH, reviewer→OPUS XHIGH, debugger→OPUS XHIGH, tester→SONNET HIGH). Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -843,10 +843,12 @@ export async function handleToolCall(name, args, opts = {}) {
           let stallWatch = { stop() {}, fired() { return false; } };
           try {
             updateSessionStatus(session.id, 'running');
-            // Bridge Start — non-silent MCP Noti so both Lead and user terminal
-            // see the lifecycle banner. Done / Error emissions (further below)
-            // also stay non-silent for consistent 3-event shape.
-            emit(`${modelTag}${role} started`);
+            // Bridge Start — silent_to_agent so the "started" lifecycle ping
+            // surfaces on Discord / user terminal but does NOT land in the Lead
+            // agent's context (redundant since Lead already knows it just
+            // dispatched). Done / Error emissions below stay non-silent so the
+            // Lead receives the result / failure.
+            emit(`${modelTag}${role} started`, { silent_to_agent: true });
             // Per-session stall watchdog — complements the orchestrator's
             // stream-watchdog (which fires at 300s/600s on raw stream silence).
             // This one catches the bridge-specific case where the lead is

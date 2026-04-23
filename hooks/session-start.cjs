@@ -241,16 +241,31 @@ function buildRecapEntriesText(db) {
     const lines = rows.map(r => {
       const tsStr = formatTs(r.ts);
       if (r.is_root === 1) {
-        const cat = r.category ? `[${r.category}] ` : '';
-        const element = r.element ?? '';
-        const summary = r.summary ?? '';
-        const combined = `${cat}${element}${summary ? ' — ' + summary : ''}`;
-        return `[${tsStr}] ${combined.slice(0, 1000)}`;
+        const category = String(r.category || '').trim();
+        const element = String(r.element || '').trim();
+        const summary = String(r.summary || '').trim().slice(0, 1000);
+        return [
+          '[[entry]]',
+          'type: root_summary',
+          `id: ${r.id}`,
+          `ts: ${tsStr}`,
+          `category: ${category || '-'}`,
+          `element: ${element || '-'}`,
+          `summary: ${summary || '-'}`,
+        ].join('\n');
       }
-      const prefix = r.role === 'user' ? 'u' : r.role === 'assistant' ? 'a' : (r.role || '?');
-      return `[${tsStr}] ${prefix}: ${cleanText(String(r.content || '')).slice(0, 1000)}`;
+      const role = String(r.role || '?').trim() || '?';
+      const content = cleanText(String(r.content || '')).slice(0, 1000);
+      return [
+        '[[entry]]',
+        'type: raw_turn',
+        `id: ${r.id}`,
+        `ts: ${tsStr}`,
+        `role: ${role}`,
+        `content: ${content || '-'}`,
+      ].join('\n');
     });
-    const text = lines.reverse().join('\n');
+    const text = lines.reverse().join('\n\n');
     return text.length > 20 ? text : '';
   } catch (e) {
     process.stderr.write(`[session-start] recap build failed: ${e.message}\n`);
@@ -278,7 +293,18 @@ function requestLlmRecap(entriesText, timeoutMs) {
       const port = active?.httpPort;
       if (!port) return resolve(null);
 
-      const payload = JSON.stringify({ prompt: entriesText });
+      const recapInput = [
+        'Below is the recap input extracted from the memory store.',
+        'The format is already correct. Do not ask for another format.',
+        'Each [[entry]] block is one memory entry.',
+        '- type: root_summary -> use category / element / summary',
+        '- type: raw_turn -> use role / content',
+        'Write the final handoff note directly from these entries.',
+        '',
+        entriesText,
+      ].join('\n');
+
+      const payload = JSON.stringify({ prompt: recapInput });
       const req = http.request({
         hostname: '127.0.0.1',
         port,
@@ -295,9 +321,12 @@ function requestLlmRecap(entriesText, timeoutMs) {
         res.on('end', () => {
           try {
             const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            const summary = body?.summary;
-            if (res.statusCode === 200 && typeof summary === 'string' && summary.trim()) {
-              resolve(summary.trim());
+            const summary = typeof body?.summary === 'string' ? body.summary.trim() : '';
+            const invalid =
+              !summary ||
+              /provide the entries|format i can process|structured memory entries|pointer to where they'?re stored|which would you prefer/i.test(summary);
+            if (res.statusCode === 200 && !invalid) {
+              resolve(summary);
             } else {
               resolve(null);
             }
@@ -338,7 +367,7 @@ function requestLlmRecap(entriesText, timeoutMs) {
   const memoryBlocks = buildMemoryBlocks();
   let recapBlock = '';
   if (memoryBlocks.recapEntries) {
-    const llmSummary = await requestLlmRecap(memoryBlocks.recapEntries, 30000);
+    const llmSummary = await requestLlmRecap(memoryBlocks.recapEntries, 25000);
     recapBlock = llmSummary
       ? '## Session Recap\n\n' + llmSummary
       : '## Session Recap\n\n' + memoryBlocks.recapEntries;

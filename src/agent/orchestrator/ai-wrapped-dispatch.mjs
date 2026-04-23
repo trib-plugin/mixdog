@@ -183,8 +183,23 @@ function parseGrepBestCandidate(rawText) {
   return null
 }
 
+// Explore fast path runs before the LLM call and, if it finds a candidate,
+// returns its synthesized answer directly — skipping the LLM entirely. That's
+// correct for simple "where is X defined?" queries but wrong for multi-angle
+// research queries that just happen to mention an identifier. Gate on prompt
+// shape: short, non-imperative only.
+function _isSimpleExploreLookup(query) {
+  const text = String(query || '').trim()
+  if (!text) return false
+  const words = text.split(/\s+/).filter(Boolean)
+  if (words.length > 12) return false
+  if (/\b(list|propose|evaluate|identify|trace|review|audit|summarize|design|implement|refactor|analyze|compare|suggest|recommend|walkthrough|walk\s+through)\b/i.test(text)) return false
+  return true
+}
+
 async function runExploreFastPath(query, cwd) {
   if (!cwd) return null
+  if (!_isSimpleExploreLookup(query)) return null
   const identifier = extractIdentifierCandidate(query)
   if (!identifier) return null
   let symbolResult

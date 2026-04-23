@@ -2171,7 +2171,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_imports',
     title: 'Find Imports',
     annotations: { title: 'Find Imports', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Direct imports of a file. Use this instead of `code_graph(mode:"imports")` when you already know the file path. Optimized alias for quicker tool selection in the main session.',
+    description: 'What does this file import from others? Returns modules/files that the target file pulls in. Use this instead of `code_graph(mode:"imports")` when you already know the file path. Optimized alias for quicker tool selection in the main session.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2184,7 +2184,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_dependents',
     title: 'Find Dependents',
     annotations: { title: 'Find Dependents', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Files that depend on or import the target file. Use this instead of `code_graph(mode:"dependents")` when you already know the file path. Optimized alias for quicker tool selection in the main session.',
+    description: 'Who imports from this file? Returns files that depend on or pull in the target file. Use this instead of `code_graph(mode:"dependents")` when you already know the file path. Optimized alias for quicker tool selection in the main session.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2197,7 +2197,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_references',
     title: 'Find References',
     annotations: { title: 'Find References', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Find references for a symbol across the repository. Use this instead of `code_graph(mode:"references")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required.',
+    description: 'Find references for a symbol across the repository. Use this instead of `code_graph(mode:"references")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. For non-function symbols (constants, type aliases, variables), this is the correct tool — `find_callers` only matches call-site invocations.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2212,7 +2212,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_callers',
     title: 'Find Callers',
     annotations: { title: 'Find Callers', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Find caller files for a symbol across the repository. Use this instead of `code_graph(mode:"callers")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required.',
+    description: 'Find caller files for a symbol across the repository. Use this instead of `code_graph(mode:"callers")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. Only matches call-site invocations — for non-function symbols (constants, type aliases, variables), prefer `find_references` instead.',
     inputSchema: {
       type: 'object',
       properties: {

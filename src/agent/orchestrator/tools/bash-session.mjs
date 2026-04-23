@@ -163,17 +163,44 @@ function _startReaper() {
     if (typeof _reaperTimer.unref === 'function') _reaperTimer.unref();
 }
 
+// Kill a spawned shell along with any child processes it forked. Posix path
+// signals the process group (pgid == pid because we spawn with detached:true),
+// so `sleep 1000 &` or a node server started inside the session is reaped
+// instead of being left orphaned holding pipes open. Windows uses taskkill
+// /T /F to walk the process tree. SIGTERM is sent first so well-behaved
+// children can shut down cleanly; a SIGKILL escalation timer (3 s) forces the
+// issue if they don't. Safe to call multiple times — all errors swallowed.
+function _killProcessTree(proc) {
+    if (!proc || proc.killed) return;
+    const pid = proc.pid;
+    if (!pid) return;
+    try {
+        if (process.platform === 'win32') {
+            // /T walks the tree, /F forces — no graceful SIGTERM on win.
+            spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
+        } else {
+            try { process.kill(-pid, 'SIGTERM'); }
+            catch { try { proc.kill('SIGTERM'); } catch { /* ignore */ } }
+        }
+    } catch { /* ignore */ }
+    // Escalate to SIGKILL if still alive. Windows taskkill /F is already
+    // forceful, so only posix needs the escalation timer.
+    if (process.platform !== 'win32') {
+        const esc = setTimeout(() => {
+            if (proc.killed) return;
+            try { process.kill(-pid, 'SIGKILL'); }
+            catch { try { proc.kill('SIGKILL'); } catch { /* ignore */ } }
+        }, 3000);
+        if (typeof esc.unref === 'function') esc.unref();
+    }
+}
+
 function _killSession(id, _reason) {
     const s = _sessions.get(id);
     if (!s) return;
     _sessions.delete(id);
-    try {
-        s.proc.stdin?.end();
-    } catch { /* ignore */ }
-    try {
-        // SIGTERM first; if the child ignores it the OS reaps on process exit.
-        s.proc.kill('SIGTERM');
-    } catch { /* ignore */ }
+    try { s.proc.stdin?.end(); } catch { /* ignore */ }
+    _killProcessTree(s.proc);
 }
 
 function _evictOldestIfFull() {
@@ -224,6 +251,12 @@ function _spawnSession(id) {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: buildBashEnv(),
         windowsHide: true,
+        // detached:true on posix gives the child its own process group so
+        // _killProcessTree can signal the whole group (catches `sleep 1000 &`
+        // and similar backgrounded children). Skipped on win32 where
+        // detached has different semantics (no console attached, used for
+        // daemonization — unwanted here).
+        detached: process.platform !== 'win32',
     });
     proc.stdout.setEncoding('utf-8');
     proc.stderr.setEncoding('utf-8');
@@ -337,7 +370,7 @@ function _runCommand(entry, command, timeoutMs) {
             const partialErr = entry.stderrBuf;
             entry.stdoutBuf = '';
             entry.stderrBuf = '';
-            try { entry.proc.kill('SIGTERM'); } catch { /* ignore */ }
+            _killProcessTree(entry.proc);
             cleanup();
             // Return a structured result (not a reject) so the caller
             // renders a proper exit/stderr block instead of a bare Error.
@@ -469,7 +502,7 @@ export const BASH_SESSION_TOOL_DEFS = [
             properties: {
                 command: { type: 'string', description: 'Shell command to execute in the session.' },
                 session_id: { type: 'string', description: 'Existing session to reuse. Omit to create a new one; the id is returned in the response header as `[session: <id>]`. Unknown ids are minted (stable resume).' },
-                timeout: { type: 'number', description: 'Command timeout. Values ≤ 600 are treated as seconds; larger values as ms. Default 30 s, max 600 s. On timeout the session is killed (caller should mint a new one).' },
+                timeout: { type: 'number', description: 'Command timeout in milliseconds. Default 30000, max 600000. On timeout the session is killed (caller should mint a new one). Note: dual-unit behaviour (values ≤ 600 treated as seconds) is deprecated — pass milliseconds only.' },
                 close: { type: 'boolean', description: 'Close the session after this command returns. Default false.' },
             },
             required: ['command'],

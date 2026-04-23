@@ -325,6 +325,21 @@ function providerCacheKey(provider) {
     return `mixdog-${PROVIDER_ALIAS[provider] || provider}`;
 }
 
+// Fast-path eligibility gate. The bridge fast paths (find_symbol / env-grep /
+// code_graph direct) skip the LLM and return a synthesized one-liner. That's
+// great for "where is X defined?" but catastrophic when the prompt is a long
+// multi-step instruction that merely mentions an identifier — the agent then
+// answers with a random symbol match and 0 LLM output. Require short,
+// non-imperative prompts before any fast path may fire.
+function _isSimpleIdentifierLookup(prompt) {
+    const text = String(prompt || '').trim();
+    if (!text) return false;
+    const words = text.split(/\s+/).filter(Boolean);
+    if (words.length > 12) return false;
+    if (/\b(list|propose|evaluate|identify|trace|review|audit|summarize|design|implement|refactor|analyze|compare|suggest|recommend|walkthrough|walk\s+through)\b/i.test(text)) return false;
+    return true;
+}
+
 function _extractBridgeIdentifier(prompt) {
     const text = String(prompt || '');
     const backticked = text.match(/`([^`]{2,120})`/);
@@ -617,8 +632,11 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
         }
     }
 
-    // Strong structural signals first — no intent classification required.
-    if (identifier && (intent === 'definition_lookup' || intent === null)) {
+    // Strong structural signals first — require explicit definition_lookup
+    // classification AND a simple-lookup-shaped prompt. The previous `|| intent
+    // === null` fallthrough misfired on any long instruction that happened to
+    // contain an identifier.
+    if (identifier && intent === 'definition_lookup' && _isSimpleIdentifierLookup(prompt)) {
         const symbolText = await executeInternalTool('find_symbol', { symbol: identifier }).catch(() => null);
         const candidateFromSymbol = symbolText ? _parseFindSymbolBestCandidate(symbolText) : null;
         if (candidateFromSymbol?.filePath && Number.isFinite(candidateFromSymbol.line)) {
@@ -632,7 +650,10 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
         }
     }
 
-    if (identifier && _isEnvLikeIdentifier(identifier)) {
+    // Env-flag shape (ALL_CAPS_WITH_UNDERSCORES) has no intent gate because it
+    // is a strong structural signal on its own. Still require a simple-lookup
+    // prompt so "list all FOO_BAR usages in ..." long instructions don't hijack.
+    if (identifier && _isEnvLikeIdentifier(identifier) && _isSimpleIdentifierLookup(prompt)) {
         const grepArgs = {
             pattern: identifier,
             path: effectiveCwd || session.cwd || process.cwd(),

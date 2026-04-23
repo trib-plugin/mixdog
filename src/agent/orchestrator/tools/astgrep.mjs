@@ -376,7 +376,7 @@ async function sgSearch(args, cwd) {
 }
 
 async function sgRewrite(args, cwd) {
-  const { pattern, rewrite, path, lang, globs, apply } = args || {};
+  const { pattern, rewrite, path, lang, globs, apply, confirm } = args || {};
   if (!pattern || typeof pattern !== 'string') {
     throw new Error('sg_rewrite: "pattern" is required (string)');
   }
@@ -385,6 +385,13 @@ async function sgRewrite(args, cwd) {
   }
   if (!path || typeof path !== 'string') {
     throw new Error('sg_rewrite: "path" is required (file or directory)');
+  }
+  // Require an explicit confirm token when apply:true is set. The rewrite
+  // is non-atomic per-file (see the ATOMICITY LIMITATION block below) and
+  // can crash mid-run, leaving files half-written. The confirm gate makes
+  // accidental apply in automation infeasible — the caller must affirm.
+  if (apply === true && confirm !== 'APPLY REWRITE') {
+    return 'Error: sg_rewrite apply:true requires confirm: "APPLY REWRITE" (non-atomic per-file rewrite; see description for crash-sensitive paths)';
   }
   scopeCheck('sg_rewrite', path, cwd);
   const absPath = resolvePath(cwd, path);
@@ -489,7 +496,8 @@ export const ASTGREP_TOOL_DEFS = [
         path: { type: 'string', description: 'File or directory to rewrite. Absolute or cwd-relative.' },
         lang: { type: 'string', description: 'Language override. See sg_search.' },
         globs: { description: 'Include / exclude glob(s). See sg_search.', anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
-        apply: { type: 'boolean', description: 'Apply the rewrite and write to disk. Default false (dry-run preview only).' },
+        apply: { type: 'boolean', description: 'Apply the rewrite and write to disk. Default false (dry-run preview only). When true, `confirm: "APPLY REWRITE"` is also required.' },
+        confirm: { type: 'string', description: 'Required when apply:true — must equal exactly "APPLY REWRITE". Gates against accidental non-atomic file rewrites.' },
       },
       required: ['pattern', 'rewrite', 'path'],
     },
