@@ -1826,10 +1826,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (path === '/open') {
-    if (!windowOpen) {
-      openAppWindow();
-      windowOpen = true;
-    }
+    openAppWindow();
+    windowOpen = true;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;

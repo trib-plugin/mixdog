@@ -4,6 +4,11 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.9] - Unreleased
+
+### Fixed
+- **Config UI re-open is now idempotent**: the setup-server `/open` endpoint previously skipped `openAppWindow()` when its in-memory `windowOpen` flag was already `true`, which stuck at `true` even when the initial browser spawn silently failed. Subsequent `/mixdog:config` invocations returned 200 without actually opening anything. The flag gate has been removed — every `/open` request now re-triggers the platform browser spawn, so re-running the command self-recovers from a missed first open.
+
 ## [0.1.8] - Unreleased
 
 ### Fixed
