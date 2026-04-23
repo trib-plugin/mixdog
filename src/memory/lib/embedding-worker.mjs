@@ -1,6 +1,7 @@
 import { parentPort } from 'worker_threads'
 import { createRequire } from 'module'
 import { join } from 'path'
+import { pathToFileURL } from 'url'
 import { mkdirSync } from 'fs'
 
 const MODEL_ID = 'Xenova/bge-m3'
@@ -36,7 +37,14 @@ function patchOrtThreads() {
   if (ortPatched) return
   try {
     const require = createRequire(import.meta.url)
-    const ort = require('onnxruntime-node')
+    let ort = null
+    try {
+      const transformersPkg = require.resolve('@huggingface/transformers/package.json')
+      const transformersRequire = createRequire(pathToFileURL(transformersPkg))
+      ort = transformersRequire('onnxruntime-node')
+    } catch {
+      ort = require('onnxruntime-node')
+    }
     if (!ort?.InferenceSession?.create) {
       process.stderr.write('[embed-worker] ORT patch skipped: InferenceSession.create not found\n')
       return
@@ -70,7 +78,10 @@ async function loadExtractor() {
       }
       const startMs = Date.now()
       let extractor
-      const preferGpu = (process.env.MIXDOG_MEMORY_EMBED_DEVICE || 'auto') !== 'cpu'
+      const requestedDevice = String(process.env.MIXDOG_MEMORY_EMBED_DEVICE || 'auto').trim().toLowerCase()
+      const preferGpu = requestedDevice === 'dml'
+        || requestedDevice === 'gpu'
+        || (requestedDevice === 'auto' && process.platform === 'win32')
       if (preferGpu) {
         try {
           extractor = await pipeline('feature-extraction', MODEL_ID, { ...opts, device: 'dml' })

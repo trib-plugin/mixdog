@@ -1237,9 +1237,9 @@ function _cheapReferenceSearch(graph, symbol, cwd, { language = null } = {}) {
   return result;
 }
 
-function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 20 } = {}) {
+function _findSymbolHits(graph, symbol, { language = null } = {}) {
   const cleanSymbol = String(symbol || '').trim();
-  if (!cleanSymbol) return '(no symbol matches)';
+  if (!cleanSymbol) return [];
   _ensureSymbolTokenIndex(graph);
 
   const indexKey = `${language || '*'}|${cleanSymbol}`;
@@ -1302,6 +1302,13 @@ function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 2
     || a.rel.localeCompare(b.rel)
     || a.line - b.line
   );
+  return hits;
+}
+
+function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 20 } = {}) {
+  const hits = _findSymbolHits(graph, symbol, { language });
+
+  if (!hits.length) return '(no symbol matches)';
 
   const topHits = hits.slice(0, Math.max(1, limit));
   const primary = topHits[0];
@@ -1322,6 +1329,17 @@ function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 2
     return `${idx + 1}. ${hit.rel}:${hit.line}:${hit.col} [${kind}, ${hit.lang}, matches=${hit.matchCount}]${suffix}`;
   }));
   return lines.join('\n');
+}
+
+function _resolveReferenceLanguageNode(graph, symbol, rel, cwd, language = null) {
+  if (rel) {
+    const node = graph.nodes.get(rel);
+    if (node) return node;
+  }
+  const hits = _findSymbolHits(graph, symbol, { language });
+  if (!hits.length) return null;
+  const primary = hits.find((hit) => hit.declarationLike) || hits[0];
+  return primary?.rel ? graph.nodes.get(primary.rel) || null : null;
 }
 
 function _collapseReferenceLinesToCallers(referenceText) {
@@ -1652,15 +1670,17 @@ async function codeGraph(args, cwd) {
   if (mode === 'references') {
     const symbol = String(args?.symbol || '').trim();
     if (!symbol) throw new Error('code_graph references: "symbol" is required');
-    if (!node) return `code_graph references: file not found in graph: ${normFile || '(missing file)'}`;
-    return _cheapReferenceSearch(graph, symbol, cwd, { language: node.lang });
+    const resolvedNode = _resolveReferenceLanguageNode(graph, symbol, rel, cwd, String(args?.language || '').trim() || null);
+    if (!resolvedNode) return `code_graph references: file not found in graph: ${normFile || '(missing file)'}`;
+    return _cheapReferenceSearch(graph, symbol, cwd, { language: resolvedNode.lang });
   }
 
   if (mode === 'callers') {
     const symbol = String(args?.symbol || '').trim();
     if (!symbol) throw new Error('code_graph callers: "symbol" is required');
-    if (!node) return `code_graph callers: file not found in graph: ${normFile || '(missing file)'}`;
-    const refs = _cheapReferenceSearch(graph, symbol, cwd, { language: node.lang });
+    const resolvedNode = _resolveReferenceLanguageNode(graph, symbol, rel, cwd, String(args?.language || '').trim() || null);
+    if (!resolvedNode) return `code_graph callers: file not found in graph: ${normFile || '(missing file)'}`;
+    const refs = _cheapReferenceSearch(graph, symbol, cwd, { language: resolvedNode.lang });
     return _collapseReferenceLinesToCallers(refs);
   }
 
@@ -2073,7 +2093,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'code_graph',
     title: 'Code Graph',
     annotations: { title: 'Code Graph', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. Use `find_symbol` first when you know an identifier (constant, function, class, variable) but not the file.',
+    description: 'Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. In the main session, prefer direct aliases (`find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`) when the question is that specific; use `code_graph` for broader graph/impact questions.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2097,6 +2117,62 @@ export const CODE_GRAPH_TOOL_DEFS = [
         symbol: { type: 'string', description: 'Symbol or identifier to find.' },
         language: { type: 'string', description: 'Optional language filter (e.g. javascript, typescript, python).' },
         limit: { type: 'number', description: 'Optional result cap. Default 20, max 50.' },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'find_imports',
+    title: 'Find Imports',
+    annotations: { title: 'Find Imports', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Direct imports of a file. Use this instead of `code_graph(mode:"imports")` when you already know the file path. Optimized alias for quicker tool selection in the main session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'Path to the target file.' },
+      },
+      required: ['file'],
+    },
+  },
+  {
+    name: 'find_dependents',
+    title: 'Find Dependents',
+    annotations: { title: 'Find Dependents', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Files that depend on or import the target file. Use this instead of `code_graph(mode:"dependents")` when you already know the file path. Optimized alias for quicker tool selection in the main session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'Path to the target file.' },
+      },
+      required: ['file'],
+    },
+  },
+  {
+    name: 'find_references',
+    title: 'Find References',
+    annotations: { title: 'Find References', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Find references for a symbol across the repository. Use this instead of `code_graph(mode:"references")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol name to resolve references for.' },
+        file: { type: 'string', description: 'Optional file path to narrow the language/source file.' },
+        language: { type: 'string', description: 'Optional language filter (e.g. javascript, typescript, python).' },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'find_callers',
+    title: 'Find Callers',
+    annotations: { title: 'Find Callers', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Find caller files for a symbol across the repository. Use this instead of `code_graph(mode:"callers")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol name to resolve callers for.' },
+        file: { type: 'string', description: 'Optional file path to narrow the language/source file.' },
+        language: { type: 'string', description: 'Optional language filter (e.g. javascript, typescript, python).' },
       },
       required: ['symbol'],
     },
@@ -2139,6 +2215,10 @@ export async function executeCodeGraphTool(name, args, cwd) {
   switch (name) {
     case 'code_graph': return codeGraph(args, effectiveCwd);
     case 'find_symbol': return findSymbolTool(args, effectiveCwd);
+    case 'find_imports': return codeGraph({ ...(args || {}), mode: 'imports' }, effectiveCwd);
+    case 'find_dependents': return codeGraph({ ...(args || {}), mode: 'dependents' }, effectiveCwd);
+    case 'find_references': return codeGraph({ ...(args || {}), mode: 'references' }, effectiveCwd);
+    case 'find_callers': return codeGraph({ ...(args || {}), mode: 'callers' }, effectiveCwd);
     case 'rename_file_refs': return renameFileRefs(args, effectiveCwd);
     case 'rename_symbol_refs': return renameSymbolRefs(args, effectiveCwd);
     default: throw new Error(`Unknown code-graph tool: ${name}`);

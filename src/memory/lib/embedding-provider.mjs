@@ -41,7 +41,8 @@ function getCachedEmbedding(key) {
 
 function ensureWorker() {
   if (worker) return worker
-  worker = new Worker(WORKER_PATH, { env: { ...process.env } })
+  const execArgv = process.execArgv.filter((arg) => !String(arg).startsWith('--input-type'))
+  worker = new Worker(WORKER_PATH, { env: { ...process.env }, execArgv })
   worker.on('message', (msg) => {
     if (msg.type === 'profile') {
       writeProfilePoint(msg.record)

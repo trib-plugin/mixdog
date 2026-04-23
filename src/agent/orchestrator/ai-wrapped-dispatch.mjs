@@ -132,18 +132,6 @@ function extractIdentifierCandidate(query) {
   return best
 }
 
-function isDefinitionLookupQuery(query) {
-  const text = String(query || '').toLowerCase()
-  if (!text.trim()) return false
-  return /where\b.*\bdefined|where\b.*\bdeclare|definition|defined\b|declared\b|located\b|정의|선언|어디/.test(text)
-}
-
-function isUsageLookupQuery(query) {
-  const text = String(query || '').toLowerCase()
-  if (!text.trim()) return false
-  return /where\b.*\bused|used\b|what does .* do|summarize what it does|어디.*쓰|사용|무엇.*하는지/.test(text)
-}
-
 function parseFindSymbolBestCandidate(rawText) {
   const lines = String(rawText || '').split('\n').map((line) => line.trim()).filter(Boolean)
   const marker = lines.indexOf('# best declaration candidate')
@@ -199,21 +187,19 @@ async function runExploreFastPath(query, cwd) {
   if (!cwd) return null
   const identifier = extractIdentifierCandidate(query)
   if (!identifier) return null
-  if (isDefinitionLookupQuery(query)) {
-    let symbolResult
-    try {
-      symbolResult = await executeCodeGraphTool('find_symbol', { symbol: identifier }, cwd)
-    } catch {
-      return null
-    }
-    const candidate = parseFindSymbolBestCandidate(symbolResult)
-    if (!candidate?.filePath || !Number.isFinite(candidate.line)) return null
-
+  let symbolResult
+  try {
+    symbolResult = await executeCodeGraphTool('find_symbol', { symbol: identifier }, cwd)
+  } catch {
+    symbolResult = null
+  }
+  const symbolCandidate = parseFindSymbolBestCandidate(symbolResult)
+  if (symbolCandidate?.filePath && Number.isFinite(symbolCandidate.line)) {
     let readOut = ''
     try {
       readOut = await executeBuiltinTool('read', {
-        path: candidate.filePath,
-        offset: Math.max(0, candidate.line - 1),
+        path: symbolCandidate.filePath,
+        offset: Math.max(0, symbolCandidate.line - 1),
         limit: 12,
       }, cwd)
     } catch {
@@ -221,12 +207,12 @@ async function runExploreFastPath(query, cwd) {
     }
 
     const pieces = [
-      `\`${identifier}\` is defined in \`${candidate.filePath}:${candidate.line}\`.`,
-      summarizeDeclarationShape(identifier, candidate.declaration),
-      `Declaration: ${candidate.declaration}`,
+      `Best code match for \`${identifier}\`: \`${symbolCandidate.filePath}:${symbolCandidate.line}\`.`,
+      summarizeDeclarationShape(identifier, symbolCandidate.declaration),
+      `Declaration: ${symbolCandidate.declaration}`,
     ]
-    if (candidate.context) {
-      pieces.push(`Context: ${candidate.context}`)
+    if (symbolCandidate.context) {
+      pieces.push(`Context: ${symbolCandidate.context}`)
     }
     if (readOut && !String(readOut).startsWith('Error:')) {
       const compactRead = String(readOut).split('\n').slice(0, 8).join('\n')
@@ -235,45 +221,41 @@ async function runExploreFastPath(query, cwd) {
     return pieces.join('\n\n')
   }
 
-  if (isUsageLookupQuery(query)) {
-    let grepOut = ''
-    try {
-      grepOut = await executeBuiltinTool('grep', {
-        pattern: identifier,
-        path: cwd,
-        glob: ['**/*.*'],
-        output_mode: 'content',
-        head_limit: 20,
-        '-n': true,
-        '-C': 1,
-      }, cwd)
-    } catch {
-      return null
-    }
-    const candidate = parseGrepBestCandidate(grepOut)
-    if (!candidate?.filePath || !Number.isFinite(candidate.line)) return null
-    let readOut = ''
-    try {
-      readOut = await executeBuiltinTool('read', {
-        path: candidate.filePath,
-        offset: Math.max(0, candidate.line - 1),
-        limit: 12,
-      }, cwd)
-    } catch {
-      readOut = ''
-    }
-    const parts = [
-      `\`${identifier}\` is used in \`${candidate.filePath}:${candidate.line}\`.`,
-    ]
-    if (candidate.content) parts.push(`Best match: ${candidate.content}`)
-    if (readOut && !String(readOut).startsWith('Error:')) {
-      const compactRead = String(readOut).split('\n').slice(0, 8).join('\n')
-      parts.push(`Nearby lines:\n${compactRead}`)
-    }
-    return parts.join('\n\n')
+  let grepOut = ''
+  try {
+    grepOut = await executeBuiltinTool('grep', {
+      pattern: identifier,
+      path: cwd,
+      glob: ['**/*.*'],
+      output_mode: 'content',
+      head_limit: 20,
+      '-n': true,
+      '-C': 1,
+    }, cwd)
+  } catch {
+    return null
   }
-
-  return null
+  const candidate = parseGrepBestCandidate(grepOut)
+  if (!candidate?.filePath || !Number.isFinite(candidate.line)) return null
+  let readOut = ''
+  try {
+    readOut = await executeBuiltinTool('read', {
+      path: candidate.filePath,
+      offset: Math.max(0, candidate.line - 1),
+      limit: 12,
+    }, cwd)
+  } catch {
+    readOut = ''
+  }
+  const parts = [
+    `Best code match for \`${identifier}\`: \`${candidate.filePath}:${candidate.line}\`.`,
+  ]
+  if (candidate.content) parts.push(`Match: ${candidate.content}`)
+  if (readOut && !String(readOut).startsWith('Error:')) {
+    const compactRead = String(readOut).split('\n').slice(0, 8).join('\n')
+    parts.push(`Nearby lines:\n${compactRead}`)
+  }
+  return parts.join('\n\n')
 }
 
 function getDiskCachePath() {

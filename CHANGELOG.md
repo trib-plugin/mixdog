@@ -4,6 +4,25 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.23] - Unreleased
+
+### Fixed
+
+- **Bridge fast-path / prefetch false positives** — `_extractGithubRepoSlug` in `src/agent/orchestrator/session/manager.mjs` no longer matches arbitrary `word/word` patterns (file paths, URL segments, etc.). Only `github.com/owner/repo` URLs or explicit quoted `owner/repo` tokens qualify, using GitHub's real owner/repo naming constraints, and the returned slug carries a `source` tag. `_isGithubRepoQuery` cross-checks that source; keyword-only triggers are rejected. Previously a prompt containing the word "repo" plus any path was misread as a GitHub repo query, the search result was collapsed to a one-line summary, and the worker returned that string without ever invoking the LLM (`completed=1 tokens_in=0 duration≈300ms`).
+- **Fast-path empty-result guard** — `_summarizeRepoSearchText` returns `null` when `_extractRepoSearchEvidence` finds no actual evidence in the search output, so the fast-path falls through to the normal LLM path instead of replacing the task with a canned "… is a GitHub repository." string.
+- **Duplicate search call** — when prefetch already injected context, the fast-path is skipped, avoiding a second identical GitHub search (trajectory previously logged two `search` tool calls at iteration 1 for the same slug).
+
+### Added
+
+- **Embedding-based intent classifier** (`src/agent/orchestrator/intent-classifier.mjs`, new) — classifies a prompt against a caller-provided candidate list (`github_repo`, `definition_lookup`, `usage_lookup`, `callers`, `references`, `dependents`, `imports`). Fast-path and prefetch in `manager.mjs` now gate their actions on this classification instead of regex keyword triggers.
+- **Code-graph tool surface** (`src/agent/orchestrator/tools/code-graph.mjs`) — `find_symbol` extensions plus symbol-only handling for `callers` / `references`. Tool registrations updated in `tools.json`.
+- **Retrieval prompt tightening** — `src/agent/orchestrator/ai-wrapped-dispatch.mjs` and `rules/shared/01-tool.md` sharpen explore / retrieval routing and alias handling.
+- **Embedding runtime hardening** — `src/memory/lib/embedding-provider.mjs` cleans up worker `execArgv`; `src/memory/lib/embedding-worker.mjs` fixes ORT loading and corrects the CPU default path.
+
+### Removed
+
+- **Plugin-level `statusLine` field** in `.claude-plugin/plugin.json` (added in 0.1.22). Claude Code's plugin spec only honours `agent` and `subagentStatusLine` keys at the plugin level, so the declared `statusLine` was silently ignored. Regular `statusLine` configuration belongs in the user's own `~/.claude/settings.json`.
+
 ## [0.1.22] - Unreleased
 
 ### Added

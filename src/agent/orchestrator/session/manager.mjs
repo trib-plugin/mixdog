@@ -16,6 +16,7 @@ import { collectSkillsCached, buildSkillToolDefs, loadAgentTemplate, loadRoleTem
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
+import { classifyPromptIntent } from '../intent-classifier.mjs';
 import { resolvePluginData, DEFAULT_PLUGIN, DEFAULT_MARKETPLACE } from '../../../shared/plugin-paths.mjs';
 
 // Phase B: Pool B Tier 2 content builder (common rules only).
@@ -221,6 +222,10 @@ export const BRIDGE_DENY_TOOLS = Object.freeze([
     // AST / specialised editors kept off the bridge schema for now —
     // apply_patch stays because it cuts edit/read round-trips on multi-file work.
     'sg_search', 'sg_rewrite', 'edit_lines', 'diff',
+    // Main-session convenience aliases. Bridge roles already know to use
+    // `code_graph` / `find_symbol` directly, so carrying alias-only tools
+    // here just bloats the shared BP_1 shard without adding capability.
+    'find_imports', 'find_dependents', 'find_references', 'find_callers',
 ]);
 
 function _computeBaseTools(toolSpec, mcp, skillTools) {
@@ -329,16 +334,26 @@ function _extractBridgeIdentifier(prompt) {
         'Where', 'What', 'Which', 'Find', 'Return', 'Summarize', 'Read',
         'Use', 'Your', 'This', 'That', 'These', 'Those', 'The', 'A', 'An',
         'How', 'Why', 'When', 'Who',
+        'GitHub', 'Github', 'GitLab', 'Gitlab',
     ]);
+    const strongCandidates = candidates.filter((token) => {
+        if (STOPWORDS.has(token)) return false;
+        if (/^[A-Z][A-Z0-9_]+$/.test(token)) return true;
+        if (/^[a-z]+(?:[A-Z][A-Za-z0-9]*)+$/.test(token)) return true;
+        if (/^[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+$/.test(token)) return true;
+        if (/^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+$/.test(token)) return true;
+        if (/\d/.test(token)) return true;
+        return false;
+    });
     let best = null;
     let bestScore = -Infinity;
-    for (const token of candidates) {
-        if (STOPWORDS.has(token)) continue;
+    for (const token of strongCandidates) {
         let score = 0;
         if (/^[A-Z][A-Z0-9_]+$/.test(token)) score += 10;
         if (/^[a-z]+(?:[A-Z][A-Za-z0-9]*)+$/.test(token)) score += 7;
+        if (/^[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+$/.test(token)) score += 6;
         if (/^[A-Z][A-Za-z0-9]*_[A-Za-z0-9_]+$/.test(token)) score += 8;
-        if (/^[A-Z][a-z]+$/.test(token)) score -= 4;
+        if (/^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+$/.test(token)) score += 6;
         score += Math.min(token.length, 24) / 10;
         if (score > bestScore) {
             best = token;
@@ -348,26 +363,45 @@ function _extractBridgeIdentifier(prompt) {
     return best;
 }
 
-function _isDefinitionQuery(prompt) {
-    const text = String(prompt || '').toLowerCase();
-    return /where\b.*\bdefined|where\b.*\bdeclare|definition|defined\b|declared\b|정의|선언/.test(text);
+function _isEnvLikeIdentifier(identifier) {
+    return /^[A-Z][A-Z0-9_]+$/.test(String(identifier || ''));
 }
 
-function _isUsageQuery(prompt) {
-    const text = String(prompt || '').toLowerCase();
-    return /where\b.*\bused|used\b|what does .* do|summarize what it does|어디.*쓰|사용|무엇.*하는지/.test(text);
-}
+const GITHUB_OWNER_PATTERN = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})`;
+const GITHUB_REPO_PATTERN = String.raw`[A-Za-z0-9._-]{1,100}`;
 
 function _extractGithubRepoSlug(prompt) {
     const text = String(prompt || '');
-    const m = text.match(/\b([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/);
-    if (!m) return null;
-    return { owner: m[1], repo: m[2] };
+    const urlRe = new RegExp(String.raw`(?:https?:\/\/)?(?:www\.)?github\.com\/(${GITHUB_OWNER_PATTERN})\/(${GITHUB_REPO_PATTERN})(?=$|[\/?#\s"'` + "`" + String.raw`.,:;!])`, 'i');
+    const urlMatch = text.match(urlRe);
+    if (urlMatch?.[1] && urlMatch?.[2]) {
+        return { owner: urlMatch[1], repo: urlMatch[2], source: 'github_url' };
+    }
+
+    const quotedRe = new RegExp(String.raw`["'` + "`" + String.raw`](${GITHUB_OWNER_PATTERN})\/(${GITHUB_REPO_PATTERN})["'` + "`" + String.raw`]`, 'g');
+    for (const m of text.matchAll(quotedRe)) {
+        const owner = m[1];
+        const repo = m[2];
+        if (owner && repo) return { owner, repo, source: 'quoted_slug' };
+    }
+
+    const standaloneRe = new RegExp(String.raw`(^|[\s(])(${GITHUB_OWNER_PATTERN})\/(${GITHUB_REPO_PATTERN})(?=$|[\s).,:;!?])`, 'g');
+    for (const m of text.matchAll(standaloneRe)) {
+        const owner = m[2];
+        const repo = m[3];
+        if (!owner || !repo) continue;
+        // Avoid treating file names / local paths as repo names.
+        if (/\.[A-Za-z0-9]{1,6}$/.test(repo)) continue;
+        return { owner, repo, source: 'bare_slug' };
+    }
+    return null;
 }
 
-function _isGithubRepoQuery(prompt) {
+function _isGithubRepoQuery(prompt, repoSlug) {
+    if (!repoSlug?.owner || !repoSlug?.repo) return false;
+    if (repoSlug.source === 'github_url' || repoSlug.source === 'quoted_slug') return true;
     const text = String(prompt || '').toLowerCase();
-    return /\brepo\b|\brepository\b|github/.test(text);
+    return /\bgithub(?:\.com)?\b|\brepo(?:sitory)?\b/.test(text);
 }
 
 function _extractKnownFilePaths(prompt, cwd, maxFiles = 4) {
@@ -389,11 +423,6 @@ function _extractKnownFilePaths(prompt, cwd, maxFiles = 4) {
         }
     }
     return out;
-}
-
-function _isCompareOrSummarizeFilesQuery(prompt) {
-    const text = String(prompt || '').toLowerCase();
-    return /\bcompare\b|\bdiff\b|\bdifference\b|\bcontrast\b|\bsummarize\b|\bsummary\b|\bbullets?\b|비교|차이|요약/.test(text);
 }
 
 function _parseFindSymbolBestCandidate(rawText) {
@@ -432,62 +461,134 @@ function _parseGrepBestCandidate(rawText) {
     return null;
 }
 
-function _summarizeFastPath(identifier, prompt, candidate, readOut) {
-    const promptText = String(prompt || '');
+function _summarizeFastPath(identifier, candidate, readOut) {
     const nearby = String(readOut || '').split('\n').slice(0, 8).join('\n').trim();
-    if (_isDefinitionQuery(promptText)) {
-        const parts = [
-            `\`${identifier}\` is defined in \`${candidate.filePath}:${candidate.line}\`.`,
-        ];
-        if (candidate.declaration) parts.push(`Declaration: ${candidate.declaration}`);
-        if (candidate.context) parts.push(`Context: ${candidate.context}`);
-        if (nearby) parts.push(`Nearby lines:\n${nearby}`);
-        return parts.join('\n\n');
-    }
     const parts = [
-        `\`${identifier}\` is used in \`${candidate.filePath}:${candidate.line}\`.`,
+        `Best code match for \`${identifier}\`: \`${candidate.filePath}:${candidate.line}\`.`,
     ];
-    if (candidate.content) parts.push(`Best match: ${candidate.content}`);
+    if (candidate.declaration) parts.push(`Declaration: ${candidate.declaration}`);
+    if (candidate.context) parts.push(`Context: ${candidate.context}`);
+    if (candidate.content) parts.push(`Match: ${candidate.content}`);
     if (nearby) parts.push(`Nearby lines:\n${nearby}`);
     return parts.join('\n\n');
 }
 
-function _summarizeRepoSearchText(owner, repo, searchText) {
+function _summarizeDeclarationShape(identifier, declaration) {
+    const line = String(declaration || '');
+    if (/\bObject\.freeze\(\[/.test(line)) return `${identifier} starts a frozen array definition.`;
+    if (/\bObject\.freeze\(\{/.test(line)) return `${identifier} starts a frozen object definition.`;
+    if (/\bexport\s+const\b/.test(line)) return `${identifier} is exported as a constant.`;
+    if (/\bconst\b/.test(line)) return `${identifier} is defined as a constant.`;
+    if (/\bfunction\b/.test(line)) return `${identifier} is defined as a function.`;
+    if (/\bclass\b/.test(line)) return `${identifier} is defined as a class.`;
+    if (/\binterface\b/.test(line)) return `${identifier} is defined as an interface.`;
+    if (/\btype\b/.test(line)) return `${identifier} is defined as a type alias.`;
+    return `${identifier} is defined here.`;
+}
+
+function _summarizeDefinitionFastPath(identifier, candidate) {
+    const parts = [
+        `Best code match for \`${identifier}\`: \`${candidate.filePath}:${candidate.line}\`.`,
+        _summarizeDeclarationShape(identifier, candidate.declaration),
+    ];
+    if (candidate.declaration) parts.push(`Declaration: ${candidate.declaration}`);
+    if (candidate.context) parts.push(`Context: ${candidate.context}`);
+    return parts.join('\n\n');
+}
+
+function _summarizeEnvFlagFastPath(identifier, candidate) {
+    const line = String(candidate?.content || '').trim();
+    const parts = [
+        `Best code match for \`${identifier}\`: \`${candidate.filePath}:${candidate.line}\`.`,
+    ];
+    if (/process\.env\.[A-Za-z_][A-Za-z0-9_]*\s*===?\s*['"]?1['"]?/.test(line) && /\breturn\b/.test(line)) {
+        parts.push(`${identifier} acts as an on/off guard here; when it is set to \`'1'\`, the surrounding code returns early.`);
+    } else if (/process\.env\./.test(line)) {
+        parts.push(`${identifier} is used here as an environment guard.`);
+    }
+    if (line) parts.push(`Match: ${line}`);
+    return parts.join('\n\n');
+}
+
+function _extractRepoSearchEvidence(owner, repo, searchText) {
     const lines = String(searchText || '').split('\n').map((line) => line.trim()).filter(Boolean);
+    if (!lines.length) return null;
+    const slug = `${owner}/${repo}`.toLowerCase();
+    const joined = lines.join('\n').toLowerCase();
+    if (!joined.includes(slug) && !joined.includes(`github.com/${slug}`)) return null;
     const title = lines[0]?.replace(/^\d+\.\s*/, '') || `${owner}/${repo}`;
     const summaryLine = lines.find((line, idx) => idx > 0 && !/^https?:\/\//.test(line) && !/^(stars|language|license|default|forks)\b/i.test(line));
     const metaLine = lines.find((line) => /(stars|language|license|default|forks)\b/i.test(line));
-    const parts = [`${title} is ${summaryLine || 'a GitHub repository.'}`];
-    if (metaLine) parts.push(metaLine);
+    if (!summaryLine && !metaLine) return null;
+    return { title, summaryLine, metaLine };
+}
+
+function _summarizeRepoSearchText(owner, repo, searchText) {
+    const evidence = _extractRepoSearchEvidence(owner, repo, searchText);
+    if (!evidence) return null;
+    const parts = [`${evidence.title} is ${evidence.summaryLine || 'a GitHub repository.'}`];
+    if (evidence.metaLine) parts.push(evidence.metaLine);
     return parts.join('\n\n');
+}
+
+async function _searchGithubRepoText(repoSlug) {
+    if (!repoSlug?.owner || !repoSlug?.repo) return { searchOut: null, evidence: null, summary: null };
+    const searchArgs = {
+        github_type: 'repo',
+        owner: repoSlug.owner,
+        repo: repoSlug.repo,
+        site: 'github.com',
+        maxResults: 5,
+        keywords: `${repoSlug.owner}/${repoSlug.repo}`,
+    };
+    let searchOut = null;
+    try {
+        const searchMod = await import('../../../search/index.mjs');
+        const raw = await searchMod.handleToolCall('search', searchArgs);
+        searchOut = Array.isArray(raw?.content)
+            ? raw.content.map((c) => c?.type === 'text' ? c.text || '' : JSON.stringify(c)).join('\n')
+            : null;
+    } catch {
+        searchOut = await executeInternalTool('search', searchArgs).catch(() => null);
+    }
+    if (!searchOut || String(searchOut).startsWith('Error:')) {
+        return { searchOut: null, evidence: null, summary: null };
+    }
+    const evidence = _extractRepoSearchEvidence(repoSlug.owner, repoSlug.repo, searchOut);
+    const summary = evidence ? _summarizeRepoSearchText(repoSlug.owner, repoSlug.repo, searchOut) : null;
+    return { searchOut, evidence, summary };
 }
 
 async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     if (session?.owner !== 'bridge') return null;
     const repoSlug = _extractGithubRepoSlug(prompt);
-    if (repoSlug && _isGithubRepoQuery(prompt)) {
-        const searchArgs = {
-            github_type: 'repo',
-            owner: repoSlug.owner,
-            repo: repoSlug.repo,
-            site: 'github.com',
-            maxResults: 5,
-            keywords: `${repoSlug.owner}/${repoSlug.repo}`,
+    const knownFiles = _extractKnownFilePaths(prompt, effectiveCwd || session.cwd || process.cwd(), 1);
+    const identifier = _extractBridgeIdentifier(prompt);
+    const intentCandidates = [];
+    if (_isGithubRepoQuery(prompt, repoSlug)) intentCandidates.push('github_repo');
+    if (identifier) intentCandidates.push('definition_lookup', 'usage_lookup', 'callers', 'references');
+    if (knownFiles.length >= 1) intentCandidates.push('dependents', 'imports');
+    const intent = await classifyPromptIntent(prompt, [...new Set(intentCandidates)]).catch(() => null);
+
+    const resolveIdentifierCandidate = async () => {
+        if (!identifier) return null;
+        const symbolText = await executeInternalTool('find_symbol', { symbol: identifier }).catch(() => null);
+        const candidate = symbolText ? _parseFindSymbolBestCandidate(symbolText) : null;
+        if (!candidate?.filePath || !Number.isFinite(candidate.line)) return null;
+        onToolCall?.(1, [{ name: 'find_symbol', arguments: { symbol: identifier } }]);
+        return candidate;
+    };
+
+    if (identifier && ['callers', 'references'].includes(intent || '')) {
+        const graphArgs = {
+            mode: intent === 'callers' ? 'callers' : 'references',
+            symbol: identifier,
         };
-        let searchOut = null;
-        try {
-            const searchMod = await import('../../../search/index.mjs');
-            const raw = await searchMod.handleToolCall('search', searchArgs);
-            searchOut = Array.isArray(raw?.content)
-                ? raw.content.map((c) => c?.type === 'text' ? c.text || '' : JSON.stringify(c)).join('\n')
-                : null;
-        } catch {
-            searchOut = await executeInternalTool('search', searchArgs).catch(() => null);
-        }
-        if (searchOut && !String(searchOut).startsWith('Error:')) {
-            onToolCall?.(1, [{ name: 'search', arguments: searchArgs }]);
+        const graphOut = await executeInternalTool('code_graph', graphArgs).catch(() => null);
+        if (graphOut && !String(graphOut).startsWith('Error:')) {
+            onToolCall?.(1, [{ name: 'code_graph', arguments: graphArgs }]);
             return {
-                content: _summarizeRepoSearchText(repoSlug.owner, repoSlug.repo, searchOut),
+                content: String(graphOut),
                 iterations: 2,
                 toolCallsTotal: 1,
                 usage: null,
@@ -495,26 +596,43 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
         }
     }
 
-    const identifier = _extractBridgeIdentifier(prompt);
-    if (!identifier) return null;
-
-    if (_isDefinitionQuery(prompt)) {
-        const symbolText = await executeInternalTool('find_symbol', { symbol: identifier }).catch(() => null);
-        const candidate = symbolText ? _parseFindSymbolBestCandidate(symbolText) : null;
-        if (!candidate?.filePath || !Number.isFinite(candidate.line)) return null;
-        onToolCall?.(1, [{ name: 'find_symbol', arguments: { symbol: identifier } }]);
-        const readArgs = { path: candidate.filePath, offset: Math.max(0, candidate.line - 1), limit: 12 };
-        const readOut = await executeInternalTool('read', readArgs).catch(() => '');
-        onToolCall?.(2, [{ name: 'read', arguments: readArgs }]);
-        return {
-            content: _summarizeFastPath(identifier, prompt, candidate, readOut),
-            iterations: 3,
-            toolCallsTotal: 2,
-            usage: null,
-        };
+    if (identifier && intent === 'usage_lookup' && !_isEnvLikeIdentifier(identifier)) {
+        const candidate = await resolveIdentifierCandidate();
+        if (candidate) {
+            const graphArgs = {
+                mode: 'references',
+                file: candidate.filePath,
+                symbol: identifier,
+            };
+            const graphOut = await executeInternalTool('code_graph', graphArgs).catch(() => null);
+            if (graphOut && !String(graphOut).startsWith('Error:')) {
+                onToolCall?.(2, [{ name: 'code_graph', arguments: graphArgs }]);
+                return {
+                    content: String(graphOut),
+                    iterations: 3,
+                    toolCallsTotal: 2,
+                    usage: null,
+                };
+            }
+        }
     }
 
-    if (_isUsageQuery(prompt)) {
+    // Strong structural signals first — no intent classification required.
+    if (identifier && (intent === 'definition_lookup' || intent === null)) {
+        const symbolText = await executeInternalTool('find_symbol', { symbol: identifier }).catch(() => null);
+        const candidateFromSymbol = symbolText ? _parseFindSymbolBestCandidate(symbolText) : null;
+        if (candidateFromSymbol?.filePath && Number.isFinite(candidateFromSymbol.line)) {
+            onToolCall?.(1, [{ name: 'find_symbol', arguments: { symbol: identifier } }]);
+            return {
+                content: _summarizeDefinitionFastPath(identifier, candidateFromSymbol),
+                iterations: 2,
+                toolCallsTotal: 1,
+                usage: null,
+            };
+        }
+    }
+
+    if (identifier && _isEnvLikeIdentifier(identifier)) {
         const grepArgs = {
             pattern: identifier,
             path: effectiveCwd || session.cwd || process.cwd(),
@@ -526,26 +644,18 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
         };
         const grepOut = await executeInternalTool('grep', grepArgs).catch(() => null);
         const candidate = grepOut ? _parseGrepBestCandidate(grepOut) : null;
-        if (!candidate?.filePath || !Number.isFinite(candidate.line)) return null;
-        onToolCall?.(1, [{ name: 'grep', arguments: grepArgs }]);
-        const readArgs = { path: candidate.filePath, offset: Math.max(0, candidate.line - 1), limit: 12 };
-        const readOut = await executeInternalTool('read', readArgs).catch(() => '');
-        onToolCall?.(2, [{ name: 'read', arguments: readArgs }]);
-        return {
-            content: _summarizeFastPath(identifier, prompt, candidate, readOut),
-            iterations: 3,
-            toolCallsTotal: 2,
-            usage: null,
-        };
+        if (candidate?.filePath && Number.isFinite(candidate.line)) {
+            onToolCall?.(1, [{ name: 'grep', arguments: grepArgs }]);
+            return {
+                content: _summarizeEnvFlagFastPath(identifier, candidate),
+                iterations: 2,
+                toolCallsTotal: 1,
+                usage: null,
+            };
+        }
     }
 
-    return null;
-}
-
-async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCall) {
-    if (session?.owner !== 'bridge') return null;
-    const repoSlug = _extractGithubRepoSlug(prompt);
-    if (repoSlug && _isGithubRepoQuery(prompt)) {
+    if (intent === 'github_repo' && _isGithubRepoQuery(prompt, repoSlug) && repoSlug && !identifier && knownFiles.length === 0) {
         const searchArgs = {
             github_type: 'repo',
             owner: repoSlug.owner,
@@ -554,24 +664,61 @@ async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCa
             maxResults: 5,
             keywords: `${repoSlug.owner}/${repoSlug.repo}`,
         };
-        let searchOut = null;
-        try {
-            const searchMod = await import('../../../search/index.mjs');
-            const raw = await searchMod.handleToolCall('search', searchArgs);
-            searchOut = Array.isArray(raw?.content)
-                ? raw.content.map((c) => c?.type === 'text' ? c.text || '' : JSON.stringify(c)).join('\n')
-                : null;
-        } catch {
-            searchOut = await executeInternalTool('search', searchArgs).catch(() => null);
+        const { summary } = await _searchGithubRepoText(repoSlug);
+        if (summary) {
+            onToolCall?.(1, [{ name: 'search', arguments: searchArgs }]);
+            return {
+                content: summary,
+                iterations: 2,
+                toolCallsTotal: 1,
+                usage: null,
+            };
         }
-        if (searchOut && !String(searchOut).startsWith('Error:')) {
+    }
+
+    if (knownFiles.length >= 1 && ['dependents', 'imports'].includes(intent || '')) {
+        const mode = intent === 'imports' ? 'imports' : 'dependents';
+        const graphArgs = { mode, file: knownFiles[0] };
+        const graphOut = await executeInternalTool('code_graph', graphArgs).catch(() => null);
+        if (graphOut && !String(graphOut).startsWith('Error:')) {
+            onToolCall?.(1, [{ name: 'code_graph', arguments: graphArgs }]);
+            return {
+                content: String(graphOut),
+                iterations: 2,
+                toolCallsTotal: 1,
+                usage: null,
+            };
+        }
+    }
+
+    return null;
+}
+
+async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCall) {
+    if (session?.owner !== 'bridge') return null;
+    const repoSlug = _extractGithubRepoSlug(prompt);
+    const knownFiles = _extractKnownFilePaths(prompt, effectiveCwd || session.cwd || process.cwd());
+    const identifier = _extractBridgeIdentifier(prompt);
+    const repoIntent = _isGithubRepoQuery(prompt, repoSlug)
+        ? await classifyPromptIntent(prompt, ['github_repo']).catch(() => null)
+        : null;
+    if (repoSlug && repoIntent === 'github_repo' && !identifier && knownFiles.length === 0) {
+        const searchArgs = {
+            github_type: 'repo',
+            owner: repoSlug.owner,
+            repo: repoSlug.repo,
+            site: 'github.com',
+            maxResults: 5,
+            keywords: `${repoSlug.owner}/${repoSlug.repo}`,
+        };
+        const { searchOut, evidence } = await _searchGithubRepoText(repoSlug);
+        if (evidence && searchOut) {
             onToolCall?.(1, [{ name: 'search', arguments: searchArgs }]);
             return `Prefetched repository context for this request. Answer directly from this unless it is clearly insufficient. Do NOT call \`search\` again for the same repository unless the provided result is missing the requested information.\n\n${searchOut}`;
         }
     }
 
-    const knownFiles = _extractKnownFilePaths(prompt, effectiveCwd || session.cwd || process.cwd());
-    if (knownFiles.length < 2 || !_isCompareOrSummarizeFilesQuery(prompt)) return null;
+    if (knownFiles.length < 2) return null;
     const reads = knownFiles.map((filePath) => ({
         path: filePath,
         mode: 'head',
@@ -1020,7 +1167,9 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 process.stderr.write(`[session] Warning: prompt is very large (est. ${Math.round(promptTokenEstimate)} tokens vs ${softBudget} soft budget)\n`);
             }
             const effectiveCwd = cwdOverride || session.cwd;
-            const fastPath = await _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall);
+            const fastPath = prefetchedContext
+                ? null
+                : await _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall);
             if (fastPath) {
                 session.messages = [...session.messages, { role: 'user', content: prompt }];
                 if (fastPath.content) {
@@ -1387,8 +1536,6 @@ export const _internals = {
     _extractBridgeIdentifier,
     _extractGithubRepoSlug,
     _isGithubRepoQuery,
-    _isDefinitionQuery,
-    _isUsageQuery,
     _tryBridgeFastPath,
     _tryBridgePrefetchContext,
 };

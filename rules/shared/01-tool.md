@@ -28,6 +28,8 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 - Past context → `recall`. External web / URL / GitHub → `search`. Local filesystem → `explore`.
 - Known path → `read` directly. Unknown location → `grep` / `glob` first, then targeted `read`.
 - Code structure (imports, dependents, symbols, references, callers): `code_graph` before raw `grep`.
+- In the main/public tool surface, prefer the direct aliases when available:
+  `find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`.
 - If you know an identifier / constant / function / class name but not the file, use `find_symbol` before `grep`.
 - Multi-file or already-clear edits: `apply_patch` before repeated `read` → `edit`.
 - Shell work across turns: `bash_session` reuses shell state — don't replay setup in repeated `bash` calls.
@@ -40,7 +42,11 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 Use these rules regardless of the current role name. Role-specific prompts may add nuance, but the first tool choice should follow this table unless the user explicitly asks otherwise.
 
 - "I know the identifier name, but not the file" → `find_symbol`
-- "Who imports / calls / references / depends on this?" → `code_graph`
+- "Who imports this file?" → `find_imports`
+- "Who depends on this file?" → `find_dependents`
+- "Who calls this symbol?" → `find_callers`
+- "Where is this symbol referenced?" → `find_references`
+- Broader structural graph question / impact / mixed graph query → `code_graph`
 - "I know the file already" → `read`
 - "I need 2+ known files" → one `read` call with array `path`
 - "I need to create/replace several whole files" → `write_many`

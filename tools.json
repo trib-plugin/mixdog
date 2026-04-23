@@ -1604,7 +1604,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. Use `find_symbol` first when you know an identifier (constant, function, class, variable) but not the file.",
+    "description": "Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. In the main session, prefer the direct aliases (`find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`) when the question is that specific; use `code_graph` for broader graph / impact questions.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1671,6 +1671,122 @@
         "limit": {
           "type": "number",
           "description": "Optional result cap. Default 20, max 50."
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "module": "code_graph"
+  },
+  {
+    "name": "find_imports",
+    "title": "Find Imports",
+    "annotations": {
+      "title": "Find Imports",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Direct imports of a file. Use this instead of `code_graph(mode:\"imports\")` when you already know the file path. Optimized alias for quicker tool selection in the main session.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to the target file."
+        }
+      },
+      "required": [
+        "file"
+      ]
+    },
+    "module": "code_graph"
+  },
+  {
+    "name": "find_dependents",
+    "title": "Find Dependents",
+    "annotations": {
+      "title": "Find Dependents",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Files that depend on or import the target file. Use this instead of `code_graph(mode:\"dependents\")` when you already know the file path. Optimized alias for quicker tool selection in the main session.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to the target file."
+        }
+      },
+      "required": [
+        "file"
+      ]
+    },
+    "module": "code_graph"
+  },
+  {
+    "name": "find_references",
+    "title": "Find References",
+    "annotations": {
+      "title": "Find References",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Find references for a symbol across the repository. Use this instead of `code_graph(mode:\"references\")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Symbol name to resolve references for."
+        },
+        "file": {
+          "type": "string",
+          "description": "Optional file path to narrow the language/source file."
+        },
+        "language": {
+          "type": "string",
+          "description": "Optional language filter (e.g. javascript, typescript, python)."
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "module": "code_graph"
+  },
+  {
+    "name": "find_callers",
+    "title": "Find Callers",
+    "annotations": {
+      "title": "Find Callers",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Find caller files for a symbol across the repository. Use this instead of `code_graph(mode:\"callers\")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Symbol name to resolve callers for."
+        },
+        "file": {
+          "type": "string",
+          "description": "Optional file path to narrow the language/source file."
+        },
+        "language": {
+          "type": "string",
+          "description": "Optional language filter (e.g. javascript, typescript, python)."
         }
       },
       "required": [
