@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mixdog statusline wrapper — v0.1.27
+# mixdog statusline wrapper — v0.1.29
 # Line 1 (runtime): model + effort, cost, context window bar, 5h / 7d rate limit, block reset time.
 # Line 2 (incoming, from mixdog /bridge/status): sessions, last completed, jobs, schedule, discord, ngrok, recall.
 # Endpoint discovery: advertisement file → MCP status server → legacy setup-server (3458).

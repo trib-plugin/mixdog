@@ -89,6 +89,28 @@ function readJson(filePath) {
 // qualified executable so the statusLine command runs against MSYS bash, which
 // handles Windows paths correctly. Fall back to the bare `bash` token when no
 // Git Bash is found (preserves prior behavior on non-Windows).
+//
+// Quoting note: the statusLine command is a single shell string that Claude
+// Code runs via cmd.exe on Windows. Two separately-quoted paths with embedded
+// spaces (e.g. "C:/Program Files/.../bash.exe" plus a quoted script path) can
+// trip cmd's quote-stripping heuristics in corner cases. Resolve the executable
+// to its 8.3 short name (e.g. C:/PROGRA~1/Git/bin/bash.exe) so the executable
+// half has no spaces and does not need its own quoting layer.
+//
+// Uses the standard Windows 8.3 mapping for the `Program Files` / `Program
+// Files (x86)` roots, which is present on every Windows install that has
+// 8dot3name creation enabled (Microsoft's default; only disabled on hardened
+// servers). Falls back to the long path when the short form does not exist.
+function toShortPathWin32(longPath) {
+  const shortForm = longPath
+    .replace(/^([A-Z]):[\\/]Program Files \(x86\)\b/i, '$1:/PROGRA~2')
+    .replace(/^([A-Z]):[\\/]Program Files\b/i, '$1:/PROGRA~1');
+  if (shortForm !== longPath) {
+    try { if (fs.existsSync(shortForm)) return shortForm; } catch {}
+  }
+  return longPath;
+}
+
 function resolveBashCommand(scriptPath) {
   if (process.platform !== 'win32') return `bash "${scriptPath}"`;
   const candidates = [
@@ -97,7 +119,12 @@ function resolveBashCommand(scriptPath) {
     'C:/Program Files/Git/usr/bin/bash.exe',
   ];
   for (const candidate of candidates) {
-    try { if (fs.existsSync(candidate)) return `"${candidate}" "${scriptPath}"`; } catch {}
+    try {
+      if (!fs.existsSync(candidate)) continue;
+      const shortExec = toShortPathWin32(candidate);
+      const execToken = /\s/.test(shortExec) ? `"${shortExec}"` : shortExec;
+      return `${execToken} "${scriptPath}"`;
+    } catch {}
   }
   return `bash "${scriptPath}"`;
 }

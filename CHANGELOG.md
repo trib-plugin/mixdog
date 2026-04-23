@@ -4,6 +4,12 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.29] - Unreleased
+
+### Fixed
+
+- **StatusLine still invisible on Windows despite 0.1.28 Git Bash path** — 0.1.28 injected `"C:/Program Files/Git/bin/bash.exe" "C:/Users/.../statusline.sh"` into `statusLine.command`. The `bash.exe` path itself was correct, but cmd.exe's quote-handling for the full command string is brittle when *two* separately-quoted paths each contain spaces: depending on whether Claude Code invokes through `cmd /d /s /c` or plain `cmd /c`, the outer quotes are stripped in a way that re-splits `C:/Program Files/...` on the internal space and the whole line silently fails to parse, so the statusline never rendered. `hooks/session-start.cjs` now resolves the Git Bash executable to its 8.3 short form (`C:/PROGRA~1/Git/bin/bash.exe`) via `cmd /c for %I in (...) do @echo %~sI` before injecting, so the executable half has no spaces, needs no outer quoting, and cannot interact with cmd's quote heuristics. The script-path half keeps its quotes for the same reason but there the cache path is under `%USERPROFILE%` which is normally space-free.
+
 ## [0.1.28] - Unreleased
 
 ### Fixed
