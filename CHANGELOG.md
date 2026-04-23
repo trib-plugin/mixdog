@@ -4,6 +4,18 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.11] - Unreleased
+
+### Added
+- **macOS voice auto-install**: new macOS branch in `/install/voice` probes for Homebrew, runs `brew install whisper-cpp`, resolves the binary via `brew --prefix whisper-cpp` (`whisper-cli` as of Apr 2026), downloads the turbo model, and smoke-tests the binary. If Homebrew is absent a clean error with the https://brew.sh install URL is returned (`stage: brew-check`).
+- **Linux voice auto-install**: new Linux branch clones `ggerganov/whisper.cpp` (shallow) into `<dataDir>/voice/whisper.cpp-src/`, builds via CMake into `build/bin/whisper-cli`, downloads the turbo model, and smoke-tests. If any of `git`, `cmake`, `make`, `g++`/`clang++` are missing, returns a clean error with a distro-specific install command (`apt`/`dnf`/`pacman` detected from `/etc/os-release`).
+- **Shared voice-install helpers**: extracted `downloadModelToDataDir()`, `writeVoiceConfig()`, and `smokeTestWhisper()` — all three platform branches (win/mac/linux) use these; no duplicated download or config-write logic.
+- **Full idempotency across all platforms**: if `voice.command` binary and model already exist and the binary passes a smoke test, the endpoint returns `{ ok: true, skipped: true }` immediately without re-downloading or rebuilding.
+
+### Changed
+- `/install/voice` User-Agent bumped to `mixdog/0.1.11`.
+- `setup.html` stage-label map extended with macOS/Linux-specific stages: `brew-check`, `brew-install`, `brew-prefix`, `brew-binary`, `build-tools-check`, `git-clone`, `build`.
+
 ## [0.1.10] - Unreleased
 
 ### Added

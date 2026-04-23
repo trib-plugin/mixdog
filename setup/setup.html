@@ -2439,7 +2439,7 @@ async function installVoice() {
       await loadChannelsCliCheck();
       renderAdvanced();
     } else {
-      const stageLabel = { 'platform-check': 'Platform check', 'download-binary': 'Downloading binary', 'extract-binary': 'Extracting binary', 'download-model': 'Downloading model', 'smoke-test': 'Smoke test' }[r.stage] || r.stage || 'Install';
+      const stageLabel = { 'platform-check': 'Platform check', 'download-binary': 'Downloading binary', 'extract-binary': 'Extracting binary', 'download-model': 'Downloading model', 'smoke-test': 'Smoke test', 'brew-check': 'Homebrew check', 'brew-install': 'brew install whisper-cpp', 'brew-prefix': 'Resolving brew path', 'brew-binary': 'Locating binary', 'build-tools-check': 'Build tools check', 'git-clone': 'Cloning source', 'build': 'Building from source' }[r.stage] || r.stage || 'Install';
       setStatus(`\u2717 ${stageLabel} failed: ${r.error}`, 'var(--red)');
       if (btn) { btn.textContent = 'Retry'; btn.disabled = false; }
     }
