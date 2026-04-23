@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mixdog statusline wrapper — v0.1.32
+# mixdog statusline wrapper — v0.1.33
 # Line 1 (runtime): model + effort, cost, context window bar, 5h / 7d rate limit, block reset time.
 # Line 2 (incoming, from mixdog /bridge/status): sessions, last completed, jobs, schedule, discord, ngrok, recall.
 # Endpoint discovery: advertisement file → MCP status server → legacy setup-server (3458).
@@ -344,6 +344,7 @@ elif [ "$COLS" -ge 80 ]; then
     "$(seg_cost_l1)" \
     "$(seg_ctx_med)" \
     "$(seg_rl5h_l1)" \
+    "$(seg_rl7d_l1)" \
     "$(seg_reset_l1)")"
 else
   L1="$(join_pipe \

@@ -4,6 +4,13 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.33] - Unreleased
+
+### Fixed
+
+- **StatusLine still invisible on Windows after 0.1.32** — 0.1.31 removed the 0.1.30 `.bat` wrapper on the assumption that Claude Code spawns Git Bash automatically for `.sh` files on Windows. It does not: when `statusLine.command` points directly at a `.sh` path, Windows has no executor for it and the statusline never renders. 0.1.32's jq-consolidation made the script itself fast (~1.9s standalone via Git Bash), but the launch path was still broken. `hooks/session-start.cjs` restores the 0.1.30 strategy — emit `bin/statusline.bat` that invokes `"<bashExe>" "%~dp0statusline.sh" %*` and point `statusLine.command` at the `.bat`'s absolute Windows-native path. Quotes live inside the batch file, not on the launcher command line, so cmd.exe's outer-quote-stripping can't mangle them. Git Bash detection walks `C:/Program Files/Git/bin/bash.exe` → `(x86)` → `Git/usr/bin/bash.exe` and normalises to 8.3 short form when available.
+- **7D rate-limit segment missing from medium tier** — `bin/statusline.sh` wide tier rendered `5H` / `7D` / `Reset` but medium tier (80-119 cols) only had `5H` / `Reset`, silently hiding weekly budget on any typical Claude Code window width. Added `seg_rl7d_l1` to the medium-tier layout so both rate-limit windows render whenever the payload carries them.
+
 ## [0.1.30] - Unreleased
 
 ### Fixed
