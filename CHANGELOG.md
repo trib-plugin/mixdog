@@ -4,6 +4,12 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.22] - Unreleased
+
+### Added
+
+- **Plugin-level `statusLine` auto-injection** — `.claude-plugin/plugin.json` now declares `statusLine.command = bash ${CLAUDE_PLUGIN_ROOT}/bin/statusline.sh`. Claude Code applies the 2-line width-responsive statusline automatically on enable; the setup UI snippet in `~/.claude/settings.json` is no longer required. Users who want to disable it can override `statusLine` in their own settings.
+
 ## [0.1.21] - Unreleased
 
 ### Changed

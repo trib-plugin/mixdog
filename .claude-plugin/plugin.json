@@ -1,6 +1,6 @@
 {
   "name": "mixdog",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "description": "Claude Code all-in-one agent plugin — autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing.",
   "mcpServers": {
     "mixdog": {
@@ -11,5 +11,9 @@
       "cwd": "${CLAUDE_PLUGIN_ROOT}",
       "timeout": 120000
     }
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash ${CLAUDE_PLUGIN_ROOT}/bin/statusline.sh"
   }
 }
