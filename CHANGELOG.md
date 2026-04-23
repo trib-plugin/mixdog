@@ -4,6 +4,12 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.24] - Unreleased
+
+### Added
+
+- **StatusLine auto-injection** — `hooks/session-start.cjs` now writes a `statusLine` entry into `~/.claude/settings.json` on every interactive session start, pointing at `${CLAUDE_PLUGIN_ROOT}/bin/statusline.sh`. Tagged with `source: "mixdog-auto"` so subsequent runs refresh the path after a version bump without touching user-owned or other plugins' `statusLine` settings. Replaces the silently-ignored plugin-manifest `statusLine` field attempted in 0.1.22 (removed in 0.1.23); Claude Code's plugin schema does not honour a top-level `statusLine` key, so injection into the user settings file is the only working path.
+
 ## [0.1.23] - Unreleased
 
 ### Fixed

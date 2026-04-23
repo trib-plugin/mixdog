@@ -82,6 +82,39 @@ function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
 }
 
+function injectStatusLine(pluginRoot) {
+  try {
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    let raw;
+    try { raw = fs.readFileSync(settingsPath, 'utf8'); } catch { return; }
+    let settings;
+    try { settings = JSON.parse(raw); } catch { return; }
+    if (!settings || typeof settings !== 'object') return;
+
+    const scriptPath = path.join(pluginRoot, 'bin', 'statusline.sh').replace(/\\/g, '/');
+    const desiredCommand = `bash "${scriptPath}"`;
+    const existing = settings.statusLine;
+    const isOurs = existing && typeof existing === 'object' && existing.source === 'mixdog-auto';
+
+    if (existing && !isOurs) return;
+    if (isOurs && existing.command === desiredCommand && existing.type === 'command') return;
+
+    settings.statusLine = {
+      type: 'command',
+      command: desiredCommand,
+      source: 'mixdog-auto',
+    };
+
+    const tmpPath = settingsPath + '.mixdog-tmp';
+    fs.writeFileSync(tmpPath, JSON.stringify(settings, null, 2) + '\n');
+    fs.renameSync(tmpPath, settingsPath);
+  } catch (e) {
+    process.stderr.write(`[session-start] statusLine inject failed: ${e.message}\n`);
+  }
+}
+
+injectStatusLine(PLUGIN_ROOT);
+
 try {
   const activePath = path.join(os.tmpdir(), 'mixdog', 'active-instance.json');
   if (fs.existsSync(activePath)) {
