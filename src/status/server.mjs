@@ -1,20 +1,27 @@
 /**
- * MCP-embedded status HTTP server.
+ * Status HTTP server (forked child process).
  *
  * A tiny loopback-only HTTP server that exposes GET /bridge/status for
- * statusline consumers. Unlike setup-server.mjs (port 3458, on-demand via
- * /mixdog:config), this one runs for the lifetime of the MCP server
- * process so line 2 of the statusline has a reliable data source even
- * when the setup UI isn't open.
+ * statusline consumers. Lives in its OWN process (forked by server.mjs
+ * at boot) so bursty MCP tool activity in the parent can't starve the
+ * statusline's short 1-second curl timeout.
  *
  * Binds to an ephemeral port on 127.0.0.1 and advertises the port via
  * ~/.claude/mixdog-status.json so bin/statusline.sh can discover it
  * without hard-coded port numbers.
+ *
+ * Can be used two ways:
+ *   1. Imported: `startStatusServer({ dataDir, advertisePath, log })` —
+ *      kept as a named export for tests / ad-hoc in-process hosting.
+ *   2. Spawned directly via `fork('src/status/server.mjs')` — config is
+ *      read from MIXDOG_STATUS_DATA_DIR / MIXDOG_STATUS_ADVERTISE_PATH
+ *      env vars. The parent kills this process at shutdown.
  */
 
 import http from 'http';
 import { writeFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
 import { dirname } from 'path';
+import { pathToFileURL } from 'url';
 import { buildBridgeStatus, renderBridgeStatusText } from './aggregator.mjs';
 
 function writeAdvertisement(path, record) {
@@ -83,4 +90,37 @@ export async function startStatusServer({ dataDir, advertisePath, log = () => {}
       server.close(() => resolve());
     }),
   };
+}
+
+// ── Child-process entry point ─────────────────────────────────────────
+// When invoked directly (`node src/status/server.mjs`), read config
+// from env and boot. Parent signals shutdown by disconnecting IPC or
+// sending SIGTERM; either way we tear down the server and exit.
+const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+if (isMain) {
+  const dataDir = process.env.MIXDOG_STATUS_DATA_DIR;
+  const advertisePath = process.env.MIXDOG_STATUS_ADVERTISE_PATH;
+  if (!dataDir || !advertisePath) {
+    process.stderr.write('[status-server] missing MIXDOG_STATUS_DATA_DIR or MIXDOG_STATUS_ADVERTISE_PATH\n');
+    process.exit(2);
+  }
+  const log = (m) => process.stdout.write(m + '\n');
+  let handle = null;
+  let shuttingDown = false;
+  const shutdown = async (reason) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`[status-server] shutdown (${reason})`);
+    try { if (handle) await handle.close(); } catch {}
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('disconnect', () => shutdown('parent-disconnect'));
+  try {
+    handle = await startStatusServer({ dataDir, advertisePath, log });
+  } catch (e) {
+    process.stderr.write(`[status-server] failed to start: ${e && (e.stack || e.message) || e}\n`);
+    process.exit(1);
+  }
 }

@@ -809,26 +809,38 @@ setImmediate(() => {
   }
 })
 
-// ── Status HTTP server ─────────────────────────────────────────────
+// ── Status HTTP server (forked child) ──────────────────────────────
 // Exposes /bridge/status on an ephemeral loopback port so the terminal
 // statusline has a reliable data source independent of the on-demand
-// setup-server (port 3458). Advertises its port via
-// ~/.claude/mixdog-status.json; bin/statusline.sh reads the file and
-// curls the advertised port.
+// setup-server (port 3458). Runs in its OWN forked process — bursty
+// tool activity in this MCP process can otherwise starve the
+// statusline's short 1-second curl timeout. Advertises the port via
+// ~/.claude/mixdog-status.json; bin/statusline.sh reads that file.
 const STATUS_ADVERTISE_PATH = join(homedir(), '.claude', 'mixdog-status.json')
-let statusServerHandle = null
-setImmediate(async () => {
+let statusServerChild = null
+setImmediate(() => {
   try {
-    const { startStatusServer } = await import(
-      pathToFileURL(join(PLUGIN_ROOT, 'src/status/server.mjs')).href
+    statusServerChild = fork(
+      join(PLUGIN_ROOT, 'src/status/server.mjs'),
+      [],
+      {
+        env: {
+          ...process.env,
+          MIXDOG_STATUS_DATA_DIR: PLUGIN_DATA,
+          MIXDOG_STATUS_ADVERTISE_PATH: STATUS_ADVERTISE_PATH,
+        },
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        windowsHide: true,
+      }
     )
-    statusServerHandle = await startStatusServer({
-      dataDir: PLUGIN_DATA,
-      advertisePath: STATUS_ADVERTISE_PATH,
-      log: (m) => log(m),
+    statusServerChild.stdout?.on('data', (d) => log(String(d).trimEnd()))
+    statusServerChild.stderr?.on('data', (d) => log(`[status-server] stderr: ${String(d).trimEnd()}`))
+    statusServerChild.on('exit', (code, signal) => {
+      log(`[status-server] child exited code=${code} signal=${signal}`)
+      statusServerChild = null
     })
   } catch (e) {
-    log(`[status-server] failed to start: ${e && (e.stack || e.message) || e}`)
+    log(`[status-server] failed to fork: ${e && (e.stack || e.message) || e}`)
   }
 })
 
@@ -897,9 +909,20 @@ async function shutdown(reason) {
     const { stopIdleCleanup } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.mjs')).href)
     stopIdleCleanup()
   } catch {}
-  // Close status HTTP server + remove its advertisement file
-  if (statusServerHandle) {
-    try { await statusServerHandle.close() } catch {}
+  // Stop status HTTP server child — parent-disconnect triggers graceful
+  // shutdown (advertisement file cleanup + server.close) in the child.
+  // On Windows, taskkill /F is the reliable fallback.
+  if (statusServerChild) {
+    const pid = statusServerChild.pid
+    try {
+      if (isWin && pid) {
+        require('child_process').execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', windowsHide: true, timeout: 3000 })
+      } else {
+        statusServerChild.kill('SIGTERM')
+      }
+    } catch {}
+    // Belt-and-braces: unlink the advertisement file if child didn't.
+    try { unlinkSync(STATUS_ADVERTISE_PATH) } catch {}
   }
   // Kill workers — Windows needs taskkill for reliable cleanup
   for (const [name, entry] of workers) {

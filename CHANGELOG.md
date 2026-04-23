@@ -4,6 +4,12 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.27] - Unreleased
+
+### Fixed
+
+- **Status HTTP server isolated from MCP tool activity** — 0.1.26 boot-ed the status HTTP server inside the MCP process so it shared the Node event loop with tool handlers. While the MCP process was busy serving bursty tool calls (bash / read / grep), the statusline's 1-second `curl --max-time 1` could not complete, and line 2 silently dropped. The status server now runs in its OWN forked process (`child_process.fork` at boot); the MCP process kills it at shutdown (Windows uses `taskkill /F /T`, elsewhere `SIGTERM` → child's `disconnect` handler). Config is passed via `MIXDOG_STATUS_DATA_DIR` / `MIXDOG_STATUS_ADVERTISE_PATH` env vars. The same HTTP endpoint (`GET /bridge/status`) and advertisement file (`~/.claude/mixdog-status.json`) remain — statusline side is unchanged.
+
 ## [0.1.26] - Unreleased
 
 ### Fixed
