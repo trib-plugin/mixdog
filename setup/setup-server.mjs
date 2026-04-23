@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { exec, execSync, spawn, spawnSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, createWriteStream, mkdirSync, renameSync, unlinkSync, readdirSync, rmSync, statSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, createWriteStream, mkdirSync, renameSync, unlinkSync, readdirSync, rmSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { homedir, arch, platform } from 'os';
 import { fileURLToPath } from 'url';
@@ -873,6 +873,204 @@ const server = http.createServer(async (req, res) => {
         updatedAt: registry.data.updatedAt,
         profiles,
       }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(e?.message || e) }));
+    }
+    return;
+  }
+
+  // ── GET /bridge/status ──────────────────────────────────────────────
+  // Cheap, read-only, loopback-only. Returns mixdog runtime state as
+  // either a JSON object (?format=json) or a single-line statusline
+  // string (?format=text or Accept: text/plain).
+  // No Origin guard needed — read-only endpoint (C2 convention, v0.1.14).
+  if (req.method === 'GET' && path === '/bridge/status') {
+    try {
+      const now = Date.now();
+      const wantText = url.searchParams.get('format') === 'text'
+        || (req.headers['accept'] || '').includes('text/plain');
+
+      // ── 1. Active + recently-completed bridge sessions ────────────────
+      // Read session files from disk (same store the agent uses).
+      const sessionsDir = join(DATA_DIR, 'sessions');
+      let allSessions = [];
+      if (existsSync(sessionsDir)) {
+        try {
+          const files = readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
+          for (const f of files) {
+            try {
+              allSessions.push(JSON.parse(readFileSync(join(sessionsDir, f), 'utf-8')));
+            } catch { /* skip corrupt */ }
+          }
+        } catch { /* dir unreadable */ }
+      }
+      // Running: bridge sessions with status='running' and not tombstoned.
+      // We mirror store.mjs's RUNNING_STALL_MS (10 min) to avoid counting zombie sessions.
+      const RUNNING_STALL_MS = 10 * 60 * 1000;
+      const running = allSessions.filter(s =>
+        s.owner === 'bridge'
+        && s.status === 'running'
+        && s.closed !== true
+        && (now - (s.updatedAt || s.createdAt || 0)) <= RUNNING_STALL_MS
+      );
+      const runningRoles = running.map(s => s.role || 'agent').filter(Boolean);
+
+      // Most recently completed bridge session (closed, within 30 min).
+      const RECENT_MS = 30 * 60 * 1000;
+      const recentClosed = allSessions
+        .filter(s => s.owner === 'bridge' && s.closed === true && (now - (s.updatedAt || 0)) <= RECENT_MS)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      const lastCompleted = recentClosed[0] || null;
+
+      // ── 2. Scheduler state (computed from config — channels worker is a ─
+      //       separate process; no shared in-memory state).               ─
+      // Strategy: read config.json, collect all enabled schedules with a
+      // legacy HH:MM time, compute the next fire within 12 hours.
+      let scheduleActive = 0;
+      let scheduleDeferred = 0; // deferred count not available cross-process; always 0
+      let nextSchedule = null; // { name, fireAt (ms timestamp) }
+      try {
+        const cfg = readJsonFile(CONFIG_PATH) || {};
+        const allSchedules = [
+          ...(cfg.nonInteractive || []),
+          ...(cfg.interactive || []),
+        ].filter(s => s.enabled !== false && s.name);
+        scheduleActive = allSchedules.length;
+
+        // Compute next HH:MM fire within the next 12 hours.
+        const TWELVE_H = 12 * 60 * 60 * 1000;
+        const candidates = [];
+        for (const s of allSchedules) {
+          if (!s.time || !/^\d{2}:\d{2}$/.test(s.time)) continue;
+          const [hh, mm] = s.time.split(':').map(Number);
+          // Try today's slot, then tomorrow's.
+          for (const offsetDays of [0, 1]) {
+            const candidate = new Date(now);
+            candidate.setDate(candidate.getDate() + offsetDays);
+            candidate.setHours(hh, mm, 0, 0);
+            const diff = candidate.getTime() - now;
+            if (diff > 0 && diff <= TWELVE_H) {
+              candidates.push({ name: s.name, fireAt: candidate.getTime(), diff });
+            }
+          }
+        }
+        candidates.sort((a, b) => a.diff - b.diff);
+        if (candidates.length > 0) nextSchedule = candidates[0];
+      } catch { /* config unreadable */ }
+
+      // ── 3. Recall count (bridge-trace.jsonl, last 60 min, tail 2 MB) ──
+      let recallCount = 0;
+      const TRACE_PATH = join(DATA_DIR, 'history', 'bridge-trace.jsonl');
+      const HOUR_MS = 60 * 60 * 1000;
+      if (existsSync(TRACE_PATH)) {
+        try {
+          // Read up to 2 MB from the tail so we don't load huge files into RAM.
+          const MAX_BYTES = 2 * 1024 * 1024;
+          const stat = statSync(TRACE_PATH);
+          const fileSize = stat.size;
+          const start = Math.max(0, fileSize - MAX_BYTES);
+          const bytesToRead = fileSize - start;
+          const buf = Buffer.alloc(bytesToRead);
+          const fd = openSync(TRACE_PATH, 'r');
+          try { readSync(fd, buf, 0, bytesToRead, start); } finally { closeSync(fd); }
+          const cutoff = now - HOUR_MS;
+          const lines = buf.toString('utf-8').split('\n');
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const ev = JSON.parse(line);
+              if (ev.kind === 'tool' && ev.tool_name === 'recall' && new Date(ev.ts).getTime() >= cutoff) {
+                recallCount++;
+              }
+            } catch { /* skip malformed */ }
+          }
+        } catch { /* trace unreadable */ }
+      }
+
+      // ── Assemble JSON payload ─────────────────────────────────────────
+      const sessionSegment = running.length > 0
+        ? { active: running.length, roles: runningRoles }
+        : { active: 0, roles: [] };
+
+      let lastCompletedSegment = null;
+      if (lastCompleted) {
+        const ageMs = now - (lastCompleted.updatedAt || 0);
+        const ageMins = Math.round(ageMs / 60000);
+        lastCompletedSegment = {
+          role: lastCompleted.role || 'agent',
+          agoMinutes: ageMins,
+        };
+      }
+
+      const scheduleSegment = {
+        active: scheduleActive,
+        deferred: scheduleDeferred,
+        next: nextSchedule ? {
+          name: nextSchedule.name,
+          fireAt: nextSchedule.fireAt,
+          fireAtISO: new Date(nextSchedule.fireAt).toISOString(),
+        } : null,
+      };
+
+      const jsonPayload = {
+        sessions: sessionSegment,
+        lastCompleted: lastCompletedSegment,
+        schedule: scheduleSegment,
+        recallLastHour: recallCount,
+        generatedAt: new Date(now).toISOString(),
+      };
+
+      if (!wantText) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(jsonPayload));
+        return;
+      }
+
+      // ── Assemble text one-liner ───────────────────────────────────────
+      const parts = [];
+
+      // Segment 1: active sessions
+      if (running.length > 0) {
+        const roleList = [...new Set(runningRoles)].join(',');
+        parts.push(`\u2699 ${running.length} running (${roleList})`);
+      } else {
+        parts.push('idle');
+      }
+
+      // Segment 2: most recent completed (within 30 min)
+      if (lastCompleted) {
+        const ageMs = now - (lastCompleted.updatedAt || 0);
+        const ageMins = Math.round(ageMs / 60000);
+        const timeAgo = ageMins <= 0 ? 'just now' : `${ageMins}m`;
+        const role = lastCompleted.role || 'agent';
+        parts.push(`\u2713 ${role} ${timeAgo}`);
+      }
+
+      // Segment 3: next scheduled item (within 12 hours)
+      if (nextSchedule) {
+        const d = new Date(nextSchedule.fireAt);
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        parts.push(`\u23f0 ${hh}:${mm} ${nextSchedule.name}`);
+      }
+
+      // Segment 4: schedule roster
+      if (scheduleActive > 0) {
+        const rosterStr = scheduleDeferred > 0
+          ? `\uD83D\uDCCB ${scheduleActive}/${scheduleDeferred}def`
+          : `\uD83D\uDCCB ${scheduleActive}`;
+        parts.push(rosterStr);
+      }
+
+      // Segment 5: recall count (last hour)
+      if (recallCount > 0) {
+        parts.push(`\uD83E\uDDE0 ${recallCount}r/1h`);
+      }
+
+      const text = parts.join(' \u00B7 ');
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(text);
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: String(e?.message || e) }));

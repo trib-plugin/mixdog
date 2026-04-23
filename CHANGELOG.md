@@ -4,6 +4,14 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.17] - Unreleased
+
+### Added
+
+- **Status endpoint**: new `GET /bridge/status` on the setup-server (port 3458). Supports `?format=json` (structured payload) and `?format=text` / `Accept: text/plain` (single-line statusline string). No Origin guard needed — read-only endpoint per C2 convention.
+- **Statusline segments**: active bridge sessions with role list · most recent completed session (within 30 min) · next scheduled item within 12 hours · schedule roster count · recall tool calls in the last hour.
+- **Setup UI**: new Statusline panel (General → Statusline) with copyable `settings.json` snippet for Claude Code's `statusLine.command` and a live preview section that fetches current output from the endpoint.
+
 ## [0.1.16] - Unreleased
 
 ### Changed
