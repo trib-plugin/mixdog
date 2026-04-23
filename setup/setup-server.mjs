@@ -1583,12 +1583,49 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && path === '/install/voice') {
+  // Accept both POST (legacy) and GET?stream=1 (SSE) for /install/voice
+  const _voiceUrl = new URL(req.url, 'http://localhost');
+  const isVoiceSSE  = (req.method === 'GET'  && _voiceUrl.pathname === '/install/voice' && _voiceUrl.searchParams.get('stream') === '1');
+  const isVoicePOST = (req.method === 'POST' && path === '/install/voice');
+
+  if (isVoicePOST || isVoiceSSE) {
     // One-click whisper.cpp + turbo model installer.
     // Detects platform (win32 / darwin / linux), installs binary + model, writes config.
+    // Supports SSE streaming (GET ?stream=1) and legacy JSON POST.
+
+    const _sseActive = isVoiceSSE;
+
+    // SSE: flush headers immediately so the browser EventSource connects
+    if (_sseActive) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+      res.flushHeaders();
+    }
+
+    /** Emit an SSE event (noop in legacy POST mode). */
+    const emitSSE = (eventName, data) => {
+      if (!_sseActive) return;
+      res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    /** Emit a stage transition event. */
+    const emitStage = (stage, message) => emitSSE('stage', { stage, message });
+
     const send = (payload) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(payload));
+      if (_sseActive) {
+        if (payload.ok === false) {
+          emitSSE('error', payload);
+        } else {
+          emitSSE('done', payload);
+        }
+        res.end();
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      }
     };
 
     const os_platform = platform(); // 'win32' | 'darwin' | 'linux'
@@ -1611,17 +1648,39 @@ const server = http.createServer(async (req, res) => {
       setTimeout(() => { try { child.kill(); } catch {} resolve(false); }, 10000);
     });
 
-    /** Download a URL to destPath, following redirects. */
-    const downloadFile = (url, destPath) => new Promise((resolve, reject) => {
+    /** Download a URL to destPath, following redirects.
+     *  Optional onProgress({bytes, total, speed}) called at most every 200ms.
+     */
+    const downloadFile = (url, destPath, onProgress) => new Promise((resolve, reject) => {
       const doGet = (u) => {
-        https.get(u, { headers: { 'User-Agent': 'mixdog/0.1.11' } }, (resp) => {
+        https.get(u, { headers: { 'User-Agent': 'mixdog/0.1.13' } }, (resp) => {
           if (resp.statusCode === 301 || resp.statusCode === 302 || resp.statusCode === 303 || resp.statusCode === 307 || resp.statusCode === 308) {
             return doGet(resp.headers.location);
           }
           if (resp.statusCode !== 200) return reject(new Error(`HTTP ${resp.statusCode} from ${u}`));
+          const total = parseInt(resp.headers['content-length'] || '0', 10) || 0;
+          let bytes = 0;
+          let lastProgressTime = Date.now();
+          let lastProgressBytes = 0;
           const ws = createWriteStream(destPath);
+          resp.on('data', (chunk) => {
+            bytes += chunk.length;
+            if (onProgress) {
+              const now = Date.now();
+              const elapsed = now - lastProgressTime;
+              if (elapsed >= 200) {
+                const speed = elapsed > 0 ? Math.round((bytes - lastProgressBytes) / (elapsed / 1000)) : 0;
+                onProgress({ bytes, total, speed });
+                lastProgressTime = now;
+                lastProgressBytes = bytes;
+              }
+            }
+          });
           resp.pipe(ws);
-          ws.on('finish', resolve);
+          ws.on('finish', () => {
+            if (onProgress) onProgress({ bytes, total, speed: 0 });
+            resolve();
+          });
           ws.on('error', reject);
           resp.on('error', reject);
         }).on('error', reject);
@@ -1632,9 +1691,10 @@ const server = http.createServer(async (req, res) => {
     /**
      * Download ggml-large-v3-turbo.bin into <dataDir>/voice/models/.
      * Idempotent: skips if file already exists and is > 100 MB.
+     * Optional onProgress({bytes,total,speed}) callback throttled to 200ms.
      * Returns absolute model path.
      */
-    const downloadModelToDataDir = async () => {
+    const downloadModelToDataDir = async (onProgress) => {
       const modelPath = join(modelDir, 'ggml-large-v3-turbo.bin');
       const MIN_MODEL_BYTES = 100 * 1024 * 1024; // 100 MB sanity threshold
       if (existsSync(modelPath)) {
@@ -1645,7 +1705,7 @@ const server = http.createServer(async (req, res) => {
         }
       }
       console.log('  [voice-install] downloading ggml-large-v3-turbo.bin (~1.5 GB)...');
-      await downloadFile(MODEL_URL, modelPath);
+      await downloadFile(MODEL_URL, modelPath, onProgress);
       return modelPath;
     };
 
@@ -1669,9 +1729,9 @@ const server = http.createServer(async (req, res) => {
       const binDir = join(voiceDir, 'whisper.cpp');
       mkdirSync(binDir, { recursive: true });
 
-      const WHISPER_WIN_TAG   = 'r245.5';
+      // ── Purfview tag: try GitHub releases API, fall back to known-good tag ──
+      const FALLBACK_PURFVIEW_TAG = 'r245.5';
       const WHISPER_WIN_ASSET = 'Whisper-faster-v3-portable.zip';
-      const binaryUrl      = `https://github.com/Purfview/whisper-standalone-win/releases/download/${WHISPER_WIN_TAG}/${WHISPER_WIN_ASSET}`;
       const whisperBinName = 'whisper-faster.exe';
       const whisperBinPath = join(binDir, whisperBinName);
 
@@ -1685,8 +1745,55 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      // Resolve Purfview release tag dynamically
+      emitStage('purfview-lookup', 'Looking up latest Purfview release tag…');
+      let WHISPER_WIN_TAG = FALLBACK_PURFVIEW_TAG;
+      try {
+        const tagJson = await new Promise((resolve, reject) => {
+          const apiReq = https.get(
+            'https://api.github.com/repos/Purfview/whisper-standalone-win/releases/latest',
+            {
+              headers: {
+                'Accept': 'application/vnd.github+json',
+                'User-Agent': 'mixdog/0.1.13',
+              },
+            },
+            (resp) => {
+              if (resp.statusCode !== 200) {
+                resp.resume();
+                return reject(new Error(`GitHub API returned HTTP ${resp.statusCode}`));
+              }
+              let body = '';
+              resp.on('data', (c) => { body += c; });
+              resp.on('end', () => {
+                try { resolve(JSON.parse(body)); }
+                catch (e) { reject(new Error(`JSON parse error: ${e.message}`)); }
+              });
+              resp.on('error', reject);
+            }
+          );
+          apiReq.on('error', reject);
+          apiReq.setTimeout(5000, () => {
+            apiReq.destroy();
+            reject(new Error('GitHub API request timed out after 5s'));
+          });
+        });
+        if (tagJson && typeof tagJson.tag_name === 'string' && tagJson.tag_name) {
+          WHISPER_WIN_TAG = tagJson.tag_name;
+          console.log(`  [voice-install] resolved Purfview tag: ${WHISPER_WIN_TAG}`);
+        } else {
+          throw new Error('tag_name missing from GitHub API response');
+        }
+      } catch (tagErr) {
+        process.stderr.write(`[voice-install] Purfview tag lookup failed (${tagErr.message}); using fallback tag ${FALLBACK_PURFVIEW_TAG}\n`);
+        WHISPER_WIN_TAG = FALLBACK_PURFVIEW_TAG;
+      }
+
+      const binaryUrl = `https://github.com/Purfview/whisper-standalone-win/releases/download/${WHISPER_WIN_TAG}/${WHISPER_WIN_ASSET}`;
+
       // Download binary archive
       const archivePath = join(binDir, 'whisper-download.zip');
+      emitStage('purfview-download', `Downloading Purfview ${WHISPER_WIN_TAG}…`);
       try {
         console.log(`  [voice-install] downloading whisper binary from ${binaryUrl}`);
         await downloadFile(binaryUrl, archivePath);
@@ -1695,6 +1802,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Extract
+      emitStage('purfview-extract', 'Extracting Purfview archive…');
       try {
         execSync(
           `powershell -NoProfile -Command "Expand-Archive -Force -Path '${archivePath}' -DestinationPath '${binDir}'"`,
@@ -1717,19 +1825,22 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Download model
+      emitStage('download-model', 'Downloading turbo model (~1.5 GB)…');
       let resolvedModelPath;
       try {
-        resolvedModelPath = await downloadModelToDataDir();
+        resolvedModelPath = await downloadModelToDataDir((p) => emitSSE('progress', { stage: 'download-model', ...p }));
       } catch (e) {
         return send({ ok: false, stage: 'download-model', error: e.message });
       }
 
       // Smoke test
+      emitStage('smoke-test', 'Running smoke test…');
       const smokeOk = await smokeTestWhisper(whisperBinPath);
       if (!smokeOk) {
         return send({ ok: false, stage: 'smoke-test', error: 'Binary failed smoke test (--help returned non-zero or timed out).' });
       }
 
+      emitStage('write-config', 'Writing voice config…');
       writeVoiceConfig(whisperBinPath, resolvedModelPath);
       console.log(`  [voice-install] done. binary=${whisperBinPath} model=${resolvedModelPath}`);
       return send({ ok: true, whisperPath: whisperBinPath, modelPath: resolvedModelPath });
@@ -1738,6 +1849,7 @@ const server = http.createServer(async (req, res) => {
     // ── macOS branch ─────────────────────────────────────────────────────────
     if (os_platform === 'darwin') {
       // 1. Probe for Homebrew
+      emitStage('brew-check', 'Checking for Homebrew…');
       let brewPath;
       try {
         brewPath = execSync('which brew', { stdio: 'pipe', timeout: 5000 }).toString().trim();
@@ -1769,6 +1881,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       // 2. brew install whisper-cpp (already-installed is fine)
+      emitStage('brew-install', 'Running brew install whisper-cpp…');
       try {
         console.log('  [voice-install] running: brew install whisper-cpp');
         execSync('brew install whisper-cpp', { stdio: 'pipe', timeout: 600000 }); // 10 min
@@ -1778,6 +1891,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       // 3. Resolve binary path via brew --prefix
+      emitStage('brew-prefix', 'Resolving brew --prefix for whisper-cpp…');
       let brewPrefix;
       try {
         brewPrefix = execSync('brew --prefix whisper-cpp', { stdio: 'pipe', timeout: 10000 }).toString().trim();
@@ -1786,25 +1900,29 @@ const server = http.createServer(async (req, res) => {
       }
 
       // The formula installs 'whisper-cli' as of Apr 2026.
+      emitStage('brew-binary', 'Locating whisper-cli binary…');
       const whisperBinPath = join(brewPrefix, 'bin', 'whisper-cli');
       if (!existsSync(whisperBinPath)) {
         return send({ ok: false, stage: 'brew-binary', error: `whisper-cli not found at expected path: ${whisperBinPath}` });
       }
 
       // 4. Download model
+      emitStage('download-model', 'Downloading turbo model (~1.5 GB)…');
       let resolvedModelPath;
       try {
-        resolvedModelPath = await downloadModelToDataDir();
+        resolvedModelPath = await downloadModelToDataDir((p) => emitSSE('progress', { stage: 'download-model', ...p }));
       } catch (e) {
         return send({ ok: false, stage: 'download-model', error: e.message });
       }
 
       // 5. Smoke test
+      emitStage('smoke-test', 'Running smoke test…');
       const smokeOk = await smokeTestWhisper(whisperBinPath);
       if (!smokeOk) {
         return send({ ok: false, stage: 'smoke-test', error: 'whisper-cli failed smoke test (--help returned non-zero or timed out).' });
       }
 
+      emitStage('write-config', 'Writing voice config…');
       writeVoiceConfig(whisperBinPath, resolvedModelPath);
       console.log(`  [voice-install] done. binary=${whisperBinPath} model=${resolvedModelPath}`);
       return send({ ok: true, whisperPath: whisperBinPath, modelPath: resolvedModelPath });
@@ -1813,6 +1931,7 @@ const server = http.createServer(async (req, res) => {
     // ── Linux branch ─────────────────────────────────────────────────────────
     if (os_platform === 'linux') {
       // 1. Probe for required build tools
+      emitStage('build-tools-check', 'Checking for required build tools…');
       const requiredTools = ['git', 'cmake', 'make'];
       const cxxCandidates = ['g++', 'clang++'];
       const missing = [];
@@ -1830,10 +1949,13 @@ const server = http.createServer(async (req, res) => {
       if (missing.length > 0) {
         // Detect distro from /etc/os-release for a helpful install hint
         let distroId = '';
+        let distroIdLike = '';
         try {
           const osRelease = readFileSync('/etc/os-release', 'utf8');
-          const idLine = osRelease.split('\n').find(l => /^ID=/i.test(l));
-          distroId = (idLine || '').replace(/^ID=/i, '').replace(/["']/g, '').trim().toLowerCase();
+          const idLine     = osRelease.split('\n').find(l => /^ID=/i.test(l));
+          const idLikeLine = osRelease.split('\n').find(l => /^ID_LIKE=/i.test(l));
+          distroId     = (idLine     || '').replace(/^ID=/i,      '').replace(/["']/g, '').trim().toLowerCase();
+          distroIdLike = (idLikeLine || '').replace(/^ID_LIKE=/i, '').replace(/["']/g, '').trim().toLowerCase();
         } catch { /* ignore */ }
 
         const pkgNames = missing.map(t => {
@@ -1847,6 +1969,15 @@ const server = http.createServer(async (req, res) => {
           installHint = `sudo dnf install -y ${pkgNames.map(t => t === 'g++' ? 'gcc-c++' : t).join(' ')}`;
         } else if (['arch', 'manjaro', 'endeavouros'].includes(distroId)) {
           installHint = `sudo pacman -S ${pkgNames.map(t => t === 'g++' ? 'gcc' : t).join(' ')}`;
+        } else if (['opensuse-leap', 'opensuse-tumbleweed', 'opensuse'].includes(distroId) || distroIdLike.includes('suse')) {
+          // zypper package name may vary; whisper-cpp may not be in official repos — provide a generic hint
+          installHint = `sudo zypper install ${pkgNames.map(t => t === 'g++' ? 'gcc-c++' : t).join(' ')} (then check your package manager for whisper-cpp)`;
+        } else if (distroId === 'void') {
+          installHint = `sudo xbps-install -S ${pkgNames.map(t => t === 'g++' ? 'gcc' : t).join(' ')}`;
+        } else if (distroId === 'nixos') {
+          installHint = `nix-env -iA nixpkgs.${pkgNames.map(t => t === 'g++' ? 'gcc' : t === 'cmake' ? 'cmake' : t === 'make' ? 'gnumake' : t).join(' nixpkgs.')} (declarative config preferred: add to environment.systemPackages)`;
+        } else if (distroId === 'gentoo') {
+          installHint = `sudo emerge ${pkgNames.map(t => t === 'g++' ? 'sys-devel/gcc' : t === 'cmake' ? 'dev-build/cmake' : t === 'make' ? 'sys-devel/make' : t === 'git' ? 'dev-vcs/git' : t).join(' ')}`;
         } else {
           installHint = `Install using your package manager: ${missing.join(', ')}`;
         }
@@ -1873,6 +2004,7 @@ const server = http.createServer(async (req, res) => {
 
       // 2. Clone whisper.cpp (shallow, skip if already cloned)
       if (!existsSync(join(srcDir, '.git'))) {
+        emitStage('git-clone', 'Cloning whisper.cpp (shallow)…');
         try {
           console.log('  [voice-install] cloning whisper.cpp...');
           mkdirSync(voiceDir, { recursive: true });
@@ -1889,6 +2021,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       // 3. CMake configure + build
+      emitStage('build', 'Building whisper.cpp from source (may take several minutes)…');
       try {
         console.log('  [voice-install] cmake configure...');
         execSync(
@@ -1911,19 +2044,22 @@ const server = http.createServer(async (req, res) => {
       }
 
       // 5. Download model
+      emitStage('download-model', 'Downloading turbo model (~1.5 GB)…');
       let resolvedModelPath;
       try {
-        resolvedModelPath = await downloadModelToDataDir();
+        resolvedModelPath = await downloadModelToDataDir((p) => emitSSE('progress', { stage: 'download-model', ...p }));
       } catch (e) {
         return send({ ok: false, stage: 'download-model', error: e.message });
       }
 
       // 6. Smoke test
+      emitStage('smoke-test', 'Running smoke test…');
       const smokeOk = await smokeTestWhisper(whisperBinPath);
       if (!smokeOk) {
         return send({ ok: false, stage: 'smoke-test', error: 'whisper-cli failed smoke test (--help returned non-zero or timed out).' });
       }
 
+      emitStage('write-config', 'Writing voice config…');
       writeVoiceConfig(whisperBinPath, resolvedModelPath);
       console.log(`  [voice-install] done. binary=${whisperBinPath} model=${resolvedModelPath}`);
       return send({ ok: true, whisperPath: whisperBinPath, modelPath: resolvedModelPath });

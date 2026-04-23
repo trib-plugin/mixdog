@@ -4,6 +4,21 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.13] - Unreleased
+
+### Added
+- **Purfview dynamic release tag lookup (Windows)**: the Windows voice-install branch now queries `GET https://api.github.com/repos/Purfview/whisper-standalone-win/releases/latest` (5 s timeout, no auth) to resolve the current `tag_name` before constructing the download URL. Falls back to the hardcoded constant `FALLBACK_PURFVIEW_TAG = 'r245.5'` on any network/API error, logging a single stderr line.
+- **SSE progress streaming for `/install/voice`**: the handler now accepts `GET /install/voice?stream=1` in addition to the legacy `POST`. In SSE mode it emits `event: stage` (stage transitions), `event: progress` (download bytes/total/speed every ≥ 200 ms), `event: done`, and `event: error` events so the UI can show real-time progress during the ~1.5 GB model download.
+- **`downloadModelToDataDir(onProgress)`**: the model-download helper now accepts an optional `onProgress({bytes, total, speed})` callback; download speed is computed as bytes/sec over each 200 ms window. All three platform branches (win/mac/linux) pass the SSE emitter.
+- **`downloadFile` progress hook**: the low-level `downloadFile` helper now accepts an optional `onProgress` callback and reports byte counts + speed in real time via `resp.on('data', …)`.
+- **Stage events for all platforms**: all significant steps (purfview-lookup, purfview-download, purfview-extract, brew-check, brew-install, brew-prefix, brew-binary, build-tools-check, git-clone, build, download-model, write-config, smoke-test) emit `stage` SSE events with descriptive messages.
+- **Progress bar UI in `setup.html`**: the voice install section now renders a progress bar (`.voice-progress-bar / .voice-progress-fill`), a stage label, and a download speed line. Uses `EventSource` with `addEventListener('stage'/'progress'/'done'/'error')`. On `done` with `skipped:true` it renders the installed state; on `error` it shows stage + message and re-enables the Retry button.
+- **Linux distro expansion**: `/etc/os-release` detection extended with openSUSE (`ID=opensuse-*` or `ID_LIKE=*suse*` → `zypper`), Void Linux (`ID=void` → `xbps-install`), NixOS (`ID=nixos` → `nix-env` with declarative-config note), and Gentoo (`ID=gentoo` → `emerge`). The source-build fallback path is unchanged.
+
+### Changed
+- `downloadFile` User-Agent bumped to `mixdog/0.1.13`.
+- `installVoice()` in `setup.html` migrated from `fetch` + JSON to `EventSource` SSE; legacy JSON POST endpoint preserved for backwards compatibility.
+
 ## [0.1.12] - Unreleased
 
 ### Added

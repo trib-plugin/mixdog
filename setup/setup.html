@@ -408,6 +408,13 @@
   }
   .cli-status a:hover { color: var(--text-1); }
 
+  /* Voice install progress bar */
+  .voice-progress-wrap { margin-top: 6px; padding-left: 24px; display: flex; flex-direction: column; gap: 4px; }
+  .voice-progress-bar { background: rgba(255,255,255,0.08); border-radius: 4px; height: 6px; overflow: hidden; width: 100%; }
+  .voice-progress-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width 0.2s linear; width: 0%; }
+  .voice-progress-label { font-size: 11px; color: var(--text-4); }
+  .voice-progress-speed { font-size: 10px; color: var(--text-4); font-variant-numeric: tabular-nums; }
+
   /* Time inputs */
   .time-row {
     display: flex; align-items: center; gap: 8px;
@@ -2398,6 +2405,11 @@ function renderVoiceSection() {
           '<button class="save" id="btn-install-voice" onclick="installVoice()" style="width:auto;height:30px;padding:0 14px;margin-left:auto;font-size:11px;flex-shrink:0">Install</button>' +
         '</div>' +
         '<div id="voice-install-status" style="font-size:11px;color:var(--text-4);display:none;padding-left:24px;"></div>' +
+        '<div id="voice-progress-wrap" class="voice-progress-wrap" style="display:none;width:100%">' +
+          '<div class="voice-progress-label" id="voice-stage-label"></div>' +
+          '<div class="voice-progress-bar"><div class="voice-progress-fill" id="voice-progress-fill"></div></div>' +
+          '<div class="voice-progress-speed" id="voice-progress-speed"></div>' +
+        '</div>' +
       '</div>';
   } else {
     const tribCfg = cliStatus._tribCfgVoice || {};
@@ -2417,36 +2429,95 @@ function renderVoiceSection() {
   }
 }
 
-async function installVoice() {
+function installVoice() {
   const btn = document.getElementById('btn-install-voice');
   const statusEl = document.getElementById('voice-install-status');
+  const progressWrap = document.getElementById('voice-progress-wrap');
+  const stageLabel = document.getElementById('voice-stage-label');
+  const progressFill = document.getElementById('voice-progress-fill');
+  const progressSpeed = document.getElementById('voice-progress-speed');
+
   const setStatus = (msg, color) => {
     if (!statusEl) return;
     statusEl.style.display = 'block';
     statusEl.style.color = color || 'var(--text-4)';
     statusEl.textContent = msg;
   };
+  const showProgress = (show) => { if (progressWrap) progressWrap.style.display = show ? 'flex' : 'none'; };
+  const setStage = (msg) => { if (stageLabel) stageLabel.textContent = msg; };
+  const setProgressPct = (pct) => { if (progressFill) progressFill.style.width = Math.min(100, Math.max(0, pct)) + '%'; };
+  const setSpeed = (msg) => { if (progressSpeed) progressSpeed.textContent = msg; };
+
+  const STAGE_LABELS = {
+    'platform-check': 'Platform check', 'purfview-lookup': 'Looking up Purfview release',
+    'purfview-download': 'Downloading Purfview binary', 'purfview-extract': 'Extracting binary',
+    'download-binary': 'Downloading binary', 'extract-binary': 'Extracting binary',
+    'download-model': 'Downloading model (~1.5 GB)', 'smoke-test': 'Smoke test',
+    'write-config': 'Writing config',
+    'brew-check': 'Homebrew check', 'brew-install': 'brew install whisper-cpp',
+    'brew-prefix': 'Resolving brew path', 'brew-binary': 'Locating binary',
+    'build-tools-check': 'Build tools check', 'git-clone': 'Cloning source', 'build': 'Building from source',
+  };
+
+  const fmtBytes = (b) => b >= 1e9 ? (b/1e9).toFixed(2)+' GB' : b >= 1e6 ? (b/1e6).toFixed(1)+' MB' : b >= 1e3 ? (b/1e3).toFixed(0)+' KB' : b+' B';
+
   if (btn) { btn.textContent = 'Installing\u2026'; btn.disabled = true; }
-  setStatus('Downloading whisper.cpp\u2026');
-  try {
-    const r = await fetch('/install/voice', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}',
-    }).then(r => r.json());
-    if (r.ok) {
-      setStatus('\u2713 Done', 'var(--green)');
-      await loadChannelsCliCheck();
-      renderAdvanced();
-    } else {
-      const stageLabel = { 'platform-check': 'Platform check', 'download-binary': 'Downloading binary', 'extract-binary': 'Extracting binary', 'download-model': 'Downloading model', 'smoke-test': 'Smoke test', 'brew-check': 'Homebrew check', 'brew-install': 'brew install whisper-cpp', 'brew-prefix': 'Resolving brew path', 'brew-binary': 'Locating binary', 'build-tools-check': 'Build tools check', 'git-clone': 'Cloning source', 'build': 'Building from source' }[r.stage] || r.stage || 'Install';
-      setStatus(`\u2717 ${stageLabel} failed: ${r.error}`, 'var(--red)');
-      if (btn) { btn.textContent = 'Retry'; btn.disabled = false; }
-    }
-  } catch (e) {
-    setStatus(`\u2717 Network error: ${e.message}`, 'var(--red)');
+  showProgress(true);
+  setStage('Starting\u2026');
+  setProgressPct(0);
+  setStatus('');
+
+  const es = new EventSource('/install/voice?stream=1');
+
+  es.addEventListener('stage', (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      setStage(STAGE_LABELS[d.stage] || d.message || d.stage);
+      if (d.stage !== 'download-model') { setProgressPct(0); setSpeed(''); }
+    } catch {}
+  });
+
+  es.addEventListener('progress', (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.stage === 'download-model' && d.total > 0) {
+        setProgressPct((d.bytes / d.total) * 100);
+        setSpeed(fmtBytes(d.bytes) + ' / ' + fmtBytes(d.total) + (d.speed > 0 ? ' \u00b7 ' + fmtBytes(d.speed) + '/s' : ''));
+      }
+    } catch {}
+  });
+
+  es.addEventListener('done', (e) => {
+    es.close();
+    try {
+      const d = JSON.parse(e.data);
+      showProgress(false);
+      if (d.ok) {
+        setStatus('\u2713 Done', 'var(--green)');
+        loadChannelsCliCheck().then(() => renderAdvanced());
+      }
+    } catch { setStatus('\u2713 Done', 'var(--green)'); loadChannelsCliCheck().then(() => renderAdvanced()); }
+  });
+
+  es.addEventListener('error', (e) => {
+    es.close();
+    showProgress(false);
+    try {
+      const d = JSON.parse(e.data);
+      const sl = STAGE_LABELS[d.stage] || d.stage || 'Install';
+      setStatus('\u2717 ' + sl + ' failed: ' + (d.error || 'Unknown error'), 'var(--red)');
+    } catch { setStatus('\u2717 Connection error', 'var(--red)'); }
     if (btn) { btn.textContent = 'Retry'; btn.disabled = false; }
-  }
+  });
+
+  // Fallback: if EventSource itself fires onerror with no data (network issue)
+  es.onerror = () => {
+    if (es.readyState === EventSource.CLOSED) return; // already handled
+    es.close();
+    showProgress(false);
+    setStatus('\u2717 Connection lost during install', 'var(--red)');
+    if (btn) { btn.textContent = 'Retry'; btn.disabled = false; }
+  };
 }
 
 function toggleCollapsible(toggleEl) {
