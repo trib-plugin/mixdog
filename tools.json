@@ -5,11 +5,11 @@
     "annotations": {
       "title": "Discord Reply",
       "readOnlyHint": false,
-      "destructiveHint": false,
+      "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Reply on the messaging channel. Use `fetch` first to inspect recent messages, then `reply` with `chat_id`/`reply_to`. Prefer plain `text` for normal replies; add `files`, `embeds`, or `components` only when needed.",
+    "description": "Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -95,7 +95,7 @@
     "annotations": {
       "title": "Edit Message",
       "readOnlyHint": false,
-      "destructiveHint": false,
+      "destructiveHint": true,
       "idempotentHint": true,
       "openWorldHint": true
     },
@@ -148,7 +148,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Download attachments from a message to the local inbox. Use `fetch` first to find the message, then `download_attachment` when attachments are present (`+Natt`). Returns local file paths ready for `read`.",
+    "description": "Download attachments from a message to the local inbox. Use after fetch shows a message has attachments (marked with +Natt). Returns file paths ready to Read.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -178,7 +178,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Fetch recent messages from a channel. Returns oldest-first with message IDs. Use this before `reply`, `download_attachment`, or `react` when you need message ids or attachment context. The platform's search API isn't exposed to bots, so this is the only way to look back.",
+    "description": "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -193,6 +193,39 @@
       },
       "required": [
         "channel"
+      ]
+    },
+    "module": "channels"
+  },
+  {
+    "name": "fetch_many",
+    "title": "Fetch Many",
+    "annotations": {
+      "title": "Fetch Many",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "description": "Fetch recent messages from multiple channels in one call. Use this when you need to look back across 2+ channels without serial fetches.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Channel name labels as configured in channelsConfig"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max messages per channel (default 20, capped at 100)."
+        }
+      },
+      "required": [
+        "channels"
       ]
     },
     "module": "channels"
@@ -325,11 +358,11 @@
     "annotations": {
       "title": "Memory Cycle",
       "readOnlyHint": false,
-      "destructiveHint": false,
+      "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild, prune, cycle1, backfill, status, remember (store fact), forget (archive a root), delete (wipe all entries; requires confirm).",
+    "description": "Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild (requires confirm: \"REBUILD MEMORY\"), prune (requires confirm: \"PRUNE OLD ENTRIES\"), cycle1, backfill, status, remember (store fact), forget (archive a root), delete (requires confirm: \"DELETE ALL MEMORY\" — wipes all entries).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -381,7 +414,7 @@
         },
         "confirm": {
           "type": "string",
-          "description": "Required for delete action. Must be exactly \"DELETE ALL MEMORY\"."
+          "description": "Required for destructive actions: \"DELETE ALL MEMORY\" for delete, \"PRUNE OLD ENTRIES\" for prune, \"REBUILD MEMORY\" for rebuild. Must match exactly."
         }
       },
       "required": [
@@ -401,7 +434,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Past context from the memory store. `query`: string or array (parallel fan-out). Answer returns in-turn as the MCP tool response. Pass `background:true` for heavy queries that may exceed the ~14s MCP timeout — a handle is returned and the answer then arrives via channel notification. External web → `search`, codebase → `explore`.",
+    "description": "Past context from the memory store. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. External web → `search`, codebase → `explore`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -420,7 +453,7 @@
               "minItems": 1
             }
           ],
-          "description": "Natural language query or array (parallel fan-out)."
+          "description": "Single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks)."
         },
         "cwd": {
           "type": "string",
@@ -428,7 +461,7 @@
         },
         "background": {
           "type": "boolean",
-          "description": "Default: false — sync, merged answer returned directly as the tool response. Set true to dispatch async and receive the answer via channel notification; use this for heavy queries that may exceed the ~14s MCP timeout."
+          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
         }
       },
       "required": [
@@ -449,7 +482,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Internal codebase search. `query`: string or array (parallel fan-out). `cwd` is authoritative search root (no silent fan-out). Answer returns in-turn as the MCP tool response. Pass `background:true` for heavy multi-angle queries that may exceed the ~14s MCP timeout — a handle is returned and the answer then arrives via channel notification. Past context → `recall`, external web → `search`.",
+    "description": "Internal codebase search. Local filesystem only — not web, not memory. `query`: single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). `cwd` is authoritative search root (no silent fan-out). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -468,7 +501,7 @@
               "minItems": 1
             }
           ],
-          "description": "Natural language query or array (parallel fan-out)."
+          "description": "Single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks)."
         },
         "cwd": {
           "type": "string",
@@ -476,7 +509,7 @@
         },
         "background": {
           "type": "boolean",
-          "description": "Default: false — sync, merged answer returned directly as the tool response. Set true to dispatch async and receive the answer via channel notification; use this for heavy queries that may exceed the ~14s MCP timeout."
+          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
         }
       },
       "required": [
@@ -490,7 +523,7 @@
     "name": "search",
     "title": "Search",
     "aiWrapped": true,
-    "description": "External web search, URL scrape, GitHub code/issues/repos. `query`: string or array (parallel fan-out); URL → scrape, `owner/repo` → GitHub. Answer returns in-turn as the MCP tool response. Pass `background:true` for heavy queries that may exceed the ~14s MCP timeout — a handle is returned and the answer then arrives via channel notification. Past context → `recall`, codebase → `explore`.",
+    "description": "External web search, URL scrape, GitHub code/issues/repos. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes; URL → scrape, `owner/repo` → GitHub) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, codebase → `explore`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -509,7 +542,7 @@
               "minItems": 1
             }
           ],
-          "description": "Natural language query or array (parallel fan-out)."
+          "description": "Single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks)."
         },
         "cwd": {
           "type": "string",
@@ -517,7 +550,7 @@
         },
         "background": {
           "type": "boolean",
-          "description": "Default: false — sync, merged answer returned directly as the tool response. Set true to dispatch async and receive the answer via channel notification; use this for heavy queries that may exceed the ~14s MCP timeout."
+          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
         }
       },
       "required": [
@@ -651,7 +684,7 @@
     "title": "List Models",
     "annotations": {
       "title": "List Models",
-      "readOnlyHint": false,
+      "readOnlyHint": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -673,7 +706,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (default bindings: worker→SONNET HIGH, reviewer→OPUS XHIGH, debugger→OPUS XHIGH, tester→SONNET HIGH). Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early.",
+    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (default bindings: worker→SONNET HIGH, reviewer→OPUS XHIGH, debugger→OPUS XHIGH, tester→SONNET HIGH). Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1137,7 +1170,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Execute a shell command. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. If you need shell state across turns (cwd, env, sourced venv), use `bash_session` instead of replaying setup in repeated `bash` calls. Set `run_in_background:true` for long builds/tests/servers, then inspect with `job_status` / `job_wait` / `job_read` / `jobs_list`. Destructive patterns (rm -rf /, force-push, format) are blocked.",
+    "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Only opt into persistent shell state when you truly need cwd/env/venv continuity: pass `persistent:true` (bridge sessions) or call `bash_session` directly. Set `run_in_background:true` for long builds/tests/servers, then inspect with `job_status` / `job_wait` / `job_read` / `jobs_list`. Destructive patterns (rm -rf /, force-push, format) are blocked.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1156,6 +1189,14 @@
         "run_in_background": {
           "type": "boolean",
           "description": "Run command in the background and return a job id immediately. Use for long builds/tests/servers."
+        },
+        "persistent": {
+          "type": "boolean",
+          "description": "Bridge sessions only: opt into persistent shell state. When true, the bridge routes this `bash` call through `bash_session` and reuses the shell on later `persistent:true` calls."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Bridge sessions only: explicit persistent shell session id to reuse. Prefer `persistent:true` unless you need to target a specific shell."
         }
       },
       "required": [
@@ -1329,7 +1370,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` first; use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.",
+    "description": "ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1476,7 +1517,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). Use `glob` for pure path patterns, `find_symbol` for identifier lookup, and `grep` for content.",
+    "description": "Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). Use `find` mode to filter by filename pattern within a directory tree; for repository-wide filename pattern search use `glob` instead, and for in-file content search use `grep`. Use `find_symbol` for identifier lookup.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1604,7 +1645,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. In the main session, prefer the direct aliases (`find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`) when the question is that specific; use `code_graph` for broader graph / impact questions.",
+    "description": "Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. In the main session, prefer direct aliases (`find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`) when the question is that specific; use `code_graph` for broader graph/impact questions.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1689,7 +1730,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Direct imports of a file. Main/public session: first choice for \"what does this file import?\" Use this instead of `code_graph(mode:\"imports\")` when you already know the file path.",
+    "description": "What does this file import from others? Returns modules/files that the target file pulls in. Use this instead of `code_graph(mode:\"imports\")` when you already know the file path. Optimized alias for quicker tool selection in the main session.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1714,7 +1755,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Files that depend on or import the target file. Main/public session: first choice for \"what depends on this file?\" Use this instead of `code_graph(mode:\"dependents\")` when you already know the file path.",
+    "description": "Who imports from this file? Returns files that depend on or pull in the target file. Use this instead of `code_graph(mode:\"dependents\")` when you already know the file path. Optimized alias for quicker tool selection in the main session.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1739,7 +1780,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Find references for a symbol across the repository. Main/public session: first choice for \"where is this symbol referenced?\" Use this instead of `code_graph(mode:\"references\")`. Optional `file` can narrow the language/source file, but is no longer required.",
+    "description": "Find references for a symbol across the repository. Use this instead of `code_graph(mode:\"references\")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. For non-function symbols (constants, type aliases, variables), this is the correct tool — `find_callers` only matches call-site invocations.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1772,7 +1813,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Find caller files for a symbol across the repository. Main/public session: first choice for \"who calls this symbol?\" Use this instead of `code_graph(mode:\"callers\")`. Optional `file` can narrow the language/source file, but is no longer required.",
+    "description": "Find caller files for a symbol across the repository. Use this instead of `code_graph(mode:\"callers\")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. Only matches call-site invocations — for non-function symbols (constants, type aliases, variables), prefer `find_references` instead.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1970,7 +2011,11 @@
         },
         "apply": {
           "type": "boolean",
-          "description": "Apply the rewrite and write to disk. Default false (dry-run preview only)."
+          "description": "Apply the rewrite and write to disk. Default false (dry-run preview only). When true, `confirm: \"APPLY REWRITE\"` is also required."
+        },
+        "confirm": {
+          "type": "string",
+          "description": "Required when apply:true — must equal exactly \"APPLY REWRITE\". Gates against accidental non-atomic file rewrites."
         }
       },
       "required": [
@@ -2042,7 +2087,7 @@
         },
         "timeout": {
           "type": "number",
-          "description": "Command timeout. Values ≤ 600 are treated as seconds; larger values as ms. Default 30 s, max 600 s. On timeout the session is killed (caller should mint a new one)."
+          "description": "Command timeout in milliseconds. Default 30000, max 600000. On timeout the session is killed (caller should mint a new one). Note: dual-unit behaviour (values ≤ 600 treated as seconds) is deprecated — pass milliseconds only."
         },
         "close": {
           "type": "boolean",
