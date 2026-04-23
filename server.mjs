@@ -21,6 +21,7 @@ import { z } from 'zod'
 import { fork } from 'child_process'
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, watch as fsWatch, existsSync, unlinkSync } from 'fs'
 import { join, resolve as pathResolve } from 'path'
+import { homedir } from 'os'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import { resolvePluginData } from './src/shared/plugin-paths.mjs'
@@ -808,6 +809,29 @@ setImmediate(() => {
   }
 })
 
+// ── Status HTTP server ─────────────────────────────────────────────
+// Exposes /bridge/status on an ephemeral loopback port so the terminal
+// statusline has a reliable data source independent of the on-demand
+// setup-server (port 3458). Advertises its port via
+// ~/.claude/mixdog-status.json; bin/statusline.sh reads the file and
+// curls the advertised port.
+const STATUS_ADVERTISE_PATH = join(homedir(), '.claude', 'mixdog-status.json')
+let statusServerHandle = null
+setImmediate(async () => {
+  try {
+    const { startStatusServer } = await import(
+      pathToFileURL(join(PLUGIN_ROOT, 'src/status/server.mjs')).href
+    )
+    statusServerHandle = await startStatusServer({
+      dataDir: PLUGIN_DATA,
+      advertisePath: STATUS_ADVERTISE_PATH,
+      log: (m) => log(m),
+    })
+  } catch (e) {
+    log(`[status-server] failed to start: ${e && (e.stack || e.message) || e}`)
+  }
+})
+
 // ── Spawn workers: memory + channels ──────────────────────────────
 // Workers own all heavy work. Session recap, buffer flush, cycle
 // scheduling all run inside the worker process. No in-process fallback.
@@ -873,6 +897,10 @@ async function shutdown(reason) {
     const { stopIdleCleanup } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.mjs')).href)
     stopIdleCleanup()
   } catch {}
+  // Close status HTTP server + remove its advertisement file
+  if (statusServerHandle) {
+    try { await statusServerHandle.close() } catch {}
+  }
   // Kill workers — Windows needs taskkill for reliable cleanup
   for (const [name, entry] of workers) {
     const pid = entry.proc.pid

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# mixdog statusline wrapper — v0.1.25
+# mixdog statusline wrapper — v0.1.26
 # Line 1 (runtime): model + effort, cost, context window bar, 5h / 7d rate limit, block reset time.
-# Line 2 (incoming, from setup-server /bridge/status): sessions, last completed, jobs, schedule, discord, ngrok, recall.
+# Line 2 (incoming, from mixdog /bridge/status): sessions, last completed, jobs, schedule, discord, ngrok, recall.
+# Endpoint discovery: advertisement file → MCP status server → legacy setup-server (3458).
 # Width-responsive: >=120 wide, 80-119 medium, <80 narrow. Graceful degradation on missing jq, unreachable endpoint, or missing stdin.
 
 set -euo pipefail 2>/dev/null || true   # best-effort; some POSIX shells vary
@@ -64,8 +65,28 @@ elif command -v jq >/dev/null 2>&1 && [ -r "$HOME/.claude/settings.json" ]; then
 fi
 
 # ── Fetch mixdog /bridge/status ──────────────────────────────────────────────
+# Discovery order:
+#   1. Advertisement file (~/.claude/mixdog-status.json) written by the
+#      MCP-embedded status server. Ephemeral port, refreshed on every boot.
+#   2. Legacy port 3458 — setup-server when /mixdog:config is open.
 BRIDGE_JSON=""
-BRIDGE_JSON="$(curl -s --max-time 1 'http://localhost:3458/bridge/status?format=json' 2>/dev/null || true)"
+STATUS_ADVERT="$HOME/.claude/mixdog-status.json"
+STATUS_PORT=""
+if [ -r "$STATUS_ADVERT" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    STATUS_PORT="$(jq -r '.port // empty' "$STATUS_ADVERT" 2>/dev/null || true)"
+  else
+    STATUS_PORT="$(grep -o '"port"[ ]*:[ ]*[0-9]*' "$STATUS_ADVERT" | grep -o '[0-9]*$' | head -1 || true)"
+  fi
+fi
+case "$STATUS_PORT" in ''|*[!0-9]*) STATUS_PORT="" ;; esac
+if [ -n "$STATUS_PORT" ]; then
+  BRIDGE_JSON="$(curl -s --max-time 1 "http://127.0.0.1:${STATUS_PORT}/bridge/status?format=json" 2>/dev/null || true)"
+fi
+# Fallback: legacy setup-server port
+if [ -z "$BRIDGE_JSON" ]; then
+  BRIDGE_JSON="$(curl -s --max-time 1 'http://127.0.0.1:3458/bridge/status?format=json' 2>/dev/null || true)"
+fi
 # Verify it's JSON-ish (starts with '{')
 case "$BRIDGE_JSON" in
   '{'*) : ;;
@@ -367,4 +388,9 @@ fi
 
 # Always emit line 1; emit line 2 only if non-empty so Claude Code doesn't render an empty row.
 printf '%s\n' "${L1:-mixdog}"
-[ -n "$L2" ] && printf '%s\n' "$L2"
+if [ -n "$L2" ]; then
+  printf '%s\n' "$L2"
+fi
+# Explicit success exit — avoids the final `[` returning 1 when L2 is empty,
+# which Claude Code would otherwise treat as a failed statusline and suppress.
+exit 0

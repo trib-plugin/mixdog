@@ -886,280 +886,28 @@ const server = http.createServer(async (req, res) => {
   // either a JSON object (?format=json) or a single-line statusline
   // string (?format=text or Accept: text/plain).
   // No Origin guard needed — read-only endpoint (C2 convention, v0.1.14).
+  // 0.1.26: aggregation logic lives in src/status/aggregator.mjs so the
+  // MCP-embedded status server shares the same implementation.
   if (req.method === 'GET' && path === '/bridge/status') {
     try {
-      const now = Date.now();
+      const { buildBridgeStatus, renderBridgeStatusText } = await import('../src/status/aggregator.mjs');
       const wantText = url.searchParams.get('format') === 'text'
         || (req.headers['accept'] || '').includes('text/plain');
-
-      // ── 1. Active + recently-completed bridge sessions ────────────────
-      // Read session files from disk (same store the agent uses).
-      const sessionsDir = join(DATA_DIR, 'sessions');
-      let allSessions = [];
-      if (existsSync(sessionsDir)) {
-        try {
-          const files = readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
-          for (const f of files) {
-            try {
-              allSessions.push(JSON.parse(readFileSync(join(sessionsDir, f), 'utf-8')));
-            } catch { /* skip corrupt */ }
-          }
-        } catch { /* dir unreadable */ }
-      }
-      // Running: bridge sessions with status='running' and not tombstoned.
-      // We mirror store.mjs's RUNNING_STALL_MS (10 min) to avoid counting zombie sessions.
-      const RUNNING_STALL_MS = 10 * 60 * 1000;
-      const running = allSessions.filter(s =>
-        s.owner === 'bridge'
-        && s.status === 'running'
-        && s.closed !== true
-        && (now - (s.updatedAt || s.createdAt || 0)) <= RUNNING_STALL_MS
-      );
-      const runningRoles = running.map(s => s.role || 'agent').filter(Boolean);
-
-      // Most recently completed bridge session (closed, within 30 min).
-      const RECENT_MS = 30 * 60 * 1000;
-      const recentClosed = allSessions
-        .filter(s => s.owner === 'bridge' && s.closed === true && (now - (s.updatedAt || 0)) <= RECENT_MS)
-        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-      const lastCompleted = recentClosed[0] || null;
-
-      // ── 2. Scheduler state ────────────────────────────────────────────────
-      // Primary: read channels/status-snapshot.json (written every 10s by the
-      // channels worker). If fresh (<=30s old), use snapshot data directly.
-      // Fallback: derive best-effort from config.json (0.1.17 behaviour).
-      let scheduleActive = 0;
-      let scheduleDeferred = 0;
-      let nextSchedule = null; // { name, fireAt (ms timestamp) }
-      let discordTotalUnread = null; // null = unavailable
-      let ngrokTunnelUrl = null;
-      const SNAPSHOT_STALE_MS = 30_000;
-      let snapshotFresh = false;
-      try {
-        if (existsSync(STATUS_SNAPSHOT_PATH)) {
-          const snap = JSON.parse(readFileSync(STATUS_SNAPSHOT_PATH, 'utf-8'));
-          if (snap && typeof snap.writtenAt === 'number' && (now - snap.writtenAt) <= SNAPSHOT_STALE_MS) {
-            snapshotFresh = true;
-            // Schedule: active count from config (most accurate), deferred + next from snapshot
-            const cfg = readJsonFile(CONFIG_PATH) || {};
-            const allSchedules = [
-              ...(cfg.nonInteractive || []),
-              ...(cfg.interactive || []),
-            ].filter(s => s.enabled !== false && s.name);
-            scheduleActive = allSchedules.length;
-            scheduleDeferred = snap.schedules?.deferredCount ?? 0;
-            if (snap.schedules?.next) {
-              nextSchedule = { name: snap.schedules.next.name, fireAt: snap.schedules.next.fireAt };
-            }
-            // Discord
-            if (typeof snap.discord?.totalUnread === 'number') {
-              discordTotalUnread = snap.discord.totalUnread;
-            }
-            // Ngrok tunnel URL (overrides probe below when available)
-            if (snap.ngrok?.tunnelUrl) {
-              ngrokTunnelUrl = snap.ngrok.tunnelUrl;
-            }
-          }
-        }
-      } catch { /* snapshot unreadable — fall through */ }
-
-      if (!snapshotFresh) {
-        // Fallback: derive from config.json (0.1.17 behaviour — HH:MM only, no cron)
-        try {
-          const cfg = readJsonFile(CONFIG_PATH) || {};
-          const allSchedules = [
-            ...(cfg.nonInteractive || []),
-            ...(cfg.interactive || []),
-          ].filter(s => s.enabled !== false && s.name);
-          scheduleActive = allSchedules.length;
-
-          const TWELVE_H = 12 * 60 * 60 * 1000;
-          const candidates = [];
-          for (const s of allSchedules) {
-            if (!s.time || !/^\d{2}:\d{2}$/.test(s.time)) continue;
-            const [hh, mm] = s.time.split(':').map(Number);
-            for (const offsetDays of [0, 1]) {
-              const candidate = new Date(now);
-              candidate.setDate(candidate.getDate() + offsetDays);
-              candidate.setHours(hh, mm, 0, 0);
-              const diff = candidate.getTime() - now;
-              if (diff > 0 && diff <= TWELVE_H) {
-                candidates.push({ name: s.name, fireAt: candidate.getTime(), diff });
-              }
-            }
-          }
-          candidates.sort((a, b) => a.diff - b.diff);
-          if (candidates.length > 0) nextSchedule = candidates[0];
-        } catch { /* config unreadable */ }
-      }
-
-      // ── 3. Recall count (bridge-trace.jsonl, last 60 min, tail 2 MB) ──
-      let recallCount = 0;
-      const TRACE_PATH = join(DATA_DIR, 'history', 'bridge-trace.jsonl');
-      const HOUR_MS = 60 * 60 * 1000;
-      if (existsSync(TRACE_PATH)) {
-        try {
-          // Read up to 2 MB from the tail so we don't load huge files into RAM.
-          const MAX_BYTES = 2 * 1024 * 1024;
-          const stat = statSync(TRACE_PATH);
-          const fileSize = stat.size;
-          const start = Math.max(0, fileSize - MAX_BYTES);
-          const bytesToRead = fileSize - start;
-          const buf = Buffer.alloc(bytesToRead);
-          const fd = openSync(TRACE_PATH, 'r');
-          try { readSync(fd, buf, 0, bytesToRead, start); } finally { closeSync(fd); }
-          const cutoff = now - HOUR_MS;
-          const lines = buf.toString('utf-8').split('\n');
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const ev = JSON.parse(line);
-              if (ev.kind === 'tool' && ev.tool_name === 'recall' && new Date(ev.ts).getTime() >= cutoff) {
-                recallCount++;
-              }
-            } catch { /* skip malformed */ }
-          }
-        } catch { /* trace unreadable */ }
-      }
-
-      // ── 4. Jobs count (jobs/state.json — status='running') ───────────────
-      let jobsCount = 0;
-      const JOBS_STATE_PATH = join(DATA_DIR, 'jobs', 'state.json');
-      if (existsSync(JOBS_STATE_PATH)) {
-        try {
-          const jobsState = JSON.parse(readFileSync(JOBS_STATE_PATH, 'utf-8'));
-          if (Array.isArray(jobsState)) {
-            jobsCount = jobsState.filter(j => j.status === 'running').length;
-          }
-        } catch { /* unreadable */ }
-      }
-
-      // ── 5. Ngrok online (probe local ngrok API at 127.0.0.1:4040) ────────
-      // If the snapshot already gave us a tunnelUrl, skip the live probe.
-      // Times out in 300 ms. Only reports true if >=1 tunnel is active.
-      let ngrokOnline = false;
-      if (ngrokTunnelUrl) {
-        ngrokOnline = true; // snapshot already confirmed a live tunnel
+      const payload = await buildBridgeStatus(DATA_DIR);
+      if (wantText) {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(renderBridgeStatusText(payload));
       } else {
-        await new Promise((resolve) => {
-          const timer = setTimeout(() => { try { req_ng && req_ng.destroy(); } catch {} resolve(); }, 300);
-          let req_ng;
-          try {
-            req_ng = http.get('http://127.0.0.1:4040/api/tunnels', (r) => {
-              clearTimeout(timer);
-              let body = '';
-              r.on('data', d => { body += d; });
-              r.on('end', () => {
-                try {
-                  const parsed = JSON.parse(body);
-                  const tunnel = (parsed.tunnels || []).find(t => t.public_url);
-                  if (tunnel) {
-                    ngrokOnline = true;
-                    ngrokTunnelUrl = tunnel.public_url;
-                  }
-                } catch { /* ignore */ }
-                resolve();
-              });
-            });
-            req_ng.on('error', () => { clearTimeout(timer); resolve(); });
-            req_ng.setTimeout(300, () => { clearTimeout(timer); try { req_ng.destroy(); } catch {} resolve(); });
-          } catch { clearTimeout(timer); resolve(); }
-        });
-      }
-
-      // ── Assemble JSON payload ─────────────────────────────────────────
-      const sessionSegment = running.length > 0
-        ? { active: running.length, roles: runningRoles }
-        : { active: 0, roles: [] };
-
-      let lastCompletedSegment = null;
-      if (lastCompleted) {
-        const ageMs = now - (lastCompleted.updatedAt || 0);
-        const ageMins = Math.round(ageMs / 60000);
-        lastCompletedSegment = {
-          role: lastCompleted.role || 'agent',
-          agoMinutes: ageMins,
-        };
-      }
-
-      const scheduleSegment = {
-        active: scheduleActive,
-        deferred: scheduleDeferred,
-        next: nextSchedule ? {
-          name: nextSchedule.name,
-          fireAt: nextSchedule.fireAt,
-          fireAtISO: new Date(nextSchedule.fireAt).toISOString(),
-        } : null,
-      };
-
-      const jsonPayload = {
-        sessions: sessionSegment,
-        lastCompleted: lastCompletedSegment,
-        schedule: scheduleSegment,
-        recallLastHour: recallCount,
-        jobs: { count: jobsCount },
-        ngrok: { online: ngrokOnline, tunnelUrl: ngrokTunnelUrl ?? undefined },
-        ...(discordTotalUnread !== null ? { discord: { totalUnread: discordTotalUnread } } : {}),
-        snapshotFresh,
-        generatedAt: new Date(now).toISOString(),
-      };
-
-      if (!wantText) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(jsonPayload));
-        return;
+        res.end(JSON.stringify(payload));
       }
-
-      // ── Assemble text one-liner ───────────────────────────────────────
-      const parts = [];
-
-      // Segment 1: active sessions
-      if (running.length > 0) {
-        const roleList = [...new Set(runningRoles)].join(',');
-        parts.push(`\u2699 ${running.length} running (${roleList})`);
-      } else {
-        parts.push('idle');
-      }
-
-      // Segment 2: most recent completed (within 30 min)
-      if (lastCompleted) {
-        const ageMs = now - (lastCompleted.updatedAt || 0);
-        const ageMins = Math.round(ageMs / 60000);
-        const timeAgo = ageMins <= 0 ? 'just now' : `${ageMins}m`;
-        const role = lastCompleted.role || 'agent';
-        parts.push(`\u2713 ${role} ${timeAgo}`);
-      }
-
-      // Segment 3: next scheduled item (within 12 hours)
-      if (nextSchedule) {
-        const d = new Date(nextSchedule.fireAt);
-        const hh = String(d.getHours()).padStart(2, '0');
-        const mm = String(d.getMinutes()).padStart(2, '0');
-        parts.push(`\u23f0 ${hh}:${mm} ${nextSchedule.name}`);
-      }
-
-      // Segment 4: schedule roster
-      if (scheduleActive > 0) {
-        const rosterStr = scheduleDeferred > 0
-          ? `\uD83D\uDCCB ${scheduleActive}/${scheduleDeferred}def`
-          : `\uD83D\uDCCB ${scheduleActive}`;
-        parts.push(rosterStr);
-      }
-
-      // Segment 5: recall count (last hour)
-      if (recallCount > 0) {
-        parts.push(`\uD83E\uDDE0 ${recallCount}r/1h`);
-      }
-
-      const text = parts.join(' \u00B7 ');
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end(text);
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: String(e?.message || e) }));
     }
     return;
   }
+
 
   // ── GET /api/plugin-path ─────────────────────────────────────────────────
   // Returns the absolute directory of the plugin install (parent of setup/).

@@ -4,6 +4,18 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.26] - Unreleased
+
+### Fixed
+
+- **StatusLine suppressed when line 2 empty** — `bin/statusline.sh` ended with `[ -n "$L2" ] && printf ...`; when L2 was empty the bare-test exit code 1 propagated to the script, and Claude Code treats non-zero exit as "hide the statusline" — so the fully-rendered line 1 never surfaced. Replaced the `&&` tail with an explicit `if` block and a terminal `exit 0`.
+
+### Added
+
+- **MCP-embedded status HTTP server** — `src/status/server.mjs` boots alongside the MCP process (`server.mjs`) on an ephemeral loopback port and serves `GET /bridge/status` for statusline consumers. Its port is advertised via `~/.claude/mixdog-status.json` (`{pid, port, startedAt}`). Removes the statusline's dependency on the on-demand setup-server (port 3458) — line 2 segments (`Running`, `Last`, `Jobs`, `Next`, `Scheduled`, `Unread`, `Tunnel`, `Recall`) now populate whenever the MCP server is alive, not only when `/mixdog:config` is open.
+- **Shared status aggregator** — `src/status/aggregator.mjs` extracts the session / schedule / recall / jobs / ngrok aggregation previously inlined in `setup-server.mjs`. Both the MCP-embedded server and the setup-server now delegate to it, so they cannot drift.
+- **Statusline endpoint discovery** — `bin/statusline.sh` reads the port from `~/.claude/mixdog-status.json` and `curl`s the advertised endpoint. Falls back to the legacy `127.0.0.1:3458` (setup-server) when the advertisement is absent.
+
 ## [0.1.25] - Unreleased
 
 ### Changed
