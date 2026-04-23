@@ -50,6 +50,8 @@ writeJson(pkgPath, pkg);
 touched.push('package.json');
 
 // 2. package-lock.json — skip if absent
+// Only lockfileVersion 2/3 (npm 7+) uses packages[""]; lockfileVersion 1 (npm 6)
+// only has the top-level .version, which is still updated above — fine for this repo.
 const lockPath = path.join(ROOT, 'package-lock.json');
 if (fs.existsSync(lockPath)) {
   const lock = readJson(lockPath);

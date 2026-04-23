@@ -2347,8 +2347,8 @@ async function loadChannelsCliCheck() {
     const data = await fetch('/cli-check').then(r => r.json());
     cliStatus = data;
     // Attach voice config paths for the installed-state display.
-    if (data.whisper?.installed && data._voiceCfg) {
-      cliStatus._tribCfgVoice = data._voiceCfg;
+    if (data.whisper?.installed && data.voice) {
+      cliStatus._tribCfgVoice = data.voice;
     }
   } catch {}
 }
@@ -2413,8 +2413,8 @@ function renderVoiceSection() {
       '</div>';
   } else {
     const tribCfg = cliStatus._tribCfgVoice || {};
-    const whisperPath = tribCfg.command || '';
-    const modelPath   = tribCfg.model   || '';
+    const whisperPath = tribCfg.commandName || '';
+    const modelPath   = tribCfg.modelName   || '';
     el.innerHTML =
       '<div class="r" style="flex-direction:column;align-items:flex-start;gap:6px;">' +
         '<div style="display:flex;align-items:center;gap:8px;">' +
@@ -2450,6 +2450,7 @@ function installVoice() {
 
   const STAGE_LABELS = {
     'platform-check': 'Platform check', 'purfview-lookup': 'Looking up Purfview release',
+    'purfview-fallback': 'Purfview fallback (GitHub API unreachable)',
     'purfview-download': 'Downloading Purfview binary', 'purfview-extract': 'Extracting binary',
     'download-binary': 'Downloading binary', 'extract-binary': 'Extracting binary',
     'download-model': 'Downloading model (~1.5 GB)', 'smoke-test': 'Smoke test',

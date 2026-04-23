@@ -4,6 +4,24 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.16] - Unreleased
+
+### Changed
+
+- **Cleanup**: removed dead whisper branch from `POST /install` handler (validator already allows only `tool === 'ngrok'`; handler now matches that invariant cleanly)
+- **Privacy**: `/cli-check` no longer leaks absolute paths — response now carries `commandName` / `modelName` (basenames only) under `voice` instead of full filesystem paths
+- **API**: renamed `_voiceCfg` → `voice` in `/cli-check` response (dropped misleading underscore prefix; `voice.commandName` / `voice.modelName`)
+
+### Fixed
+
+- **Reliability**: smoke test now matches `usage`/`whisper` substring in combined stdout+stderr instead of trusting exit code 0/1 — segfaulting binaries no longer pass
+- **Reliability**: smoke test `setTimeout` handle is now cleared on both `close` and `error` paths (was leaking a delayed `resolve(false)` call)
+- **UX**: Purfview tag fallback now emits an SSE `purfview-fallback` stage event so users see "Using pinned tag … (GitHub API unreachable)" in the UI
+
+### Internal
+
+- `scripts/bump-version.mjs`: added comment noting that only `lockfileVersion` 2/3 (`packages[""]` path) is handled; v1 (npm 6) only gets the top-level `.version` updated — fine for this repo (npm 7+)
+
 ## [0.1.15] - Unreleased
 
 ### Fixed

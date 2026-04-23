@@ -1117,7 +1117,7 @@ const server = http.createServer(async (req, res) => {
     const whisperInstalled = typeof voiceCfg.command === 'string' && voiceCfg.command.length > 0 && existsSync(voiceCfg.command);
     const ngrok = await checkCli('ngrok');
     const cliPayload = { whisper: { installed: whisperInstalled }, ngrok };
-    if (whisperInstalled) cliPayload._voiceCfg = { command: voiceCfg.command, model: voiceCfg.model || '' };
+    if (whisperInstalled) cliPayload.voice = { commandName: path.basename(voiceCfg.command), modelName: voiceCfg.model ? path.basename(voiceCfg.model) : '' };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(cliPayload));
     return;
@@ -1764,12 +1764,23 @@ const server = http.createServer(async (req, res) => {
 
     // ── Shared helpers ───────────────────────────────────────────────────────
 
-    /** Spawn binary with --help; exit 0 or 1 both count (whisper-cli exits 1 on --help). */
+    /** Spawn binary with -h; match 'usage' or 'whisper' in combined output.
+     *  A segfaulting binary produces neither even if its exit code is 1. */
     const smokeTestWhisper = (binPath) => new Promise((resolve) => {
-      const child = spawn(binPath, ['--help'], { stdio: 'pipe', windowsHide: true });
-      child.on('close', (code) => resolve(code === 0 || code === 1));
-      child.on('error', () => resolve(false));
-      setTimeout(() => { try { child.kill(); } catch {} resolve(false); }, 10000);
+      const child = spawn(binPath, ['-h'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      let stdoutBuf = '';
+      let stderrBuf = '';
+      child.stdout.on('data', (d) => { stdoutBuf += String(d); });
+      child.stderr.on('data', (d) => { stderrBuf += String(d); });
+      const timer = setTimeout(() => { try { child.kill(); } catch {} resolve(false); }, 10000);
+      child.on('error', () => { clearTimeout(timer); resolve(false); });
+      child.on('close', () => {
+        clearTimeout(timer);
+        const combined = (stdoutBuf + '\n' + stderrBuf).toLowerCase();
+        // whisper-cli prints "usage" or "whisper" in its help output;
+        // a segfaulting binary produces neither even if exit code happens to be 1.
+        resolve(combined.includes('usage') || combined.includes('whisper'));
+      });
     });
 
     /** Download a URL to destPath, following redirects.
@@ -1938,6 +1949,7 @@ const server = http.createServer(async (req, res) => {
       } catch (tagErr) {
         process.stderr.write(`[voice-install] Purfview tag lookup failed (${tagErr.message}); using fallback tag ${FALLBACK_PURFVIEW_TAG}\n`);
         WHISPER_WIN_TAG = FALLBACK_PURFVIEW_TAG;
+        emitStage('purfview-fallback', `Using pinned tag ${FALLBACK_PURFVIEW_TAG} (GitHub API unreachable)`);
       }
 
       const binaryUrl = `https://github.com/Purfview/whisper-standalone-win/releases/download/${WHISPER_WIN_TAG}/${WHISPER_WIN_ASSET}`;
