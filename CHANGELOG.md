@@ -11,15 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.1.8] - Unreleased
 
-### Fixed
-- **Dep-hash now uses `package-lock.json`** instead of `package.json`: a version-only plugin bump (e.g. 0.1.7 → 0.1.8 with identical deps) no longer triggers an unnecessary `npm ci`. If `package-lock.json` is absent the hash falls back to only the `dependencies`/`optionalDependencies`/`peerDependencies` objects of `package.json` (sorted for stability), so unrelated metadata changes are also ignored.
-- **Lock-holder liveness check**: the shared-install lock file now stores `{pid, hostname, startedAt}` as JSON. A waiting process probes whether the holder is still alive (`process.kill(pid, 0)`) on the same host, or uses a 10-minute mtime threshold on a different host, before stealing the lock — preventing two concurrent `npm ci` runs into the same `node_modules` directory on slow or cold-network machines.
-- **Atomic stamp write**: the `.deps-stamp` file is now written via a `.deps-stamp.tmp` + `fs.renameSync` pair, ensuring a crash or out-of-disk error between the `npm ci` and the stamp write can never leave the stamp in an inconsistent state that would suppress a legitimate reinstall.
-- **Search seed timeout aligned with example**: the `requestTimeoutMs` default in the first-boot seed was corrected from 30 000 ms to 15 000 ms, matching `search-config.example.json` and the practical MCP tool boundary (~14 s).
-- **Removed inaccurate GitHub unauthenticated claim**: the search-config example no longer states that GitHub works without a token. All providers — including GitHub — require a credential; requests are rejected when all provider credentials are blank.
-
-## [Unreleased]
-
 ### Added
 - Auto-open config UI on first install (session-start hook, `.first-boot-seen` flag).
 - `config/memory-config.example.json` — seed reference for the memory pipeline.
@@ -32,8 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - README Quick start reflects automatic bootstrap and Anthropic OAuth as the default provider.
 
 ### Fixed
-- `search-config.example.json` github.token comment no longer misattributes it to Anthropic OAuth.
-- `package.json` version aligned with `.claude-plugin/plugin.json` (both now `0.1.7`).
+- **Dep-hash now uses `package-lock.json`** instead of `package.json`: a version-only plugin bump (e.g. 0.1.7 → 0.1.8 with identical deps) no longer triggers an unnecessary `npm ci`. If `package-lock.json` is absent the hash falls back to only the `dependencies`/`optionalDependencies`/`peerDependencies` objects of `package.json` (sorted for stability), so unrelated metadata changes are also ignored.
+- **Lock-holder liveness check**: the shared-install lock file now stores `{pid, hostname, startedAt}` as JSON. A waiting process probes whether the holder is still alive (`process.kill(pid, 0)`) on the same host, or uses a 10-minute mtime threshold on a different host, before stealing the lock — preventing two concurrent `npm ci` runs into the same `node_modules` directory on slow or cold-network machines.
+- **Atomic stamp write**: the `.deps-stamp` file is now written via a `.deps-stamp.tmp` + `fs.renameSync` pair, ensuring a crash or out-of-disk error between the `npm ci` and the stamp write can never leave the stamp in an inconsistent state that would suppress a legitimate reinstall.
+- **Search seed timeout aligned with example**: the `requestTimeoutMs` default in the first-boot seed was corrected from 30 000 ms to 15 000 ms, matching `search-config.example.json` and the practical MCP tool boundary (~14 s).
+- **Removed inaccurate GitHub unauthenticated claim**: the search-config example no longer states that GitHub works without a token. All providers — including GitHub — require a credential; requests are rejected when all provider credentials are blank.
 
 ## [0.1.7] - 2026-04-23
 
