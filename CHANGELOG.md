@@ -4,6 +4,13 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.15] - Unreleased
+
+### Fixed
+
+- **Tool-loop-guard: raised `structure_probe` family-abort threshold 32 → 48** — legitimate multi-site edits in large (~2000 LOC) files were hitting the old cap (false-positive abort confirmed in sess_...89263b with 32 distinct calls across 4 tools).
+- **Tool-loop-guard: productive-tool reset** — a successful `edit`, `multi_edit`, `batch_edit`, `apply_patch`, `write`, `bash`, or `bash_session` call now resets all family counters (`structure_probe`, `search_fanout`, `edit_roundtrip`). Probe→edit→probe cycles no longer accumulate toward abort; only true uninterrupted grinding triggers the guard.
+
 ## [0.1.14] - Unreleased
 
 ### Security / Reliability

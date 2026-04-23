@@ -37,9 +37,18 @@ const DEFAULT_SAME_TOOL_ABORT_THRESHOLDS = Object.freeze(
     Object.fromEntries(Object.entries(DEFAULT_SAME_TOOL_THRESHOLDS).map(([name, value]) => [name, value * 2])),
 );
 const DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS = Object.freeze({
-    structure_probe: 32,
+    structure_probe: 48, // 48: accommodates multi-site edits in large (~2000 LOC) files
     search_fanout: 32,
 });
+
+// Tools whose success signals genuine progress (not probe grinding).
+// A successful call to any of these resets the structure_probe and
+// search_fanout family counters so probe→edit→probe cycles don't
+// accumulate toward abort.
+const PRODUCTIVE_TOOLS = Object.freeze(new Set([
+    'edit', 'multi_edit', 'batch_edit', 'apply_patch', 'write',
+    'bash', 'bash_session',
+]));
 
 const DEFAULT_CONFIG = Object.freeze({
     detectThreshold: 4,
@@ -531,6 +540,21 @@ export function checkToolCall(guard, event) {
     }
 
     if (!isErrorResult(result)) {
+        // Productive-tool reset: a successful edit/bash between probes means
+        // the model is making progress, not grinding. Reset structure_probe
+        // and search_fanout family counters so legitimate probe→edit→probe
+        // cycles don't accumulate toward abort.
+        if (PRODUCTIVE_TOOLS.has(toolKey)) {
+            for (const rule of cfg.toolFamilyWarnRules) {
+                const prev = guard.familyRuns.get(rule.key);
+                if (prev) {
+                    prev.count = 0;
+                    prev.distinctTools = new Set();
+                    prev.warned = false;
+                }
+            }
+        }
+
         // Success resets the error-loop guard (same-tool track stays — it
         // counts both success and failure on whitelisted tools).
         guard.currentSig = null;
