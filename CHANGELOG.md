@@ -4,6 +4,21 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.19] - Unreleased
+
+### Added
+
+- **Channels worker snapshot** — `src/channels/lib/status-snapshot.mjs` writes `<DATA_DIR>/channels/status-snapshot.json` every 10 seconds (plus once on startup). Covers cross-process data: cron-expression next-fire time, deferred schedule count, Discord unread count (in-memory, no persistence across restarts), ngrok tunnel URL. Atomic write (tmp → rename). Writer started from `startOwnedRuntime()` alongside `scheduler.start()`.
+- **`/bridge/status` snapshot integration** — setup-server reads the snapshot when present and fresh (≤30 s old). Merges `schedules.next` (now supports cron-expression schedules, not just HH:MM), `schedules.deferredCount`, `discord.totalUnread`, and `ngrok.tunnelUrl` into the JSON response. Falls back gracefully to config.json-derived best-effort (0.1.17 behaviour) when snapshot is stale or absent.
+- **`bin/statusline.sh` rate_limits segments** — parses `rate_limits.five_hour.used_percentage` and `rate_limits.seven_day.used_percentage` from Claude Code stdin JSON. Rendered as `⏱ 42%/5h` (wide), `⏱ 42%` (medium), `⏱ 42%` (narrow, ≥50% only). 7d shown only in wide tier as `📅 18%/7d`. Both jq and grep/sed fallback paths updated.
+- **`bin/statusline.sh` discord unread segment** — parses `discord.totalUnread` from `/bridge/status` JSON. Rendered as `💬 3 unread` (wide), `💬 3` (medium/narrow). Segment omitted when `totalUnread` is 0 or field is absent.
+- **Layout updated across all three width tiers** — line 1 (runtime): `⚙ … · ✓ … · 🔧 … · 🪙 … · ⏱ …`; line 2 (incoming): `⏰ … · 📋 … · 💬 … · 🌐 … · 🧠 … · 📅 …` (wide). Medium and narrow tiers updated accordingly.
+
+### Notes
+
+- Discord unread count is in-memory only; resets to zero on channels worker restart (clean start is fine for v1).
+- Passive tracking only: unread count is based on messages received across `fetchMessages` calls — no extra polling loop added.
+
 ## [0.1.18] - Unreleased
 
 ### Added

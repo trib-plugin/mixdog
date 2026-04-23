@@ -18,6 +18,7 @@ import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR }
 import { loadConfig as loadAgentConfig } from "../agent/orchestrator/config.mjs";
 import { initProviders } from "../agent/orchestrator/providers/registry.mjs";
 import { Scheduler } from "./lib/scheduler.mjs";
+import { startSnapshotWriter, updateSnapshotScheduler, stopSnapshotWriter } from "./lib/status-snapshot.mjs";
 import { hasPending as dispatchHasPending } from "../agent/orchestrator/dispatch-persist.mjs";
 import { setListener as setActivityBusListener } from "../agent/orchestrator/activity-bus.mjs";
 import { WebhookServer } from "./lib/webhook.mjs";
@@ -711,6 +712,7 @@ async function startOwnedRuntime(options = {}) {
 `);
   }
   scheduler.start();
+  startSnapshotWriter(scheduler);
   if (webhookServer) webhookServer.start();
   if (_eventPipelineShouldStart) eventPipeline.start();
   let httpPort;
@@ -731,6 +733,7 @@ async function stopOwnedRuntime(reason) {
   stopServerTyping();
   stopOwnerHttpServer();
   scheduler.stop();
+  stopSnapshotWriter();
   if (webhookServer) webhookServer.stop();
   eventPipeline.stop();
   releaseOwnedChannelLocks(INSTANCE_ID);

@@ -34,6 +34,7 @@ const home = homedir();
 const DATA_DIR = resolvePluginData();
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
 const BOT_PATH = join(DATA_DIR, 'bot.json');
+const STATUS_SNAPSHOT_PATH = join(DATA_DIR, 'channels', 'status-snapshot.json');
 
 // -- Agent paths (same data dir after unification) --
 const AGENT_DATA_DIR = DATA_DIR;
@@ -923,41 +924,74 @@ const server = http.createServer(async (req, res) => {
         .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
       const lastCompleted = recentClosed[0] || null;
 
-      // ── 2. Scheduler state (computed from config — channels worker is a ─
-      //       separate process; no shared in-memory state).               ─
-      // Strategy: read config.json, collect all enabled schedules with a
-      // legacy HH:MM time, compute the next fire within 12 hours.
+      // ── 2. Scheduler state ────────────────────────────────────────────────
+      // Primary: read channels/status-snapshot.json (written every 10s by the
+      // channels worker). If fresh (<=30s old), use snapshot data directly.
+      // Fallback: derive best-effort from config.json (0.1.17 behaviour).
       let scheduleActive = 0;
-      let scheduleDeferred = 0; // deferred count not available cross-process; always 0
+      let scheduleDeferred = 0;
       let nextSchedule = null; // { name, fireAt (ms timestamp) }
+      let discordTotalUnread = null; // null = unavailable
+      let ngrokTunnelUrl = null;
+      const SNAPSHOT_STALE_MS = 30_000;
+      let snapshotFresh = false;
       try {
-        const cfg = readJsonFile(CONFIG_PATH) || {};
-        const allSchedules = [
-          ...(cfg.nonInteractive || []),
-          ...(cfg.interactive || []),
-        ].filter(s => s.enabled !== false && s.name);
-        scheduleActive = allSchedules.length;
-
-        // Compute next HH:MM fire within the next 12 hours.
-        const TWELVE_H = 12 * 60 * 60 * 1000;
-        const candidates = [];
-        for (const s of allSchedules) {
-          if (!s.time || !/^\d{2}:\d{2}$/.test(s.time)) continue;
-          const [hh, mm] = s.time.split(':').map(Number);
-          // Try today's slot, then tomorrow's.
-          for (const offsetDays of [0, 1]) {
-            const candidate = new Date(now);
-            candidate.setDate(candidate.getDate() + offsetDays);
-            candidate.setHours(hh, mm, 0, 0);
-            const diff = candidate.getTime() - now;
-            if (diff > 0 && diff <= TWELVE_H) {
-              candidates.push({ name: s.name, fireAt: candidate.getTime(), diff });
+        if (existsSync(STATUS_SNAPSHOT_PATH)) {
+          const snap = JSON.parse(readFileSync(STATUS_SNAPSHOT_PATH, 'utf-8'));
+          if (snap && typeof snap.writtenAt === 'number' && (now - snap.writtenAt) <= SNAPSHOT_STALE_MS) {
+            snapshotFresh = true;
+            // Schedule: active count from config (most accurate), deferred + next from snapshot
+            const cfg = readJsonFile(CONFIG_PATH) || {};
+            const allSchedules = [
+              ...(cfg.nonInteractive || []),
+              ...(cfg.interactive || []),
+            ].filter(s => s.enabled !== false && s.name);
+            scheduleActive = allSchedules.length;
+            scheduleDeferred = snap.schedules?.deferredCount ?? 0;
+            if (snap.schedules?.next) {
+              nextSchedule = { name: snap.schedules.next.name, fireAt: snap.schedules.next.fireAt };
+            }
+            // Discord
+            if (typeof snap.discord?.totalUnread === 'number') {
+              discordTotalUnread = snap.discord.totalUnread;
+            }
+            // Ngrok tunnel URL (overrides probe below when available)
+            if (snap.ngrok?.tunnelUrl) {
+              ngrokTunnelUrl = snap.ngrok.tunnelUrl;
             }
           }
         }
-        candidates.sort((a, b) => a.diff - b.diff);
-        if (candidates.length > 0) nextSchedule = candidates[0];
-      } catch { /* config unreadable */ }
+      } catch { /* snapshot unreadable — fall through */ }
+
+      if (!snapshotFresh) {
+        // Fallback: derive from config.json (0.1.17 behaviour — HH:MM only, no cron)
+        try {
+          const cfg = readJsonFile(CONFIG_PATH) || {};
+          const allSchedules = [
+            ...(cfg.nonInteractive || []),
+            ...(cfg.interactive || []),
+          ].filter(s => s.enabled !== false && s.name);
+          scheduleActive = allSchedules.length;
+
+          const TWELVE_H = 12 * 60 * 60 * 1000;
+          const candidates = [];
+          for (const s of allSchedules) {
+            if (!s.time || !/^\d{2}:\d{2}$/.test(s.time)) continue;
+            const [hh, mm] = s.time.split(':').map(Number);
+            for (const offsetDays of [0, 1]) {
+              const candidate = new Date(now);
+              candidate.setDate(candidate.getDate() + offsetDays);
+              candidate.setHours(hh, mm, 0, 0);
+              const diff = candidate.getTime() - now;
+              if (diff > 0 && diff <= TWELVE_H) {
+                candidates.push({ name: s.name, fireAt: candidate.getTime(), diff });
+              }
+            }
+          }
+          candidates.sort((a, b) => a.diff - b.diff);
+          if (candidates.length > 0) nextSchedule = candidates[0];
+        } catch { /* config unreadable */ }
+      }
 
       // ── 3. Recall count (bridge-trace.jsonl, last 60 min, tail 2 MB) ──
       let recallCount = 0;
@@ -1001,31 +1035,37 @@ const server = http.createServer(async (req, res) => {
       }
 
       // ── 5. Ngrok online (probe local ngrok API at 127.0.0.1:4040) ────────
-      // We do a best-effort HTTP GET to the ngrok local dashboard API.
+      // If the snapshot already gave us a tunnelUrl, skip the live probe.
       // Times out in 300 ms. Only reports true if >=1 tunnel is active.
       let ngrokOnline = false;
-      await new Promise((resolve) => {
-        const timer = setTimeout(() => { req_ng && req_ng.destroy(); resolve(); }, 300);
-        let req_ng;
-        try {
-          req_ng = http.get('http://127.0.0.1:4040/api/tunnels', (r) => {
-            clearTimeout(timer);
-            let body = '';
-            r.on('data', d => { body += d; });
-            r.on('end', () => {
-              try {
-                const parsed = JSON.parse(body);
-                if (Array.isArray(parsed.tunnels) && parsed.tunnels.length > 0) {
-                  ngrokOnline = true;
-                }
-              } catch { /* ignore */ }
-              resolve();
+      if (ngrokTunnelUrl) {
+        ngrokOnline = true; // snapshot already confirmed a live tunnel
+      } else {
+        await new Promise((resolve) => {
+          const timer = setTimeout(() => { try { req_ng && req_ng.destroy(); } catch {} resolve(); }, 300);
+          let req_ng;
+          try {
+            req_ng = http.get('http://127.0.0.1:4040/api/tunnels', (r) => {
+              clearTimeout(timer);
+              let body = '';
+              r.on('data', d => { body += d; });
+              r.on('end', () => {
+                try {
+                  const parsed = JSON.parse(body);
+                  const tunnel = (parsed.tunnels || []).find(t => t.public_url);
+                  if (tunnel) {
+                    ngrokOnline = true;
+                    ngrokTunnelUrl = tunnel.public_url;
+                  }
+                } catch { /* ignore */ }
+                resolve();
+              });
             });
-          });
-          req_ng.on('error', () => { clearTimeout(timer); resolve(); });
-          req_ng.setTimeout(300, () => { clearTimeout(timer); req_ng.destroy(); resolve(); });
-        } catch { clearTimeout(timer); resolve(); }
-      });
+            req_ng.on('error', () => { clearTimeout(timer); resolve(); });
+            req_ng.setTimeout(300, () => { clearTimeout(timer); try { req_ng.destroy(); } catch {} resolve(); });
+          } catch { clearTimeout(timer); resolve(); }
+        });
+      }
 
       // ── Assemble JSON payload ─────────────────────────────────────────
       const sessionSegment = running.length > 0
@@ -1058,7 +1098,9 @@ const server = http.createServer(async (req, res) => {
         schedule: scheduleSegment,
         recallLastHour: recallCount,
         jobs: { count: jobsCount },
-        ngrok: { online: ngrokOnline },
+        ngrok: { online: ngrokOnline, tunnelUrl: ngrokTunnelUrl ?? undefined },
+        ...(discordTotalUnread !== null ? { discord: { totalUnread: discordTotalUnread } } : {}),
+        snapshotFresh,
         generatedAt: new Date(now).toISOString(),
       };
 
