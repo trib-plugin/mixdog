@@ -4,6 +4,12 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.28] - Unreleased
+
+### Fixed
+
+- **StatusLine invisible on Windows when `bash` resolves to WSL** — the injected `statusLine.command` was `bash "C:/Users/.../statusline.sh"`. On Windows with WSL installed, PATH resolution picks `C:\Windows\System32\bash.exe` (the WSL launcher) first, which cannot read Windows-style paths and fails with `exit 127, No such file or directory`. Claude Code treats non-zero exit as "hide the statusline", so nothing ever rendered — not even line 1. The earlier 0.1.27 event-loop-contention diagnosis was wrong; the status server was never being reached because the script never ran. `hooks/session-start.cjs` now probes known Git Bash install paths on Windows (`C:/Program Files/Git/bin/bash.exe` and variants) and emits a fully-qualified executable in the command, bypassing PATH and pinning execution to MSYS bash. Non-Windows platforms keep the bare `bash` token.
+
 ## [0.1.27] - Unreleased
 
 ### Fixed

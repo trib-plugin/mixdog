@@ -82,6 +82,26 @@ function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
 }
 
+// On Windows, the `bash` command found first in PATH is typically
+// `C:\Windows\System32\bash.exe` — the WSL launcher, which cannot resolve
+// Windows-style paths like `C:/Users/...` and fails with exit 127. Claude Code
+// then renders nothing. Probe known Git Bash install paths and use a fully
+// qualified executable so the statusLine command runs against MSYS bash, which
+// handles Windows paths correctly. Fall back to the bare `bash` token when no
+// Git Bash is found (preserves prior behavior on non-Windows).
+function resolveBashCommand(scriptPath) {
+  if (process.platform !== 'win32') return `bash "${scriptPath}"`;
+  const candidates = [
+    'C:/Program Files/Git/bin/bash.exe',
+    'C:/Program Files (x86)/Git/bin/bash.exe',
+    'C:/Program Files/Git/usr/bin/bash.exe',
+  ];
+  for (const candidate of candidates) {
+    try { if (fs.existsSync(candidate)) return `"${candidate}" "${scriptPath}"`; } catch {}
+  }
+  return `bash "${scriptPath}"`;
+}
+
 function injectStatusLine(pluginRoot) {
   try {
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
@@ -92,7 +112,7 @@ function injectStatusLine(pluginRoot) {
     if (!settings || typeof settings !== 'object') return;
 
     const scriptPath = path.join(pluginRoot, 'bin', 'statusline.sh').replace(/\\/g, '/');
-    const desiredCommand = `bash "${scriptPath}"`;
+    const desiredCommand = resolveBashCommand(scriptPath);
     const desiredRefreshInterval = 2;
     const existing = settings.statusLine;
     const isOurs = existing && typeof existing === 'object' && existing.source === 'mixdog-auto';
