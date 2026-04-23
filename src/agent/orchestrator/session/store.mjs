@@ -266,7 +266,7 @@ export function sweepStaleSessions(ttlMs) {
     for (const f of files) {
         try {
             const session = JSON.parse(readFileSync(join(dir, f), 'utf-8'));
-            const lastActive = session.updatedAt || session.createdAt || 0;
+            const lastActive = session.lastHeartbeatAt || session.updatedAt || session.createdAt || 0;
             // Only sweep bridge sessions
             if (session.owner !== 'bridge') { remaining++; continue; }
             // Running sessions are normally reaped by the stream-watchdog

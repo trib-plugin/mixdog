@@ -190,6 +190,7 @@ let db = null
 let mainConfig = null
 let _cycleInterval = null
 let _startupTimeout = null
+let _cycle1InFlight = null // shared cycle1 promise
 let _initialized = false
 let _bootTimestamp = null
 let _transcriptOffsets = new Map()
@@ -422,6 +423,24 @@ function _initTranscriptWatcher() {
 const CYCLE1_HEALTH_OVERDUE_MS = 5 * 60_000
 const CYCLE1_AUTO_RESTART_COOLDOWN_MS = 5 * 60_000
 
+function _startCycle1Run(config = {}, options = {}) {
+  _cycle1InFlight = (async () => {
+    try {
+      const result = await runCycle1(db, config, options)
+      setCycleLastRun('cycle1', Date.now())
+      return result
+    } finally {
+      _cycle1InFlight = null
+    }
+  })()
+  return _cycle1InFlight
+}
+
+async function _awaitCycle1Run(config = {}, options = {}) {
+  if (_cycle1InFlight) return await _cycle1InFlight
+  return await _startCycle1Run(config, options)
+}
+
 async function checkCycles() {
   if (mainConfig?.enabled === false) return
 
@@ -449,10 +468,13 @@ async function checkCycles() {
     )
     const lastAutoRestart = last.cycle1_autoRestart || 0
     if (now - lastAutoRestart >= CYCLE1_AUTO_RESTART_COOLDOWN_MS) {
+      if (_cycle1InFlight) {
+        process.stderr.write('[cycle1] skipped: already running\n')
+        return
+      }
       setCycleLastRun('cycle1_autoRestart', now)
       try {
-        const result = await runCycle1(db, mainConfig?.cycle1 || {})
-        setCycleLastRun('cycle1', Date.now())
+        const result = await _startCycle1Run(mainConfig?.cycle1 || {})
         process.stderr.write(
           `[cycle1] auto-restart completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`
         )
@@ -466,9 +488,12 @@ async function checkCycles() {
   }
 
   if (now - last.cycle1 >= cycle1Ms) {
+    if (_cycle1InFlight) {
+      process.stderr.write('[cycle1] skipped: already running\n')
+      return
+    }
     try {
-      const result = await runCycle1(db, mainConfig?.cycle1 || {})
-      setCycleLastRun('cycle1', Date.now())
+      const result = await _startCycle1Run(mainConfig?.cycle1 || {})
       process.stderr.write(`[cycle1] completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`)
     } catch (e) {
       process.stderr.write(`[cycle1] error: ${e.message}\n`)
@@ -708,8 +733,7 @@ async function handleMemoryAction(args) {
   }
 
   if (action === 'cycle1') {
-    const result = await runCycle1(db, config?.cycle1 || {})
-    setCycleLastRun('cycle1', Date.now())
+    const result = await _awaitCycle1Run(config?.cycle1 || {})
     return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped}` }
   }
 
@@ -720,8 +744,7 @@ async function handleMemoryAction(args) {
   }
 
   if (action === 'flush') {
-    const r1 = await runCycle1(db, config?.cycle1 || {})
-    setCycleLastRun('cycle1', Date.now())
+    const r1 = await _awaitCycle1Run(config?.cycle1 || {})
     const r2 = await runCycle2(db, config?.cycle2 || {})
     setCycleLastRun('cycle2', Date.now())
     return { text: `flush: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
@@ -740,9 +763,8 @@ async function handleMemoryAction(args) {
           embedding = NULL, summary_hash = NULL
       WHERE is_root = 1 OR (chunk_root IS NULL)
     `).run()
-    const r1 = await runCycle1(db, config?.cycle1 || {})
+    const r1 = await _awaitCycle1Run(config?.cycle1 || {})
     const r2 = await runCycle2(db, config?.cycle2 || {})
-    setCycleLastRun('cycle1', Date.now())
     setCycleLastRun('cycle2', Date.now())
     return { text: `rebuild: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
   }
@@ -766,10 +788,9 @@ async function handleMemoryAction(args) {
       limit,
       config,
       ingestTranscriptFile,
-      runCycle1,
+      runCycle1: (dbArg, cycle1Config = {}, options = {}) => _awaitCycle1Run(cycle1Config, options),
       runCycle2,
     })
-    setCycleLastRun('cycle1', Date.now())
     setCycleLastRun('cycle2', Date.now())
     return {
       text: `backfill: window=${result.window} scope=${result.scope} files=${result.files} ingested=${result.ingested} cycle1_iters=${result.cycle1_iters} promoted=${result.promoted} unclassified=${result.unclassified}`,

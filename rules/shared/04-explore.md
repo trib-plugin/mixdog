@@ -1,6 +1,7 @@
 # Explore
 
-- `explore` — internal codebase navigation. Each natural-language query is translated into glob + grep patterns and executed in parallel; one call can cover several angles.
+- `explore` — internal codebase navigation. A single natural-language query lets ONE internal agent fan out glob + grep probes and return a synthesized answer covering several angles at once. Same single-agent-judges-multi-angle principle applies to `recall` (memory) and `search` (external web).
+- Array form on any of the three = N INDEPENDENT agents, mechanical merge, no cross-synthesis. Default to a single rich query; use array only for genuinely unrelated questions.
 
 ## Explore-first (default move)
 

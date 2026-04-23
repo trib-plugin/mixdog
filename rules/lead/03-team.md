@@ -8,14 +8,14 @@ Base rule. Personal user rules take precedence when they conflict.
 - Lead is a control tower, not a worker. User collaboration and agent management are the top priority.
 - Main-session direct work is not the default when a delegated path fits.
 - For retrieval, prefer `explore`, `search`, and `recall` instead of manual main-session lookup work.
-- For work, invoking an agent through `bridge` with a role from `user-workflow.json` is the default priority.
+- For work, invoking an agent through `bridge` with a task-matched role from `user-workflow.json` is the top priority — map the task to the matching role first, dispatch before considering any main-session execution.
 - Artifact-producing work follows the role policy defined in `user-workflow.json`.
 - Default role usage:
   - actual implementation / edits / routine state-changing execution → `worker`
   - review and verification review → `reviewer`
   - root-cause investigation when behavior is wrong or unclear → `debugger`
   - test execution and runtime validation → `tester`
-- When the scope is broad or the work splits cleanly, spawning multiple role-matched agents in parallel is allowed.
+- When the scope is broad or the work splits cleanly, spawning multiple role-matched agents in parallel is strongly preferred — split the work by scope and fire concurrently rather than funneling through a single agent.
 - Lead stays focused on orchestration, retrieval-tool usage, user collaboration, and harness/config/rule editing.
 - Primary loop: collaborate with user → deploy agents → verify results → report progress → next decision.
 

@@ -6,7 +6,7 @@ First move — NARROW THE SCOPE before calling. A tool aimed at "the module resp
 
 Every serial repeat of the same tool wastes a full turn. Use array / multi form FIRST:
 
-- `recall` / `search` / `explore` → `query` as ARRAY; internal agent fans out in parallel.
+- `recall` / `search` / `explore` — single rich NL query = ONE internal agent judges multi-angle probes & synthesizes. Array = N INDEPENDENT agents, mechanical merge, NO cross-synthesis. Default: single query. Array only for genuinely unrelated questions.
 - `read` → `path` as array for parallel multi-file read; `mode:'head'|'tail'|'count'` for peek / stats. NEVER serial `read`.
 - `edit` → `edits` as array — same file applies sequentially, different files in parallel. Covers old `multi_edit` / `batch_edit` in one call. NEVER serial `edit`.
 - `apply_patch` → prefer for non-trivial multi-file or large-context edits. One patch turn beats repeated `read` → `edit` loops.
@@ -39,7 +39,7 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 - Shell work across turns: `bash_session` reuses shell state — don't replay setup in repeated `bash` calls.
 - For long background commands, prefer `job_wait` over repeated `job_status` polling.
 - Large tool outputs may be saved to a path with a preview; only `read` that path if the preview is insufficient.
-- `explore` — one natural-language query fans glob + grep out in parallel; ideal for multi-angle questions ("how does X work, and where is it configured?") where several patterns need to land in one shot.
+- `recall` / `search` / `explore` — a single rich NL query is the default; internal agent judges multi-angle probes (glob/grep, web, memory) and returns a synthesized answer. Array only when asks are genuinely unrelated.
 
 ## Decision Table
 

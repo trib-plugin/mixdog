@@ -53,12 +53,13 @@ export async function buildBridgeStatus(dataDir) {
       }
     } catch { /* dir unreadable */ }
   }
-  const running = allSessions.filter(s =>
-    s.owner === 'bridge'
-    && s.status === 'running'
-    && s.closed !== true
-    && (now - (s.updatedAt || s.createdAt || 0)) <= RUNNING_STALL_MS
-  );
+  const running = allSessions.filter(s => {
+    const lastActive = s.lastHeartbeatAt || s.updatedAt || s.createdAt || 0;
+    return s.owner === 'bridge'
+      && s.status === 'running'
+      && s.closed !== true
+      && (now - lastActive) <= RUNNING_STALL_MS;
+  });
   const runningRoles = running.map(s => s.role || 'agent').filter(Boolean);
 
   const recentClosed = allSessions

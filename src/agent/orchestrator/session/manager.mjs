@@ -100,6 +100,7 @@ export class SessionClosedError extends Error {
 let _mcpToolsCache = null;
 let _mcpToolsCacheTime = 0;
 const MCP_CACHE_TTL = 60000; // 1 minute
+const HEARTBEAT_THROTTLE_MS = 60_000; // 60s
 
 function _getMcpToolsCached() {
     const now = Date.now();
@@ -947,6 +948,7 @@ export function createSession(opts) {
         cwd: opts.cwd,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        lastHeartbeatAt: null,
         totalInputTokens: 0,
         totalOutputTokens: 0,
         // Refreshed on each completed ask() — surfaced by list_sessions for
@@ -1041,13 +1043,19 @@ export function markSessionAskStart(id) {
 export function markSessionStreamDelta(id) {
     if (!id) return;
     const entry = _touchRuntime(id);
-    entry.lastStreamDeltaAt = Date.now();
+    const now = Date.now();
+    entry.lastStreamDeltaAt = now;
     // Only promote to 'streaming' if we were in a pre-stream stage; never downgrade
     // mid-tool (tool_running has its own delta source if the tool streams back).
     if (entry.stage === 'connecting' || entry.stage === 'requesting') {
         entry.stage = 'streaming';
     }
-    entry.updatedAt = Date.now();
+    const session = loadSession(id);
+    if (session && now - (session.lastHeartbeatAt || 0) > HEARTBEAT_THROTTLE_MS) {
+        session.lastHeartbeatAt = now;
+        saveSession(session);
+    }
+    entry.updatedAt = now;
 }
 export function markSessionToolCall(id, toolName) {
     if (!id) return;
