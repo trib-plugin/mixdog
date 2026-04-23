@@ -1,0 +1,29 @@
+{
+  "__comment": "Web search configuration. Seeded automatically on first install — add API keys via /mixdog:config or by editing this file in the data directory.",
+  "rawSearch": {
+    "__comment": "Provider priority list — first provider with a valid key is tried first, then falls back in order.",
+    "priority": ["serper", "brave", "perplexity", "firecrawl", "tavily", "xai"],
+    "maxResults": 10,
+    "credentials": {
+      "__comment": "Leave apiKey (or github.token) as empty string to disable a provider.",
+      "serper": { "apiKey": "" },
+      "brave": { "apiKey": "" },
+      "perplexity": { "apiKey": "" },
+      "firecrawl": { "apiKey": "" },
+      "tavily": { "apiKey": "" },
+      "xai": { "apiKey": "" },
+      "github": { "token": "" }
+    }
+  },
+  "requestTimeoutMs": 15000,
+  "crawl": {
+    "__comment": "URL scraping limits applied when fetching page content.",
+    "maxPages": 10,
+    "maxDepth": 2,
+    "sameDomainOnly": true
+  },
+  "siteRules": {
+    "__comment": "Per-domain overrides — force a specific search/scrape backend for a given hostname.",
+    "x.com": { "search": "xai.x_search", "scrape": "xai.x_search" }
+  }
+}

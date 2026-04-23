@@ -1,0 +1,17 @@
+{
+  "__comment": "Memory pipeline configuration. Seeded automatically on first install — edit via /mixdog:config or directly in the data directory.",
+  "enabled": true,
+  "user": {
+    "__comment": "Optional user identity seeded into core memory so recall can personalise responses.",
+    "name": "",
+    "title": ""
+  },
+  "cycle1": {
+    "__comment": "Chunker cycle — groups raw conversation entries into labelled memory chunks.",
+    "interval": "10m"
+  },
+  "cycle2": {
+    "__comment": "Curator cycle — promotes high-value chunks to active core memory and prunes stale entries.",
+    "interval": "1h"
+  }
+}

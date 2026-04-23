@@ -1,24 +1,62 @@
 {
-  "__comment": "Copy to agent-config.json (in the plugin data directory) and fill in. Provider credentials for the agent orchestrator. Never commit a filled copy.",
-  "providers": {
-    "anthropic": {
-      "__comment": "Anthropic API key. REQUIRED for Anthropic models. Leave empty string to disable.",
-      "apiKey": ""
+  "__comment": "Default agent preset definitions. Seeded automatically on first install — edit via /mixdog:config or directly in the data directory.",
+  "presets": [
+    {
+      "__comment": "Cheapest tier — use for fast classification and retrieval roles (memory cycle, search, recall, explore).",
+      "id": "haiku",
+      "name": "HAIKU",
+      "type": "bridge",
+      "provider": "anthropic-oauth",
+      "model": "claude-haiku-4-5-20251001",
+      "tools": "full"
     },
-    "openai": {
-      "__comment": "OpenAI API key. REQUIRED for OpenAI models. Leave empty string to disable.",
-      "apiKey": "",
-      "baseUrl": "https://api.openai.com/v1"
+    {
+      "__comment": "Mid-tier Sonnet — balanced cost/quality for curation and summarisation tasks.",
+      "id": "sonnet-mid",
+      "name": "SONNET MID",
+      "type": "bridge",
+      "provider": "anthropic-oauth",
+      "model": "claude-sonnet-4-6",
+      "effort": "medium",
+      "tools": "full"
     },
-    "google": {
-      "__comment": "Google Generative AI key for Gemini models. Leave empty string to disable.",
-      "apiKey": ""
+    {
+      "__comment": "High-effort Sonnet — default for implementation roles (worker, tester).",
+      "id": "sonnet-high",
+      "name": "SONNET HIGH",
+      "type": "bridge",
+      "provider": "anthropic-oauth",
+      "model": "claude-sonnet-4-6",
+      "effort": "high",
+      "tools": "full"
     },
-    "openai-compat": {
-      "__comment": "OpenAI-compatible endpoint (LM Studio, Ollama, vLLM, LiteLLM, etc.). Fill in base URL + key, leave empty to disable.",
-      "apiKey": "",
-      "baseUrl": ""
+    {
+      "__comment": "Mid-effort Opus — not assigned by default; available for custom role bindings.",
+      "id": "opus-mid",
+      "name": "OPUS MID",
+      "type": "bridge",
+      "provider": "anthropic-oauth",
+      "model": "claude-opus-4-7",
+      "effort": "medium",
+      "tools": "full"
+    },
+    {
+      "__comment": "Highest-effort Opus — default for quality-critical roles (reviewer, debugger).",
+      "id": "opus-xhigh",
+      "name": "OPUS XHIGH",
+      "type": "bridge",
+      "provider": "anthropic-oauth",
+      "model": "claude-opus-4-7",
+      "effort": "xhigh",
+      "tools": "full"
     }
-  },
-  "defaultProvider": "__REQUIRED__ — set to one of the keys above once its credentials are filled in."
+  ],
+  "maintenance": {
+    "__comment": "Internal pipeline role-to-preset bindings. Values must match a preset 'name' above.",
+    "cycle1": "HAIKU",
+    "cycle2": "SONNET MID",
+    "search": "HAIKU",
+    "recall": "HAIKU",
+    "explore": "HAIKU"
+  }
 }

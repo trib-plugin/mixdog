@@ -1,24 +1,8 @@
 {
-  "__comment": "Copy to config.json (in the plugin data directory) and edit. Global plugin toggles.",
-  "memory": {
-    "__comment": "Persistent memory module. Disable to skip SQLite init.",
-    "enabled": true
-  },
-  "search": {
-    "__comment": "Web search module. Provider order determines failover. Each provider may require its own API key in agent-config.json.",
-    "enabled": true,
-    "providerOrder": [
-      "ddg",
-      "google",
-      "bing"
-    ]
-  },
-  "channels": {
-    "__comment": "Discord channel backend. Requires a filled-in bot.json (token + channel IDs). Disable if you do not use Discord.",
-    "enabled": false
-  },
-  "agent": {
-    "__comment": "External AI sub-agent orchestrator.",
-    "enabled": true
+  "__comment": "Global plugin configuration. Seeded automatically on first install — edit via /mixdog:config or directly in the data directory.",
+  "promptInjection": {
+    "__comment": "Controls how mixdog injects rules and memory into the session. 'claude_md' writes to CLAUDE.md (recommended); 'hook' uses the session-start hook output only.",
+    "mode": "claude_md",
+    "targetPath": "~/.claude/CLAUDE.md"
   }
 }

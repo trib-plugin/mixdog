@@ -1,24 +1,25 @@
 {
-  "__comment": "Copy to user-workflow.json (in the plugin data directory) and edit. Defines per-role prompts and provider bindings for delegated agents.",
-  "roles": {
-    "worker": {
-      "__comment": "Role 'worker' — code implementation with read-write filesystem access.",
-      "provider": "anthropic",
-      "model": "claude-sonnet-4-5",
-      "systemPromptFile": "agents/worker.md",
-      "toolPreset": "full"
+  "__comment": "Role-to-preset bindings for delegated agents. Seeded automatically on first install — edit via /mixdog:config or directly in the data directory. Preset names must match a 'name' field in agent-config.json.",
+  "roles": [
+    {
+      "__comment": "Code implementation role. Runs with high reasoning effort to handle complex edits.",
+      "name": "worker",
+      "preset": "SONNET HIGH"
     },
-    "reviewer": {
-      "__comment": "Role 'reviewer' — read-only code review.",
-      "provider": "anthropic",
-      "model": "claude-sonnet-4-5",
-      "systemPromptFile": "agents/reviewer.md",
-      "toolPreset": "readonly"
+    {
+      "__comment": "Code review role. Uses the highest-quality model for accurate critique.",
+      "name": "reviewer",
+      "preset": "OPUS XHIGH"
+    },
+    {
+      "__comment": "Bug investigation role. Uses the highest-quality model for deep root-cause analysis.",
+      "name": "debugger",
+      "preset": "OPUS XHIGH"
+    },
+    {
+      "__comment": "Test execution and verification role. High-effort Sonnet balances speed and accuracy.",
+      "name": "tester",
+      "preset": "SONNET HIGH"
     }
-  },
-  "defaults": {
-    "__comment": "Fallback provider/model if a role does not override them. REQUIRED — set to a provider registered in agent-config.json.",
-    "provider": "",
-    "model": ""
-  }
+  ]
 }

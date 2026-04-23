@@ -41,20 +41,31 @@ run `npm install`, and register the MCP server declared in
 
 ## Quick start
 
-1. **First boot.** After install, open any Claude Code session. The plugin
-   will seed `memory-config.json` and open its setup web page on first
-   launch. Answer the prompts to pick a default provider.
-2. **Add credentials.** Copy the templates in `config/` into your plugin
-   data directory and fill in:
-   - `agent-config.json` — provider API keys (at least one).
-   - `user-workflow.json` — role-to-model bindings.
-   - `config.json` — which modules to enable.
-3. **Optional: Discord.** To use the channel backend, also copy
-   `config/bot.example.json` to `bot.json`, fill in the token and
-   channel IDs, then set `channels.enabled: true` in `config.json`.
-4. **Reload the plugin** from Claude Code. The MCP handshake should
-   complete within a second, and the tools defined in `tools.json`
-   become available.
+1. **Install.**
+   ```
+   /plugin marketplace add trib-plugin/mixdog
+   /plugin install mixdog@trib-plugin
+   ```
+
+2. **Restart Claude Code.** The MCP server bootstraps dependencies
+   automatically (`npm ci`) and seeds its data directory with working
+   defaults under `~/.claude/plugins/data/mixdog-trib-plugin/`.
+
+3. **That's it.** Anthropic OAuth (the Claude Code login) is the default
+   provider, so bridge / recall / explore / memory work immediately — no
+   API keys required.
+
+4. **Config UI.** On first launch the config UI opens automatically at
+   `http://localhost:3458` for providers, presets, and role bindings.
+   You can re-open it any time with `/mixdog:config`.
+
+5. **Optional external web search.** Add a Brave / Serper / Tavily / etc.
+   key in the config UI (or edit `search-config.json` directly in the
+   data directory).
+
+6. **Optional Discord backend.** Copy `config/bot.example.json` to the
+   data directory as `bot.json`, fill in the token and channel IDs, then
+   enable channels from the config UI.
 
 ## Features
 
@@ -113,18 +124,28 @@ context.
 ## Configuration
 
 All user-editable config lives in the plugin data directory
-(`<claude-data>/plugins/data/mixdog-trib-plugin/`), NOT in the repository.
-The repository ships `.example.json` templates under `config/`:
+(`~/.claude/plugins/data/mixdog-trib-plugin/`), NOT in the repository.
+The easiest way to edit it is `/mixdog:config` — this opens the in-browser
+UI. Editing the JSON files directly is also fully supported.
 
-| Template                              | Copy to                | Purpose                                   |
-| ------------------------------------- | ---------------------- | ----------------------------------------- |
-| `config/user-workflow.example.json`   | `user-workflow.json`   | Role → model bindings                     |
-| `config/agent-config.example.json`    | `agent-config.json`    | Provider API keys                         |
-| `config/config.example.json`          | `config.json`          | Module toggles                            |
-| `config/bot.example.json`             | `bot.json`             | Discord credentials (if channels enabled) |
+The following files are managed in the data directory:
 
-Every field in every template is documented inline with `__comment`
-keys. Required fields are explicitly marked `__REQUIRED__`.
+| File                  | How it gets there       | Purpose                                       |
+| --------------------- | ----------------------- | --------------------------------------------- |
+| `agent-config.json`   | Auto-seeded on install  | Provider presets and maintenance role bindings |
+| `user-workflow.json`  | Auto-seeded on install  | Role → preset bindings for delegated agents   |
+| `config.json`         | Auto-seeded on install  | Prompt injection mode and target path          |
+| `memory-config.json`  | Auto-seeded on install  | Memory pipeline toggles and cycle intervals    |
+| `search-config.json`  | Auto-seeded on install  | Web search providers and API credentials       |
+| `bot.json`            | Manual copy (see below) | Discord credentials (required for channels)   |
+
+The repository ships matching `.example.json` files under `config/` that
+mirror the exact seed defaults — useful as a reference or for diffing
+after manual edits.
+
+**Discord setup (optional).** Copy `config/bot.example.json` to the data
+directory as `bot.json`, fill in the bot token and channel IDs, then
+enable channels from `/mixdog:config`.
 
 ## Commands
 

@@ -342,7 +342,7 @@ const TOOLS = [
     name: 'bridge',
     title: 'Bridge to External Model',
     annotations: { title: 'Bridge to External Model', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (e.g. worker→OPUS XHIGH, reviewer→GPT5.4). Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early.',
+    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (default bindings: worker→SONNET HIGH, reviewer→OPUS XHIGH, debugger→OPUS XHIGH, tester→SONNET HIGH). Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early.',
     inputSchema: {
       type: 'object',
       properties: {

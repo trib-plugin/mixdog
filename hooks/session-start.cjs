@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawn } = require('child_process');
 const { DatabaseSync } = require('node:sqlite');
 const { resolvePluginData } = require(path.join(__dirname, '..', 'lib', 'plugin-paths.cjs'));
 
@@ -19,6 +20,19 @@ if (_event.kind && _event.kind !== 'interactive') process.exit(0);
 const DATA_DIR = resolvePluginData();
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 if (!DATA_DIR || !PLUGIN_ROOT) process.exit(0);
+
+// First-boot: auto-open the config UI once per install.
+try {
+  const flagPath = path.join(DATA_DIR, '.first-boot-seen');
+  if (!fs.existsSync(flagPath)) {
+    spawn('node', [path.join(PLUGIN_ROOT, 'setup', 'launch.mjs')], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    }).unref();
+    fs.writeFileSync(flagPath, '');
+  }
+} catch {}
 
 // Clear active orchestrator session pointer (merged from clear-active-session.mjs)
 try {

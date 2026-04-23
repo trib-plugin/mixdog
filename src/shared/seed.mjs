@@ -52,7 +52,7 @@ const SEEDS = {
                 github: { token: '' },
             },
         },
-        requestTimeoutMs: 30000,
+        requestTimeoutMs: 15000,
         crawl: { maxPages: 10, maxDepth: 2, sameDomainOnly: true },
         siteRules: {
             'x.com': { search: 'xai.x_search', scrape: 'xai.x_search' },
