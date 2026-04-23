@@ -562,7 +562,12 @@ async function startOwnerHttpServer() {
           if (!recapPrompt) { res.writeHead(400); res.end(JSON.stringify({ error: "prompt required" })); return; }
           try {
             const recapLlm = makeBridgeLlm({ role: "recap-agent", taskType: "maintenance" });
-            const summary = await recapLlm({ prompt: recapPrompt });
+            const userMessage = [
+              `Run recap: write a handoff note for these entries per the recap-agent spec.`,
+              ``,
+              recapPrompt,
+            ].join('\n');
+            const summary = await recapLlm({ prompt: userMessage });
             res.writeHead(200);
             res.end(JSON.stringify({ summary: String(summary || "").trim() }));
           } catch (e) {
