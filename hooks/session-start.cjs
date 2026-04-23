@@ -30,7 +30,6 @@ try {
       stdio: 'ignore',
       windowsHide: true,
     }).unref();
-    fs.writeFileSync(flagPath, '');
 
     // Auto-install ngrok globally if not present (non-blocking, non-fatal).
     try {
@@ -66,6 +65,10 @@ try {
     } catch (e) {
       process.stderr.write(`[session-start] git hook install failed: ${e.message}\n`);
     }
+
+    // H6: write flag after spawns have been issued (not before), so we don't
+    // suppress the first-boot UI on the next session if this one crashes early.
+    fs.writeFileSync(flagPath, '');
   }
 } catch {}
 

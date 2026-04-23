@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { exec, execSync, spawn, spawnSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, createWriteStream, mkdirSync, renameSync, readdirSync, rmSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, createWriteStream, mkdirSync, renameSync, unlinkSync, readdirSync, rmSync, statSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { homedir, arch, platform } from 'os';
 import { fileURLToPath } from 'url';
@@ -12,6 +12,16 @@ import { ensureDataSeeds } from '../src/shared/seed.mjs';
 import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memory-cycle.mjs';
 import { runFullBackfill } from '../src/memory/lib/memory-ops-policy.mjs';
 import { cleanMemoryText } from '../src/memory/lib/memory.mjs';
+
+// C2 — Origin/Referer guard for mutating routes.
+// Returns true when the request is safe to handle (no browser origin, or origin
+// matches our own loopback UI port).  Direct curl / native-client calls that
+// carry no Origin header are allowed through.
+function isAllowedOrigin(req) {
+  const o = req.headers.origin || req.headers.referer || '';
+  if (!o) return true; // direct curl/native clients without browser origin
+  return /^http:\/\/(localhost|127\.0\.0\.1):3458(\/|$)/.test(o);
+}
 
 let DatabaseSync;
 try { ({ DatabaseSync } = await import('node:sqlite')); } catch {}
@@ -880,6 +890,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/config') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
 
     const botData = data._bot;
@@ -919,6 +934,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/modules') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const tribCfg = readJsonFile(MIXDOG_CONFIG_PATH) || {};
     const sanitized = {};
@@ -950,6 +970,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/capabilities') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const tribCfg = readJsonFile(MIXDOG_CONFIG_PATH) || {};
     const sanitized = { homeAccess: !!(data && typeof data === 'object' && data.homeAccess === true) };
@@ -980,6 +1005,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/schedules') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const sc = await readBody(req);
     if (!sc.name) { res.writeHead(400); res.end('name required'); return; }
     const dir = join(SCHEDULES_DIR, sc.name);
@@ -1036,6 +1066,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/webhooks') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const wh = await readBody(req);
     if (!wh.name) { res.writeHead(400); res.end('name required'); return; }
     const dir = join(WEBHOOKS_DIR, wh.name);
@@ -1101,6 +1136,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/agent/config') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const existing = readAgentConfig();
     const merged = mergeAgentConfig(existing, data);
@@ -1118,6 +1158,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/agent/presets') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     let preset;
     try { preset = normalizePreset(data); }
@@ -1157,6 +1202,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/agent/maintenance') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const cfg = readAgentConfig();
     const validIds = new Set((cfg.presets || []).map(p => p.id));
@@ -1192,6 +1242,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/agent/validate') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const validation = {};
     const checks = [];
@@ -1218,6 +1273,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/agent/learning') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const existing = readAgentConfig();
     if (data.trajectory) existing.trajectory = { ...(existing.trajectory || {}), ...data.trajectory };
@@ -1242,6 +1302,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/memory/config') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const existing = readMemoryConfig();
     const merged = mergeMemoryConfig(existing, data);
@@ -1267,6 +1332,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/memory/presets') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     let preset;
     try { preset = normalizePreset(data); }
@@ -1345,6 +1415,11 @@ const server = http.createServer(async (req, res) => {
 
   {
     const statusMatch = req.method === 'POST' && path.match(/^\/api\/memory\/entries\/(\d+)\/status$/);
+    if (statusMatch && !isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     if (statusMatch) {
       const id = Number(statusMatch[1]);
       const data = await readBody(req);
@@ -1373,6 +1448,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/api/memory/entries') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const element = String(data.element ?? '').trim();
     const summary = String(data.summary ?? '').trim();
@@ -1420,6 +1500,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/memory/backfill') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     if (_backfillInProgress) {
       res.writeHead(409, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: 'backfill already in progress' }));
@@ -1457,6 +1542,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/memory/delete') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     if (data?.confirm !== 'DELETE ALL MEMORY') {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1491,6 +1581,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/memory/validate') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const validation = {};
     const checks = [];
@@ -1515,6 +1610,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/search/config') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const existing = readSearchConfig();
     const merged = mergeSearchConfig(existing, data);
@@ -1526,6 +1626,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/search/validate') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const validation = {};
     const checks = [];
@@ -1558,6 +1663,11 @@ const server = http.createServer(async (req, res) => {
   // ============================================================
 
   if (req.method === 'POST' && path === '/install') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const tool = data.tool;
     if (!tool || !['ngrok'].includes(tool)) {
@@ -1589,6 +1699,20 @@ const server = http.createServer(async (req, res) => {
   const isVoicePOST = (req.method === 'POST' && path === '/install/voice');
 
   if (isVoicePOST || isVoiceSSE) {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
+    // H5 — abort on disconnect
+    const abortController = new AbortController();
+    let aborted = false;
+    req.on('close', () => {
+      if (res.writableEnded) return;
+      aborted = true;
+      abortController.abort();
+    });
+
     // One-click whisper.cpp + turbo model installer.
     // Detects platform (win32 / darwin / linux), installs binary + model, writes config.
     // Supports SSE streaming (GET ?stream=1) and legacy JSON POST.
@@ -1605,14 +1729,14 @@ const server = http.createServer(async (req, res) => {
       res.flushHeaders();
     }
 
-    /** Emit an SSE event (noop in legacy POST mode). */
+    /** Emit an SSE event (noop in legacy POST mode or after abort). */
     const emitSSE = (eventName, data) => {
-      if (!_sseActive) return;
+      if (!_sseActive || aborted) return;
       res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
     };
 
     /** Emit a stage transition event. */
-    const emitStage = (stage, message) => emitSSE('stage', { stage, message });
+    const emitStage = (stage, message) => { if (aborted) return; emitSSE('stage', { stage, message }); };
 
     const send = (payload) => {
       if (_sseActive) {
@@ -1649,41 +1773,64 @@ const server = http.createServer(async (req, res) => {
     });
 
     /** Download a URL to destPath, following redirects.
+     *  Writes to destPath + '.part', then renames to destPath on success.
      *  Optional onProgress({bytes, total, speed}) called at most every 200ms.
+     *  Optional signal (AbortSignal) cancels the download.
      */
-    const downloadFile = (url, destPath, onProgress) => new Promise((resolve, reject) => {
+    const downloadFile = (url, destPath, onProgress, signal) => new Promise((resolve, reject) => {
+      const partPath = destPath + '.part';
+      let ws = null;
+      const cleanup = () => { try { unlinkSync(partPath); } catch {} };
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          if (ws) { try { ws.destroy(); } catch {} }
+          cleanup();
+        });
+      }
       const doGet = (u) => {
-        https.get(u, { headers: { 'User-Agent': 'mixdog/0.1.13' } }, (resp) => {
+        const reqHandle = https.get(u, { headers: { 'User-Agent': 'mixdog/0.1.14' } }, (resp) => {
           if (resp.statusCode === 301 || resp.statusCode === 302 || resp.statusCode === 303 || resp.statusCode === 307 || resp.statusCode === 308) {
             return doGet(resp.headers.location);
           }
-          if (resp.statusCode !== 200) return reject(new Error(`HTTP ${resp.statusCode} from ${u}`));
-          const total = parseInt(resp.headers['content-length'] || '0', 10) || 0;
-          let bytes = 0;
+          if (resp.statusCode !== 200) {
+            resp.resume();
+            cleanup();
+            return reject(new Error(`HTTP ${resp.statusCode} from ${u}`));
+          }
+          const clHeader = resp.headers['content-length'];
+          const expectedTotal = (clHeader != null && clHeader !== '') ? Number(clHeader) : null;
+          const total = expectedTotal != null ? expectedTotal : 0;
+          let bytesWritten = 0;
           let lastProgressTime = Date.now();
           let lastProgressBytes = 0;
-          const ws = createWriteStream(destPath);
+          ws = createWriteStream(partPath);
           resp.on('data', (chunk) => {
-            bytes += chunk.length;
+            bytesWritten += chunk.length;
             if (onProgress) {
               const now = Date.now();
               const elapsed = now - lastProgressTime;
               if (elapsed >= 200) {
-                const speed = elapsed > 0 ? Math.round((bytes - lastProgressBytes) / (elapsed / 1000)) : 0;
-                onProgress({ bytes, total, speed });
+                const speed = elapsed > 0 ? Math.round((bytesWritten - lastProgressBytes) / (elapsed / 1000)) : 0;
+                onProgress({ bytes: bytesWritten, total, speed });
                 lastProgressTime = now;
-                lastProgressBytes = bytes;
+                lastProgressBytes = bytesWritten;
               }
             }
           });
           resp.pipe(ws);
           ws.on('finish', () => {
-            if (onProgress) onProgress({ bytes, total, speed: 0 });
+            if (onProgress) onProgress({ bytes: bytesWritten, total, speed: 0 });
+            if (expectedTotal != null && bytesWritten !== Number(expectedTotal)) {
+              cleanup();
+              return reject(new Error(`Download truncated: ${bytesWritten} of ${expectedTotal} bytes`));
+            }
+            try { renameSync(partPath, destPath); } catch (e) { cleanup(); return reject(e); }
             resolve();
           });
-          ws.on('error', reject);
-          resp.on('error', reject);
-        }).on('error', reject);
+          ws.on('error', (e) => { cleanup(); reject(e); });
+          resp.on('error', (e) => { cleanup(); reject(e); });
+        });
+        reqHandle.on('error', (e) => { cleanup(); reject(e); });
       };
       doGet(url);
     });
@@ -1694,18 +1841,19 @@ const server = http.createServer(async (req, res) => {
      * Optional onProgress({bytes,total,speed}) callback throttled to 200ms.
      * Returns absolute model path.
      */
-    const downloadModelToDataDir = async (onProgress) => {
+    const downloadModelToDataDir = async (onProgress, signal) => {
       const modelPath = join(modelDir, 'ggml-large-v3-turbo.bin');
-      const MIN_MODEL_BYTES = 100 * 1024 * 1024; // 100 MB sanity threshold
+      // TODO: pin sha256 when upstream publishes
+      // turbo model is ~1.5 GB; 1.4 GB threshold catches truncated re-runs
+      const MIN_MODEL_BYTES = 1_400_000_000; // 1.4 GB
       if (existsSync(modelPath)) {
-        const { statSync } = await import('fs');
-        if (statSync(modelPath).size > MIN_MODEL_BYTES) {
+        if (statSync(modelPath).size >= MIN_MODEL_BYTES) {
           console.log('  [voice-install] model already present, skipping download.');
           return modelPath;
         }
       }
       console.log('  [voice-install] downloading ggml-large-v3-turbo.bin (~1.5 GB)...');
-      await downloadFile(MODEL_URL, modelPath, onProgress);
+      await downloadFile(MODEL_URL, modelPath, onProgress, signal);
       return modelPath;
     };
 
@@ -1779,6 +1927,9 @@ const server = http.createServer(async (req, res) => {
           });
         });
         if (tagJson && typeof tagJson.tag_name === 'string' && tagJson.tag_name) {
+          if (!/^[\w.\-]+$/.test(tagJson.tag_name)) {
+            throw new Error('tag_name contains unsafe characters: ' + tagJson.tag_name);
+          }
           WHISPER_WIN_TAG = tagJson.tag_name;
           console.log(`  [voice-install] resolved Purfview tag: ${WHISPER_WIN_TAG}`);
         } else {
@@ -1796,18 +1947,21 @@ const server = http.createServer(async (req, res) => {
       emitStage('purfview-download', `Downloading Purfview ${WHISPER_WIN_TAG}…`);
       try {
         console.log(`  [voice-install] downloading whisper binary from ${binaryUrl}`);
-        await downloadFile(binaryUrl, archivePath);
+        await downloadFile(binaryUrl, archivePath, null, abortController.signal);
       } catch (e) {
         return send({ ok: false, stage: 'download-binary', error: e.message });
       }
 
       // Extract
+      if (aborted) return;
       emitStage('purfview-extract', 'Extracting Purfview archive…');
       try {
-        execSync(
-          `powershell -NoProfile -Command "Expand-Archive -Force -Path '${archivePath}' -DestinationPath '${binDir}'"`,
-          { stdio: 'pipe', windowsHide: true, timeout: 60000 }
-        );
+        const ps = spawnSync('powershell', [
+          '-NoProfile', '-NonInteractive',
+          '-Command',
+          'Expand-Archive', '-Force', '-Path', archivePath, '-DestinationPath', binDir
+        ], { stdio: 'inherit', windowsHide: true });
+        if (ps.status !== 0) throw new Error('Expand-Archive failed with status ' + ps.status);
         try { rmSync(archivePath); } catch {}
       } catch (e) {
         return send({ ok: false, stage: 'extract-binary', error: e.message });
@@ -1828,18 +1982,20 @@ const server = http.createServer(async (req, res) => {
       emitStage('download-model', 'Downloading turbo model (~1.5 GB)…');
       let resolvedModelPath;
       try {
-        resolvedModelPath = await downloadModelToDataDir((p) => emitSSE('progress', { stage: 'download-model', ...p }));
+        resolvedModelPath = await downloadModelToDataDir((p) => emitSSE('progress', { stage: 'download-model', ...p }), abortController.signal);
       } catch (e) {
         return send({ ok: false, stage: 'download-model', error: e.message });
       }
 
       // Smoke test
+      if (aborted) return;
       emitStage('smoke-test', 'Running smoke test…');
       const smokeOk = await smokeTestWhisper(whisperBinPath);
       if (!smokeOk) {
         return send({ ok: false, stage: 'smoke-test', error: 'Binary failed smoke test (--help returned non-zero or timed out).' });
       }
 
+      if (aborted) return;
       emitStage('write-config', 'Writing voice config…');
       writeVoiceConfig(whisperBinPath, resolvedModelPath);
       console.log(`  [voice-install] done. binary=${whisperBinPath} model=${resolvedModelPath}`);
@@ -1907,21 +2063,24 @@ const server = http.createServer(async (req, res) => {
       }
 
       // 4. Download model
+      if (aborted) return;
       emitStage('download-model', 'Downloading turbo model (~1.5 GB)…');
       let resolvedModelPath;
       try {
-        resolvedModelPath = await downloadModelToDataDir((p) => emitSSE('progress', { stage: 'download-model', ...p }));
+        resolvedModelPath = await downloadModelToDataDir((p) => emitSSE('progress', { stage: 'download-model', ...p }), abortController.signal);
       } catch (e) {
         return send({ ok: false, stage: 'download-model', error: e.message });
       }
 
       // 5. Smoke test
+      if (aborted) return;
       emitStage('smoke-test', 'Running smoke test…');
       const smokeOk = await smokeTestWhisper(whisperBinPath);
       if (!smokeOk) {
         return send({ ok: false, stage: 'smoke-test', error: 'whisper-cli failed smoke test (--help returned non-zero or timed out).' });
       }
 
+      if (aborted) return;
       emitStage('write-config', 'Writing voice config…');
       writeVoiceConfig(whisperBinPath, resolvedModelPath);
       console.log(`  [voice-install] done. binary=${whisperBinPath} model=${resolvedModelPath}`);
@@ -2004,16 +2163,13 @@ const server = http.createServer(async (req, res) => {
 
       // 2. Clone whisper.cpp (shallow, skip if already cloned)
       if (!existsSync(join(srcDir, '.git'))) {
+        if (aborted) return;
         emitStage('git-clone', 'Cloning whisper.cpp (shallow)…');
-        try {
-          console.log('  [voice-install] cloning whisper.cpp...');
-          mkdirSync(voiceDir, { recursive: true });
-          execSync(
-            `git clone --depth 1 https://github.com/ggerganov/whisper.cpp "${srcDir}"`,
-            { stdio: 'pipe', timeout: 120000 }
-          );
-        } catch (e) {
-          const msg = (e.stderr || e.stdout || e.message || '').toString().slice(0, 500);
+        console.log('  [voice-install] cloning whisper.cpp...');
+        mkdirSync(voiceDir, { recursive: true });
+        const gitResult = spawnSync('git', ['clone', '--depth', '1', 'https://github.com/ggerganov/whisper.cpp', srcDir], { stdio: 'inherit', timeout: 120000 });
+        if (gitResult.status !== 0) {
+          const msg = (gitResult.stderr || gitResult.error?.message || 'non-zero exit').toString().slice(0, 500);
           return send({ ok: false, stage: 'git-clone', error: `git clone failed: ${msg}` });
         }
       } else {
@@ -2021,21 +2177,20 @@ const server = http.createServer(async (req, res) => {
       }
 
       // 3. CMake configure + build
+      if (aborted) return;
       emitStage('build', 'Building whisper.cpp from source (may take several minutes)…');
-      try {
-        console.log('  [voice-install] cmake configure...');
-        execSync(
-          `cmake -B build -DCMAKE_BUILD_TYPE=Release`,
-          { stdio: 'pipe', cwd: srcDir, timeout: 120000 }
-        );
-        console.log('  [voice-install] cmake build (this may take several minutes)...');
-        execSync(
-          `cmake --build build -j --config Release`,
-          { stdio: 'pipe', cwd: srcDir, timeout: 900000 } // 15 min
-        );
-      } catch (e) {
-        const msg = (e.stderr || e.stdout || e.message || '').toString().slice(0, 800);
-        return send({ ok: false, stage: 'build', error: `Build failed: ${msg}` });
+      console.log('  [voice-install] cmake configure...');
+      const cmakeCfg = spawnSync('cmake', ['-B', 'build', '-DCMAKE_BUILD_TYPE=Release'], { stdio: 'inherit', cwd: srcDir, timeout: 120000 });
+      if (cmakeCfg.status !== 0) {
+        const msg = (cmakeCfg.stderr || cmakeCfg.error?.message || 'non-zero exit').toString().slice(0, 800);
+        return send({ ok: false, stage: 'build', error: `CMake configure failed: ${msg}` });
+      }
+      if (aborted) return;
+      console.log('  [voice-install] cmake build (this may take several minutes)...');
+      const cmakeBuild = spawnSync('cmake', ['--build', 'build', '-j', '--config', 'Release'], { stdio: 'inherit', cwd: srcDir, timeout: 900000 }); // 15 min
+      if (cmakeBuild.status !== 0) {
+        const msg = (cmakeBuild.stderr || cmakeBuild.error?.message || 'non-zero exit').toString().slice(0, 800);
+        return send({ ok: false, stage: 'build', error: `CMake build failed: ${msg}` });
       }
 
       // 4. Verify binary
@@ -2044,21 +2199,24 @@ const server = http.createServer(async (req, res) => {
       }
 
       // 5. Download model
+      if (aborted) return;
       emitStage('download-model', 'Downloading turbo model (~1.5 GB)…');
       let resolvedModelPath;
       try {
-        resolvedModelPath = await downloadModelToDataDir((p) => emitSSE('progress', { stage: 'download-model', ...p }));
+        resolvedModelPath = await downloadModelToDataDir((p) => emitSSE('progress', { stage: 'download-model', ...p }), abortController.signal);
       } catch (e) {
         return send({ ok: false, stage: 'download-model', error: e.message });
       }
 
       // 6. Smoke test
+      if (aborted) return;
       emitStage('smoke-test', 'Running smoke test…');
       const smokeOk = await smokeTestWhisper(whisperBinPath);
       if (!smokeOk) {
         return send({ ok: false, stage: 'smoke-test', error: 'whisper-cli failed smoke test (--help returned non-zero or timed out).' });
       }
 
+      if (aborted) return;
       emitStage('write-config', 'Writing voice config…');
       writeVoiceConfig(whisperBinPath, resolvedModelPath);
       console.log(`  [voice-install] done. binary=${whisperBinPath} model=${resolvedModelPath}`);
@@ -2091,6 +2249,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/general/save') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     const existing = readConfig();
     const next = { ...existing };
@@ -2133,6 +2296,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/md/project') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const body = await readBody(req);
     const cwd = String(body?.path || '').trim();
     const content = String(body?.content ?? '');
@@ -2211,6 +2379,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/md/role') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const body = await readBody(req);
     const name = String(body?.name || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
     const description = String(body?.description ?? '').trim();
@@ -2266,6 +2439,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/workflow/save') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const data = await readBody(req);
     writeUserWorkflow(data);
     console.log('  Config saved: user-workflow');
@@ -2281,6 +2459,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/workflow/md') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     let body = '';
     await new Promise((resolve, reject) => {
       req.on('data', c => { body += c; });
@@ -2332,7 +2515,7 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => { // loopback-only: local config UI; never expose to LAN
   console.log(`\n  MIXDOG CONFIG`);
   console.log(`  http://localhost:${PORT}\n`);
   if (process.env.MIXDOG_SETUP_OPEN_ON_START === '1') {

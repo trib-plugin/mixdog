@@ -4,6 +4,23 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.14] - Unreleased
+
+### Security / Reliability
+
+- **C1 — Loopback bind**: `server.listen` now binds to `127.0.0.1` only; the config UI is never reachable from the LAN.
+- **C2 — Origin/Referer guard**: added `isAllowedOrigin(req)` helper that allows direct curl/native clients (no Origin header) and rejects browser cross-origin requests not matching `http://(localhost|127.0.0.1):3458`. Returns `403 { ok: false, error: 'forbidden: cross-origin' }`. Applied to all mutating routes: `POST /config`, `POST /modules`, `POST /capabilities`, `POST /schedules`, `POST /webhooks`, `POST /agent/config`, `POST /agent/presets`, `POST /agent/maintenance`, `POST /agent/validate`, `POST /agent/learning`, `POST /memory/config`, `POST /memory/presets`, `POST /memory/backfill`, `POST /memory/delete`, `POST /memory/validate`, `POST /search/config`, `POST /search/validate`, `POST /install`, `POST /install/voice` + `GET /install/voice?stream=1`, `POST /api/memory/entries`, `POST /api/memory/entries/:id/status`, `POST /general/save`, `POST /md/project`, `POST /md/role`, `POST /workflow/save`, `POST /workflow/md`.
+- **H3/H4 — Download integrity + .part pattern**: `downloadFile` now writes to `destPath + '.part'` and renames to `destPath` on success. Captures `content-length` as `expectedTotal`; on finish, if `bytesWritten !== expectedTotal` the `.part` file is deleted and the promise rejects with a truncation error. On any stream/socket/HTTP error the `.part` file is cleaned up. Added `unlinkSync`/`statSync` to named imports.
+- **H3 — Model idempotency threshold**: `downloadModelToDataDir` threshold changed from `> 100 MB` to `>= 1.4 GB` (catches truncated re-runs of the ~1.5 GB turbo model). Added `// TODO: pin sha256 when upstream publishes` comment.
+- **H5 — Abort on disconnect**: `/install/voice` handler sets up an `AbortController`; on `req.close` (while response still open) sets `aborted = true` and calls `abortController.abort()`. The signal is threaded into `downloadFile` (cleans up `.part` on abort) and `downloadModelToDataDir`. All `emitSSE`/`emitStage` calls are no-ops when `aborted`. `if (aborted) return` guards added before each long-running stage (downloads, builds, smoke test).
+- **H6 — First-boot flag timing**: in `hooks/session-start.cjs`, the `.first-boot-seen` flag write is now moved to after the ngrok and git-hook spawn blocks, so the flag is only written once the spawns have been issued rather than before them.
+- **H7 — PowerShell array-form spawn**: `Expand-Archive` call replaced with `spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive', '-Force', '-Path', archivePath, '-DestinationPath', binDir])` with `status !== 0` check. No more shell interpolation of archive path.
+- **M8 — Array-form git/cmake on Linux**: `execSync` string-interpolated commands replaced with `spawnSync` array form for `git clone`, `cmake -B build`, and `cmake --build build`. Includes status-check error returns.
+- **M9 — Validate tag_name**: after resolving the Purfview GitHub release `tag_name`, validates it matches `/^[\w.\-]+$/` and throws (falling back to `FALLBACK_PURFVIEW_TAG`) if it contains unsafe characters.
+
+### Changed
+- `downloadFile` User-Agent bumped to `mixdog/0.1.14`.
+
 ## [0.1.13] - Unreleased
 
 ### Added
