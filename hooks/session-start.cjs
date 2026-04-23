@@ -83,6 +83,35 @@ function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
 }
 
+function ensurePromptInjectionConfig() {
+  const cfgPath = path.join(DATA_DIR, 'config.json');
+  if (fs.existsSync(cfgPath)) return;
+  try {
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      promptInjection: {
+        mode: 'claude_md',
+        targetPath: '~/.claude/CLAUDE.md',
+      },
+    }, null, 2) + '\n');
+  } catch (e) {
+    process.stderr.write(`[session-start] config seed failed: ${e.message}\n`);
+  }
+}
+
+function hasManagedClaudeMdBlock(targetPath) {
+  if (!targetPath) return false;
+  try {
+    const { expandHome, MARKER_START, MARKER_END } = require(path.join(PLUGIN_ROOT, 'lib', 'claude-md-writer.cjs'));
+    const resolved = expandHome(targetPath);
+    if (!resolved || !fs.existsSync(resolved)) return false;
+    const content = fs.readFileSync(resolved, 'utf8');
+    return content.includes(MARKER_START) && content.includes(MARKER_END);
+  } catch {
+    return false;
+  }
+}
+
 // statusLine launch strategy.
 //
 // Claude Code spawns statusLine commands through a shell — bash on macOS/Linux
@@ -287,12 +316,19 @@ function requestLlmRecap(entriesText, timeoutMs) {
 }
 
 (async () => {
+  ensurePromptInjectionConfig();
+
   const mainConfig = readJson(path.join(DATA_DIR, 'config.json'));
-  const claudeMdMode = mainConfig.promptInjection && mainConfig.promptInjection.mode === 'claude_md';
+  const injection = mainConfig && typeof mainConfig.promptInjection === 'object' ? mainConfig.promptInjection : {};
+  const claudeMdMode = injection.mode === 'claude_md';
+  const claudeMdTargetPath = typeof injection.targetPath === 'string' && injection.targetPath
+    ? injection.targetPath
+    : '~/.claude/CLAUDE.md';
+  const needsBootstrapInjection = claudeMdMode && !hasManagedClaudeMdBlock(claudeMdTargetPath);
 
   let additionalContext = '';
 
-  if (!claudeMdMode) {
+  if (!claudeMdMode || needsBootstrapInjection) {
     try {
       const { buildInjectionContent } = require(path.join(PLUGIN_ROOT, 'lib', 'rules-builder.cjs'));
       additionalContext = buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) || '';

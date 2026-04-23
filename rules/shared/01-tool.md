@@ -24,8 +24,11 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 
 **Information-retrieval tools are top priority. Always prefer `recall` / `search` / `explore` (and `read` / `glob` / `list` / `grep` for known-path / pattern work) over `bash` for any lookup. Using `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup is a rule violation — `bash` is shell-only work (git, build, test, run).**
 
-- **Order when unsure: recall → search → explore → grep+read. This order is mandatory, not a suggestion. Skip a step only when you already know which tool the query belongs to.**
+**Goal: avoid doing lookup work manually in the main session when the delegated retrieval path fits. Prefer `recall` / `search` / `explore` first; use lower-level file tools only when the scope is already known or the retrieval tool does not fit the question.**
+
+- **When unsure, choose by scope first. This is mandatory, not a suggestion.**
 - Past context → `recall`. External web / URL / GitHub → `search`. Local filesystem → `explore`.
+- Do not route a clearly local codebase question through `recall` or `search` before `explore`.
 - Known path → `read` directly. Unknown location → `grep` / `glob` first, then targeted `read`.
 - Code structure (imports, dependents, symbols, references, callers): `code_graph` before raw `grep`.
 - In the main/public tool surface, prefer the direct aliases when available:

@@ -16,6 +16,16 @@ import { DEFAULT_PRESETS, DEFAULT_MAINTENANCE } from '../agent/orchestrator/conf
 // ANTHROPIC_DEFAULT_*_MODEL overrides at load time) resolves at seed time,
 // not at module-import time.
 const SEEDS = {
+    // Main config — seed prompt injection to CLAUDE.md so lead-session
+    // rules land in the strongest path on first boot instead of silently
+    // falling back to SessionStart-hook-only injection.
+    'config.json': () => JSON.stringify({
+        promptInjection: {
+            mode: 'claude_md',
+            targetPath: '~/.claude/CLAUDE.md',
+        },
+    }, null, 2) + '\n',
+
     'memory-config.json': () => JSON.stringify({
         enabled: true,
         user: { name: '', title: '' },

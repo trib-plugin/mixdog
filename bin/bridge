@@ -10,12 +10,16 @@
 //   bridge <role> -             Read prompt from stdin
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 import { request } from 'http';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const { resolvePluginData } = require('../lib/plugin-paths.cjs');
 
 const STORE_PATH = join(
-  process.env.CLAUDE_PLUGIN_DATA || join(process.env.HOME || process.env.USERPROFILE, '.claude', 'plugins', 'data', 'mixdog-mixdog'),
+  resolvePluginData(),
   'prompt-store.json'
 );
 
@@ -25,7 +29,7 @@ function load() {
 }
 
 function save(store) {
-  mkdirSync(join(STORE_PATH, '..'), { recursive: true });
+  mkdirSync(dirname(STORE_PATH), { recursive: true });
   writeFileSync(STORE_PATH, JSON.stringify(store, null, 2) + '\n', 'utf-8');
 }
 

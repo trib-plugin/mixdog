@@ -25,6 +25,7 @@ import { homedir } from 'os'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import { resolvePluginData } from './src/shared/plugin-paths.mjs'
+import { ensureDataSeeds } from './src/shared/seed.mjs'
 
 // ── Environment ──────────────────────────────────────────────────────
 // Claude Code normally injects CLAUDE_PLUGIN_ROOT / CLAUDE_PLUGIN_DATA
@@ -33,6 +34,7 @@ import { resolvePluginData } from './src/shared/plugin-paths.mjs'
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || process.cwd()
 const PLUGIN_DATA = resolvePluginData()
 mkdirSync(PLUGIN_DATA, { recursive: true })
+try { ensureDataSeeds(PLUGIN_DATA) } catch {}
 
 // ── Singleton lock ──────────────────────────────────────────────────
 // Prevents two server.mjs instances (e.g. marketplaces/ path vs cache/

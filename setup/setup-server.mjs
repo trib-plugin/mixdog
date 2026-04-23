@@ -53,11 +53,40 @@ const DEFAULT_USER_WORKFLOW = {
   ],
 };
 
-const DEFAULT_USER_WORKFLOW_MD = `Default role assignment:
-- Implementation → worker
-- Verification → reviewer
-- Debugging → debugger
-- Testing → tester
+const DEFAULT_USER_WORKFLOW_MD = `# User Workflow
+
+## Workflow Control
+
+- Workflow phases are Plan → Execute → Verify → Ship → Retro.
+- Moving to the next phase requires explicit user approval.
+- Once a phase is approved, ordinary actions inside that phase may proceed without repeated approval.
+- Destructive, irreversible, build, deploy, push, or similarly high-risk actions still require explicit approval.
+
+## Working Principle
+
+- The main session is primarily for orchestration, not for doing the work manually when a delegated path fits.
+- Prefer delegated retrieval through \`explore\`, \`search\`, and \`recall\`.
+- Prefer delegated execution through \`bridge\` using the role policy in \`user-workflow.json\`.
+
+## Role Policy
+
+- Prefer delegated paths over doing the work manually in the main session.
+- For retrieval, prefer \`explore\`, \`search\`, and \`recall\`.
+- For work, invoking an agent through \`bridge\` with a role from \`user-workflow.json\` is the default priority.
+- Follow the role policy defined in \`user-workflow.json\`.
+- When the scope is broad or the work splits cleanly, spawning multiple role-matched agents in parallel is allowed.
+- Default role usage:
+  - \`worker\` handles actual implementation work and routine state-changing execution.
+  - \`reviewer\` handles verification and code review.
+  - \`debugger\` handles debugging and root-cause investigation.
+  - \`tester\` handles the test phase, test execution, and runtime validation.
+
+## Retrieval Priority
+
+- Local codebase / file / config lookup → \`explore\` first.
+- Past session / memory lookup → \`recall\` first.
+- External web / docs / GitHub lookup → \`search\` first.
+- Use lower-level manual lookup only when the retrieval path clearly does not fit or the scope is already narrowed.
 `;
 
 // -- Memory paths --

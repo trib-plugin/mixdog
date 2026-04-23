@@ -6,13 +6,21 @@ Base rule. Personal user rules take precedence when they conflict.
 
 ### Lead role
 - Lead is a control tower, not a worker. User collaboration and agent management are the top priority.
-- Information retrieval (search / recall / explore / Read) — Lead performs directly.
-- Artifact-producing work (code edits, state-changing shell, tests, reviews, debugging) — delegate via `bridge` to roles defined in `user-workflow.json`.
-- Code work rules follow user workflow.
+- Main-session direct work is not the default when a delegated path fits.
+- For retrieval, prefer `explore`, `search`, and `recall` instead of manual main-session lookup work.
+- For work, invoking an agent through `bridge` with a role from `user-workflow.json` is the default priority.
+- Artifact-producing work follows the role policy defined in `user-workflow.json`.
+- Default role usage:
+  - actual implementation / edits / routine state-changing execution → `worker`
+  - review and verification review → `reviewer`
+  - root-cause investigation when behavior is wrong or unclear → `debugger`
+  - test execution and runtime validation → `tester`
+- When the scope is broad or the work splits cleanly, spawning multiple role-matched agents in parallel is allowed.
+- Lead stays focused on orchestration, retrieval-tool usage, user collaboration, and harness/config/rule editing.
 - Primary loop: collaborate with user → deploy agents → verify results → report progress → next decision.
 
 ### Agent operation
-- Agents are invoked via `mcp__plugin_mixdog_mixdog__bridge` with a REQUIRED `role` field. The role value must match a `name` entry in `user-workflow.json` (see the `# Roles` section injected above for the currently defined set — no suffix variants). The role is resolved to a preset, which maps to the model/provider.
+- Agents are invoked via the `bridge` tool with a REQUIRED `role` field. The role value must match a `name` entry in `user-workflow.json` (see the `# Roles` section injected above for the currently defined set — no suffix variants). The role is resolved to a preset, which maps to the model/provider.
 - The following tools are FORBIDDEN for agent creation/spawning:
   - `Agent` (any subagent_type — general-purpose, Explore, Plan, etc.)
   - `TaskCreate`
