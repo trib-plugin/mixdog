@@ -4,6 +4,15 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.25] - Unreleased
+
+### Changed
+
+- **StatusLine line 1 redesign** — `bin/statusline.sh` now renders line 1 from stdin-JSON fields only (no dependency on the setup-server endpoint): `Model · EFFORT │ $cost │ Context Window ▓░░ 12% │ 5H 15% │ 7D 8% │ Reset HH:MM`. Separator changed from ` · ` to ` │ ` (U+2502). Labels moved to Title Case (`Context Window`, `5H`, `7D`, `Reset`). Context window usage gained a progress bar (10 cells wide, 6 cells medium, percentage-only narrow) with at-least-one-cell guarantee for non-zero values. Model name is family-only (`Opus`) below the wide breakpoint. Block reset time derived from `rate_limits.five_hour.resets_at` via `date -d @ts` / `date -r ts` / `awk strftime` fallback.
+- **Effort indicator** — reads `CLAUDE_CODE_EFFORT_LEVEL` env var first, then falls back to `.effortLevel` in `~/.claude/settings.json` (via `jq`). Rendered uppercase next to the model name when present; silently omitted otherwise.
+- **StatusLine line 2 moved to bridge-only** — all incoming/event segments (`Running`, `Last`, `Jobs`, `Next`, `Scheduled`, `Unread`, `Tunnel`, `Recall`) now live exclusively on line 2 and source from the setup-server `/bridge/status` endpoint. When the endpoint is unreachable (setup-server not running) line 2 collapses to empty and is not emitted, so Claude Code does not render a blank second row. Previously the `Idle` sessions pseudo-segment caused line 2 to always render.
+- **`statusLine` auto-injection now sets `refreshInterval: 2`** — `hooks/session-start.cjs` writes `refreshInterval: 2` alongside `command` so the statusline re-runs every 2 seconds independent of assistant-message events. Fixes the case where bridge-driven line 2 segments (running agents, schedule next, unread) go stale while the main session is idle waiting on background work. Docs: [Customize your status line — refreshInterval](https://code.claude.com/docs/en/statusline).
+
 ## [0.1.24] - Unreleased
 
 ### Added

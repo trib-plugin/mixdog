@@ -93,15 +93,22 @@ function injectStatusLine(pluginRoot) {
 
     const scriptPath = path.join(pluginRoot, 'bin', 'statusline.sh').replace(/\\/g, '/');
     const desiredCommand = `bash "${scriptPath}"`;
+    const desiredRefreshInterval = 2;
     const existing = settings.statusLine;
     const isOurs = existing && typeof existing === 'object' && existing.source === 'mixdog-auto';
 
     if (existing && !isOurs) return;
-    if (isOurs && existing.command === desiredCommand && existing.type === 'command') return;
+    if (
+      isOurs
+      && existing.command === desiredCommand
+      && existing.type === 'command'
+      && existing.refreshInterval === desiredRefreshInterval
+    ) return;
 
     settings.statusLine = {
       type: 'command',
       command: desiredCommand,
+      refreshInterval: desiredRefreshInterval,
       source: 'mixdog-auto',
     };
 

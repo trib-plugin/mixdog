@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# mixdog statusline wrapper — v0.1.19
-# Combines Claude Code stdin JSON (cost, model) with mixdog /bridge/status.
-# Outputs two lines: runtime (line 1) and incoming (line 2).
-# Width-responsive: >=120 wide, 80-119 medium, <80 narrow.
-# Graceful degradation: missing jq, unreachable endpoint, or missing stdin.
+# mixdog statusline wrapper — v0.1.25
+# Line 1 (runtime): model + effort, cost, context window bar, 5h / 7d rate limit, block reset time.
+# Line 2 (incoming, from setup-server /bridge/status): sessions, last completed, jobs, schedule, discord, ngrok, recall.
+# Width-responsive: >=120 wide, 80-119 medium, <80 narrow. Graceful degradation on missing jq, unreachable endpoint, or missing stdin.
 
 set -euo pipefail 2>/dev/null || true   # best-effort; some POSIX shells vary
 
@@ -29,28 +28,39 @@ fi
 CC_COST=""
 CC_MODEL=""
 CC_CTX_USED=""
-CC_RL_5H=""    # rate_limits.five_hour.used_percentage
-CC_RL_7D=""    # rate_limits.seven_day.used_percentage
+CC_RL_5H=""       # rate_limits.five_hour.used_percentage
+CC_RL_7D=""       # rate_limits.seven_day.used_percentage
+CC_RL_5H_RESET="" # rate_limits.five_hour.resets_at (unix epoch seconds)
 
 if [ -n "$CC_JSON" ]; then
   HAS_JQ=0
   command -v jq >/dev/null 2>&1 && HAS_JQ=1
 
   if [ "$HAS_JQ" -eq 1 ]; then
-    CC_COST="$(printf '%s' "$CC_JSON"   | jq -r '.cost.total_cost_usd // empty' 2>/dev/null || true)"
-    CC_MODEL="$(printf '%s' "$CC_JSON"  | jq -r '.model.display_name // empty' 2>/dev/null || true)"
-    CC_CTX_USED="$(printf '%s' "$CC_JSON" | jq -r '.context_window.used_percentage // empty' 2>/dev/null || true)"
-    CC_RL_5H="$(printf '%s' "$CC_JSON"  | jq -r '.rate_limits.five_hour.used_percentage // empty' 2>/dev/null || true)"
-    CC_RL_7D="$(printf '%s' "$CC_JSON"  | jq -r '.rate_limits.seven_day.used_percentage // empty' 2>/dev/null || true)"
+    CC_COST="$(printf '%s' "$CC_JSON"       | jq -r '.cost.total_cost_usd // empty' 2>/dev/null || true)"
+    CC_MODEL="$(printf '%s' "$CC_JSON"      | jq -r '.model.display_name // empty' 2>/dev/null || true)"
+    CC_CTX_USED="$(printf '%s' "$CC_JSON"   | jq -r '.context_window.used_percentage // empty' 2>/dev/null || true)"
+    CC_RL_5H="$(printf '%s' "$CC_JSON"      | jq -r '.rate_limits.five_hour.used_percentage // empty' 2>/dev/null || true)"
+    CC_RL_7D="$(printf '%s' "$CC_JSON"      | jq -r '.rate_limits.seven_day.used_percentage // empty' 2>/dev/null || true)"
+    CC_RL_5H_RESET="$(printf '%s' "$CC_JSON" | jq -r '.rate_limits.five_hour.resets_at // empty' 2>/dev/null || true)"
   else
     # Fallback: minimal grep/sed extraction (no arrays, simple flat keys)
-    CC_COST="$(printf '%s' "$CC_JSON"   | grep -o '"total_cost_usd"[ ]*:[ ]*[0-9.]*' | grep -o '[0-9.]*$' | head -1 || true)"
-    CC_MODEL="$(printf '%s' "$CC_JSON"  | grep -o '"display_name"[ ]*:[ ]*"[^"]*"' | sed 's/.*:[ ]*"\([^"]*\)"/\1/' | head -1 || true)"
-    CC_CTX_USED="$(printf '%s' "$CC_JSON" | grep -o '"used_percentage"[ ]*:[ ]*[0-9.]*' | grep -o '[0-9.]*$' | head -1 || true)"
+    CC_COST="$(printf '%s' "$CC_JSON"      | grep -o '"total_cost_usd"[ ]*:[ ]*[0-9.]*' | grep -o '[0-9.]*$' | head -1 || true)"
+    CC_MODEL="$(printf '%s' "$CC_JSON"     | grep -o '"display_name"[ ]*:[ ]*"[^"]*"' | sed 's/.*:[ ]*"\([^"]*\)"/\1/' | head -1 || true)"
+    CC_CTX_USED="$(printf '%s' "$CC_JSON"  | grep -o '"used_percentage"[ ]*:[ ]*[0-9.]*' | grep -o '[0-9.]*$' | head -1 || true)"
     # rate_limits extraction: look for five_hour / seven_day blocks (grep/sed approximation)
-    CC_RL_5H="$(printf '%s' "$CC_JSON"  | grep -o '"five_hour"[^}]*"used_percentage"[ ]*:[ ]*[0-9.]*' | grep -o '[0-9.]*$' | head -1 || true)"
-    CC_RL_7D="$(printf '%s' "$CC_JSON"  | grep -o '"seven_day"[^}]*"used_percentage"[ ]*:[ ]*[0-9.]*' | grep -o '[0-9.]*$' | head -1 || true)"
+    CC_RL_5H="$(printf '%s' "$CC_JSON"     | grep -o '"five_hour"[^}]*"used_percentage"[ ]*:[ ]*[0-9.]*' | grep -o '[0-9.]*$' | head -1 || true)"
+    CC_RL_7D="$(printf '%s' "$CC_JSON"     | grep -o '"seven_day"[^}]*"used_percentage"[ ]*:[ ]*[0-9.]*' | grep -o '[0-9.]*$' | head -1 || true)"
+    CC_RL_5H_RESET="$(printf '%s' "$CC_JSON" | grep -o '"five_hour"[^}]*"resets_at"[ ]*:[ ]*[0-9]*' | grep -o '[0-9]*$' | head -1 || true)"
   fi
+fi
+
+# ── Extract effort level from ~/.claude/settings.json ────────────────────────
+CC_EFFORT=""
+if [ -n "${CLAUDE_CODE_EFFORT_LEVEL:-}" ]; then
+  CC_EFFORT="$CLAUDE_CODE_EFFORT_LEVEL"
+elif command -v jq >/dev/null 2>&1 && [ -r "$HOME/.claude/settings.json" ]; then
+  CC_EFFORT="$(jq -r '.effortLevel // empty' "$HOME/.claude/settings.json" 2>/dev/null || true)"
 fi
 
 # ── Fetch mixdog /bridge/status ──────────────────────────────────────────────
@@ -134,12 +144,11 @@ if [ -n "$CC_RL_7D" ]; then
   case "$RL_7D_INT" in ''|*[!0-9]*) RL_7D_INT="" ;; esac
 fi
 
-# ── Format cost ──────────────────────────────────────────────────────────────
+# ── Format helpers ───────────────────────────────────────────────────────────
 fmt_cost() {
   # $1 = raw float from jq/grep; outputs "$X.XX" or ""
   local v="$1"
   [ -z "$v" ] && return
-  # Use awk for portable float formatting
   printf '%.2f' "$v" 2>/dev/null | awk '{printf "$%s", $0}'
 }
 COST_STR=""
@@ -147,141 +156,162 @@ if [ -n "$CC_COST" ]; then
   COST_STR="$(fmt_cost "$CC_COST")"
 fi
 
-# ── Assemble segments ────────────────────────────────────────────────────────
-# Line 1 segments: sessions, last-completed, jobs, cost, rate_limit_5h (wide: +7d)
-# Line 2 segments: schedule-next, schedule-roster, discord-unread, ngrok, recall, 7d (wide)
+# Short model name: keep only the family word ("Opus", "Sonnet", "Haiku") + trailing version.
+# Falls back to the raw display_name if no match.
+fmt_model_short() {
+  local m="$1"
+  [ -z "$m" ] && return
+  case "$m" in
+    *Opus*)   printf 'Opus%s'   "$(printf '%s' "$m"   | sed -n 's/.*Opus\(.*\)/\1/p')"   ;;
+    *Sonnet*) printf 'Sonnet%s' "$(printf '%s' "$m"   | sed -n 's/.*Sonnet\(.*\)/\1/p')" ;;
+    *Haiku*)  printf 'Haiku%s'  "$(printf '%s' "$m"   | sed -n 's/.*Haiku\(.*\)/\1/p')"  ;;
+    *)        printf '%s' "$m" ;;
+  esac
+}
+MODEL_STR="$(fmt_model_short "$CC_MODEL")"
 
-# -- sessions segment --
-seg_sessions_wide() {
-  if [ "$B_SESS_ACTIVE" -gt 0 ] && [ -n "$B_SESS_ROLES" ]; then
-    printf '⚙ %s running (%s)' "$B_SESS_ACTIVE" "$B_SESS_ROLES"
-  elif [ "$B_SESS_ACTIVE" -gt 0 ]; then
-    printf '⚙ %s running' "$B_SESS_ACTIVE"
+# Effort: upper-case, e.g. "XHIGH", "HIGH", "MEDIUM"
+EFFORT_STR=""
+if [ -n "$CC_EFFORT" ]; then
+  EFFORT_STR="$(printf '%s' "$CC_EFFORT" | tr '[:lower:]' '[:upper:]')"
+fi
+
+# Context window integer %
+CTX_INT=""
+if [ -n "$CC_CTX_USED" ]; then
+  CTX_INT="$(printf '%s' "$CC_CTX_USED" | awk '{printf "%d", $1+0.5}' 2>/dev/null || true)"
+  case "$CTX_INT" in ''|*[!0-9]*) CTX_INT="" ;; esac
+fi
+
+# Progress bar for context: $1 = pct 0..100, $2 = total cells
+fmt_bar() {
+  local pct="$1" cells="$2" filled i out=""
+  [ -z "$pct" ] && return
+  [ "$cells" -le 0 ] 2>/dev/null && return
+  filled=$(( pct * cells / 100 ))
+  [ "$filled" -lt 0 ] && filled=0
+  [ "$filled" -gt "$cells" ] && filled="$cells"
+  # Ensure any non-zero percentage shows at least one filled cell
+  if [ "$pct" -gt 0 ] && [ "$filled" -eq 0 ]; then filled=1; fi
+  i=0
+  while [ "$i" -lt "$filled" ]; do out="${out}▓"; i=$((i+1)); done
+  while [ "$i" -lt "$cells" ]; do out="${out}░"; i=$((i+1)); done
+  printf '%s' "$out"
+}
+
+# Reset time formatter: unix epoch seconds → "HH:MM" local time. Empty if unparseable.
+fmt_reset_hhmm() {
+  local v="$1"
+  [ -z "$v" ] && return
+  case "$v" in ''|*[!0-9]*) return ;; esac
+  # Try GNU date first, then BSD date, then awk+strftime
+  date -d "@$v" '+%H:%M' 2>/dev/null && return
+  date -r "$v" '+%H:%M' 2>/dev/null && return
+  awk -v t="$v" 'BEGIN { print strftime("%H:%M", t) }' 2>/dev/null
+}
+RESET_STR="$(fmt_reset_hhmm "$CC_RL_5H_RESET")"
+
+# Rate limit percentages (integer)
+RL_5H_INT=""
+RL_7D_INT=""
+if [ -n "$CC_RL_5H" ]; then
+  RL_5H_INT="$(printf '%s' "$CC_RL_5H" | awk '{printf "%d", $1+0.5}' 2>/dev/null || true)"
+  case "$RL_5H_INT" in ''|*[!0-9]*) RL_5H_INT="" ;; esac
+fi
+if [ -n "$CC_RL_7D" ]; then
+  RL_7D_INT="$(printf '%s' "$CC_RL_7D" | awk '{printf "%d", $1+0.5}' 2>/dev/null || true)"
+  case "$RL_7D_INT" in ''|*[!0-9]*) RL_7D_INT="" ;; esac
+fi
+
+# ── L1 segments (stdin-JSON only) ────────────────────────────────────────────
+# Model + Effort
+seg_model_full() {
+  [ -z "$MODEL_STR" ] && return
+  if [ -n "$EFFORT_STR" ]; then
+    printf '%s · %s' "$MODEL_STR" "$EFFORT_STR"
   else
-    printf '⚙ idle'
+    printf '%s' "$MODEL_STR"
   fi
 }
-seg_sessions_med() {
-  if [ "$B_SESS_ACTIVE" -gt 0 ] && [ -n "$B_SESS_ROLES" ]; then
-    printf '⚙ %s (%s)' "$B_SESS_ACTIVE" "$B_SESS_ROLES"
-  elif [ "$B_SESS_ACTIVE" -gt 0 ]; then
-    printf '⚙ %s' "$B_SESS_ACTIVE"
+seg_model_short() {
+  [ -z "$MODEL_STR" ] && return
+  local m="${MODEL_STR%% *}"   # first word only
+  if [ -n "$EFFORT_STR" ]; then
+    printf '%s · %s' "$m" "$EFFORT_STR"
   else
-    printf '⚙ idle'
-  fi
-}
-seg_sessions_nar() {
-  if [ "$B_SESS_ACTIVE" -gt 0 ]; then
-    printf '⚙ %s running' "$B_SESS_ACTIVE"
-  else
-    printf '⚙ idle'
+    printf '%s' "$m"
   fi
 }
 
-# -- last completed --
-seg_last_wide() {
+# Cost
+seg_cost_l1() { [ -n "$COST_STR" ] && printf '%s' "$COST_STR"; }
+
+# Context Window (with bar on wide/med, percentage-only on narrow)
+seg_ctx_wide() {
+  [ -z "$CTX_INT" ] && return
+  local bar; bar="$(fmt_bar "$CTX_INT" 10)"
+  printf 'Context Window %s %s%%' "$bar" "$CTX_INT"
+}
+seg_ctx_med() {
+  [ -z "$CTX_INT" ] && return
+  local bar; bar="$(fmt_bar "$CTX_INT" 6)"
+  printf 'Context Window %s %s%%' "$bar" "$CTX_INT"
+}
+seg_ctx_nar() {
+  [ -z "$CTX_INT" ] && return
+  printf 'Context %s%%' "$CTX_INT"
+}
+
+# 5H / 7D rate limits
+seg_rl5h_l1() { [ -n "$RL_5H_INT" ] && printf '5H %s%%' "$RL_5H_INT"; }
+seg_rl7d_l1() { [ -n "$RL_7D_INT" ] && printf '7D %s%%' "$RL_7D_INT"; }
+
+# Reset time
+seg_reset_l1() { [ -n "$RESET_STR" ] && printf 'Reset %s' "$RESET_STR"; }
+
+# ── L2 segments (bridge endpoint only) ───────────────────────────────────────
+seg_sessions_l2() {
+  if [ "$B_SESS_ACTIVE" -gt 0 ] && [ -n "$B_SESS_ROLES" ]; then
+    printf '%s Running (%s)' "$B_SESS_ACTIVE" "$B_SESS_ROLES"
+  elif [ "$B_SESS_ACTIVE" -gt 0 ]; then
+    printf '%s Running' "$B_SESS_ACTIVE"
+  else
+    printf 'Idle'
+  fi
+}
+seg_last_l2() {
   [ -z "$B_LAST_ROLE" ] && return
   local ago="${B_LAST_AGO:-0}"
   local timestr
   if [ "$ago" -le 0 ] 2>/dev/null; then timestr="just now"; else timestr="${ago}m"; fi
-  printf '✓ %s %s' "$B_LAST_ROLE" "$timestr"
+  printf 'Last %s %s' "$B_LAST_ROLE" "$timestr"
 }
-seg_last_med() { seg_last_wide; }  # same for medium
-seg_last_nar() { :; }              # omit in narrow
-
-# -- jobs --
-seg_jobs_wide() {
-  [ "$B_JOBS" -gt 0 ] && printf '🔧 %s jobs' "$B_JOBS"
-}
-seg_jobs_med() {
-  [ "$B_JOBS" -gt 0 ] && printf '🔧 %s' "$B_JOBS"
-}
-seg_jobs_nar() {
-  [ "$B_JOBS" -gt 0 ] && printf '🔧 %s' "$B_JOBS"
-}
-
-# -- cost --
-seg_cost_wide() { [ -n "$COST_STR" ] && printf '🪙 %s/d' "$COST_STR"; }
-seg_cost_med()  { [ -n "$COST_STR" ] && printf '🪙 %s'   "$COST_STR"; }
-seg_cost_nar()  { [ -n "$COST_STR" ] && printf '🪙 %s'   "$COST_STR"; }
-
-# -- schedule next --
-seg_sched_next_wide() {
+seg_jobs_l2()    { [ "$B_JOBS"   -gt 0 ] && printf '%s Jobs'   "$B_JOBS"; }
+seg_recall_l2()  { [ "$B_RECALL" -gt 0 ] && printf '%s Recall' "$B_RECALL"; }
+seg_ngrok_l2()   { [ "$B_NGROK"  -eq 1 ] && printf 'Tunnel'; }
+seg_sched_l2() {
   [ -z "$B_SCHED_NEXT_TIME" ] && return
-  local name="$B_SCHED_NEXT_NAME"
-  # Truncate name to 15 chars for wide
-  name="${name:0:15}"
-  printf '⏰ %s %s' "$B_SCHED_NEXT_TIME" "$name"
-}
-seg_sched_next_med() {
-  [ -z "$B_SCHED_NEXT_TIME" ] && return
-  local name="$B_SCHED_NEXT_NAME"
-  # Truncate name to 8 chars for medium (first word)
-  name="${name%% *}"
-  name="${name:0:8}"
-  printf '⏰ %s %s' "$B_SCHED_NEXT_TIME" "$name"
-}
-seg_sched_next_nar() {
-  [ -z "$B_SCHED_NEXT_TIME" ] && return
-  printf '⏰ %s' "$B_SCHED_NEXT_TIME"
-}
-
-# -- schedule roster --
-seg_roster_wide() {
-  [ "$B_SCHED_ACTIVE" -eq 0 ] && return
-  if [ "$B_SCHED_DEFERRED" -gt 0 ]; then
-    printf '📋 %s/%sdef' "$B_SCHED_ACTIVE" "$B_SCHED_DEFERRED"
+  local name="${B_SCHED_NEXT_NAME:0:15}"
+  if [ -n "$name" ]; then
+    printf 'Next %s %s' "$B_SCHED_NEXT_TIME" "$name"
   else
-    printf '📋 %s' "$B_SCHED_ACTIVE"
+    printf 'Next %s' "$B_SCHED_NEXT_TIME"
   fi
 }
-seg_roster_med() {
+seg_roster_l2() {
   [ "$B_SCHED_ACTIVE" -eq 0 ] && return
-  printf '📋 %s' "$B_SCHED_ACTIVE"
+  if [ "$B_SCHED_DEFERRED" -gt 0 ]; then
+    printf '%s Scheduled (%s def)' "$B_SCHED_ACTIVE" "$B_SCHED_DEFERRED"
+  else
+    printf '%s Scheduled' "$B_SCHED_ACTIVE"
+  fi
 }
-seg_roster_nar() { :; }   # omit in narrow
-
-# -- ngrok --
-seg_ngrok_wide() { [ "$B_NGROK" -eq 1 ] && printf '🌐 tunnel'; }
-seg_ngrok_med()  { [ "$B_NGROK" -eq 1 ] && printf '🌐'; }
-seg_ngrok_nar()  { :; }
-
-# -- recall --
-seg_recall_wide() {
-  [ "$B_RECALL" -gt 0 ] && printf '🧠 %sr/1h' "$B_RECALL"
-}
-seg_recall_med() {
-  [ "$B_RECALL" -gt 0 ] && printf '🧠 %s' "$B_RECALL"
-}
-seg_recall_nar() {
-  [ "$B_RECALL" -gt 0 ] && printf '🧠 %s' "$B_RECALL"
+seg_discord_l2() {
+  [ -n "$B_DISCORD_UNREAD" ] && [ "$B_DISCORD_UNREAD" -gt 0 ] 2>/dev/null && printf '%s Unread' "$B_DISCORD_UNREAD"
 }
 
-# -- rate limit 5h --
-seg_rl5h_wide() { [ -n "$RL_5H_INT" ] && printf '⏱ %s%%/5h' "$RL_5H_INT"; }
-seg_rl5h_med()  { [ -n "$RL_5H_INT" ] && printf '⏱ %s%%'    "$RL_5H_INT"; }
-seg_rl5h_nar()  {
-  # Only show in narrow if >= 50%
-  [ -n "$RL_5H_INT" ] && [ "$RL_5H_INT" -ge 50 ] 2>/dev/null && printf '⏱ %s%%' "$RL_5H_INT"
-}
-
-# -- rate limit 7d (wide only) --
-seg_rl7d_wide() { [ -n "$RL_7D_INT" ] && printf '📅 %s%%/7d' "$RL_7D_INT"; }
-
-# -- discord unread --
-seg_discord_wide() {
-  [ -n "$B_DISCORD_UNREAD" ] && [ "$B_DISCORD_UNREAD" -gt 0 ] 2>/dev/null && printf '💬 %s unread' "$B_DISCORD_UNREAD"
-}
-seg_discord_med() {
-  [ -n "$B_DISCORD_UNREAD" ] && [ "$B_DISCORD_UNREAD" -gt 0 ] 2>/dev/null && printf '💬 %s' "$B_DISCORD_UNREAD"
-}
-seg_discord_nar() {
-  [ -n "$B_DISCORD_UNREAD" ] && [ "$B_DISCORD_UNREAD" -gt 0 ] 2>/dev/null && printf '💬 %s' "$B_DISCORD_UNREAD"
-}
-
-# ── Build lines ──────────────────────────────────────────────────────────────
-join_dot() {
-  # Join non-empty arguments with ' · '
+# ── Join helpers ─────────────────────────────────────────────────────────────
+join_pipe() {
   local first=1
   local out=""
   for seg in "$@"; do
@@ -290,56 +320,51 @@ join_dot() {
       out="$seg"
       first=0
     else
-      out="$out · $seg"
+      out="$out │ $seg"
     fi
   done
   printf '%s' "$out"
 }
 
+# ── Build lines ──────────────────────────────────────────────────────────────
 if [ "$COLS" -ge 120 ]; then
-  # Wide (>=120)
-  # Line 1: runtime  — sessions · last · jobs · cost · ⏱ 5h
-  # Line 2: incoming — sched · roster · discord · ngrok · recall · 📅 7d
-  L1="$(join_dot \
-    "$(seg_sessions_wide)" \
-    "$(seg_last_wide)" \
-    "$(seg_jobs_wide)" \
-    "$(seg_cost_wide)" \
-    "$(seg_rl5h_wide)")"
-  L2="$(join_dot \
-    "$(seg_sched_next_wide)" \
-    "$(seg_roster_wide)" \
-    "$(seg_discord_wide)" \
-    "$(seg_ngrok_wide)" \
-    "$(seg_recall_wide)" \
-    "$(seg_rl7d_wide)")"
+  L1="$(join_pipe \
+    "$(seg_model_full)" \
+    "$(seg_cost_l1)" \
+    "$(seg_ctx_wide)" \
+    "$(seg_rl5h_l1)" \
+    "$(seg_rl7d_l1)" \
+    "$(seg_reset_l1)")"
 elif [ "$COLS" -ge 80 ]; then
-  # Medium (80-119) — 5h only, no 7d
-  L1="$(join_dot \
-    "$(seg_sessions_med)" \
-    "$(seg_last_med)" \
-    "$(seg_jobs_med)" \
-    "$(seg_cost_med)" \
-    "$(seg_rl5h_med)")"
-  L2="$(join_dot \
-    "$(seg_sched_next_med)" \
-    "$(seg_roster_med)" \
-    "$(seg_discord_med)" \
-    "$(seg_ngrok_med)" \
-    "$(seg_recall_med)")"
+  L1="$(join_pipe \
+    "$(seg_model_short)" \
+    "$(seg_cost_l1)" \
+    "$(seg_ctx_med)" \
+    "$(seg_rl5h_l1)" \
+    "$(seg_reset_l1)")"
 else
-  # Narrow (<80) — 5h only if >=50%
-  L1="$(join_dot \
-    "$(seg_sessions_nar)" \
-    "$(seg_jobs_nar)" \
-    "$(seg_cost_nar)" \
-    "$(seg_rl5h_nar)")"
-  L2="$(join_dot \
-    "$(seg_sched_next_nar)" \
-    "$(seg_discord_nar)" \
-    "$(seg_recall_nar)")"
+  L1="$(join_pipe \
+    "$(seg_model_short)" \
+    "$(seg_cost_l1)" \
+    "$(seg_ctx_nar)" \
+    "$(seg_rl5h_l1)")"
 fi
 
-# Always emit both lines (even if empty — Claude Code renders them stacked)
+L2="$(join_pipe \
+  "$(seg_sessions_l2)" \
+  "$(seg_last_l2)" \
+  "$(seg_jobs_l2)" \
+  "$(seg_sched_l2)" \
+  "$(seg_roster_l2)" \
+  "$(seg_discord_l2)" \
+  "$(seg_ngrok_l2)" \
+  "$(seg_recall_l2)")"
+
+# Drop L2 when only the default "Idle" token would be emitted (no events to show)
+if [ "$L2" = "Idle" ]; then
+  L2=""
+fi
+
+# Always emit line 1; emit line 2 only if non-empty so Claude Code doesn't render an empty row.
 printf '%s\n' "${L1:-mixdog}"
-printf '%s\n' "${L2:-}"
+[ -n "$L2" ] && printf '%s\n' "$L2"
