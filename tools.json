@@ -1689,7 +1689,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Direct imports of a file. Use this instead of `code_graph(mode:\"imports\")` when you already know the file path. Optimized alias for quicker tool selection in the main session.",
+    "description": "Direct imports of a file. Main/public session: first choice for \"what does this file import?\" Use this instead of `code_graph(mode:\"imports\")` when you already know the file path.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1714,7 +1714,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Files that depend on or import the target file. Use this instead of `code_graph(mode:\"dependents\")` when you already know the file path. Optimized alias for quicker tool selection in the main session.",
+    "description": "Files that depend on or import the target file. Main/public session: first choice for \"what depends on this file?\" Use this instead of `code_graph(mode:\"dependents\")` when you already know the file path.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1739,7 +1739,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Find references for a symbol across the repository. Use this instead of `code_graph(mode:\"references\")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required.",
+    "description": "Find references for a symbol across the repository. Main/public session: first choice for \"where is this symbol referenced?\" Use this instead of `code_graph(mode:\"references\")`. Optional `file` can narrow the language/source file, but is no longer required.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1772,7 +1772,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Find caller files for a symbol across the repository. Use this instead of `code_graph(mode:\"callers\")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required.",
+    "description": "Find caller files for a symbol across the repository. Main/public session: first choice for \"who calls this symbol?\" Use this instead of `code_graph(mode:\"callers\")`. Optional `file` can narrow the language/source file, but is no longer required.",
     "inputSchema": {
       "type": "object",
       "properties": {

@@ -708,7 +708,12 @@ function _collectCheapSymbols(text, lang) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     let m = null;
-    if (lang === 'python') {
+    if (lang === 'typescript' || lang === 'javascript') {
+      if ((m = /\b(class|interface|type|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(line))) push(m[1], m[2], i);
+      else if ((m = /\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(line))) push('function', m[1], i);
+      else if ((m = /\b(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(line))) push('binding', m[1], i);
+      else if ((m = /^\s*(?:async\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*\{?$/.exec(line))) push('method', m[1], i);
+    } else if (lang === 'python') {
       if ((m = /^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(line))) push('class', m[1], i);
       else if ((m = /^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(line))) push('function', m[1], i);
     } else if (lang === 'go') {
@@ -727,6 +732,24 @@ function _collectCheapSymbols(text, lang) {
       if ((m = /^\s*class\s+([A-Za-z_][A-Za-z0-9_:]*)/.exec(line))) push('class', m[1], i);
       else if ((m = /^\s*def\s+([A-Za-z_][A-Za-z0-9_!?=]*)/.exec(line))) push('function', m[1], i);
     }
+  }
+  return out;
+}
+
+function _extractExplainerAnchorLines(node, graph, { limit = 6, maxLineChars = 180 } = {}) {
+  const sourceLines = _getSourceTextForNode(graph, node).split(/\r?\n/);
+  const symbols = _collectCheapSymbols(sourceLines.join('\n'), node.lang);
+  const out = [];
+  const seen = new Set();
+  for (const item of symbols) {
+    if (out.length >= limit) break;
+    const idx = item.line - 1;
+    const line = String(sourceLines[idx] || '').trim();
+    if (!line) continue;
+    const key = `${item.name}:${item.line}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(`${item.kind} ${item.name} (L${item.line}): ${line.slice(0, maxLineChars)}`);
   }
   return out;
 }
@@ -1180,6 +1203,29 @@ function _getSourceTextForNode(graph, node, fallbackText = null) {
     text,
   });
   return text;
+}
+
+function _buildExplainerFileSummary(node, graph, cwd) {
+  const topTypes = Array.isArray(node?.topLevelTypes) ? node.topLevelTypes.slice(0, 8) : [];
+  const imports = Array.isArray(node?.resolvedImports) ? node.resolvedImports.map((p) => _graphRel(p, cwd)).slice(0, 8) : [];
+  const tokens = _getTokenSymbolsForNode(graph, node).slice(0, 20);
+  const anchors = _extractExplainerAnchorLines(node, graph);
+  const sourceHead = _getSourceTextForNode(graph, node)
+    .split(/\r?\n/)
+    .slice(0, 6)
+    .join('\n')
+    .trim()
+    .slice(0, 420);
+  const parts = [
+    `file: ${node.rel}`,
+    `language: ${node.lang}`,
+  ];
+  if (topTypes.length) parts.push(`top-level: ${topTypes.join(', ')}`);
+  if (tokens.length) parts.push(`symbols: ${tokens.join(', ')}`);
+  if (imports.length) parts.push(`imports: ${imports.join(', ')}`);
+  if (anchors.length) parts.push(`anchors:\n${anchors.join('\n')}`);
+  if (sourceHead) parts.push(`head:\n${sourceHead}`);
+  return parts.join('\n');
 }
 
 function _getMaskedLinesForNode(graph, node) {
@@ -2227,6 +2273,18 @@ export async function executeCodeGraphTool(name, args, cwd) {
 
 export function isCodeGraphTool(name) {
   return CODE_GRAPH_TOOL_DEFS.some((t) => t.name === name);
+}
+
+export function buildExplainerFileIndex(cwd) {
+  const graph = _buildCodeGraph(cwd);
+  return {
+    signature: graph.signature,
+    items: [...graph.nodes.values()].map((node) => ({
+      filePath: node.rel,
+      language: node.lang,
+      summary: _buildExplainerFileSummary(node, graph, cwd),
+    })),
+  };
 }
 
 export const _internals = {

@@ -30,6 +30,7 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 - Code structure (imports, dependents, symbols, references, callers): `code_graph` before raw `grep`.
 - In the main/public tool surface, prefer the direct aliases when available:
   `find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`.
+- For the main/public session, do not reach for generic `code_graph(mode=...)` if one direct alias exactly matches the question. The alias is the first choice.
 - If you know an identifier / constant / function / class name but not the file, use `find_symbol` before `grep`.
 - Multi-file or already-clear edits: `apply_patch` before repeated `read` → `edit`.
 - Shell work across turns: `bash_session` reuses shell state — don't replay setup in repeated `bash` calls.
@@ -46,6 +47,7 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 - "Who depends on this file?" → `find_dependents`
 - "Who calls this symbol?" → `find_callers`
 - "Where is this symbol referenced?" → `find_references`
+- "Main/public session and the question is exactly imports / dependents / callers / references?" → direct alias FIRST, generic `code_graph` only if the question is broader.
 - Broader structural graph question / impact / mixed graph query → `code_graph`
 - "I know the file already" → `read`
 - "I need 2+ known files" → one `read` call with array `path`
