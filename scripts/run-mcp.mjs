@@ -156,8 +156,8 @@ function legacyInstall() {
   if (hasRequiredDeps(pluginNm)) return;
   const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const args = fs.existsSync(pluginLock)
-    ? ['ci', '--ignore-scripts', '--omit=optional']
-    : ['install', '--ignore-scripts', '--omit=optional'];
+    ? ['ci', '--ignore-scripts']
+    : ['install', '--ignore-scripts'];
   process.stderr.write(`[run-mcp] legacy bootstrap: ${npmCmd} ${args.join(' ')}\n`);
   const result = spawnSync(npmCmd, args, {
     cwd: pluginRoot,
@@ -207,8 +207,8 @@ try {
 
       const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
       const args = fs.existsSync(sharedLock)
-        ? ['ci', '--ignore-scripts', '--omit=optional']
-        : ['install', '--ignore-scripts', '--omit=optional'];
+        ? ['ci', '--ignore-scripts']
+        : ['install', '--ignore-scripts'];
       process.stderr.write(`[run-mcp] installing shared deps: ${npmCmd} ${args.join(' ')}\n`);
 
       const result = spawnSync(npmCmd, args, {

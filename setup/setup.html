@@ -2336,7 +2336,14 @@ async function deleteWebhook(card) {
 
 // -- Advanced --
 async function loadChannelsCliCheck() {
-  try { cliStatus = await fetch('/cli-check').then(r => r.json()); } catch {}
+  try {
+    const data = await fetch('/cli-check').then(r => r.json());
+    cliStatus = data;
+    // Attach voice config paths for the installed-state display.
+    if (data.whisper?.installed && data._voiceCfg) {
+      cliStatus._tribCfgVoice = data._voiceCfg;
+    }
+  } catch {}
 }
 
 function populatePresetDropdowns() {
@@ -2381,16 +2388,64 @@ function renderVoiceSection() {
   const el = document.getElementById('voice-section');
   if (!cliStatus.whisper?.installed) {
     el.innerHTML =
-      '<div class="cli-status warn">' +
-        '<span style="font-size:16px;">&#9888;</span>' +
-        '<div>whisper not found<br>' +
-        '<span style="font-size:11px;color:var(--text-4)">Converts voice messages to text (openai-whisper)</span></div>' +
-        '<button class="save" id="btn-install-whisper" onclick="installTool(\'whisper\')" style="width:auto;height:30px;padding:0 14px;margin-left:auto;font-size:11px">Install</button>' +
+      '<div class="cli-status warn" style="flex-direction:column;align-items:flex-start;gap:10px;">' +
+        '<div style="display:flex;align-items:center;gap:8px;width:100%">' +
+          '<span style="font-size:16px;">&#9888;</span>' +
+          '<div>' +
+            '<strong style="color:var(--text-1)">Voice (whisper.cpp)</strong><br>' +
+            '<span style="font-size:11px;color:var(--text-4)">One-click install — downloads whisper.cpp + turbo model (~1.5 GB)</span>' +
+          '</div>' +
+          '<button class="save" id="btn-install-voice" onclick="installVoice()" style="width:auto;height:30px;padding:0 14px;margin-left:auto;font-size:11px;flex-shrink:0">Install</button>' +
+        '</div>' +
+        '<div id="voice-install-status" style="font-size:11px;color:var(--text-4);display:none;padding-left:24px;"></div>' +
       '</div>';
   } else {
-    const v = chConfig?.voice || {};
+    const tribCfg = cliStatus._tribCfgVoice || {};
+    const whisperPath = tribCfg.command || '';
+    const modelPath   = tribCfg.model   || '';
     el.innerHTML =
-      '<div class="r"><span style="color:var(--green);font-size:13px;">&#10003; Installed</span><span style="color:var(--text-4);font-size:12px;margin-left:8px;">Auto-configured</span></div>';
+      '<div class="r" style="flex-direction:column;align-items:flex-start;gap:6px;">' +
+        '<div style="display:flex;align-items:center;gap:8px;">' +
+          '<span style="color:var(--green);font-size:14px;">&#10003;</span>' +
+          '<span style="color:var(--text-1);font-size:13px;">Installed (whisper.cpp + turbo)</span>' +
+          '<a href="#" onclick="installVoice();return false;" style="font-size:11px;color:var(--text-4);margin-left:12px;text-decoration:underline;">Reinstall</a>' +
+        '</div>' +
+        (whisperPath ? '<div style="font-size:10px;color:var(--text-4);word-break:break-all;">\uD83D\uDD27 ' + whisperPath + '</div>' : '') +
+        (modelPath   ? '<div style="font-size:10px;color:var(--text-4);word-break:break-all;">\uD83E\uDDE0 ' + modelPath   + '</div>' : '') +
+        '<div id="voice-install-status" style="font-size:11px;color:var(--text-4);display:none;"></div>' +
+      '</div>';
+  }
+}
+
+async function installVoice() {
+  const btn = document.getElementById('btn-install-voice');
+  const statusEl = document.getElementById('voice-install-status');
+  const setStatus = (msg, color) => {
+    if (!statusEl) return;
+    statusEl.style.display = 'block';
+    statusEl.style.color = color || 'var(--text-4)';
+    statusEl.textContent = msg;
+  };
+  if (btn) { btn.textContent = 'Installing\u2026'; btn.disabled = true; }
+  setStatus('Downloading whisper.cpp\u2026');
+  try {
+    const r = await fetch('/install/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    }).then(r => r.json());
+    if (r.ok) {
+      setStatus('\u2713 Done', 'var(--green)');
+      await loadChannelsCliCheck();
+      renderAdvanced();
+    } else {
+      const stageLabel = { 'platform-check': 'Platform check', 'download-binary': 'Downloading binary', 'extract-binary': 'Extracting binary', 'download-model': 'Downloading model', 'smoke-test': 'Smoke test' }[r.stage] || r.stage || 'Install';
+      setStatus(`\u2717 ${stageLabel} failed: ${r.error}`, 'var(--red)');
+      if (btn) { btn.textContent = 'Retry'; btn.disabled = false; }
+    }
+  } catch (e) {
+    setStatus(`\u2717 Network error: ${e.message}`, 'var(--red)');
+    if (btn) { btn.textContent = 'Retry'; btn.disabled = false; }
   }
 }
 

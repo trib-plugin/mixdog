@@ -31,6 +31,26 @@ try {
       windowsHide: true,
     }).unref();
     fs.writeFileSync(flagPath, '');
+
+    // Auto-install ngrok globally if not present (non-blocking, non-fatal).
+    try {
+      const ngrokCheck = require('child_process').spawnSync(
+        os.platform() === 'win32' ? 'where' : 'which',
+        ['ngrok'],
+        { stdio: 'pipe', windowsHide: true }
+      );
+      if (ngrokCheck.status !== 0) {
+        spawn('npm', ['install', '-g', 'ngrok'], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+          shell: true,
+        }).unref();
+        process.stderr.write('[session-start] ngrok not found — installing globally in background\n');
+      }
+    } catch (e) {
+      process.stderr.write(`[session-start] ngrok auto-install check failed: ${e.message}\n`);
+    }
   }
 } catch {}
 

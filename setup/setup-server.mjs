@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { exec, execSync, spawn, spawnSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, readdirSync, rmSync } from 'fs';
-import { join, dirname } from 'path';
-import { homedir } from 'os';
+import { existsSync, readFileSync, writeFileSync, createWriteStream, mkdirSync, renameSync, readdirSync, rmSync } from 'fs';
+import { join, dirname, basename } from 'path';
+import { homedir, arch, platform } from 'os';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import https from 'https';
@@ -1074,12 +1074,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && path === '/cli-check') {
-    const [whisper, ngrok] = await Promise.all([
-      checkCli('whisper'),
-      checkCli('ngrok'),
-    ]);
+    // whisper: consider installed if mixdog-config.json has a valid voice.command
+    // that points to an existing file (replaces the old pip-whisper PATH check).
+    const voiceCfg = (() => {
+      try { return readJsonFile(MIXDOG_CONFIG_PATH)?.voice || {}; } catch { return {}; }
+    })();
+    const whisperInstalled = typeof voiceCfg.command === 'string' && voiceCfg.command.length > 0 && existsSync(voiceCfg.command);
+    const ngrok = await checkCli('ngrok');
+    const cliPayload = { whisper: { installed: whisperInstalled }, ngrok };
+    if (whisperInstalled) cliPayload._voiceCfg = { command: voiceCfg.command, model: voiceCfg.model || '' };
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ whisper, ngrok }));
+    res.end(JSON.stringify(cliPayload));
     return;
   }
 
@@ -1555,20 +1560,14 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && path === '/install') {
     const data = await readBody(req);
     const tool = data.tool;
-    if (!tool || !['ngrok', 'whisper'].includes(tool)) {
+    if (!tool || !['ngrok'].includes(tool)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: 'Invalid tool' }));
       return;
     }
-
-    const commands = {
-      ngrok: 'npm install -g ngrok',
-      whisper: 'pip install openai-whisper',
-    };
-
     try {
       const { stdout } = await new Promise((resolve, reject) => {
-        exec(commands[tool], { timeout: 120000, windowsHide: true }, (err, stdout, stderr) => {
+        exec('npm install -g ngrok', { timeout: 120000, windowsHide: true }, (err, stdout, stderr) => {
           if (err) reject(err);
           else resolve({ stdout, stderr });
         });
@@ -1582,6 +1581,158 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: false, tool, error: e.message }));
     }
     return;
+  }
+
+  if (req.method === 'POST' && path === '/install/voice') {
+    // One-click whisper.cpp + turbo model installer.
+    // Detects platform/arch, downloads binary + model, writes config, smoke-tests.
+    const send = (payload) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    };
+
+    const os_platform = platform(); // 'win32' | 'darwin' | 'linux'
+    const os_arch = arch();         // 'x64' | 'arm64' | ...
+
+    // ── 1. Resolve paths ────────────────────────────────────────────────────
+    const voiceDir  = join(DATA_DIR, 'voice');
+    const binDir    = join(voiceDir, 'whisper.cpp');
+    const modelDir  = join(voiceDir, 'models');
+    mkdirSync(binDir,   { recursive: true });
+    mkdirSync(modelDir, { recursive: true });
+
+    // ── 2. Determine binary filename & download URL ─────────────────────────
+    let whisperBinName, binaryUrl, archiveExt;
+    const MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin';
+
+    if (os_platform === 'win32' && os_arch === 'x64') {
+      // Purfview/whisper-standalone-win — portable, no VC++ runtime needed.
+      // Pin a known-good release tag. The binary is inside a .zip archive.
+      const WHISPER_WIN_TAG    = 'r245.5';
+      const WHISPER_WIN_ASSET  = `Whisper-faster-v3-portable.zip`;
+      binaryUrl   = `https://github.com/Purfview/whisper-standalone-win/releases/download/${WHISPER_WIN_TAG}/${WHISPER_WIN_ASSET}`;
+      archiveExt  = '.zip';
+      whisperBinName = 'whisper-faster.exe';
+    } else if (os_platform === 'darwin' || os_platform === 'linux') {
+      // No official prebuilt for macOS/Linux from ggml-org yet — tell the user.
+      return send({
+        ok: false,
+        stage: 'platform-check',
+        error: `No prebuilt whisper.cpp binary is available for ${os_platform}/${os_arch}. ` +
+               `Please install whisper.cpp manually (e.g. brew install whisper-cpp on macOS) ` +
+               `and set voice.command in mixdog-config.json.`,
+      });
+    } else {
+      return send({
+        ok: false,
+        stage: 'platform-check',
+        error: `Unsupported platform: ${os_platform}/${os_arch}. Please install whisper.cpp manually.`,
+      });
+    }
+
+    const whisperBinPath = join(binDir, whisperBinName);
+    const modelPath      = join(modelDir, 'ggml-large-v3-turbo.bin');
+
+    // ── 3. Idempotency: if binary + model exist and smoke test passes, skip ─
+    const smokeTest = (binPath) => new Promise((resolve) => {
+      const child = spawn(binPath, ['--help'], { stdio: 'pipe', windowsHide: true });
+      child.on('close', (code) => resolve(code === 0 || code === 1)); // whisper-cli exits 1 on --help
+      child.on('error', () => resolve(false));
+      setTimeout(() => { try { child.kill(); } catch {} resolve(false); }, 10000);
+    });
+
+    if (existsSync(whisperBinPath) && existsSync(modelPath)) {
+      const ok = await smokeTest(whisperBinPath);
+      if (ok) {
+        // Re-write config to ensure paths are current.
+        const tribCfg = readJsonFile(MIXDOG_CONFIG_PATH) || {};
+        tribCfg.voice = { ...(tribCfg.voice || {}), command: whisperBinPath, model: modelPath };
+        writeJsonFile(MIXDOG_CONFIG_PATH, tribCfg);
+        return send({ ok: true, whisperPath: whisperBinPath, modelPath, cached: true });
+      }
+    }
+
+    // ── 4. Download helper ───────────────────────────────────────────────────
+    const downloadFile = (url, destPath) => new Promise((resolve, reject) => {
+      const doGet = (u) => {
+        https.get(u, { headers: { 'User-Agent': 'mixdog/0.1.10' } }, (resp) => {
+          if (resp.statusCode === 301 || resp.statusCode === 302 || resp.statusCode === 303 || resp.statusCode === 307 || resp.statusCode === 308) {
+            return doGet(resp.headers.location);
+          }
+          if (resp.statusCode !== 200) return reject(new Error(`HTTP ${resp.statusCode} from ${u}`));
+          const ws = createWriteStream(destPath);
+          resp.pipe(ws);
+          ws.on('finish', resolve);
+          ws.on('error', reject);
+          resp.on('error', reject);
+        }).on('error', reject);
+      };
+      doGet(url);
+    });
+
+    // ── 5. Download binary archive ───────────────────────────────────────────
+    const archivePath = join(binDir, `whisper-download${archiveExt}`);
+    try {
+      console.log(`  [voice-install] downloading whisper binary from ${binaryUrl}`);
+      await downloadFile(binaryUrl, archivePath);
+    } catch (e) {
+      return send({ ok: false, stage: 'download-binary', error: e.message });
+    }
+
+    // ── 6. Extract archive ───────────────────────────────────────────────────
+    try {
+      if (archiveExt === '.zip') {
+        if (os_platform === 'win32') {
+          execSync(
+            `powershell -NoProfile -Command "Expand-Archive -Force -Path '${archivePath}' -DestinationPath '${binDir}'"`,
+            { stdio: 'pipe', windowsHide: true, timeout: 60000 }
+          );
+        } else {
+          execSync(`unzip -o '${archivePath}' -d '${binDir}'`, { stdio: 'pipe', timeout: 60000 });
+        }
+      }
+      // Clean up archive
+      try { rmSync(archivePath); } catch {}
+    } catch (e) {
+      return send({ ok: false, stage: 'extract-binary', error: e.message });
+    }
+
+    // Verify binary exists after extraction
+    if (!existsSync(whisperBinPath)) {
+      // Try to find what was extracted
+      try {
+        const entries = readdirSync(binDir);
+        const exeEntry = entries.find(f => f.endsWith('.exe') || f === 'whisper-cli' || f === 'whisper');
+        if (exeEntry && exeEntry !== whisperBinName) {
+          renameSync(join(binDir, exeEntry), whisperBinPath);
+        }
+      } catch {}
+      if (!existsSync(whisperBinPath)) {
+        return send({ ok: false, stage: 'extract-binary', error: `Binary not found after extraction. Expected: ${whisperBinName}` });
+      }
+    }
+
+    // ── 7. Download turbo model ──────────────────────────────────────────────
+    try {
+      console.log('  [voice-install] downloading ggml-large-v3-turbo.bin (~1.5 GB)...');
+      await downloadFile(MODEL_URL, modelPath);
+    } catch (e) {
+      return send({ ok: false, stage: 'download-model', error: e.message });
+    }
+
+    // ── 8. Smoke test ────────────────────────────────────────────────────────
+    const smokeOk = await smokeTest(whisperBinPath);
+    if (!smokeOk) {
+      return send({ ok: false, stage: 'smoke-test', error: 'Binary failed smoke test (--help returned non-zero or timed out).' });
+    }
+
+    // ── 9. Write config ──────────────────────────────────────────────────────
+    const tribCfg = readJsonFile(MIXDOG_CONFIG_PATH) || {};
+    tribCfg.voice = { ...(tribCfg.voice || {}), command: whisperBinPath, model: modelPath };
+    writeJsonFile(MIXDOG_CONFIG_PATH, tribCfg);
+    console.log(`  [voice-install] done. binary=${whisperBinPath} model=${modelPath}`);
+
+    return send({ ok: true, whisperPath: whisperBinPath, modelPath });
   }
 
   // ============================================================

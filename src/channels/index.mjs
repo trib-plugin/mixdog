@@ -12,6 +12,8 @@ import * as https from "https";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
+import { createRequire } from "module";
+const _require = createRequire(import.meta.url);
 import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR } from "./lib/config.mjs";
 import { loadConfig as loadAgentConfig } from "../agent/orchestrator/config.mjs";
 import { initProviders } from "../agent/orchestrator/providers/registry.mjs";
@@ -1305,7 +1307,10 @@ async function transcribeVoice(audioPath) {
       return text2.trim() || null;
     }
     const wavPath = audioPath.replace(/\.[^.]+$/, ".wav");
-    await runCmd("ffmpeg", ["-i", audioPath, "-ar", "16000", "-ac", "1", "-y", wavPath]);
+    const ffmpegPath = (() => {
+      try { return _require('ffmpeg-static'); } catch { return 'ffmpeg'; }
+    })();
+    await runCmd(ffmpegPath, ["-i", audioPath, "-ar", "16000", "-ac", "1", "-y", wavPath]);
     const modelPath = await findWhisperModel(config.voice?.model, whisperCmd);
     const args = ["-f", wavPath, "--no-timestamps"];
     if (lang && lang !== "auto") args.push("-l", lang);

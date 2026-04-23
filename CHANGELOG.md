@@ -4,6 +4,20 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.10] - Unreleased
+
+### Added
+- **One-click Voice install**: new `/install/voice` endpoint downloads whisper.cpp binary (Windows x64: Purfview/whisper-standalone-win portable) and `ggml-large-v3-turbo.bin` (~1.5 GB) from HuggingFace into the plugin data directory, writes `voice.command` and `voice.model` to `mixdog-config.json`, and smoke-tests the binary — no Python required. macOS/Linux return a clear "install manually" message (no prebuilt available yet).
+- **Voice UI overhaul**: `renderVoiceSection()` now shows a single [Install] button with a stage-level progress label and error display. Installed state shows ✓ badge plus resolved binary and model paths. A "Reinstall" link re-triggers the endpoint for idempotent re-installs.
+- **Auto-install ngrok on first boot**: `hooks/session-start.cjs` runs a background `npm install -g ngrok` the first time the plugin boots if `ngrok` is not on PATH. Non-blocking, non-fatal; subsequent boots skip it.
+- **`@huggingface/transformers` ^3.x** added to `dependencies` — was missing while being imported by `src/memory/lib/embedding-worker.mjs` and `src/memory/index.mjs`, causing silent failures in vector search.
+- **`ffmpeg-static` ^5.x** added to `optionalDependencies` — the cpp branch of `transcribeVoice` now resolves `ffmpeg-static` first and falls back to PATH `ffmpeg`.
+
+### Changed
+- `scripts/run-mcp.mjs`: removed `--omit=optional` from both npm arg arrays (legacy fallback and main shared-install path). Optional dependencies (`sqlite-vec`, `node-cron`, Discord voice) now install by default on first boot.
+- `/cli-check` endpoint: whisper detection now checks `mixdog-config.json → voice.command` points to an existing file instead of probing PATH for the deprecated `openai-whisper` CLI.
+- `/install` endpoint: whisper branch removed (replaced by `/install/voice`); ngrok branch unchanged.
+
 ## [0.1.9] - Unreleased
 
 ### Fixed
