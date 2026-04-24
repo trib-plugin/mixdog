@@ -431,11 +431,29 @@ async function getRuntimeProviderModels(providerId, cfg) {
 
 function _idOnly(id) { return id ? { id: String(id) } : null; }
 
+// Per-provider id blocklist applied to dynamic and direct-HTTP catalogs.
+// Pro tier models are surfaced by /v1/models but not usable through the
+// standard chat/responses paths we support, so they get filtered out at
+// catalog level rather than per-UI.
+const _MODEL_ID_BLOCKLIST = {
+  openai: [/^gpt-\d+(\.\d+)?-pro(-|$)/i, /^o\d+-pro(-|$)/i, /^sora-\d+-pro(-|$)/i],
+  'openai-oauth': [/^gpt-\d+(\.\d+)?-pro(-|$)/i],
+};
+function _applyModelBlocklist(providerId, models) {
+  const rules = _MODEL_ID_BLOCKLIST[providerId];
+  if (!rules || !Array.isArray(models)) return models;
+  return models.filter(m => {
+    const id = typeof m === 'string' ? m : m?.id;
+    if (!id) return true;
+    return !rules.some(re => re.test(id));
+  });
+}
+
 async function listProviderModels(providerId, cfg) {
   const pcfg = cfg?.providers?.[providerId] || {};
   // 1. Runtime provider (dynamic catalog, cached 24h).
   const runtime = await getRuntimeProviderModels(providerId, cfg);
-  if (runtime && runtime.length > 0) return runtime;
+  if (runtime && runtime.length > 0) return _applyModelBlocklist(providerId, runtime);
   // 2. Direct HTTP model list for key-based providers.
   const KNOWN_ENDPOINTS = {
     openai: { url: 'https://api.openai.com/v1/models', auth: k => ({ 'Authorization': `Bearer ${k}` }) },
@@ -448,14 +466,15 @@ async function listProviderModels(providerId, cfg) {
     try {
       const json = await httpGetJson(ep.url, ep.auth(pcfg.apiKey));
       const data = Array.isArray(json?.data) ? json.data : [];
-      return data
+      const mapped = data
         .map(m => _idOnly(m.id || m.name))
         .filter(Boolean)
         .sort((a, b) => a.id.localeCompare(b.id));
+      return _applyModelBlocklist(providerId, mapped);
     } catch { /* fall through to static */ }
   }
   // 3. Static fallback.
-  if (STATIC_MODELS[providerId]) return STATIC_MODELS[providerId].map(id => ({ id }));
+  if (STATIC_MODELS[providerId]) return _applyModelBlocklist(providerId, STATIC_MODELS[providerId].map(id => ({ id })));
 
   const LOCAL_DEFAULTS = { ollama: 'http://localhost:11434/v1/models', lmstudio: 'http://localhost:1234/v1/models' };
   if (LOCAL_DEFAULTS[providerId]) {
@@ -536,8 +555,13 @@ function mergeAgentConfig(existing, data) {
       if (!config.providers[name]) config.providers[name] = {};
       // Preserve any per-provider subkey from the setup payload so future
       // schema additions round-trip through the UI without being dropped.
+      // Guard sensitive-credential fields against empty-string overwrite:
+      // the UI renders password inputs without their current value in many
+      // browsers, so an unmodified save would otherwise wipe existing keys.
+      const SENSITIVE = new Set(['apiKey', 'token', 'password', 'secret']);
       for (const [k, v] of Object.entries(val)) {
         if (v === undefined) continue;
+        if (SENSITIVE.has(k) && !v) continue;
         config.providers[name][k] = v;
       }
     }
@@ -572,7 +596,8 @@ function mergeMemoryConfig(existing, incoming) {
     if (!config.providers) config.providers = {};
     for (const [name, val] of Object.entries(incoming.providers)) {
       if (!config.providers[name]) config.providers[name] = {};
-      if (val.apiKey !== undefined) config.providers[name].apiKey = val.apiKey;
+      // Skip empty apiKey so an unmodified save doesn't wipe the stored key.
+      if (val.apiKey) config.providers[name].apiKey = val.apiKey;
       if (val.baseURL !== undefined) config.providers[name].baseURL = val.baseURL;
     }
   }
@@ -586,11 +611,16 @@ function mergeSearchConfig(existing, data) {
   if (!config.rawSearch) config.rawSearch = {};
   if (!config.rawSearch.credentials) config.rawSearch.credentials = {};
   if (data.searchPriority?.length) config.rawSearch.priority = data.searchPriority;
+  // Skip empty keys so an unmodified form save doesn't wipe previously-stored
+  // credentials. The form sends whatever is in the password field, which is
+  // often blank because password inputs don't render their current value on
+  // reload in some browsers.
   for (const [id, key] of Object.entries(data.searchProviders || {})) {
+    if (!key) continue;
     if (!config.rawSearch.credentials[id]) config.rawSearch.credentials[id] = {};
     config.rawSearch.credentials[id].apiKey = key;
   }
-  if (data.github !== undefined) {
+  if (data.github) {
     if (!config.rawSearch.credentials.github) config.rawSearch.credentials.github = {};
     config.rawSearch.credentials.github.token = data.github;
   }
@@ -744,7 +774,13 @@ function mergeConfig(existing, data) {
     if (data.discord.applicationId) config.discord.applicationId = data.discord.applicationId;
   }
 
-  if (data.channelsConfig) config.channelsConfig = data.channelsConfig;
+  // Only replace channelsConfig when the incoming payload actually has at
+  // least one channel defined. An empty object is still truthy in JS, so the
+  // raw `if (data.channelsConfig)` check would wipe existing channels on any
+  // save that didn't repopulate the channel rows first.
+  if (data.channelsConfig && Object.keys(data.channelsConfig).length > 0) {
+    config.channelsConfig = data.channelsConfig;
+  }
   if (data.mainChannel) config.mainChannel = data.mainChannel;
   if (data.access) config.access = data.access;
   if (data.voice) config.voice = data.voice;
@@ -1956,9 +1992,14 @@ const server = http.createServer(async (req, res) => {
       const binDir = join(voiceDir, 'whisper.cpp');
       mkdirSync(binDir, { recursive: true });
 
-      // ── Purfview tag: try GitHub releases API, fall back to known-good tag ──
-      const FALLBACK_PURFVIEW_TAG = 'r245.5';
-      const WHISPER_WIN_ASSET = 'Whisper-faster-v3-portable.zip';
+      // ── Purfview asset lookup ──
+      // Prior versions pinned a fixed asset name under /releases/latest, but
+      // the repo's "latest" release (tag "Pro") now carries zero assets and
+      // the old "Whisper-faster-v3-portable.zip" filename no longer exists.
+      // Query the stable "faster-whisper" tag and pick the newest
+      // Whisper-Faster_*_windows.zip asset; fall back to a pinned URL when
+      // the API is unreachable.
+      const FALLBACK_BINARY_URL = 'https://github.com/Purfview/whisper-standalone-win/releases/download/faster-whisper/Whisper-Faster_r192.3_windows.zip';
       const whisperBinName = 'whisper-faster.exe';
       const whisperBinPath = join(binDir, whisperBinName);
 
@@ -1972,17 +2013,16 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      // Resolve Purfview release tag dynamically
-      emitStage('purfview-lookup', 'Looking up latest Purfview release tag…');
-      let WHISPER_WIN_TAG = FALLBACK_PURFVIEW_TAG;
+      emitStage('purfview-lookup', 'Looking up latest Purfview Whisper-Faster build…');
+      let binaryUrl = FALLBACK_BINARY_URL;
       try {
-        const tagJson = await new Promise((resolve, reject) => {
+        const relJson = await new Promise((resolve, reject) => {
           const apiReq = https.get(
-            'https://api.github.com/repos/Purfview/whisper-standalone-win/releases/latest',
+            'https://api.github.com/repos/Purfview/whisper-standalone-win/releases/tags/faster-whisper',
             {
               headers: {
                 'Accept': 'application/vnd.github+json',
-                'User-Agent': 'mixdog/0.1.13',
+                'User-Agent': 'mixdog/voice-install',
               },
             },
             (resp) => {
@@ -2005,26 +2045,21 @@ const server = http.createServer(async (req, res) => {
             reject(new Error('GitHub API request timed out after 5s'));
           });
         });
-        if (tagJson && typeof tagJson.tag_name === 'string' && tagJson.tag_name) {
-          if (!/^[\w.\-]+$/.test(tagJson.tag_name)) {
-            throw new Error('tag_name contains unsafe characters: ' + tagJson.tag_name);
-          }
-          WHISPER_WIN_TAG = tagJson.tag_name;
-          console.log(`  [voice-install] resolved Purfview tag: ${WHISPER_WIN_TAG}`);
-        } else {
-          throw new Error('tag_name missing from GitHub API response');
-        }
+        const assets = Array.isArray(relJson?.assets) ? relJson.assets : [];
+        const windowsZip = assets
+          .filter(a => a?.name && a?.browser_download_url && /whisper.?faster.*windows.*\.zip$/i.test(a.name))
+          .sort((a, b) => String(b.name).localeCompare(String(a.name), undefined, { numeric: true }))[0];
+        if (!windowsZip) throw new Error('no Whisper-Faster_*_windows.zip asset on faster-whisper release');
+        binaryUrl = windowsZip.browser_download_url;
+        console.log(`  [voice-install] resolved Purfview asset: ${windowsZip.name}`);
       } catch (tagErr) {
-        process.stderr.write(`[voice-install] Purfview tag lookup failed (${tagErr.message}); using fallback tag ${FALLBACK_PURFVIEW_TAG}\n`);
-        WHISPER_WIN_TAG = FALLBACK_PURFVIEW_TAG;
-        emitStage('purfview-fallback', `Using pinned tag ${FALLBACK_PURFVIEW_TAG} (GitHub API unreachable)`);
+        process.stderr.write(`[voice-install] Purfview asset lookup failed (${tagErr.message}); using pinned fallback URL\n`);
+        emitStage('purfview-fallback', 'GitHub API unreachable, using pinned fallback');
       }
-
-      const binaryUrl = `https://github.com/Purfview/whisper-standalone-win/releases/download/${WHISPER_WIN_TAG}/${WHISPER_WIN_ASSET}`;
 
       // Download binary archive
       const archivePath = join(binDir, 'whisper-download.zip');
-      emitStage('purfview-download', `Downloading Purfview ${WHISPER_WIN_TAG}…`);
+      emitStage('purfview-download', 'Downloading Purfview Whisper-Faster…');
       try {
         console.log(`  [voice-install] downloading whisper binary from ${binaryUrl}`);
         await downloadFile(binaryUrl, archivePath, null, abortController.signal);
@@ -2048,10 +2083,29 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (!existsSync(whisperBinPath)) {
+        // Purfview's Whisper-Faster_*_windows.zip unpacks into a `Whisper-Faster/`
+        // subfolder, so walk one level deep to find the exe and hoist it to the
+        // binDir root. Top-level entries (older layout) are handled first.
         try {
           const entries = readdirSync(binDir);
-          const exeEntry = entries.find(f => f.endsWith('.exe') || f === 'whisper-cli' || f === 'whisper');
-          if (exeEntry && exeEntry !== whisperBinName) renameSync(join(binDir, exeEntry), whisperBinPath);
+          const isExeName = f => f.endsWith('.exe') || f === 'whisper-cli' || f === 'whisper';
+          const topExe = entries.find(isExeName);
+          if (topExe && topExe !== whisperBinName) {
+            renameSync(join(binDir, topExe), whisperBinPath);
+          } else if (!topExe) {
+            for (const entry of entries) {
+              const sub = join(binDir, entry);
+              try {
+                if (!statSync(sub).isDirectory()) continue;
+                const subEntries = readdirSync(sub);
+                const nested = subEntries.find(isExeName);
+                if (nested) {
+                  renameSync(join(sub, nested), whisperBinPath);
+                  break;
+                }
+              } catch {}
+            }
+          }
         } catch {}
         if (!existsSync(whisperBinPath)) {
           return send({ ok: false, stage: 'extract-binary', error: `Binary not found after extraction. Expected: ${whisperBinName}` });

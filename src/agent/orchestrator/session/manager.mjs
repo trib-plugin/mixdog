@@ -292,7 +292,6 @@ let nextId = Date.now();
 const CONTEXT_WINDOWS = {
     // OpenAI GPT-5.x family
     'gpt-5.5': 1000000,
-    'gpt-5.5-pro': 1000000,
     'gpt-5.4-mini': 1000000,
     'gpt-5.4-nano': 1000000,
     // Anthropic Claude 4.x
