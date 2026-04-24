@@ -357,7 +357,7 @@ const CASES = {
         prompt: [
             'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
             'Do not modify files. Do not use bash.',
-            'Task: Inspect the shape of `src` and report whether it contains checkout, routes, nested, and policies areas as compact JSON.',
+            'Task: Use exactly one `list` call on the already-known directory `src` with tree/list mode to inspect its shape. Report whether it contains checkout, routes, nested, and policies areas as compact JSON. Do not list the parent directory first.',
         ].join('\n'),
     },
     grep_multi: {

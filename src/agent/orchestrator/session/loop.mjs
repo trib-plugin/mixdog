@@ -84,6 +84,9 @@ function explicitToolChoiceName(messages, tools) {
             const negative = new RegExp(`\\b${EXPLICIT_TOOL_NEGATION}\\s+${quotedName}\\b`, 'i');
             if (positive.test(text) && !negative.test(text)) return name;
         }
+        if (names.includes('list') && /\buse\s+(?:exactly\s+)?one\s+directory\s+(?:find|metadata|list)\s+query\b/i.test(text)) {
+            return 'list';
+        }
     }
     return null;
 }

@@ -14,7 +14,7 @@ import * as path from "path";
 import { pathToFileURL } from "url";
 import { createRequire } from "module";
 const _require = createRequire(import.meta.url);
-import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR } from "./lib/config.mjs";
+import { loadConfig, createBackend, loadProfileConfig, DATA_DIR } from "./lib/config.mjs";
 import { loadConfig as loadAgentConfig } from "../agent/orchestrator/config.mjs";
 import { initProviders } from "../agent/orchestrator/providers/registry.mjs";
 import { makeBridgeLlm } from "../agent/orchestrator/smart-bridge/bridge-llm.mjs";
@@ -113,7 +113,6 @@ fs.appendFileSync(_bootLogEarly, `[${localTimestamp()}] bootstrap start pid=${pr
 `);
 const _bootLog = path.join(DATA_DIR, "boot.log");
 let config = loadConfig();
-let botConfig = loadBotConfig();
 const backend = createBackend(config);
 const INSTANCE_ID = makeInstanceId();
 ensureRuntimeDirs();
@@ -299,8 +298,11 @@ const scheduler = new Scheduler(
   config.nonInteractive ?? [],
   config.interactive ?? [],
   config.proactive,
+  // channelsConfig kept for channel-label resolution (resolveChannel)
+  // only — quiet/schedules/proactive now come from the top-level config.
   config.channelsConfig,
-  botConfig
+  // 0.1.62: top-level normalized config carries quiet/schedules/proactive.
+  config
 );
 // Register the pending-dispatch probe so the scheduler treats an in-flight
 // bridge dispatch as "active" regardless of user-inbound silence.
@@ -742,7 +744,10 @@ function ensureEventPipelineRuntime() {
 }
 function ensureWebhookServerRuntime() {
   if (!webhookServer) {
-    webhookServer = new WebhookServer(config.webhook, config.channelsConfig ?? null);
+    // Pass top-level normalized config so the webhook gate reads the new
+    // top-level `quiet` subtree (and `webhook.respectQuiet`) introduced in
+    // 0.1.62. See applyDefaults() in lib/config.mjs.
+    webhookServer = new WebhookServer(config.webhook, { quiet: config.quiet ?? null });
   }
   wireWebhookHandlers();
   return webhookServer;
@@ -773,7 +778,7 @@ function syncOwnedWebhookAndEventRuntime({ reload = false } = {}) {
   if (config.webhook?.enabled) {
     const server = ensureWebhookServerRuntime();
     if (reload) {
-      server.reloadConfig(config.webhook, config.channelsConfig ?? null, {
+      server.reloadConfig(config.webhook, { quiet: config.quiet ?? null }, {
         autoStart: false
       });
       wireWebhookHandlers();
@@ -907,13 +912,14 @@ async function refreshBridgeOwnership(options = {}) {
 }
 function reloadRuntimeConfig() {
   config = loadConfig();
-  botConfig = loadBotConfig();
   scheduler.reloadConfig(
     config.nonInteractive ?? [],
     config.interactive ?? [],
     config.proactive,
+    // channelsConfig: channel-label resolution only.
     config.channelsConfig,
-    botConfig,
+    // 0.1.62: top-level normalized config (quiet/schedules/proactive).
+    config,
     { restart: bridgeRuntimeConnected }
   );
   if (bridgeRuntimeConnected) {

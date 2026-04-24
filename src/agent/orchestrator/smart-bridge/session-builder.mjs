@@ -33,14 +33,14 @@ import { traceBridgePreset } from '../bridge-trace.mjs';
  * @param {object}  opts.preset        — resolved preset object from agent-config
  * @param {object}  opts.runtimeSpec   — resolveRuntimeSpec output; must carry .scopeKey / .lane
  * @param {string}  [opts.permission]  — 'read' | 'read-write' | null (preset/full default when unset)
- * @param {string}  [opts.cwd]         — absolute working dir; falls back to process.cwd()
+ * @param {string|null} [opts.cwd]     — absolute working dir; null is the fixed bridge sentinel meaning "no caller workspace context"
  * @param {string}  [opts.owner='bridge']
  * @param {string}  [opts.sourceType]
  * @param {string}  [opts.sourceName]
  * @param {string}  [opts.taskType]
  * @param {string}  [opts.parentSessionId]
  * @param {boolean} [opts.skipRoleReminder=false] — Pool C suppresses Tier 3 reminder
- * @returns {{ session: object, effectiveCwd: string }}
+ * @returns {{ session: object, effectiveCwd: string|null }}
  */
 export function prepareBridgeSession({
     role,
@@ -56,7 +56,11 @@ export function prepareBridgeSession({
     parentSessionId,
     skipRoleReminder = false,
 }) {
-    const effectiveCwd = (typeof cwd === 'string' && cwd) ? cwd : process.cwd();
+    // Pass cwd through verbatim — null is the fixed bridge sentinel meaning
+    // "no caller workspace context" (cycle1-agent shards, etc). Upgrading
+    // null → process.cwd() here would defeat cache-shard fork suppression.
+    // Downstream collectors (collect.mjs) handle null as "no project cwd".
+    const effectiveCwd = cwd == null ? null : cwd;
     const sessionOpts = {
         preset,
         owner,

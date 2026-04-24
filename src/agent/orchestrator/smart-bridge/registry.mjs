@@ -267,13 +267,39 @@ export class CacheRegistry {
 // --- Helpers ---
 
 /**
+ * Deep stable stringifier — deterministic key order at every nesting level.
+ * Arrays preserve positional order (tool order matters); objects sort keys
+ * alphabetically. Primitives and null are serialized via JSON.stringify.
+ *
+ * Replaces the previous replacer-array form, which acted as a top-level
+ * allowlist and silently emptied nested tool objects (name/description/
+ * inputSchema were dropped → falsely stable hash across schema changes).
+ */
+export function stableStringify(value) {
+    if (value === null || typeof value !== 'object') {
+        return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+        return '[' + value.map(v => stableStringify(v)).join(',') + ']';
+    }
+    const keys = Object.keys(value).sort();
+    const parts = [];
+    for (const k of keys) {
+        const v = value[k];
+        if (v === undefined) continue;
+        parts.push(JSON.stringify(k) + ':' + stableStringify(v));
+    }
+    return '{' + parts.join(',') + '}';
+}
+
+/**
  * Stable content hash — deterministic across runs as long as structure is identical.
  * Used to detect when a profile's prefix content has drifted.
  */
 export function hashContent(content) {
     const canonical = typeof content === 'string'
         ? content
-        : JSON.stringify(content, Object.keys(content || {}).sort());
+        : stableStringify(content);
     return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
 

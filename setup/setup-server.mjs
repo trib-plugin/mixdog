@@ -907,6 +907,7 @@ function mergeConfig(existing, data) {
   if (data.schedules) config.schedules = data.schedules;
   if (data.proactive) config.proactive = data.proactive;
   if (data.webhook) config.webhook = data.webhook;
+  if (data.quiet) config.quiet = data.quiet;
 
   return config;
 }
@@ -1105,8 +1106,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && path === '/config') {
-    const config = applyChannelsDefaults(readConfig());
+    const raw = readConfig();
     const bot = readJsonFile(BOT_PATH);
+    const config = applyChannelsDefaults(raw);
     config._bot = bot;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(config));

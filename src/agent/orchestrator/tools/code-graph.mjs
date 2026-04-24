@@ -1352,7 +1352,11 @@ function _findSymbolHits(graph, symbol, { language = null } = {}) {
 }
 
 function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 20 } = {}) {
-  const hits = _findSymbolHits(graph, symbol, { language });
+  let hits = _findSymbolHits(graph, symbol, { language });
+  const retriedWithoutLanguage = !hits.length && Boolean(language);
+  if (retriedWithoutLanguage) {
+    hits = _findSymbolHits(graph, symbol, { language: null });
+  }
 
   if (!hits.length) return '(no symbol matches)';
 
@@ -1369,6 +1373,9 @@ function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 2
     lines.push('');
   }
   lines.push('# candidates');
+  if (retriedWithoutLanguage) {
+    lines.push(`language filter "${language}" had no matches; showing unfiltered repository matches.`);
+  }
   lines.push(...topHits.map((hit, idx) => {
     const kind = hit.declarationLike ? 'decl' : 'ref';
     const suffix = hit.content ? ` — ${hit.content.slice(0, 140)}` : '';

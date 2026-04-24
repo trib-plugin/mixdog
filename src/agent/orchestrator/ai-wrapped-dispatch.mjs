@@ -16,7 +16,7 @@
  */
 
 import { homedir } from 'os'
-import { resolve as resolvePath, isAbsolute, join } from 'path'
+import { resolve as resolvePath, isAbsolute, join, relative } from 'path'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { loadConfig, getPluginData } from './config.mjs'
 import { resolvePresetName } from './smart-bridge/bridge-llm.mjs'
@@ -620,10 +620,14 @@ export async function dispatchAiWrapped(name, args, ctx) {
   // when the caller explicitly wants the uncapped synthesis. See
   // bridge-llm.mjs::applyBriefCap for the cap shape.
   const brief = args.brief !== false;
-  const cwdInput = (typeof args.cwd === 'string' && args.cwd.trim())
+  const hasExplicitCwdArg = typeof args.cwd === 'string' && args.cwd.trim()
+  const cwdInput = hasExplicitCwdArg
     ? args.cwd
     : ctx?.callerCwd
-  const resolvedCwd = resolveCwd(cwdInput, ctx?.callerCwd)
+  const queryText = queries.map((q) => String(q ?? '')).join('\n')
+  const resolvedCwd = name === 'explore'
+    ? resolveExploreCwd(cwdInput, ctx?.callerCwd, queryText, Boolean(hasExplicitCwdArg))
+    : resolveCwd(cwdInput, ctx?.callerCwd)
 
   // Sync by default — the merged sub-agent answer lands in-turn as the MCP
   // tool response, no channel round-trip, no turn fragmentation. Opt into
@@ -840,6 +844,47 @@ function resolveCwd(input, baseCwd = process.cwd()) {
     : trimmed
   const base = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : process.cwd()
   return isAbsolute(expanded) ? expanded : resolvePath(base, expanded)
+}
+
+function resolveExploreCwd(input, callerCwd, queryText, hasExplicitCwdArg = false) {
+  const base = resolveCwd(callerCwd, process.cwd())
+  const resolved = resolveCwd(input, base || process.cwd())
+  if (!hasExplicitCwdArg || !base || !resolved) return resolved
+  if (isPathInside(base, resolved)) return resolved
+  if (queryMentionsCwd(queryText, input, resolved)) return resolved
+  return base
+}
+
+function isPathInside(baseCwd, targetCwd) {
+  if (!baseCwd || !targetCwd) return false
+  const rel = relative(resolvePath(baseCwd), resolvePath(targetCwd))
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+function queryMentionsCwd(queryText, rawCwd, resolvedCwd) {
+  const text = String(queryText || '')
+  if (!text.trim()) return false
+  const candidates = new Set()
+  const raw = typeof rawCwd === 'string' ? rawCwd.trim() : ''
+  if (raw) {
+    candidates.add(raw)
+    if (raw.startsWith('~')) candidates.add(raw.replace(/^~/, homedir()))
+  }
+  if (typeof resolvedCwd === 'string' && resolvedCwd.trim()) candidates.add(resolvedCwd.trim())
+
+  for (const candidate of candidates) {
+    const normalized = candidate.replace(/[\\/]+$/g, '')
+    if (normalized === '~') {
+      if (/(?:^|[\s`"'(])~(?:$|[\s`"'./\\)])/u.test(text)) return true
+      continue
+    }
+    if (normalized.length < 3) continue
+    if (text.includes(candidate) || text.includes(normalized)) return true
+    const slashVariant = candidate.replace(/\\/g, '/')
+    const slashNormalized = normalized.replace(/\\/g, '/')
+    if (text.includes(slashVariant) || text.includes(slashNormalized)) return true
+  }
+  return false
 }
 
 /**

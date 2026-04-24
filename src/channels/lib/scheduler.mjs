@@ -130,13 +130,33 @@ class Scheduler {
   // global quiet hours "HH:MM-HH:MM"
   cronJobs = /* @__PURE__ */ new Map();
   // name -> node-cron ScheduledTask for cron-expression entries
-  constructor(nonInteractive, interactive, proactive, channelsConfig, botConfig) {
+  //
+  // 0.1.62 wiring:
+  //   `topConfig` is the normalized top-level channels config from
+  //   loadConfig()/applyDefaults() — it carries `quiet`, `schedules`,
+  //   `proactive` at the top level. `channelsConfig` is still accepted
+  //   separately (channel metadata only, not quiet config) because
+  //   resolveChannel() needs the channel-label → platform-id map.
+  constructor(nonInteractive, interactive, proactive, channelsConfig, topConfig) {
     this.nonInteractive = nonInteractive.filter((s) => s.enabled !== false);
     this.interactive = interactive.filter((s) => s.enabled !== false);
     this.proactive = proactive ?? null;
     this.channelsConfig = channelsConfig ?? null;
     this.promptsDir = join(DATA_DIR, "prompts");
-    const hol = botConfig?.quiet?.holidays;
+    this._applyQuietConfig(topConfig);
+  }
+  /** Resolve quiet/schedules/proactive flags from the top-level config
+   *  (0.1.62 shape: `topConfig.quiet`, `topConfig.schedules`,
+   *  `topConfig.proactive`). Falls through silently to defaults
+   *  (empty schedule, holidays off, respect flags default true) when
+   *  topConfig is missing or malformed — defensive, not legacy. */
+  _applyQuietConfig(topConfig) {
+    const cfg = (topConfig && typeof topConfig === "object") ? topConfig : null;
+    const quietSrc = cfg?.quiet ?? null;
+    const schedulesSrc = cfg?.schedules ?? null;
+    const proactiveCfgSrc = cfg?.proactive ?? null;
+    // Holidays: read from topConfig.quiet.holidays only.
+    const hol = quietSrc?.holidays;
     if (hol === true) {
       const locale = Intl.DateTimeFormat().resolvedOptions().locale ?? "";
       this.holidayCountry = locale.split("-")[1] || locale.toUpperCase().slice(0, 2);
@@ -145,12 +165,21 @@ class Scheduler {
     } else {
       this.holidayCountry = null;
     }
-    // Prefer top-level channelsConfig.quiet.schedule (shared DND),
-    // fall back to legacy bot.quiet.schedule.
-    this.quietSchedule = channelsConfig?.quiet?.schedule ?? botConfig?.quiet?.schedule ?? null;
-    // Opt-in flags from shared config.
-    this.respectQuietProactive = channelsConfig?.proactive?.respectQuiet !== false;
-    this.respectQuietSchedules = channelsConfig?.schedules?.respectQuiet !== false;
+    // Quiet window string "HH:MM-HH:MM" from topConfig.quiet.schedule.
+    this.quietSchedule = quietSrc?.schedule ?? null;
+    // Opt-in flags: default true when unspecified, matching applyDefaults.
+    this.respectQuietProactive = proactiveCfgSrc?.respectQuiet !== false;
+    this.respectQuietSchedules = schedulesSrc?.respectQuiet !== false;
+    // Stash the normalized cfg for helpers that want the whole object.
+    // Currently scheduler uses its own TZ-aware isQuietHours(), but this
+    // field lets future code call the shared isInQuietWindow(cfg, now)
+    // without re-deriving the shape.
+    this._quietCfg = quietSrc ? { quiet: quietSrc } : null;
+    // Raw boolean for `quiet.holidays === true` — surfaces weekend-quiet
+    // semantics that match webhook's isInQuietWindow (config.mjs). Kept
+    // separate from holidayCountry (which feeds schedule.skipHolidays /
+    // days==="weekday" public-holiday skips — a different feature).
+    this.weekendQuiet = quietSrc?.holidays === true;
   }
   setInjectHandler(fn) {
     this.injectFn = fn;
@@ -366,24 +395,13 @@ ${Scheduler.INSTANCE_UUID}`;
     }
     this.start();
   }
-  reloadConfig(nonInteractive, interactive, proactive, channelsConfig, botConfig, options = {}) {
+  reloadConfig(nonInteractive, interactive, proactive, channelsConfig, topConfig, options = {}) {
     this.nonInteractive = nonInteractive.filter((s) => s.enabled !== false);
     this.interactive = interactive.filter((s) => s.enabled !== false);
     this.proactive = proactive ?? null;
     this.channelsConfig = channelsConfig ?? null;
     this.promptsDir = join(DATA_DIR, "prompts");
-    const hol2 = botConfig?.quiet?.holidays;
-    if (hol2 === true) {
-      const locale = Intl.DateTimeFormat().resolvedOptions().locale ?? "";
-      this.holidayCountry = locale.split("-")[1] || locale.toUpperCase().slice(0, 2);
-    } else if (typeof hol2 === "string" && hol2) {
-      this.holidayCountry = hol2;
-    } else {
-      this.holidayCountry = null;
-    }
-    this.quietSchedule = channelsConfig?.quiet?.schedule ?? botConfig?.quiet?.schedule ?? null;
-    this.respectQuietProactive = channelsConfig?.proactive?.respectQuiet !== false;
-    this.respectQuietSchedules = channelsConfig?.schedules?.respectQuiet !== false;
+    this._applyQuietConfig(topConfig);
     this.holidayChecked = "";
     this.todayIsHoliday = false;
     // Period-based proactive state reset (D4): clear fire counter +
@@ -612,17 +630,40 @@ ${Scheduler.INSTANCE_UUID}`;
     return dayList.some((d) => Scheduler.DAY_ABBRS[d] === dow);
   }
   /** Check if current time is within global quiet hours (quiet.schedule).
-   *  tz optional — when set, HH:MM is evaluated in the given IANA zone. */
+   *  tz optional — when set, HH:MM is evaluated in the given IANA zone.
+   *
+   *  TODO(0.1.63+): migrate to the shared isInQuietWindow(cfg, now) helper
+   *  in lib/config.mjs once that helper grows TZ awareness. The shared
+   *  helper currently evaluates only against host-local time, so scheduler
+   *  keeps this version to honor per-schedule `timezone:` overrides. When
+   *  the shared helper gains tz support, pass `this._quietCfg` straight to
+   *  it and drop this method. */
   isQuietHours(now, tz) {
-    if (!this.quietSchedule) return false;
-    const parts = this.quietSchedule.split("-");
-    if (parts.length !== 2) return false;
-    const [start, end] = parts;
-    const hhmm = tz
-      ? tzSnapshot(now, tz).hhmm
-      : `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    if (start > end) return hhmm >= start || hhmm < end;
-    return hhmm >= start && hhmm < end;
+    // Schedule-string window check (HH:MM-HH:MM, TZ-aware when tz set).
+    if (this.quietSchedule) {
+      const parts = this.quietSchedule.split("-");
+      if (parts.length === 2) {
+        const [start, end] = parts;
+        const hhmm = tz
+          ? tzSnapshot(now, tz).hhmm
+          : `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+        const inWindow = start > end
+          ? (hhmm >= start || hhmm < end)
+          : (hhmm >= start && hhmm < end);
+        if (inWindow) return true;
+      }
+    }
+    // Weekend-quiet branch: mirrors webhook's isInQuietWindow semantics
+    // for `quiet.holidays === true` — Sat/Sun in the scheduler's active
+    // TZ counts as quiet. TZ-aware via tzSnapshot (webhook is host-local;
+    // scheduler legitimately differs to honor per-schedule `timezone:`).
+    // Public-holiday skips (holidayCountry / skipHolidays / days==="weekday")
+    // are a separate feature and untouched here.
+    if (this.weekendQuiet) {
+      const dow = tzSnapshot(now, tz).dow;
+      if (dow === 0 || dow === 6) return true;
+    }
+    return false;
   }
   // Legacy random-slot generator removed (D4). Proactive is now strictly
   // period-based \u2014 see tickProactive() + FREQUENCY_MAP.idleMinutes.

@@ -446,6 +446,11 @@ function _isGithubRepoQuery(prompt, repoSlug) {
 }
 
 function _extractKnownFilePaths(prompt, cwd, maxFiles = 4) {
+    // Fix 3: no launcher-cwd fallback. When caller has no project cwd
+    // (cycle1/memory-cycle etc.), we cannot validate path existence against
+    // an arbitrary host workspace — return empty and let downstream branches
+    // handle the no-project-cwd case.
+    if (!cwd) return [];
     const text = String(prompt || '');
     const matches = text.match(/\b(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+\b/g) || [];
     const out = [];
@@ -453,7 +458,7 @@ function _extractKnownFilePaths(prompt, cwd, maxFiles = 4) {
     for (const raw of matches) {
         if (seen.has(raw)) continue;
         seen.add(raw);
-        const abs = pathResolve(cwd || process.cwd(), raw);
+        const abs = pathResolve(cwd, raw);
         try {
             const st = statSync(abs);
             if (!st.isFile()) continue;
@@ -567,6 +572,9 @@ function _explicitPromptToolChoiceName(prompt, tools) {
         const negative = new RegExp(`\\b${EXPLICIT_PROMPT_TOOL_NEGATION}\\s+${quotedName}\\b`, 'i');
         if (positive.test(text) && !negative.test(text)) return name;
     }
+    if (names.includes('list') && /\buse\s+(?:exactly\s+)?one\s+directory\s+(?:find|metadata|list)\s+query\b/i.test(text)) {
+        return 'list';
+    }
     return null;
 }
 
@@ -663,7 +671,11 @@ async function _searchGithubRepoText(repoSlug) {
 async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     if (session?.owner !== 'bridge') return null;
     const repoSlug = _extractGithubRepoSlug(prompt);
-    const knownFiles = _extractKnownFilePaths(prompt, effectiveCwd || session.cwd || process.cwd(), 1);
+    // Fix 3: pass null cwd through — `_extractKnownFilePaths` returns [] when
+    // there is no project cwd, so filesystem-existence checks never leak the
+    // launcher's working directory into bridge fast-path intent classification.
+    const fastPathCwd = effectiveCwd || session.cwd || null;
+    const knownFiles = _extractKnownFilePaths(prompt, fastPathCwd, 1);
     const identifier = _extractBridgeIdentifier(prompt);
     const intentCandidates = [];
     if (_isGithubRepoQuery(prompt, repoSlug)) intentCandidates.push('github_repo');
@@ -739,10 +751,14 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     // Env-flag shape (ALL_CAPS_WITH_UNDERSCORES) has no intent gate because it
     // is a strong structural signal on its own. Still require a simple-lookup
     // prompt so "list all FOO_BAR usages in ..." long instructions don't hijack.
-    if (identifier && _isEnvLikeIdentifier(identifier) && _isSimpleIdentifierLookup(prompt)) {
+    if (identifier && _isEnvLikeIdentifier(identifier) && _isSimpleIdentifierLookup(prompt) && fastPathCwd) {
+        // Fix 3: env-flag grep prefetch needs a concrete project cwd. When the
+        // caller is cwd-less (cycle1/memory-cycle), skip the prefetch entirely
+        // rather than grepping the launcher workspace and fragmenting cache
+        // shards per caller.
         const grepArgs = {
             pattern: identifier,
-            path: effectiveCwd || session.cwd || process.cwd(),
+            path: fastPathCwd,
             glob: ['**/*.*'],
             output_mode: 'content',
             head_limit: 20,
@@ -804,7 +820,11 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
 async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCall) {
     if (session?.owner !== 'bridge') return null;
     const repoSlug = _extractGithubRepoSlug(prompt);
-    const knownFiles = _extractKnownFilePaths(prompt, effectiveCwd || session.cwd || process.cwd());
+    // Fix 3: pass null cwd through — `_extractKnownFilePaths` returns [] for
+    // cwd-less callers, so the multi_read prefetch further down naturally
+    // becomes a no-op instead of resolving against the launcher's cwd.
+    const prefetchCwd = effectiveCwd || session.cwd || null;
+    const knownFiles = _extractKnownFilePaths(prompt, prefetchCwd);
     const identifier = _extractBridgeIdentifier(prompt);
     const repoIntent = _isGithubRepoQuery(prompt, repoSlug)
         ? await classifyPromptIntent(prompt, ['github_repo']).catch(() => null)
@@ -826,7 +846,12 @@ async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCa
     }
 
     const metadataRequest = _extractDirectoryMetadataRequest(prompt);
-    if (metadataRequest) {
+    if (metadataRequest && prefetchCwd) {
+        // Fix 3: directory-metadata prefetch drives builtin list/read with an
+        // explicit cwd. When the caller is cwd-less, skip the prefetch so we
+        // do not invoke builtin tools against the launcher's working directory
+        // (executeBuiltinTool has its own `cwd || process.cwd()` fallback that
+        // we cannot touch from this file).
         // If the user explicitly asked the worker to call a concrete tool, let
         // the normal loop satisfy that instruction. Prefetching in front of an
         // explicit list/read benchmark can otherwise produce duplicate calls.
@@ -842,7 +867,7 @@ async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCa
             head_limit: 20,
             sort: metadataRequest.sort,
         };
-        const callerCwd = effectiveCwd || session.cwd || process.cwd();
+        const callerCwd = prefetchCwd;
         const listStartedAt = Date.now();
         const listOut = await executeBuiltinTool('list', listArgs, callerCwd, { sessionId: session.id }).catch(() => null);
         if (listOut && !String(listOut).startsWith('Error:')) {

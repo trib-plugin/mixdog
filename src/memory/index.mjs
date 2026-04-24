@@ -190,7 +190,17 @@ let db = null
 let mainConfig = null
 let _cycleInterval = null
 let _startupTimeout = null
-let _cycle1InFlight = null // shared cycle1 promise
+// Outer-layer cycle1 in-flight tracker (MCP-server scope).
+//
+// The AUTHORITATIVE guard lives in memory-cycle.mjs:runCycle1 itself — that
+// one catches every caller, including direct imports (setup-server backfill,
+// policy-layer backfill). This outer tracker is kept as a defense-in-depth
+// layer local to the MCP server process: it coalesces simultaneous
+// _awaitCycle1Run callers (MCP action, scheduler, flush) onto a shared
+// promise so they all observe the SAME result object rather than some
+// getting the real stats and others getting `skippedInFlight: true` from
+// the inner guard.
+let _cycle1InFlight = null // shared cycle1 promise (outer coalesce layer)
 let _initialized = false
 let _bootTimestamp = null
 let _transcriptOffsets = new Map()
@@ -946,12 +956,12 @@ const TOOL_DEFS = [
     title: 'Explore',
     aiWrapped: true,
     annotations: { title: 'Explore', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: 'Internal codebase search. Local filesystem only — not web, not memory. `query`: single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). `cwd` is authoritative search root (no silent fan-out). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.',
+    description: 'Internal codebase search. Local filesystem only — not web, not memory. `query`: single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Omit `cwd` for the current workspace; set `cwd` only when the user explicitly names that root/path. Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.',
     inputSchema: {
       type: 'object',
       properties: {
         query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks).' },
-        cwd: { type: 'string', description: 'Authoritative search root. Absolute path; `~` and forward slashes supported. Omit → launch workspace. Target plugin tree via `cwd: "~/.claude/..."`. No silent fan-out.' },
+        cwd: { type: 'string', description: 'Optional search root. Omit for the current workspace. Use an absolute/`~` root only when the user explicitly names that path. No silent fan-out.' },
         background: { type: 'boolean', description: 'Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins.' },
       },
       required: ['query'],

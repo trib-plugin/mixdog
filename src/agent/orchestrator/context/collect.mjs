@@ -13,15 +13,24 @@ import { homedir } from 'os';
 const _agentTemplateCache = new Map();
 const AGENT_TEMPLATE_TTL = 60_000;
 export function loadAgentTemplate(name, cwd) {
-    const projectDir = cwd || process.cwd();
-    const key = `${name}|${projectDir}`;
+    // When cwd is null/missing (bridge maintenance callers like cycle1-agent
+    // pass cwd:null on purpose so provider-cache shards don't fork per MCP
+    // launch dir), skip the project-scoped template lookup entirely — DO NOT
+    // fall back to process.cwd(), which would leak the launcher's working
+    // directory into the cache key and fragment the shard per caller workspace.
+    const projectDir = (typeof cwd === 'string' && cwd.length > 0) ? cwd : null;
+    const key = `${name}|${projectDir ?? '__noproject__'}`;
     const cached = _agentTemplateCache.get(key);
     if (cached && Date.now() - cached.ts < AGENT_TEMPLATE_TTL) return cached.value;
-    // Search paths for agent files
-    const searchPaths = [
-        join(projectDir, '.claude', 'agents', `${name}.md`),
-        join(homedir(), '.claude', 'agents', `${name}.md`),
-    ];
+    // Search paths for agent files. Drop the <projectDir>/.claude/agents
+    // entry when cwd is missing; home-level + plugin walk still apply so the
+    // function's "no template found → null" contract is preserved via the
+    // normal readSafe loop below.
+    const searchPaths = [];
+    if (projectDir) {
+        searchPaths.push(join(projectDir, '.claude', 'agents', `${name}.md`));
+    }
+    searchPaths.push(join(homedir(), '.claude', 'agents', `${name}.md`));
     // Also search plugin directories
     const pluginBase = join(homedir(), '.claude', 'plugins', 'marketplaces');
     if (existsSync(pluginBase)) {
@@ -48,12 +57,19 @@ export function loadAgentTemplate(name, cwd) {
  * Full content loaded on demand via loadSkillContent().
  */
 export function collectSkills(cwd) {
-    const projectDir = cwd || process.cwd();
+    // When cwd is null/missing (e.g. bridge maintenance callers that pass
+    // cwd:null on purpose so provider-cache shards don't fork per caller
+    // workspace), skip project-scoped skills entirely — DO NOT fall back
+    // to process.cwd(), which would leak the MCP launch dir into the
+    // shard key and fragment the cache.
+    const projectDir = (typeof cwd === 'string' && cwd.length > 0) ? cwd : null;
     const skills = [];
     const dirs = [
         join(homedir(), '.claude', 'skills'),
-        join(projectDir, '.claude', 'skills'),
     ];
+    if (projectDir) {
+        dirs.push(join(projectDir, '.claude', 'skills'));
+    }
     // Plugin skill directories
     const pluginBase = join(homedir(), '.claude', 'plugins', 'marketplaces');
     if (existsSync(pluginBase)) {
@@ -195,7 +211,14 @@ export function buildSkillToolDefs(skills, { ownerIsBridge = false } = {}) {
 const _projectMdCache = new Map();
 const PROJECT_MD_TTL = 60_000;
 export function collectProjectMd(cwd) {
-    const projectDir = cwd || process.cwd();
+    // When cwd is null/missing (bridge maintenance calls deliberately pass
+    // cwd:null so provider-cache shards don't fork per caller workspace),
+    // return empty — DO NOT fall back to process.cwd(). This path feeds
+    // manager.mjs BP3 / sessionMarker, so leaking process.cwd() project
+    // context into bridge maintenance sessions would fragment shards per
+    // MCP launch dir.
+    const projectDir = (typeof cwd === 'string' && cwd.length > 0) ? cwd : null;
+    if (!projectDir) return '';
     const cached = _projectMdCache.get(projectDir);
     if (cached && Date.now() - cached.ts < PROJECT_MD_TTL) return cached.value;
     const content = readSafe(join(projectDir, 'PROJECT.md')) || '';
@@ -242,16 +265,39 @@ export function loadRoleTemplate(role, dataDir) {
     return template;
 }
 
-// --- All-agent catalog loader ---
-// Concatenates every agents/<role>.md body + every hidden-role snippet under
-// rules/bridge/ (except 00-common.md, which is already in BP1 via
-// buildBridgeInjectionContent) into one BP2 block. Because the block is
-// identical across every bridge call regardless of which role is invoked,
-// all cross-role sessions share this cache entry (BP2 hit ratio approaches
-// 100%). Individual role identity is carried separately in the
-// sessionMarker user message (see composeSystemPrompt).
-const _allAgentBodiesCache = { ts: 0, value: '' };
-const ALL_AGENT_BODIES_TTL = 60_000;
+// --- Role-scoped agent catalog loader ---
+// Emits a BP2 block scoped to the calling role:
+//   - Public roles (worker/reviewer/tester/debugger/maintenance/researcher/
+//     scheduler-task/webhook-handler): Agent Role Catalog only; Hidden Role
+//     Catalog is dropped entirely — public roles never dispatch into hidden
+//     retrieval/standalone backends.
+//   - Retrieval hidden (explorer/recall-agent/search-agent): Agent Role
+//     Catalog + Hidden block containing `retrieval-role-principles` (shared
+//     common rules) and the self section only.
+//   - Standalone hidden (cycle1-agent/cycle2-agent/proactive-decision/
+//     recap-agent): Agent Role Catalog + Hidden block with self section only.
+//   - Unknown/null role: falls back to the legacy all-in-one block so
+//     callers that don't supply role stay backward-compatible.
+//
+// BP2 is no longer bit-identical cross-role — the provider cache shards by
+// role group (public / each retrieval hidden / each standalone hidden),
+// trading a small number of additional shards for ~68% fewer prefix bytes
+// on the public-role hot path. Role identity still rides the sessionMarker
+// user message separately (see composeSystemPrompt).
+const PUBLIC_ROLES = new Set([
+    'worker', 'reviewer', 'tester', 'debugger',
+    'maintenance', 'researcher', 'scheduler-task', 'webhook-handler',
+]);
+const RETRIEVAL_HIDDEN_ROLES = new Set([
+    'explorer', 'recall-agent', 'search-agent',
+]);
+const STANDALONE_HIDDEN_ROLES = new Set([
+    'cycle1-agent', 'cycle2-agent', 'proactive-decision', 'recap-agent',
+]);
+const RETRIEVAL_PRINCIPLES_NAME = 'retrieval-role-principles';
+
+const _scopedRoleCatalogCache = new Map();
+const SCOPED_ROLE_CATALOG_TTL = 60_000;
 
 function loadHiddenRoleSnippets(pluginRoot) {
     try {
@@ -260,58 +306,90 @@ function loadHiddenRoleSnippets(pluginRoot) {
         const files = readdirSync(bridgeDir)
             .filter(f => f.endsWith('.md') && f !== '00-common.md')
             .sort();
-        const sections = [];
+        const pairs = [];
         for (const f of files) {
             const raw = readSafe(join(bridgeDir, f));
             if (!raw) continue;
             const body = raw.replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
             if (!body) continue;
             const name = f.replace(/^\d+-/, '').replace(/\.md$/, '');
-            sections.push(`## ${name}\n\n${body}`);
+            pairs.push({ name, body });
         }
-        return sections;
+        return pairs;
     } catch {
         return [];
     }
 }
 
-export function loadAllAgentBodies() {
-    if (Date.now() - _allAgentBodiesCache.ts < ALL_AGENT_BODIES_TTL) {
-        return _allAgentBodiesCache.value;
+function loadAgentSections(pluginRoot) {
+    const agentsDir = join(pluginRoot, 'agents');
+    const agentSections = [];
+    if (!existsSync(agentsDir)) return agentSections;
+    const files = readdirSync(agentsDir)
+        .filter(f => f.endsWith('.md'))
+        .sort();
+    for (const f of files) {
+        const raw = readSafe(join(agentsDir, f));
+        if (!raw) continue;
+        const body = raw.replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
+        if (!body) continue;
+        const name = f.replace(/\.md$/, '');
+        agentSections.push(`## ${name}\n\n${body}`);
+    }
+    return agentSections;
+}
+
+export function loadScopedRoleCatalog(role) {
+    const cacheKey = role || '__all__';
+    const cached = _scopedRoleCatalogCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < SCOPED_ROLE_CATALOG_TTL) {
+        return cached.value;
     }
     try {
         const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
         if (!pluginRoot) return '';
-        const agentsDir = join(pluginRoot, 'agents');
-        const agentSections = [];
-        if (existsSync(agentsDir)) {
-            const files = readdirSync(agentsDir)
-                .filter(f => f.endsWith('.md'))
-                .sort();
-            for (const f of files) {
-                const raw = readSafe(join(agentsDir, f));
-                if (!raw) continue;
-                const body = raw.replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
-                if (!body) continue;
-                const name = f.replace(/\.md$/, '');
-                agentSections.push(`## ${name}\n\n${body}`);
-            }
+        const agentSections = loadAgentSections(pluginRoot);
+        const hiddenPairs = loadHiddenRoleSnippets(pluginRoot);
+
+        // Pick which hidden sections to emit based on role classification.
+        let hiddenSectionsToEmit = null; // null → drop the Hidden block entirely
+        if (role && RETRIEVAL_HIDDEN_ROLES.has(role)) {
+            const principles = hiddenPairs.find(p => p.name === RETRIEVAL_PRINCIPLES_NAME);
+            const self = hiddenPairs.find(p => p.name === role);
+            hiddenSectionsToEmit = [];
+            if (principles) hiddenSectionsToEmit.push(`## ${principles.name}\n\n${principles.body}`);
+            if (self) hiddenSectionsToEmit.push(`## ${self.name}\n\n${self.body}`);
+        } else if (role && STANDALONE_HIDDEN_ROLES.has(role)) {
+            const self = hiddenPairs.find(p => p.name === role);
+            hiddenSectionsToEmit = [];
+            if (self) hiddenSectionsToEmit.push(`## ${self.name}\n\n${self.body}`);
+        } else if (role && PUBLIC_ROLES.has(role)) {
+            hiddenSectionsToEmit = null;
+        } else {
+            // Unknown / null role — legacy all-in-one fallback for
+            // backward-compat (e.g. callers that don't yet thread role).
+            hiddenSectionsToEmit = hiddenPairs.map(p => `## ${p.name}\n\n${p.body}`);
         }
-        const hiddenSections = loadHiddenRoleSnippets(pluginRoot);
+
         const blocks = [];
         if (agentSections.length) {
             blocks.push(`# Agent Role Catalog\n\n${agentSections.join('\n\n---\n\n')}`);
         }
-        if (hiddenSections.length) {
-            blocks.push(`# Hidden Role Catalog\n\n${hiddenSections.join('\n\n---\n\n')}`);
+        if (hiddenSectionsToEmit && hiddenSectionsToEmit.length) {
+            blocks.push(`# Hidden Role Catalog\n\n${hiddenSectionsToEmit.join('\n\n---\n\n')}`);
         }
         const value = blocks.join('\n\n---\n\n');
-        _allAgentBodiesCache.value = value;
-        _allAgentBodiesCache.ts = Date.now();
+        _scopedRoleCatalogCache.set(cacheKey, { ts: Date.now(), value });
         return value;
     } catch {
         return '';
     }
+}
+
+// Backward-compat wrapper for any external caller that still imports the
+// old symbol. Returns the unknown-role fallback (full catalog).
+export function loadAllAgentBodies() {
+    return loadScopedRoleCatalog(null);
 }
 
 // --- Compose system prompt — 4-BP cache layout ---

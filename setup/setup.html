@@ -2636,8 +2636,8 @@ async function populateChannels(cfg) {
   const bot = chExtraData.bot || {};
   if (bot.displayMode) document.getElementById('bot-display-mode').value = bot.displayMode;
 
-  // DND: top-level cfg.quiet, with legacy fallback to bot.quiet for old saves
-  const quiet = cfg?.quiet || bot.quiet || {};
+  // DND: top-level cfg.quiet (server always populates default via applyChannelsDefaults)
+  const quiet = cfg?.quiet || {};
   populateQuietHours(quiet.schedule);
   if (quiet.holidays) document.getElementById('dnd-holidays').classList.add('on');
   const setToggle = (id, on) => { const el = document.getElementById(id); if (!el) return; if (on) el.classList.add('on'); else el.classList.remove('on'); };
@@ -2748,6 +2748,20 @@ async function savePanel() {
   const warnEl = activePanel?.querySelector('.warn-msg') || document.createElement('div');
   const btn = activePanel?.querySelector('.save');
   warnEl.textContent = '';
+  // DND custom quiet-hours validation. Runs regardless of which panel is
+  // active since buildChannelsData() reads the DND fields unconditionally.
+  const quietPresetEl = document.getElementById('dnd-quiet-preset');
+  if (quietPresetEl && quietPresetEl.value === 'custom') {
+    const hhmm = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+    const s = (document.getElementById('dnd-quiet-start')?.value || '').trim();
+    const e = (document.getElementById('dnd-quiet-end')?.value || '').trim();
+    if (!hhmm.test(s) || !hhmm.test(e)) {
+      const dndWarn = document.getElementById('warn-dnd') || warnEl;
+      dndWarn.textContent = 'Invalid quiet hours. Use HH:MM (00:00 - 23:59) for both start and end.';
+      if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
+      return;
+    }
+  }
   if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
   try {
     // Save webhooks individually

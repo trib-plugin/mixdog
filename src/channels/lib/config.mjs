@@ -47,15 +47,58 @@ function applyDefaults(config) {
   // migration should pass the copied value in before applyDefaults runs.
   return out;
 }
-/** Shared quiet-window helper used by scheduler + webhook.
- *  `schedule` is "HH:MM-HH:MM"; returns true when `now` falls inside. */
-function isInQuietWindow(schedule, now = new Date()) {
+/**
+ * Shared DND / quiet-window helper used by scheduler + webhook.
+ *
+ * Signature contract (as of 0.1.62):
+ *   isInQuietWindow(cfg, now = new Date()) -> boolean
+ *
+ * `cfg` accepts exactly two shapes (top-level config with `.quiet`
+ * subtree, or a flat `{ schedule, holidays }` descriptor); anything
+ * else returns `false`.
+ *
+ * Behavior:
+ *   - Schedule window uses "HH:MM-HH:MM". Midnight-crossing windows
+ *     (start > end, e.g. "23:00-09:00") are honored. When start === end
+ *     the window is treated as empty/never (preserved doc-ambiguous
+ *     behavior — callers should avoid that shape).
+ *   - `holidays === true` AND today is a recognized holiday  => true,
+ *     regardless of schedule window.
+ *   - `holidays === false` or missing => holidays ignored.
+ *
+ * Holiday detection strategy (0.1.62 minimum viable):
+ *   Weekend-only check against the host's local timezone (Sat/Sun).
+ *   A richer sync source is a TODO — see holidays.mjs (isHoliday) for
+ *   the async Nager-backed utility; wiring that into this sync path
+ *   needs a pre-warmed cache lookup, which is out of scope for this PR.
+ *
+ * Exported so scheduler.mjs and webhook.mjs can share one implementation.
+ */
+function isInQuietWindow(cfg, now = new Date()) {
+  if (!cfg || typeof cfg !== "object") return false;
+  // Auto-detect shape: prefer cfg.quiet when present, else treat cfg as
+  // the flat { schedule, holidays } descriptor.
+  const quiet = cfg.quiet && typeof cfg.quiet === "object" ? cfg.quiet : cfg;
+  const schedule = quiet.schedule;
+  const holidays = quiet.holidays === true;
+
+  // Holiday branch: toggle on AND today qualifies => quiet regardless of window.
+  // TODO(0.1.63+): replace weekend-only check with a sync holiday lookup
+  // (pre-warmed cache from holidays.mjs / isHoliday) so public-holiday
+  // weekdays also count. For this pass, Sat/Sun in host-local TZ only.
+  if (holidays) {
+    const dow = now.getDay(); // 0=Sun ... 6=Sat, host-local TZ
+    if (dow === 0 || dow === 6) return true;
+  }
+
+  // Schedule window check (unchanged from prior behavior).
   if (!schedule || typeof schedule !== "string") return false;
   const parts = schedule.split("-");
   if (parts.length !== 2) return false;
   const [start, end] = parts;
+  // start === end => empty window (never matches); documented caveat.
   const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  if (start > end) return hhmm >= start || hhmm < end;
+  if (start > end) return hhmm >= start || hhmm < end; // midnight-crossing
   return hhmm >= start && hhmm < end;
 }
 function loadConfig() {

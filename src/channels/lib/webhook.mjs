@@ -275,9 +275,19 @@ class WebhookServer {
   noSecretWarned = false;
   ngrokProcess = null;
   ngrokStarting = false;
-  constructor(config, channelsConfig) {
+  quiet = null;
+  // ctor accepts the TOP-LEVEL normalized config slice as the second arg:
+  //   new WebhookServer(config.webhook, { quiet: config.quiet })
+  constructor(config, topLevel) {
     this.config = config;
-    this.channelsConfig = channelsConfig ?? null;
+    this._applyTopLevel(topLevel);
+  }
+  _applyTopLevel(src) {
+    this.quiet = null;
+    if (!src || typeof src !== "object") return;
+    if (src.quiet && typeof src.quiet === "object") {
+      this.quiet = src.quiet;
+    }
   }
   setEventPipeline(pipeline) {
     this.eventPipeline = pipeline;
@@ -355,9 +365,11 @@ class WebhookServer {
             }
             // Quiet-hours skip: drop (do not queue) when webhook opt-in is on
             // and current time falls inside the shared quiet window.
-            const webhookRespect = this.channelsConfig?.webhook?.respectQuiet === true;
-            const quietSchedule = this.channelsConfig?.quiet?.schedule ?? null;
-            if (webhookRespect && isInQuietWindow(quietSchedule, new Date())) {
+            const webhookRespect = this.config?.respectQuiet === true;
+            const quietCfg = this.quiet
+              ? { schedule: this.quiet.schedule ?? null, holidays: this.quiet.holidays === true }
+              : null;
+            if (webhookRespect && quietCfg && isInQuietWindow(quietCfg, new Date())) {
               logWebhook(`${name}: quiet-skip event=${eventType || "<none>"} action=${eventAction || "<none>"} (id=${deliveryId})`);
               res.writeHead(202, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ status: "quiet-skip", event: eventType, action: eventAction, id: deliveryId }));
@@ -536,9 +548,13 @@ class WebhookServer {
     }
     logWebhook("stopped (ngrok left running for reuse)");
   }
-  reloadConfig(config, _channelsConfig, options = {}) {
+  // reloadConfig(webhookCfg, topLevel, options?)
+  // `topLevel` mirrors the constructor: a top-level normalized config
+  // slice (typically `{ quiet }`).
+  reloadConfig(config, topLevel, options = {}) {
     this.stop();
     this.config = config;
+    this._applyTopLevel(topLevel);
     if (options.autoStart !== false && config.enabled) this.start();
   }
   // ── Delegate analysis via unified LLM runner ────────────────────────
