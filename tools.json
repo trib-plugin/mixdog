@@ -752,7 +752,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Big files auto-return a head+tail summary unless `full:true` or offset/limit given — for in-file content search use `grep`, not a full read.",
+    "description": "Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1469,7 +1469,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "File path search via `rg --files`. PREFER ARRAY `pattern` — OR-joined multi-pattern search in ONE call instead of serial globs. Use `grep` for in-file content search.",
+    "description": "File path search via `rg --files`. PREFER ARRAY `pattern` — OR-joined multi-pattern search in ONE call instead of serial globs. Do not emit two `glob` calls in the same assistant turn; merge them into one `glob` call with a single pattern array, even when the answer needs separate groups (group the returned paths yourself). Do not drop requested categories: if the task asks for route files + policy JSON files, include route patterns and policy patterns in that same array. Example: `pattern:[\"**/*route*.mjs\",\"**/*policy*.json\"]`. Use `grep` for in-file content search.",
     "inputSchema": {
       "type": "object",
       "properties": {

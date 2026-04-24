@@ -119,7 +119,68 @@ function traceBridgeLoop({ sessionId, iteration, sendMs, messageCount, bodyBytes
     });
 }
 
-function traceBridgeTool({ sessionId, iteration, toolName, toolKind, toolMs }) {
+const TOOL_ARG_KEYS = {
+    read: ['path', 'mode', 'n', 'offset', 'limit', 'full'],
+    multi_read: ['reads'],
+    grep: ['pattern', 'path', 'glob', 'output_mode', 'head_limit', 'offset', 'type', '-i', '-n', '-A', '-B', '-C', 'context', 'multiline'],
+    glob: ['pattern', 'path', 'head_limit', 'offset'],
+    list: ['path', 'mode', 'depth', 'hidden', 'sort', 'type', 'head_limit', 'offset', 'name', 'min_size', 'max_size', 'modified_after', 'modified_before'],
+    find_symbol: ['symbol', 'language', 'limit'],
+    find_references: ['symbol', 'file', 'language'],
+    find_callers: ['symbol', 'file', 'language'],
+    code_graph: ['mode', 'file', 'symbol', 'language', 'limit'],
+    sg_search: ['pattern', 'path', 'lang', 'globs', 'context', 'head_limit'],
+    bash: ['command', 'timeout', 'run_in_background', 'persistent', 'session_id'],
+    job_wait: ['job_id', 'timeout_ms', 'poll_ms'],
+    job_read: ['job_id', 'stream', 'mode', 'n', 'offset', 'limit'],
+    edit: ['path', 'replace_all', 'edits'],
+    multi_edit: ['path', 'edits'],
+    edit_many: ['edits'],
+    write: ['path', 'writes'],
+    write_many: ['writes'],
+    apply_patch: ['base_path', 'dry_run', 'reject_partial'],
+};
+
+const REDACT_KEY_RE = /token|secret|password|passwd|credential|authorization|api[_-]?key/i;
+const BODY_KEY_RE = /content|old_string|new_string|patch|rewrite/i;
+
+function compactTraceArgValue(value, key = '', depth = 0) {
+    if (REDACT_KEY_RE.test(key)) return '[redacted]';
+    if (value === null || value === undefined) return value;
+    if (typeof value === 'string') {
+        const limit = BODY_KEY_RE.test(key) ? 60 : 180;
+        return value.length > limit ? `${value.slice(0, limit)}...` : value;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') return value;
+    if (Array.isArray(value)) {
+        if (depth >= 2) return `[${value.length} items]`;
+        return value.slice(0, 6).map((v) => compactTraceArgValue(v, key, depth + 1));
+    }
+    if (typeof value === 'object') {
+        if (depth >= 2) return '{...}';
+        const out = {};
+        for (const [k, v] of Object.entries(value).slice(0, 12)) {
+            out[k] = compactTraceArgValue(v, k, depth + 1);
+        }
+        return out;
+    }
+    return String(value);
+}
+
+function summarizeToolArgs(toolName, args) {
+    if (!args || typeof args !== 'object') return null;
+    const keys = TOOL_ARG_KEYS[String(toolName || '')] || Object.keys(args).slice(0, 8);
+    const out = {};
+    for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(args, key)) out[key] = compactTraceArgValue(args[key], key);
+    }
+    for (const countKey of ['reads', 'edits', 'writes']) {
+        if (Array.isArray(args[countKey])) out[`${countKey}_count`] = args[countKey].length;
+    }
+    return Object.keys(out).length ? out : null;
+}
+
+function traceBridgeTool({ sessionId, iteration, toolName, toolKind, toolMs, toolArgs }) {
     appendBridgeTrace({
         sessionId,
         iteration,
@@ -127,6 +188,7 @@ function traceBridgeTool({ sessionId, iteration, toolName, toolKind, toolMs }) {
         tool_name: toolName,
         tool_kind: toolKind,
         tool_ms: toolMs,
+        tool_args: summarizeToolArgs(toolName, toolArgs),
     });
 }
 
@@ -195,7 +257,7 @@ function traceStreamAborted({ sessionId, info }) {
     });
 }
 
-function traceBridgePreset({ sessionId, role, presetName, model, provider }) {
+function traceBridgePreset({ sessionId, role, presetName, model, provider, parentSessionId }) {
     // Fires once per dispatch right after the preset has been resolved and
     // its runtime spec (provider/model) assembled. Useful for after-the-fact
     // routing analysis: "which role landed on which preset / provider / model
@@ -207,6 +269,7 @@ function traceBridgePreset({ sessionId, role, presetName, model, provider }) {
         preset_name: presetName || null,
         model: model || null,
         provider: provider || null,
+        parent_session_id: parentSessionId || null,
     });
 }
 

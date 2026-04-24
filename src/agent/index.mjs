@@ -11,6 +11,7 @@ import { setInternalToolsProvider } from './orchestrator/internal-tools.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
 import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory.mjs';
 import { prepareBridgeSession } from './orchestrator/smart-bridge/session-builder.mjs';
+import { traceBridgePreset } from './orchestrator/bridge-trace.mjs';
 import { ensureDataSeeds } from '../shared/seed.mjs';
 import { startAgentMaintenance, stopAgentMaintenance } from './orchestrator/agent-maintenance.mjs';
 import { writeFileSync, readFileSync, existsSync, watch } from 'fs';
@@ -423,6 +424,7 @@ export async function handleToolCall(name, args, opts = {}) {
   const notifyFn = typeof opts.notifyFn === 'function' ? opts.notifyFn : null;
   const elicit = typeof opts.elicitFn === 'function' ? opts.elicitFn : null;
   const requestSignal = opts.requestSignal instanceof AbortSignal ? opts.requestSignal : null;
+  const callerSessionId = typeof opts.callerSessionId === 'string' && opts.callerSessionId ? opts.callerSessionId : null;
   // Idempotent fallback — server.mjs populates the registry at boot via
   // loadModule('agent').then(...), but if eager init failed (missing deps,
   // file error), the first tool call still restores it here. Re-registration
@@ -485,6 +487,16 @@ export async function handleToolCall(name, args, opts = {}) {
           } catch { /* fall through — createSession will throw if incomplete */ }
         }
         const session = createSession(smartArgs);
+        try {
+          traceBridgePreset({
+            sessionId: session.id,
+            role: smartArgs.role || smartArgs.taskType || smartArgs.profileId || null,
+            presetName: session.preset?.id || session.preset?.name || session.profileId || null,
+            model: session.model || smartArgs.model || null,
+            provider: session.provider || smartArgs.provider || null,
+            parentSessionId: callerSessionId,
+          });
+        } catch { /* telemetry best-effort */ }
         const shouldWait = args.wait === false ? false : !!args.prompt;
         if (shouldWait) {
           try {
@@ -725,6 +737,7 @@ export async function handleToolCall(name, args, opts = {}) {
           cwd: args.cwd,
           sourceType: 'lead',
           sourceName: role,
+          parentSessionId: callerSessionId,
         });
 
         // ── Per-worker git worktree isolation (v0.6.243) ──────────────

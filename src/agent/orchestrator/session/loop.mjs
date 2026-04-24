@@ -412,6 +412,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 toolName: call.name,
                 toolKind,
                 toolMs: toolEndedAt - toolStartedAt,
+                toolArgs: call.arguments,
             });
             messages.push({
                 role: 'tool',

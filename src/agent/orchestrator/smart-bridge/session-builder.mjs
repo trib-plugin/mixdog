@@ -38,6 +38,7 @@ import { traceBridgePreset } from '../bridge-trace.mjs';
  * @param {string}  [opts.sourceType]
  * @param {string}  [opts.sourceName]
  * @param {string}  [opts.taskType]
+ * @param {string}  [opts.parentSessionId]
  * @param {boolean} [opts.skipRoleReminder=false] — Pool C suppresses Tier 3 reminder
  * @returns {{ session: object, effectiveCwd: string }}
  */
@@ -52,6 +53,7 @@ export function prepareBridgeSession({
     sourceType,
     sourceName,
     taskType,
+    parentSessionId,
     skipRoleReminder = false,
 }) {
     const effectiveCwd = (typeof cwd === 'string' && cwd) ? cwd : process.cwd();
@@ -76,6 +78,7 @@ export function prepareBridgeSession({
             presetName: presetName || null,
             model: runtimeSpec?.model || null,
             provider: runtimeSpec?.provider || null,
+            parentSessionId: parentSessionId || null,
         });
     } catch { /* telemetry best-effort */ }
     return { session, effectiveCwd };

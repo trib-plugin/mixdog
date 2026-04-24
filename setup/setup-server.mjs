@@ -674,15 +674,46 @@ function ingestTranscriptForBackfill(db, transcriptPath) {
   return count;
 }
 
+const WINDOWS_BROWSER_CANDIDATES = [
+  { label: 'Chrome (user)', env: 'LOCALAPPDATA', parts: ['Google', 'Chrome', 'Application', 'chrome.exe'] },
+  { label: 'Chrome (Program Files)', env: 'PROGRAMFILES', parts: ['Google', 'Chrome', 'Application', 'chrome.exe'] },
+  { label: 'Chrome (Program Files x86)', env: 'PROGRAMFILES(X86)', parts: ['Google', 'Chrome', 'Application', 'chrome.exe'] },
+  { label: 'Edge (user)', env: 'LOCALAPPDATA', parts: ['Microsoft', 'Edge', 'Application', 'msedge.exe'] },
+  { label: 'Edge (Program Files)', env: 'PROGRAMFILES', parts: ['Microsoft', 'Edge', 'Application', 'msedge.exe'] },
+  { label: 'Edge (Program Files x86)', env: 'PROGRAMFILES(X86)', parts: ['Microsoft', 'Edge', 'Application', 'msedge.exe'] },
+  { label: 'Brave (user)', env: 'LOCALAPPDATA', parts: ['BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'] },
+  { label: 'Brave (Program Files)', env: 'PROGRAMFILES', parts: ['BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'] },
+  { label: 'Brave (Program Files x86)', env: 'PROGRAMFILES(X86)', parts: ['BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'] },
+  { label: 'Vivaldi (user)', env: 'LOCALAPPDATA', parts: ['Vivaldi', 'Application', 'vivaldi.exe'] },
+  { label: 'Vivaldi (Program Files)', env: 'PROGRAMFILES', parts: ['Vivaldi', 'Application', 'vivaldi.exe'] },
+  { label: 'Vivaldi (Program Files x86)', env: 'PROGRAMFILES(X86)', parts: ['Vivaldi', 'Application', 'vivaldi.exe'] },
+];
+
 function getBrowserPath() {
-  const paths = [
-    process.env['LOCALAPPDATA'] + '\\Google\\Chrome\\Application\\chrome.exe',
-    process.env['PROGRAMFILES'] + '\\Google\\Chrome\\Application\\chrome.exe',
-    process.env['PROGRAMFILES(X86)'] + '\\Google\\Chrome\\Application\\chrome.exe',
-    process.env['PROGRAMFILES'] + '\\Microsoft\\Edge\\Application\\msedge.exe',
-    process.env['PROGRAMFILES(X86)'] + '\\Microsoft\\Edge\\Application\\msedge.exe',
-  ].filter(Boolean);
-  return paths.find(p => existsSync(p)) || null;
+  const checked = [];
+  const missingEnv = new Set();
+  const seenPaths = new Set();
+
+  for (const candidate of WINDOWS_BROWSER_CANDIDATES) {
+    const base = process.env[candidate.env];
+    if (!base) {
+      missingEnv.add(candidate.env);
+      continue;
+    }
+
+    const browserPath = join(base, ...candidate.parts);
+    if (seenPaths.has(browserPath)) continue;
+    seenPaths.add(browserPath);
+    checked.push({ label: candidate.label, path: browserPath });
+    if (existsSync(browserPath)) return browserPath;
+  }
+
+  const checkedText = checked.length
+    ? checked.map(item => `${item.label}: ${item.path}`).join('; ')
+    : 'no candidate paths because required environment variables were missing';
+  const missingText = missingEnv.size ? ` Missing env vars: ${[...missingEnv].join(', ')}.` : '';
+  console.error(`[setup] No supported Chromium browser found for Config UI app mode. Checked ${checked.length} path(s): ${checkedText}.${missingText}`);
+  return null;
 }
 
 function getCenteredWindowPosition() {
@@ -710,8 +741,97 @@ function getCenteredWindowPosition() {
   }
 }
 
-function openAppWindow() {
+function formatOpenError(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function describeSpawnSyncResult(result) {
+  if (result.error) return formatOpenError(result.error);
+  const details = [];
+  if (typeof result.status === 'number') details.push(`exit status ${result.status}`);
+  if (result.signal) details.push(`signal ${result.signal}`);
+  const stderr = (result.stderr || '').toString().trim();
+  const stdout = (result.stdout || '').toString().trim();
+  if (stderr) details.push(`stderr: ${stderr}`);
+  if (stdout) details.push(`stdout: ${stdout}`);
+  return details.join('; ') || 'unknown launch failure';
+}
+
+function logOpenFailure(method, message) {
+  console.error(`[setup] Failed to open Config UI window via ${method}: ${message}`);
+}
+
+function tryDetachedOpen(method, command, args, attempts) {
+  return new Promise(resolve => {
+    let child;
+    let settled = false;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+
+    try {
+      child = spawn(command, args, {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } catch (error) {
+      const message = formatOpenError(error);
+      attempts.push({ method, ok: false, error: message });
+      logOpenFailure(method, message);
+      finish(false);
+      return;
+    }
+
+    child.once('error', error => {
+      const message = formatOpenError(error);
+      attempts.push({ method, ok: false, error: message });
+      logOpenFailure(method, message);
+      finish(false);
+    });
+    child.once('spawn', () => {
+      child.unref();
+      attempts.push({ method, ok: true });
+      finish(true);
+    });
+  });
+}
+
+function trySyncOpen(method, command, args, attempts) {
+  let result;
+  try {
+    result = spawnSync(command, args, {
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    const message = formatOpenError(error);
+    attempts.push({ method, ok: false, error: message });
+    logOpenFailure(method, message);
+    return false;
+  }
+
+  if (!result.error && result.status === 0) {
+    attempts.push({ method, ok: true });
+    return true;
+  }
+
+  const message = describeSpawnSyncResult(result);
+  attempts.push({ method, ok: false, error: message });
+  logOpenFailure(method, message);
+  return false;
+}
+
+function quotePowerShellString(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+async function openAppWindow() {
   const appUrl = `http://localhost:${PORT}`;
+  const attempts = [];
 
   if (isWin) {
     const browser = getBrowserPath();
@@ -722,29 +842,41 @@ function openAppWindow() {
       ];
       const position = getCenteredWindowPosition();
       if (position) args.push(`--window-position=${position.x},${position.y}`);
-      try {
-        const child = spawn(browser, args, {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true,
-        });
-        child.unref();
-        return true;
-      } catch {}
+      if (await tryDetachedOpen('browser app mode', browser, args, attempts)) {
+        return { ok: true, method: 'browser app mode', attempts };
+      }
+    } else {
+      attempts.push({ method: 'browser app mode', ok: false, error: 'No supported Chromium browser path found' });
     }
-    spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', `Start-Process "${appUrl}"`], {
-      detached: true, stdio: 'ignore', windowsHide: true,
-    }).unref();
-    return true;
+
+    if (trySyncOpen('cmd start', 'cmd', ['/c', 'start', '', appUrl], attempts)) {
+      return {
+        ok: true,
+        method: 'cmd start',
+        warning: browser ? undefined : 'Supported Chromium browser not found; opened with the default browser instead of app mode.',
+        attempts,
+      };
+    }
+
+    const psCommand = `Start-Process -FilePath ${quotePowerShellString(appUrl)}`;
+    if (trySyncOpen('PowerShell Start-Process', 'powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', psCommand], attempts)) {
+      return { ok: true, method: 'PowerShell Start-Process', attempts };
+    }
+
+    return { ok: false, error: 'Failed to launch Config UI window', attempts };
   }
 
   if (process.platform === 'darwin') {
-    exec(`open "${appUrl}"`);
-    return true;
+    exec(`open "${appUrl}"`, error => {
+      if (error) logOpenFailure('macOS open', formatOpenError(error));
+    });
+    return { ok: true, method: 'macOS open', attempts: [{ method: 'macOS open', ok: true }] };
   }
 
-  exec(`xdg-open "${appUrl}"`);
-  return true;
+  exec(`xdg-open "${appUrl}"`, error => {
+    if (error) logOpenFailure('xdg-open', formatOpenError(error));
+  });
+  return { ok: true, method: 'xdg-open', attempts: [{ method: 'xdg-open', ok: true }] };
 }
 
 // -- Merge logic --
@@ -2618,10 +2750,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (path === '/open') {
-    openAppWindow();
+    const result = await openAppWindow();
+    if (!result.ok) {
+      windowOpen = false;
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+      return;
+    }
+
     windowOpen = true;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    res.end(JSON.stringify(result));
     return;
   }
 

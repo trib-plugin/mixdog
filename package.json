@@ -38,6 +38,7 @@
   ],
   "scripts": {
     "start": "node server.mjs",
+    "smoke:io-live": "node scripts/live-io-smoke.mjs",
     "build:tools": "node scripts/build-tools-manifest.mjs",
     "bump": "node scripts/bump-version.mjs",
     "check:version": "node scripts/check-version.mjs"

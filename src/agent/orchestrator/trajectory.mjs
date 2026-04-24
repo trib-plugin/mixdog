@@ -7,35 +7,43 @@ import { join } from 'path';
 import { mkdirSync } from 'fs';
 
 let db = null;
+let initFailed = false;
 
 export function initTrajectoryStore(dataDir) {
-  if (db) return;
-  mkdirSync(dataDir, { recursive: true });
-  const dbPath = join(dataDir, 'trajectory.sqlite');
-  db = new DatabaseSync(dbPath);
-  db.exec('PRAGMA journal_mode=WAL');
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS trajectories (
-      id INTEGER PRIMARY KEY,
-      ts TEXT NOT NULL DEFAULT (datetime('now')),
-      session_id TEXT,
-      scope TEXT,
-      preset TEXT,
-      model TEXT,
-      agent_type TEXT,
-      phase TEXT,
-      tool_calls_json TEXT,
-      iterations INTEGER DEFAULT 1,
-      tokens_in INTEGER DEFAULT 0,
-      tokens_out INTEGER DEFAULT 0,
-      duration_ms INTEGER DEFAULT 0,
-      completed INTEGER DEFAULT 1,
-      error_message TEXT,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  db.exec('CREATE INDEX IF NOT EXISTS idx_traj_scope ON trajectories(scope, ts)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_traj_ts ON trajectories(ts)');
+  if (db || initFailed) return;
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    const dbPath = join(dataDir, 'trajectory.sqlite');
+    db = new DatabaseSync(dbPath);
+    try { db.exec('PRAGMA journal_mode=WAL'); }
+    catch { /* WAL can fail on mounted filesystems; rollback journal is fine. */ }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS trajectories (
+        id INTEGER PRIMARY KEY,
+        ts TEXT NOT NULL DEFAULT (datetime('now')),
+        session_id TEXT,
+        scope TEXT,
+        preset TEXT,
+        model TEXT,
+        agent_type TEXT,
+        phase TEXT,
+        tool_calls_json TEXT,
+        iterations INTEGER DEFAULT 1,
+        tokens_in INTEGER DEFAULT 0,
+        tokens_out INTEGER DEFAULT 0,
+        duration_ms INTEGER DEFAULT 0,
+        completed INTEGER DEFAULT 1,
+        error_message TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_traj_scope ON trajectories(scope, ts)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_traj_ts ON trajectories(ts)');
+  } catch (err) {
+    initFailed = true;
+    db = null;
+    try { process.stderr.write(`[trajectory] disabled: ${err?.message || err}\n`); } catch {}
+  }
 }
 
 const INSERT_SQL = `

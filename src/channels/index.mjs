@@ -249,13 +249,19 @@ forwarder.setOnIdle(() => {
 function applyTranscriptBinding(channelId, transcriptPath, options = {}) {
   if (!transcriptPath) return;
   forwarder.setContext(channelId, transcriptPath, { replayFromStart: options.replayFromStart });
+  const boundTranscriptPath = forwarder.transcriptPath || transcriptPath;
   forwarder.startWatch();
-  void memoryIngestTranscript(transcriptPath);
-  refreshActiveInstance(INSTANCE_ID, { channelId, transcriptPath });
+  void memoryIngestTranscript(boundTranscriptPath);
+  refreshActiveInstance(INSTANCE_ID, { channelId, transcriptPath: boundTranscriptPath });
   if (options.persistStatus !== false) {
     statusState.update((state) => {
       state.channelId = channelId;
-      state.transcriptPath = transcriptPath;
+      state.transcriptPath = boundTranscriptPath;
+      state.lastFileSize = forwarder.lastFileSize;
+      state.sentCount = forwarder.sentCount;
+      state.lastSentHash = forwarder.lastHash;
+      state.lastSentTime = 0;
+      state.sessionIdle = false;
     });
   }
 }
@@ -310,15 +316,7 @@ scheduler.setPendingCheck(() => {
 // scheduler instance directly (avoids module cycles).
 setActivityBusListener(() => scheduler.noteActivity());
 let webhookServer = null;
-if (!_isWorkerMode && config.webhook?.enabled) {
-  // Construct only — start is deferred to startOwnedRuntime() so standby
-  // / proxy instances do not run a second webhook listener or consume
-  // the shared events queue.
-  webhookServer = new WebhookServer(config.webhook, config.channelsConfig ?? null);
-}
-// Construct only — start deferred to startOwnedRuntime() for ownership gating.
-const eventPipeline = new EventPipeline(config.events, config.channelsConfig);
-const _eventPipelineShouldStart = !_isWorkerMode && (config.webhook?.enabled || !!config.events?.rules?.length);
+let eventPipeline = null;
 let bridgeRuntimeConnected = false;
 let bridgeOwnershipRefreshRunning = false;
 let bridgeOwnershipTimer = null;
@@ -730,6 +728,60 @@ async function bindPersistedTranscriptIfAny() {
 `);
   }
 }
+function shouldStartEventPipelineRuntime() {
+  return config.webhook?.enabled || !!config.events?.rules?.length;
+}
+function ensureEventPipelineRuntime() {
+  if (!eventPipeline) {
+    eventPipeline = new EventPipeline(config.events, config.channelsConfig);
+    wireEventQueueHandlers(eventPipeline.getQueue());
+  }
+  return eventPipeline;
+}
+function ensureWebhookServerRuntime() {
+  if (!webhookServer) {
+    webhookServer = new WebhookServer(config.webhook, config.channelsConfig ?? null);
+  }
+  wireWebhookHandlers();
+  return webhookServer;
+}
+function stopWebhookAndEventRuntime() {
+  if (webhookServer) {
+    webhookServer.stop();
+    webhookServer = null;
+  }
+  if (eventPipeline) {
+    eventPipeline.stop();
+    eventPipeline = null;
+  }
+}
+function syncOwnedWebhookAndEventRuntime({ reload = false } = {}) {
+  if (shouldStartEventPipelineRuntime()) {
+    const pipeline = ensureEventPipelineRuntime();
+    if (reload) {
+      pipeline.reloadConfig(config.events, config.channelsConfig);
+      wireEventQueueHandlers(pipeline.getQueue());
+    }
+    pipeline.start();
+  } else if (eventPipeline) {
+    eventPipeline.stop();
+    eventPipeline = null;
+  }
+
+  if (config.webhook?.enabled) {
+    const server = ensureWebhookServerRuntime();
+    if (reload) {
+      server.reloadConfig(config.webhook, config.channelsConfig ?? null, {
+        autoStart: false
+      });
+      wireWebhookHandlers();
+    }
+    server.start();
+  } else if (webhookServer) {
+    webhookServer.stop();
+    webhookServer = null;
+  }
+}
 async function startOwnedRuntime(options = {}) {
   if (bridgeRuntimeConnected) return;
   if (!channelBridgeActive) return;
@@ -751,8 +803,7 @@ async function startOwnedRuntime(options = {}) {
   }
   scheduler.start();
   startSnapshotWriter(scheduler);
-  if (webhookServer) webhookServer.start();
-  if (_eventPipelineShouldStart) eventPipeline.start();
+  syncOwnedWebhookAndEventRuntime();
   let httpPort;
   try {
     httpPort = await startOwnerHttpServer();
@@ -772,8 +823,7 @@ async function stopOwnedRuntime(reason) {
   stopOwnerHttpServer();
   scheduler.stop();
   stopSnapshotWriter();
-  if (webhookServer) webhookServer.stop();
-  eventPipeline.stop();
+  stopWebhookAndEventRuntime();
   releaseOwnedChannelLocks(INSTANCE_ID);
   clearActiveInstance(INSTANCE_ID);
   await backend.disconnect();
@@ -864,21 +914,11 @@ function reloadRuntimeConfig() {
     botConfig,
     { restart: bridgeRuntimeConnected }
   );
-  if (config.webhook?.enabled) {
-    if (webhookServer) {
-      webhookServer.reloadConfig(config.webhook, config.channelsConfig ?? null, {
-        autoStart: bridgeRuntimeConnected
-      });
-    } else {
-      webhookServer = new WebhookServer(config.webhook, config.channelsConfig ?? null);
-      wireWebhookHandlers();
-      if (bridgeRuntimeConnected) webhookServer.start();
-    }
-  } else if (webhookServer) {
-    webhookServer.stop();
-    webhookServer = null;
+  if (bridgeRuntimeConnected) {
+    syncOwnedWebhookAndEventRuntime({ reload: true });
+  } else {
+    stopWebhookAndEventRuntime();
   }
-  eventPipeline.reloadConfig(config.events, config.channelsConfig);
 }
 function injectAndRecord(channelId, name, content, options) {
   const ts = new Date().toISOString();
@@ -925,20 +965,21 @@ function wireWebhookHandlers() {
   if (!webhookServer) return;
   webhookServer.setEventPipeline(eventPipeline);
 }
-wireWebhookHandlers();
-const eventQueue = eventPipeline.getQueue();
-eventQueue.setInjectHandler((channelId, name, content, options) => {
-  injectAndRecord(channelId, name, content, options);
-});
-eventQueue.setSendHandler(async (channelId, text) => {
-  await backend.sendMessage(channelId, text);
-});
-eventQueue.setSessionStateGetter(() => scheduler.getSessionState());
-// Defensive ownership probe: the queue tick should only run in the active
-// owner process. Standby / proxy instances see bridgeRuntimeConnected=false
-// or proxyMode=true and will skip the tick even if an errant start() slipped
-// through.
-eventQueue.setOwnerGetter(() => bridgeRuntimeConnected && !proxyMode);
+function wireEventQueueHandlers(eventQueue) {
+  if (!eventQueue) return;
+  eventQueue.setInjectHandler((channelId, name, content, options) => {
+    injectAndRecord(channelId, name, content, options);
+  });
+  eventQueue.setSendHandler(async (channelId, text) => {
+    await backend.sendMessage(channelId, text);
+  });
+  eventQueue.setSessionStateGetter(() => scheduler.getSessionState());
+  // Defensive ownership probe: the queue tick should only run in the active
+  // owner process. Standby / proxy instances see bridgeRuntimeConnected=false
+  // or proxyMode=true and will skip the tick even if an errant start() slipped
+  // through.
+  eventQueue.setOwnerGetter(() => bridgeRuntimeConnected && !proxyMode);
+}
 function editDiscordMessage(channelId, messageId, label) {
   const token = config.discord?.token;
   if (!token) return;
@@ -2136,9 +2177,6 @@ async function init(_sharedMcp) {
   // (sendNotifyToParent above). The parameter is retained for backward
   // compatibility with any caller that still passes a Server reference.
   scheduler.setInjectHandler((channelId, name, content, options) => {
-    injectAndRecord(channelId, name, content, options);
-  });
-  eventQueue.setInjectHandler((channelId, name, content, options) => {
     injectAndRecord(channelId, name, content, options);
   });
 }

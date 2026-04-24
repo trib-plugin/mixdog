@@ -28,15 +28,21 @@ function getParentPid(pid) {
 function readSessionRecord(pid) {
   const sessionFile = join(homedir(), ".claude", "sessions", `${pid}.json`);
   try {
+    const sessionFileStat = statSync(sessionFile);
     const session = JSON.parse(readFileSync(sessionFile, "utf8"));
     if (!session.sessionId) return null;
     return {
       pid,
       sessionId: session.sessionId,
       cwd: resolve(session.cwd ?? process.cwd()),
+      transcriptPath: typeof session.transcriptPath === "string" && session.transcriptPath
+        ? resolve(session.transcriptPath)
+        : "",
       startedAt: typeof session.startedAt === "number" ? session.startedAt : 0,
+      updatedAt: typeof session.updatedAt === "number" ? session.updatedAt : sessionFileStat.mtimeMs,
       kind: typeof session.kind === "string" ? session.kind : "",
-      entrypoint: typeof session.entrypoint === "string" ? session.entrypoint : ""
+      entrypoint: typeof session.entrypoint === "string" ? session.entrypoint : "",
+      sessionFile
     };
   } catch {
     return null;
@@ -72,6 +78,16 @@ function getLatestInteractiveClaudeSession() {
 function resolveTranscriptForSession(session) {
   const projectsDir = join(homedir(), ".claude", "projects");
   const projectSlug = cwdToProjectSlug(process.cwd());
+  const directTranscript = session.transcriptPath ? resolve(session.transcriptPath) : "";
+  if (directTranscript && existsSync(directTranscript)) {
+    return {
+      claudePid: session.pid,
+      sessionId: session.sessionId,
+      sessionCwd: session.cwd,
+      transcriptPath: directTranscript,
+      exists: true
+    };
+  }
   const preferred = join(projectsDir, cwdToProjectSlug(session.cwd), `${session.sessionId}.jsonl`);
   if (existsSync(preferred)) {
     return {
@@ -96,14 +112,9 @@ function resolveTranscriptForSession(session) {
     claudePid: session.pid,
     sessionId: session.sessionId,
     sessionCwd: session.cwd,
-    transcriptPath: preferred,
+    transcriptPath: directTranscript || preferred,
     exists: false
   };
-}
-function discoverSessionBoundTranscript() {
-  const session = discoverCurrentClaudeSession();
-  if (!session) return null;
-  return resolveTranscriptForSession(session);
 }
 function findLatestTranscriptByMtime(cwd) {
   const projectsDir = join(homedir(), ".claude", "projects");
@@ -122,6 +133,110 @@ function findLatestTranscriptByMtime(cwd) {
   } catch {
     return null;
   }
+}
+function isPidAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function sameResolvedPath(left, right) {
+  if (!left || !right) return false;
+  try {
+    const normalizedLeft = resolve(left);
+    const normalizedRight = resolve(right);
+    return process.platform === "win32"
+      ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+      : normalizedLeft === normalizedRight;
+  } catch {
+    return false;
+  }
+}
+function transcriptStat(transcriptPath) {
+  if (!transcriptPath) return null;
+  try {
+    return statSync(transcriptPath);
+  } catch {
+    return null;
+  }
+}
+function sessionTranscriptCandidate(session, source) {
+  if (!session) return null;
+  const bound = resolveTranscriptForSession(session);
+  if (!bound?.transcriptPath) return null;
+  const stat = bound.exists ? transcriptStat(bound.transcriptPath) : null;
+  const active = isPidAlive(session.pid);
+  const cwdMatches = sameResolvedPath(session.cwd, process.cwd());
+  return {
+    ...bound,
+    source,
+    active,
+    cwdMatches,
+    parentChain: source === "parent-chain",
+    transcriptMtime: stat?.mtimeMs ?? 0,
+    sessionUpdatedAt: session.updatedAt ?? 0,
+    startedAt: session.startedAt ?? 0
+  };
+}
+function latestMtimeTranscriptCandidate() {
+  const transcriptPath = findLatestTranscriptByMtime(process.cwd());
+  if (!transcriptPath) return null;
+  const stat = transcriptStat(transcriptPath);
+  return {
+    claudePid: null,
+    sessionId: basename(transcriptPath, ".jsonl"),
+    sessionCwd: process.cwd(),
+    transcriptPath,
+    exists: true,
+    source: "latest-mtime",
+    active: false,
+    cwdMatches: true,
+    parentChain: false,
+    transcriptMtime: stat?.mtimeMs ?? 0,
+    sessionUpdatedAt: stat?.mtimeMs ?? 0,
+    startedAt: 0
+  };
+}
+function candidateAffinity(candidate) {
+  if (candidate.active && candidate.cwdMatches) return 4;
+  if (candidate.active && candidate.parentChain && candidate.exists) return 3;
+  if (candidate.active) return 2;
+  if (candidate.cwdMatches) return 1;
+  return 0;
+}
+function compareTranscriptCandidates(left, right) {
+  const affinityDiff = candidateAffinity(right) - candidateAffinity(left);
+  if (affinityDiff !== 0) return affinityDiff;
+  if (Number(right.exists) !== Number(left.exists)) return Number(right.exists) - Number(left.exists);
+  if (right.transcriptMtime !== left.transcriptMtime) return right.transcriptMtime - left.transcriptMtime;
+  if (right.sessionUpdatedAt !== left.sessionUpdatedAt) return right.sessionUpdatedAt - left.sessionUpdatedAt;
+  if (right.startedAt !== left.startedAt) return right.startedAt - left.startedAt;
+  return (right.claudePid ?? 0) - (left.claudePid ?? 0);
+}
+function detectCurrentSessionTranscript() {
+  const candidates = [];
+  const seen = new Set();
+  const addCandidate = (candidate) => {
+    if (!candidate?.transcriptPath) return;
+    const keyPath = resolve(candidate.transcriptPath);
+    const key = `${candidate.sessionId || ""}:${process.platform === "win32" ? keyPath.toLowerCase() : keyPath}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(candidate);
+  };
+  addCandidate(sessionTranscriptCandidate(discoverCurrentClaudeSession(), "parent-chain"));
+  for (const session of listInteractiveClaudeSessions()) {
+    addCandidate(sessionTranscriptCandidate(session, "sessions-dir"));
+  }
+  addCandidate(latestMtimeTranscriptCandidate());
+  candidates.sort(compareTranscriptCandidates);
+  return candidates[0] ?? null;
+}
+function discoverSessionBoundTranscript() {
+  return detectCurrentSessionTranscript();
 }
 class OutputForwarder {
   constructor(cb, statusState) {
@@ -157,7 +272,7 @@ class OutputForwarder {
     this.channelId = channelId;
     if (!transcriptPath) return;
     if (this.transcriptPath && !existsSync(this.transcriptPath)) {
-      const relocated = findLatestTranscriptByMtime();
+      const relocated = detectCurrentSessionTranscript()?.transcriptPath ?? findLatestTranscriptByMtime();
       if (relocated) {
         transcriptPath = relocated;
       }
@@ -166,6 +281,9 @@ class OutputForwarder {
       this.closeWatcher();
       this.transcriptPath = transcriptPath;
       this.mainSessionId = "";
+      this.sentCount = 0;
+      this.lastHash = "";
+      this.turnTextBuffer = "";
     }
     try {
       const fileSize = options.replayFromStart ? 0 : existsSync(this.transcriptPath) ? statSync(this.transcriptPath).size : 0;
@@ -642,7 +760,7 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
     this.watchDebounce = setTimeout(() => {
       this.watchDebounce = null;
       if (this.transcriptPath && !existsSync(this.transcriptPath)) {
-        const relocated = findLatestTranscriptByMtime();
+        const relocated = detectCurrentSessionTranscript()?.transcriptPath ?? findLatestTranscriptByMtime();
         if (relocated && relocated !== this.transcriptPath) {
           process.stderr.write(`mixdog: watched transcript gone during flush, relocated to ${relocated}
 `);
@@ -677,6 +795,7 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
 export {
   OutputForwarder,
   cwdToProjectSlug,
+  detectCurrentSessionTranscript,
   discoverCurrentClaudeSession,
   discoverSessionBoundTranscript,
   findLatestTranscriptByMtime,

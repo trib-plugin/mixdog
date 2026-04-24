@@ -481,13 +481,16 @@ async function streamReadRange(fullPath, offset, limit) {
         let lineIdx = 0;
         let collectedBytes = 0;
         let truncated = false;
+        let stoppedAtLimit = false;
         rl.on('line', (line) => {
             if (lineIdx < offset) { lineIdx++; return; }
             if (collected.length >= limit) {
+                stoppedAtLimit = true;
                 rl.close();
                 stream.destroy();
                 return;
             }
+            if (lineIdx === 0 && line.charCodeAt(0) === 0xFEFF) line = line.slice(1);
             const rendered = `${lineIdx + 1}\t${line}`;
             collectedBytes += rendered.length + 1; // +1 for newline
             if (collectedBytes > READ_MAX_OUTPUT_BYTES) {
@@ -503,6 +506,10 @@ async function streamReadRange(fullPath, offset, limit) {
             let out = collected.join('\n');
             if (truncated) {
                 out += `\n\n... [output truncated at ${Math.round(READ_MAX_OUTPUT_BYTES/1024)} KB] ...`;
+            } else if (stoppedAtLimit) {
+                out += `${out ? '\n' : ''}... [range limit reached; next offset: ${offset + collected.length}]`;
+            } else if (!out && offset >= lineIdx) {
+                out = `(no lines in range; file has ${lineIdx} lines)`;
             }
             resolve(out);
         });
@@ -525,6 +532,22 @@ export function toDisplayPath(abs, cwd) {
 function formatMtime(mtimeMs) {
     if (!mtimeMs) return '-';
     return new Date(mtimeMs).toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function formatPaginationHint(remaining, nextOffset) {
+    const n = Number(remaining);
+    const label = Number.isFinite(n) && n > 0 ? `${n} more entries` : 'more entries';
+    return `... [${label}; next offset: ${nextOffset}]`;
+}
+
+function parseOffsetArg(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+}
+
+function parseLineLimitArg(value, defaultValue) {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.max(1, Math.trunc(n)) : defaultValue;
 }
 
 // Shared file-open prologue for read-flavoured tools (tail / wc / diff).
@@ -947,7 +970,7 @@ export const BUILTIN_TOOLS = [
         name: 'glob',
         title: 'Glob',
         annotations: { title: 'Glob', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'File path search via `rg --files`. PREFER ARRAY `pattern` — OR-joined multi-pattern search in ONE call instead of serial globs. Use `grep` for in-file content search.',
+        description: 'File path search via `rg --files`. PREFER ARRAY `pattern` — OR-joined multi-pattern search in ONE call instead of serial globs. Do not emit two `glob` calls in the same assistant turn; merge them into one `glob` call with a single pattern array, even when the answer needs separate groups (group the returned paths yourself). Do not drop requested categories: if the task asks for route files + policy JSON files, include route patterns and policy patterns in that same array. Example: `pattern:["**/*route*.mjs","**/*policy*.json"]`. Use `grep` for in-file content search.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -2744,9 +2767,11 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // requested line window instead of throwing (Task B). Without
             // range args the cap still throws so small-file default path
             // can't be weaponised to pull megabytes by accident.
-            const offset = typeof args.offset === 'number' ? args.offset : 0;
-            const limit = typeof args.limit === 'number' ? args.limit : 2000;
-            const hasRangeArgs = typeof args.offset === 'number' || typeof args.limit === 'number';
+            const hasOffsetArg = args.offset !== undefined && args.offset !== null;
+            const hasLimitArg = args.limit !== undefined && args.limit !== null;
+            const hasRangeArgs = hasOffsetArg || hasLimitArg;
+            const offset = parseOffsetArg(args.offset);
+            const limit = parseLineLimitArg(args.limit, 2000);
             let st;
             try {
                 st = statSync(fullPath);
@@ -2756,7 +2781,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}${hint}`;
             }
             const wantFull = args.full === true;
-            const cacheKey = `read|${fullPath}|${st.mtimeMs}|${st.size}|${typeof args.offset === 'number' ? args.offset : 'd'}|${typeof args.limit === 'number' ? args.limit : 'd'}|${wantFull ? 'f' : 's'}`;
+            const cacheKey = `read|${fullPath}|${st.mtimeMs}|${st.size}|${hasOffsetArg ? offset : 'd'}|${hasLimitArg ? limit : 'd'}|${wantFull ? 'f' : 's'}`;
             const cachedEntry = _cacheGetEntry(cacheKey);
             if (cachedEntry !== null) {
                 _recordReadSnapshot(fullPath, st, readStateScope, cachedEntry.readSnapshotMeta || { source: 'read_cached' });
@@ -2789,7 +2814,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }
             try {
                 const content = await readFile(fullPath, 'utf-8');
-                const lines = content.split('\n');
+                const lines = content.split(/\r?\n/);
+                if (lines.length > 0 && lines[0].charCodeAt(0) === 0xFEFF) lines[0] = lines[0].slice(1);
                 const sliced = lines.slice(offset, offset + limit);
                 const rendered = sliced.map((line, i) => `${offset + i + 1}\t${line}`).join('\n');
                 // Output byte cap protects against many-line slices that
@@ -2800,6 +2826,13 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     out = rendered.slice(0, READ_MAX_OUTPUT_BYTES) + `\n\n... [output truncated at ${Math.round(READ_MAX_OUTPUT_BYTES/1024)} KB] ...`;
                 } else {
                     out = rendered;
+                }
+                if (hasRangeArgs && rendered.length <= READ_MAX_OUTPUT_BYTES) {
+                    if (sliced.length === 0 && offset >= lines.length) {
+                        out = `(no lines in range; file has ${lines.length} lines)`;
+                    } else if (offset + sliced.length < lines.length) {
+                        out += `${out ? '\n' : ''}${formatPaginationHint(lines.length - offset - sliced.length, offset + sliced.length)}`;
+                    }
                 }
                 // v0.6.231 smart cap. Only engages when the caller asked for
                 // the default read (no offset/limit, full:false) AND the file
