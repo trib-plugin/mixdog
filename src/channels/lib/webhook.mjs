@@ -21,6 +21,15 @@ function logWebhook(msg) {
   } catch {
   }
 }
+function isActionableEvent(event, action) {
+  if (!event) return true;
+  if (event === "push") return true;
+  if (event === "issues") return ["opened", "edited", "reopened"].includes(action);
+  if (event === "issue_comment") return action === "created";
+  if (event === "pull_request") return ["opened", "edited", "reopened", "synchronize"].includes(action);
+  if (event === "ping") return false;
+  return false;
+}
 const SIGNATURE_HEADERS = {
   github: { header: "x-hub-signature-256", prefix: "sha256=" },
   sentry: { header: "sentry-hook-signature", prefix: "" },
@@ -335,11 +344,19 @@ class WebhookServer {
               return;
             }
             const parsed = body ? JSON.parse(body) : {};
+            const eventType = headers["x-github-event"] || null;
+            const eventAction = parsed?.action || null;
+            if (!isActionableEvent(eventType, eventAction)) {
+              logWebhook(`${name}: skip event=${eventType || "<none>"} action=${eventAction || "<none>"} (id=${deliveryId})`);
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ status: "skip", event: eventType, action: eventAction, id: deliveryId }));
+              return;
+            }
             appendDelivery(name, {
               id: deliveryId,
               endpoint: name,
               status: "pending",
-              event: headers["x-github-event"] || null,
+              event: eventType,
               headersSummary: buildHeadersSummary(headers),
               payloadPreview: String(body || "").slice(0, 512),
             });
