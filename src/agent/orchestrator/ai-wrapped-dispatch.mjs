@@ -183,6 +183,31 @@ function parseGrepBestCandidate(rawText) {
   return null
 }
 
+function parseNumberedReadLines(rawText) {
+  return String(rawText || '').split('\n')
+    .map((line) => {
+      const m = line.match(/^(\d+)\t(.*)$/)
+      return m ? { line: Number(m[1]), text: m[2] } : null
+    })
+    .filter(Boolean)
+}
+
+function inferEnclosingFunctionHint(readOut, targetLine) {
+  const rows = parseNumberedReadLines(readOut)
+  if (!rows.length) return null
+  let idx = rows.findIndex((row) => row.line >= targetLine)
+  if (idx === -1) idx = rows.length - 1
+  const banned = new Set(['if', 'for', 'while', 'switch', 'catch', 'function'])
+  for (let i = idx; i >= 0; i--) {
+    const line = rows[i].text.trim()
+    let m = line.match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)
+      || line.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_][A-Za-z0-9_]*\s*=>)/)
+      || line.match(/^(?:async\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*\{?$/)
+    if (m?.[1] && !banned.has(m[1])) return m[1]
+  }
+  return null
+}
+
 // Explore fast path runs before the LLM call and, if it finds a candidate,
 // returns its synthesized answer directly — skipping the LLM entirely. That's
 // correct for simple "where is X defined?" queries but wrong for multi-angle
@@ -192,8 +217,14 @@ function _isSimpleExploreLookup(query) {
   const text = String(query || '').trim()
   if (!text) return false
   const words = text.split(/\s+/).filter(Boolean)
-  if (words.length > 12) return false
-  if (/\b(list|propose|evaluate|identify|trace|review|audit|summarize|design|implement|refactor|analyze|compare|suggest|recommend|walkthrough|walk\s+through)\b/i.test(text)) return false
+  if (/\b(list|propose|evaluate|trace|review|audit|summarize|design|implement|refactor|analyze|compare|suggest|recommend|walkthrough|walk\s+through)\b/i.test(text)) return false
+  if (/\b(who\s+calls|callers?|called\s+by|all\s+references|reference\s+graph)\b/i.test(text)) return false
+  if (words.length > 12) {
+    const strongIdentifiers = text.match(/\b(?:[A-Z][A-Z0-9_]{2,}|[a-z]+(?:[A-Z][A-Za-z0-9]*)+)\b/g) || []
+    const uniqueStrong = [...new Set(strongIdentifiers)]
+    const lookupIntent = /\b(find|locate|where|file|function|definition|defined|contains|identifier|symbol)\b|찾|어디|파일|함수|위치|포함|식별자|심볼|근거/i.test(text)
+    if (words.length > 45 || uniqueStrong.length !== 1 || !lookupIntent) return false
+  }
   return true
 }
 
@@ -226,47 +257,34 @@ async function runExploreFilenamePatternFastPath(query, cwd) {
   ].join('\n')
 }
 
-async function runExploreFastPath(query, cwd) {
+async function runExploreCallerFastPath(query, cwd) {
   if (!cwd) return null
-  const filenamePatternResult = await runExploreFilenamePatternFastPath(query, cwd)
-  if (filenamePatternResult) return filenamePatternResult
-  if (!_isSimpleExploreLookup(query)) return null
-  const identifier = extractIdentifierCandidate(query)
+  const text = String(query || '').trim()
+  if (!/\b(who\s+calls|callers?\s+of|called\s+by|caller\s+file|caller\s+function)\b/i.test(text)) return null
+  if (/\b(list\s+all|all\s+references|reference\s+graph|impact|trace|audit|review)\b/i.test(text)) return null
+  if (text.split(/\s+/).filter(Boolean).length > 50) return null
+  const identifier = extractIdentifierCandidate(text)
   if (!identifier) return null
-  let symbolResult
+  let callers = ''
   try {
-    symbolResult = await executeCodeGraphTool('find_symbol', { symbol: identifier }, cwd)
+    callers = await executeCodeGraphTool('code_graph', {
+      mode: 'callers',
+      symbol: identifier,
+      limit: 20,
+    }, cwd)
   } catch {
-    symbolResult = null
+    return null
   }
-  const symbolCandidate = parseFindSymbolBestCandidate(symbolResult)
-  if (symbolCandidate?.filePath && Number.isFinite(symbolCandidate.line)) {
-    let readOut = ''
-    try {
-      readOut = await executeBuiltinTool('read', {
-        path: symbolCandidate.filePath,
-        offset: Math.max(0, symbolCandidate.line - 1),
-        limit: 12,
-      }, cwd)
-    } catch {
-      readOut = ''
-    }
+  if (!callers || String(callers).startsWith('Error:') || /^\(no callers\)/i.test(String(callers).trim())) return null
+  return [
+    `Direct caller lookup for \`${identifier}\` from code_graph:`,
+    'Complete grounded result; no follow-up file read is needed when caller and evidence line are present.',
+    String(callers).trim(),
+  ].join('\n')
+}
 
-    const pieces = [
-      `Best code match for \`${identifier}\`: \`${symbolCandidate.filePath}:${symbolCandidate.line}\`.`,
-      summarizeDeclarationShape(identifier, symbolCandidate.declaration),
-      `Declaration: ${symbolCandidate.declaration}`,
-    ]
-    if (symbolCandidate.context) {
-      pieces.push(`Context: ${symbolCandidate.context}`)
-    }
-    if (readOut && !String(readOut).startsWith('Error:')) {
-      const compactRead = String(readOut).split('\n').slice(0, 8).join('\n')
-      pieces.push(`Nearby lines:\n${compactRead}`)
-    }
-    return pieces.join('\n\n')
-  }
-
+async function runExploreGrepLiteralFastPath(identifier, cwd) {
+  if (!identifier || !cwd) return null
   let grepOut = ''
   try {
     grepOut = await executeBuiltinTool('grep', {
@@ -287,21 +305,88 @@ async function runExploreFastPath(query, cwd) {
   try {
     readOut = await executeBuiltinTool('read', {
       path: candidate.filePath,
-      offset: Math.max(0, candidate.line - 1),
+      offset: Math.max(0, candidate.line - 4),
       limit: 12,
     }, cwd)
   } catch {
     readOut = ''
   }
   const parts = [
-    `Best code match for \`${identifier}\`: \`${candidate.filePath}:${candidate.line}\`.`,
+    `Best literal match for \`${identifier}\`: \`${candidate.filePath}:${candidate.line}\`.`,
   ]
   if (candidate.content) parts.push(`Match: ${candidate.content}`)
+  const enclosing = inferEnclosingFunctionHint(readOut, candidate.line)
+  if (enclosing) {
+    parts.push(`Enclosing function hint: \`${enclosing}\`.`)
+  }
   if (readOut && !String(readOut).startsWith('Error:')) {
     const compactRead = String(readOut).split('\n').slice(0, 8).join('\n')
     parts.push(`Nearby lines:\n${compactRead}`)
   }
   return parts.join('\n\n')
+}
+
+async function runExploreLiteralFastPath(query, cwd) {
+  if (!cwd) return null
+  const text = String(query || '').trim()
+  if (!/\b(literal|exact|contains|occurrence|identifier)\b|리터럴|문자열|어디|쓰이|사용|포함|근거/i.test(text)) return null
+  if (/\b(list\s+all|all\s+references|reference\s+graph|impact|trace|audit|review)\b/i.test(text)) return null
+  if (text.split(/\s+/).filter(Boolean).length > 60) return null
+  const identifier = extractIdentifierCandidate(text)
+  if (!identifier || !/^(?:[A-Z][A-Z0-9_]{2,}|[a-z]+(?:[A-Z][A-Za-z0-9]*)+)$/.test(identifier)) return null
+  return runExploreGrepLiteralFastPath(identifier, cwd)
+}
+
+async function runExploreFastPath(query, cwd) {
+  if (!cwd) return null
+  const filenamePatternResult = await runExploreFilenamePatternFastPath(query, cwd)
+  if (filenamePatternResult) return filenamePatternResult
+  const callerResult = await runExploreCallerFastPath(query, cwd)
+  if (callerResult) return callerResult
+  const literalResult = await runExploreLiteralFastPath(query, cwd)
+  if (literalResult) return literalResult
+  if (!_isSimpleExploreLookup(query)) return null
+  const identifier = extractIdentifierCandidate(query)
+  if (!identifier) return null
+  let symbolResult
+  try {
+    symbolResult = await executeCodeGraphTool('find_symbol', { symbol: identifier }, cwd)
+  } catch {
+    symbolResult = null
+  }
+  const symbolCandidate = parseFindSymbolBestCandidate(symbolResult)
+  if (symbolCandidate?.filePath && Number.isFinite(symbolCandidate.line)) {
+    let readOut = ''
+    try {
+      readOut = await executeBuiltinTool('read', {
+        path: symbolCandidate.filePath,
+        offset: Math.max(0, symbolCandidate.line - 4),
+        limit: 12,
+      }, cwd)
+    } catch {
+      readOut = ''
+    }
+
+    const pieces = [
+      `Best code match for \`${identifier}\`: \`${symbolCandidate.filePath}:${symbolCandidate.line}\`.`,
+      summarizeDeclarationShape(identifier, symbolCandidate.declaration),
+      `Declaration: ${symbolCandidate.declaration}`,
+    ]
+    if (symbolCandidate.context) {
+      pieces.push(`Context: ${symbolCandidate.context}`)
+    }
+    const enclosing = inferEnclosingFunctionHint(readOut, symbolCandidate.line)
+    if (enclosing) {
+      pieces.push(`Enclosing function hint: \`${enclosing}\`.`)
+    }
+    if (readOut && !String(readOut).startsWith('Error:')) {
+      const compactRead = String(readOut).split('\n').slice(0, 8).join('\n')
+      pieces.push(`Nearby lines:\n${compactRead}`)
+    }
+    return pieces.join('\n\n')
+  }
+
+  return runExploreGrepLiteralFastPath(identifier, cwd)
 }
 
 function getDiskCachePath() {
@@ -438,6 +523,16 @@ export function getDispatchResult(id) {
   return _dispatchResults.get(String(id)) || null
 }
 
+function appendRetrievalCompleteHint(tool, body, queryCount) {
+  const text = typeof body === 'string' ? body : String(body ?? '')
+  const plural = queryCount === 1 ? 'this query' : 'these queries'
+  return [
+    text,
+    '',
+    `[${tool} retrieval complete: synthesize from the result for ${plural}; do not call ${tool} again with the same query unless the result explicitly says there were no useful hits.]`,
+  ].join('\n')
+}
+
 export async function dispatchAiWrapped(name, args, ctx) {
   const rawQuery = args.query
   if (rawQuery == null) return fail('query is required')
@@ -522,7 +617,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
           if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
           return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
         }).join('\n\n---\n\n')
-    return ok(merged)
+    return ok(appendRetrievalCompleteHint(name, merged, queries.length))
   }
 
   // Background dispatch path. The caller (Lead) gets an immediate handle;
@@ -652,6 +747,7 @@ Use the \`memory_search\` tool to retrieve ranked entries.
 Rules:
 - Default to exactly ONE \`memory_search\` call.
 - A second \`memory_search\` call is allowed only if the first returns no useful hits and you are widening time scope or dropping an over-tight filter.
+- Never call \`memory_search\` twice with identical arguments. If you already searched the query, synthesize from that evidence.
 - Never do a third retrieval call.
 - If the first call yields relevant entries, synthesize immediately instead of probing alternate phrasings.
 - Cite entry ids inline.
@@ -662,6 +758,10 @@ Return concise prose.`
 function buildSearchPrompt(query, _cwd) {
   // cwd has no effect on web_search semantics; second arg accepted for
   // builder signature uniformity.
+  const repoMatch = String(query || '').match(/\b([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/)
+  const repoRule = repoMatch
+    ? `\n- This is a GitHub repository read. Call \`web_search\` exactly once with \`github_type:\"repo\"\`, \`owner:\"${repoMatch[1]}\"\`, and \`repo:\"${repoMatch[2]}\"\`. Omit \`keywords\`, \`site\`, and \`type\`. The second-call exception does not apply to this query: stop after that one call unless the tool returns an explicit error or no GitHub repository URL. Do not run code/repository/free-text follow-up searches.`
+    : ''
   return `Query: ${query}
 
 Use the \`web_search\` tool to retrieve ranked results.
@@ -673,6 +773,11 @@ Rules:
 - If the first call already returns enough evidence, synthesize immediately.
 - If the first call returns a single GitHub read result (repo / file / issue / pulls) with concrete metadata, treat it as authoritative and answer immediately.
 - Prefer narrower \`site\` / \`type\` / GitHub-specific arguments over retrying with near-identical free text.
+- For specific documentation queries, choose a result whose title, URL, or snippet directly matches the requested topic. Do not answer with a generic homepage when the query asks for a specific page such as a models/API/reference page.
+- For GitHub repo questions, repository metadata (URL, description, stars/language/default branch/license) is enough evidence.
+- Only set \`github_type\` / \`owner\` / \`repo\` for explicit GitHub queries. For official docs or domain-restricted web searches, call \`web_search\` with \`keywords\`, optional \`site\`, optional \`type\`, and leave all GitHub fields omitted.
+- Do not send empty optional fields such as \`owner:""\`, \`repo:""\`, \`path:""\`, \`site:""\`, \`keywords:""\`, or placeholder \`number:0\`; omit unused fields entirely.
+${repoRule}
 - Cite URLs inline.
 
 Return concise prose.`

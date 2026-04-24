@@ -79,6 +79,82 @@ const searchArgsSchema = z.object({
   { message: 'keywords is required for non-GitHub-read operations' },
 )
 
+const SEARCH_EMPTY_STRING_FIELDS = [
+  'keywords',
+  'site',
+  'type',
+  'github_type',
+  'owner',
+  'repo',
+  'path',
+  'ref',
+  'state',
+]
+
+function normalizeSearchArgs(rawArgs) {
+  if (!rawArgs || typeof rawArgs !== 'object' || Array.isArray(rawArgs)) return rawArgs
+  const args = { ...rawArgs }
+  for (const key of SEARCH_EMPTY_STRING_FIELDS) {
+    const value = args[key]
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      if (!trimmed) delete args[key]
+      else args[key] = trimmed
+    }
+  }
+  if (Array.isArray(args.keywords)) {
+    const keywords = args.keywords
+      .map(value => typeof value === 'string' ? value.trim() : value)
+      .filter(value => typeof value === 'string' ? value.length > 0 : Boolean(value))
+    if (keywords.length > 0) args.keywords = keywords
+    else delete args.keywords
+  }
+  if (args.number === 0 && args.github_type !== 'issue') {
+    delete args.number
+  }
+  if (['file', 'repo', 'issue', 'pulls'].includes(args.github_type)) {
+    delete args.keywords
+    delete args.site
+    delete args.type
+  }
+  if (args.github_type === 'repo') {
+    delete args.path
+    delete args.number
+    delete args.ref
+    delete args.state
+  } else if (args.github_type === 'file') {
+    delete args.number
+    delete args.state
+  } else if (args.github_type === 'issue') {
+    delete args.path
+    delete args.ref
+    delete args.state
+  } else if (args.github_type === 'pulls') {
+    delete args.path
+    delete args.number
+    delete args.ref
+  }
+  if (args.github_type && args.site && !/(^|\.)github\.com$/i.test(args.site)) {
+    delete args.github_type
+    delete args.owner
+    delete args.repo
+    delete args.path
+    delete args.number
+    delete args.ref
+    delete args.state
+  }
+  if (['file', 'repo', 'issue', 'pulls'].includes(args.github_type) && (!args.owner || !args.repo)) {
+    delete args.github_type
+    delete args.owner
+    delete args.repo
+    delete args.path
+    delete args.number
+    delete args.ref
+    delete args.state
+  }
+  return args
+}
+
 const scrapeArgsSchema = z.object({
   urls: z.array(z.string().url()).min(1).describe('List of URLs to scrape.'),
 })
@@ -277,13 +353,79 @@ async function writeStartupSnapshot() {
 async function _searchCore(args, { config, usageState, cacheState }) {
   const isGithubReadType = ['file', 'repo', 'issue', 'pulls'].includes(args.github_type)
   if (isGithubReadType) {
-    const response = await runRawSearch({
-      ...args,
-      keywords: args.keywords || '',
-      providers: ['github'],
-      maxResults: args.maxResults || getRawSearchMaxResults(config),
-    })
-    return { tool: 'search', provider: 'github', github_type: args.github_type, response }
+    try {
+      const response = await runRawSearch({
+        ...args,
+        keywords: args.keywords || '',
+        providers: ['github'],
+        maxResults: args.maxResults || getRawSearchMaxResults(config),
+      })
+      return { tool: 'search', provider: 'github', github_type: args.github_type, response }
+    } catch (error) {
+      if (args.github_type !== 'repo' || !args.owner || !args.repo) throw error
+      const githubError = error instanceof Error ? error.message : String(error)
+      const runtimeEnv = buildRuntimeEnv(config)
+      const available = getAvailableRawProviders(runtimeEnv)
+      const providers = rankProviders(
+        getRawSearchPriority(config).filter(provider => provider !== 'github' && available.includes(provider)),
+        usageState,
+        'github.com',
+      )
+      if (!providers.length) throw error
+
+      const fallbackArgs = {
+        keywords: `GitHub repository ${args.owner}/${args.repo}`,
+        site: 'github.com',
+        type: 'web',
+        maxResults: args.maxResults || getRawSearchMaxResults(config),
+      }
+      const searchCacheKey = buildCacheKey('search', {
+        keywords: fallbackArgs.keywords,
+        providers,
+        site: fallbackArgs.site,
+        type: fallbackArgs.type,
+        github_type: 'repo:fallback',
+        owner: args.owner,
+        repo: args.repo,
+        maxResults: fallbackArgs.maxResults,
+      })
+      const cachedSearch = getCachedEntry(cacheState, searchCacheKey)
+      if (cachedSearch) {
+        return {
+          ...cachedSearch.payload,
+          cache: buildCacheMeta(cachedSearch, true),
+          github_type: args.github_type,
+          githubFallback: true,
+          githubError,
+        }
+      }
+
+      try {
+        const response = await runRawSearch({
+          ...fallbackArgs,
+          providers,
+        })
+        noteProviderSuccess(usageState, response.usedProvider, {
+          lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
+        })
+        for (const failure of response.failures || []) {
+          noteProviderFailure(usageState, failure.provider, failure.error, 60000)
+        }
+        rememberPreferredRawProviders(usageState, 'github.com', [response.usedProvider, ...providers.filter(item => item !== response.usedProvider)])
+        const cachedEntry = setCachedEntry(
+          cacheState,
+          searchCacheKey,
+          { tool: 'search', providers, response, github_type: args.github_type, githubFallback: true, githubError },
+          getSearchCacheTtlMs('web'),
+        )
+        return { tool: 'search', providers, response, cache: buildCacheMeta(cachedEntry, false), github_type: args.github_type, githubFallback: true, githubError }
+      } catch (fallbackError) {
+        for (const provider of providers) {
+          noteProviderFailure(usageState, provider, fallbackError instanceof Error ? fallbackError.message : String(fallbackError), 60000)
+        }
+        throw error
+      }
+    }
   }
 
   if (!args.github_type && !args.site && args.keywords) {
@@ -594,7 +736,7 @@ async function handleToolCall(name, rawArgs) {
     case 'search': {
       let args
       try {
-        args = searchArgsSchema.parse(rawArgs || {})
+        args = searchArgsSchema.parse(normalizeSearchArgs(rawArgs || {}))
       } catch (e) {
         if (e instanceof z.ZodError) {
           return { content: [{ type: 'text', text: JSON.stringify({ error: 'Invalid arguments', details: e.errors }) }], isError: true }

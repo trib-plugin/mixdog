@@ -13,9 +13,28 @@ let runtime = null;
 let syntheticToolsRegistered = false;
 let liveInternalToolDefs = [];
 const liveAiWrappedToolDefs = [];
+let recallSeedReady = true;
+let recallSeedError = null;
 
 function readJsonIfExists(path) {
     try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
+}
+
+function isSearchProviderConfigured() {
+    try {
+        const dataRoot = process.env.CLAUDE_PLUGIN_DATA;
+        if (!dataRoot) return false;
+        const raw = readJsonIfExists(join(dataRoot, 'search-config.json'));
+        const creds = raw?.rawSearch?.credentials || {};
+        for (const entry of Object.values(creds)) {
+            if (!entry || typeof entry !== 'object') continue;
+            const v = entry.apiKey ?? entry.token ?? '';
+            if (typeof v === 'string' && v.trim().length > 0) return true;
+        }
+        return false;
+    } catch {
+        return false;
+    }
 }
 
 function ensureLocalPluginEnv() {
@@ -102,7 +121,7 @@ function printHelp() {
         'Options:',
         '  --role <name>              Bridge role to spawn. Default worker.',
         '  --preset <id|name>         Optional explicit preset passed to bridge.',
-        '  --case <all|name[,name...]>  pagination,discovery,multi_read,glob_multi,list_recent,symbol_lookup,count_tail,tree_shape,grep_multi,grep_context,grep_count,list_find_size,list_find_mtime,code_graph_callers,read_bookends,read_offset_window,explore_fast_symbol,explore_fanout,explore_callers,recall_single,search_live_official,search_github_repo,search_config_guard,explore.',
+        '  --case <all|name[,name...]>  pagination,discovery,multi_read,glob_multi,list_recent,symbol_lookup,count_tail,tree_shape,grep_multi,grep_context,grep_count,list_find_size,list_find_mtime,code_graph_callers,read_bookends,read_offset_window,explore_fast_symbol,explore_literal_context,explore_fanout,explore_callers,recall_single,recall_recent_webhook,recall_array_fanout,search_live_official,search_official_site_platform,search_github_repo,search_github_slug,real_explore_literal,real_search_models,real_recall_webhook,search_config_guard,explore.',
         '  --runs <n>                 Repeat each case. Default 1.',
         '  --parallel                 Run selected cases concurrently within each run.',
         '  --workspace <path>         Reuse/create a fixture workspace at path.',
@@ -289,7 +308,7 @@ const CASES = {
         prompt: [
             'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
             'Do not modify files. Do not use bash.',
-            'Task: Locate both route modules and policy JSON files under `src` using filename patterns. Use one `glob` call whose pattern array includes both route patterns and policy patterns. Answer compact JSON with keys: case, routes, policies. Both categories are required.',
+            'Task: Locate both route modules and policy JSON files under `src` using filename patterns. Use exactly one `glob` call with a pattern array containing `src/**/*route*.mjs`, `src/**/*route*.js`, and `src/**/*policy*.json`. Answer compact JSON with keys: case, routes, policies. Both categories are required.',
         ].join('\n'),
     },
     list_recent: {
@@ -461,6 +480,7 @@ const CASES = {
     },
     explore_fast_symbol: {
         expectAll: [/smokeNeedleTarget|IO_SMOKE_NEEDLE|module-13/i],
+        jsonTextMatches: [/module-13\.mjs/i, /smokeNeedleTarget/i],
         preferTools: ['explore'],
         maxTotalIterations: 3,
         maxToolCalls: 1,
@@ -474,8 +494,26 @@ const CASES = {
             'Task: This is a local filesystem lookup. Use exactly one `explore` call to find `IO_SMOKE_NEEDLE` and report the file and function as compact JSON. Do not call grep/read/glob directly.',
         ].join('\n'),
     },
+    explore_literal_context: {
+        expectAll: [/GRAPH_CALLER_TARGET/i, /runCheckoutSmoke/i, /app\.mjs/i],
+        jsonTextMatches: [/app\.mjs/i, /runCheckoutSmoke/i, /GRAPH_CALLER_TARGET/i],
+        forbiddenAnswerPatterns: [/enclosingFunction"?\s*:\s*null/i],
+        preferTools: ['explore'],
+        maxTotalIterations: 3,
+        maxToolCalls: 1,
+        requireToolArgMatches: [
+            { tool: 'explore', pattern: /GRAPH_CALLER_TARGET/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'glob'],
+        prompt: [
+            'You are a bridge worker running a live routing smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: This is a local literal lookup. Use exactly one `explore` call to find `GRAPH_CALLER_TARGET`, then answer compact JSON with keys: case, file, function, evidence. The evidence field must include `GRAPH_CALLER_TARGET`. Do not call grep/read/glob directly.',
+        ].join('\n'),
+    },
     explore_fanout: {
         expectAll: [/order\.route\.mjs|profile\.route\.mjs/i, /refund\.policy\.json/i],
+        jsonTextMatches: [/order\.route\.mjs/i, /profile\.route\.mjs/i, /refund\.policy\.json/i],
         preferTools: ['explore'],
         maxTotalIterations: 2,
         maxToolCalls: 1,
@@ -491,9 +529,10 @@ const CASES = {
     },
     explore_callers: {
         expectAll: [/runCheckoutSmoke|app\.mjs|GRAPH_CALLER_TARGET/i],
+        jsonTextMatches: [/app\.mjs/i, /runCheckoutSmoke/i, /buildCheckoutPipeline|GRAPH_CALLER_TARGET/i],
         preferTools: ['explore'],
-        maxTotalIterations: 8,
-        maxToolCalls: 5,
+        maxTotalIterations: 3,
+        maxToolCalls: 1,
         requireToolArgMatches: [
             { tool: 'explore', pattern: /buildCheckoutPipeline|caller|call/ },
         ],
@@ -506,9 +545,11 @@ const CASES = {
     },
     recall_single: {
         expectAll: [/fast path|session\/manager|ai-wrapped-dispatch|iter/i],
+        jsonTextMatches: [/fast path|iter/i, /session\/manager|ai-wrapped-dispatch|게이트/i],
         preferTools: ['recall'],
         maxTotalIterations: 6,
         maxToolCalls: 3,
+        noDuplicateToolCalls: true,
         requireToolArgMatches: [
             { tool: 'recall', pattern: /fast path|iter|게이트/ },
         ],
@@ -519,8 +560,45 @@ const CASES = {
             'Task: This asks about past context. Use exactly one `recall` call for "fast path 게이트 보강 수정 iter 줄이기". Answer compact JSON with keys: case, remembered_change, evidence. Do not use search, explore, grep, or read.',
         ].join('\n'),
     },
+    recall_array_fanout: {
+        seedRecall: true,
+        skipIf: () => recallSeedReady ? null : `recall seed unavailable: ${recallSeedError || 'unknown error'}`,
+        expectAll: [/LIVE_RECALL_TARGET|opal-memory-v1/i, /fast path|iter|게이트|ai-wrapped-dispatch/i],
+        jsonTextMatches: [/LIVE_RECALL_TARGET|opal-memory-v1/i, /fast path|iter|게이트|ai-wrapped-dispatch/i],
+        preferTools: ['recall'],
+        maxTotalIterations: 8,
+        maxToolCalls: 4,
+        requireToolArgMatches: [
+            { tool: 'recall', pattern: /LIVE_RECALL_TARGET|fast path|게이트/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'search', 'explore'],
+        prompt: [
+            'You are a bridge worker running a live memory routing smoke benchmark.',
+            'Do not modify files. Do not use bash.',
+            'Task: This asks about two unrelated past-context angles. Use exactly one `recall` call with a query array containing "LIVE_RECALL_TARGET opal-memory-v1" and "fast path 게이트 보강 수정 iter 줄이기". Answer compact JSON with keys: case, seeded_marker, remembered_change. Do not use search, explore, grep, or read.',
+        ].join('\n'),
+    },
+    recall_recent_webhook: {
+        expectAll: [/webhook|웹훅/i, /projectaa|tester-probe|probe/i],
+        jsonTextMatches: [/webhook|웹훅/i, /projectaa/i, /tester-probe|probe/i],
+        preferTools: ['recall'],
+        maxTotalIterations: 6,
+        maxToolCalls: 3,
+        noDuplicateToolCalls: true,
+        requireToolArgMatches: [
+            { tool: 'recall', pattern: /webhook|웹훅|projectaa|tester-probe/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'search', 'explore'],
+        prompt: [
+            'You are a bridge worker running a live memory routing smoke benchmark.',
+            'Do not modify files. Do not use bash.',
+            'Task: This asks about recent past context. Use exactly one `recall` call for "projectaa webhook tester-probe 웹훅 확인". Answer compact JSON with keys: case, topic, evidence. Do not use search, explore, grep, or read.',
+        ].join('\n'),
+    },
     search_live_official: {
         expectAll: [/OpenAI|docs|platform\.openai\.com|models/i],
+        jsonTextMatches: [/OpenAI/i, /platform\.openai\.com|developers\.openai\.com/i, /models/i],
+        forbiddenAnswerPatterns: [/lookup_failed|requires authentication|authentication error|url"?\s*:\s*null/i],
         preferTools: ['search'],
         maxTotalIterations: 6,
         maxToolCalls: 3,
@@ -528,14 +606,35 @@ const CASES = {
             { tool: 'search', pattern: /OpenAI|official|docs|models/ },
         ],
         avoidTools: ['bash', 'grep', 'read', 'explore', 'recall'],
+        avoidWorkerTools: ['web_search'],
         prompt: [
             'You are a bridge worker running a live external-search routing smoke benchmark.',
             'Do not modify files. Do not use bash.',
-            'Task: This is an external web lookup. Use exactly one `search` call for "OpenAI official docs models API", then answer compact JSON with keys: case, source, title, url. Do not use explore, recall, grep, or read.',
+            'Task: This is an external web lookup. Use exactly one `search` call for "OpenAI official docs models API", then answer compact JSON with keys: case, source, title, url. Do not call `web_search` directly. Do not use explore, recall, grep, or read.',
+        ].join('\n'),
+    },
+    search_official_site_platform: {
+        expectAll: [/OpenAI|platform\.openai\.com|docs|models/i],
+        jsonTextMatches: [/OpenAI/i, /platform\.openai\.com/i, /models/i],
+        forbiddenAnswerPatterns: [/lookup_failed|requires authentication|authentication error|url"?\s*:\s*null/i],
+        preferTools: ['search'],
+        maxTotalIterations: 6,
+        maxToolCalls: 3,
+        requireToolArgMatches: [
+            { tool: 'search', pattern: /platform\.openai\.com|OpenAI|models/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'explore', 'recall'],
+        avoidWorkerTools: ['web_search'],
+        prompt: [
+            'You are a bridge worker running a live external-search routing smoke benchmark.',
+            'Do not modify files. Do not use bash.',
+            'Task: This is an official documentation domain lookup, not a GitHub lookup. Use exactly one `search` call for "site:platform.openai.com OpenAI models API docs", then answer compact JSON with keys: case, source, title, url. Do not call `web_search` directly. Do not use explore, recall, grep, or read.',
         ].join('\n'),
     },
     search_github_repo: {
-        expectAll: [/openai\/codex|github\.com\/openai\/codex|Codex/i],
+        expectAll: [/openai\/codex/i, /github\.com\/openai\/codex/i],
+        jsonTextMatches: [/openai\/codex/i, /github\.com\/openai\/codex/i],
+        forbiddenAnswerPatterns: [/lookup_failed|requires authentication|authentication error|url"?\s*:\s*null/i],
         preferTools: ['search'],
         maxTotalIterations: 6,
         maxToolCalls: 3,
@@ -543,13 +642,91 @@ const CASES = {
             { tool: 'search', pattern: /openai\/codex|GitHub|repo/ },
         ],
         avoidTools: ['bash', 'grep', 'read', 'explore', 'recall'],
+        avoidWorkerTools: ['web_search'],
         prompt: [
             'You are a bridge worker running a live external-search routing smoke benchmark.',
             'Do not modify files. Do not use bash.',
-            'Task: This is an external GitHub lookup. Use exactly one `search` call for "GitHub repo openai/codex", then answer compact JSON with keys: case, repo, url, evidence. Do not use explore, recall, grep, or read.',
+            'Task: This is an external GitHub lookup. Use exactly one `search` call for "GitHub repo openai/codex", then answer compact JSON with keys: case, repo, url, evidence. Do not call `web_search` directly. Do not use explore, recall, grep, or read.',
+        ].join('\n'),
+    },
+    search_github_slug: {
+        expectAll: [/openai\/codex/i, /github\.com\/openai\/codex/i],
+        jsonTextMatches: [/openai\/codex/i, /github\.com\/openai\/codex/i],
+        forbiddenAnswerPatterns: [/lookup_failed|requires authentication|authentication error|url"?\s*:\s*null/i],
+        preferTools: ['search'],
+        maxTotalIterations: 6,
+        maxToolCalls: 3,
+        requireToolArgMatches: [
+            { tool: 'search', pattern: /openai\/codex/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'explore', 'recall'],
+        avoidWorkerTools: ['web_search'],
+        prompt: [
+            'You are a bridge worker running a live external-search routing smoke benchmark.',
+            'Do not modify files. Do not use bash.',
+            'Task: This is an external GitHub slug lookup. Use exactly one `search` call for "openai/codex", then answer compact JSON with keys: case, repo, url, evidence. Do not call `web_search` directly. Do not use explore, recall, grep, or read.',
+        ].join('\n'),
+    },
+    real_explore_literal: {
+        requireJson: false,
+        expectAll: [/GRAPH_CALLER_TARGET/i, /runCheckoutSmoke/i, /app\.mjs/i],
+        jsonTextMatches: [/GRAPH_CALLER_TARGET/i, /runCheckoutSmoke/i, /app\.mjs/i],
+        forbiddenAnswerPatterns: [/enclosingFunction"?\s*:\s*null/i, /모르|찾을 수 없|not found/i],
+        preferTools: ['explore'],
+        maxTotalIterations: 3,
+        maxToolCalls: 1,
+        requireToolArgMatches: [
+            { tool: 'explore', pattern: /GRAPH_CALLER_TARGET/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'glob'],
+        prompt: [
+            '실사용 답변 품질 테스트입니다. 파일은 수정하지 마세요.',
+            '`GRAPH_CALLER_TARGET`가 어디서 쓰이는지 `explore` 한 번만 사용해서 확인한 뒤, 파일 경로, 함수명, 근거 라인을 자연어 한두 문장으로 설명해주세요.',
+            'JSON으로 답하지 마세요. grep/read/glob를 직접 호출하지 마세요.',
+        ].join('\n'),
+    },
+    real_search_models: {
+        requireJson: false,
+        expectAll: [/OpenAI/i, /models/i, /https:\/\/(?:platform|developers)\.openai\.com\/[^\s)]*models/i],
+        jsonTextMatches: [/OpenAI/i, /models/i, /https:\/\/(?:platform|developers)\.openai\.com\/[^\s)]*models/i],
+        forbiddenAnswerPatterns: [/lookup_failed|requires authentication|authentication error|url"?\s*:\s*null|https:\/\/platform\.openai\.com\/(?:\s|$)/i],
+        preferTools: ['search'],
+        maxTotalIterations: 6,
+        maxToolCalls: 3,
+        requireToolArgMatches: [
+            { tool: 'search', pattern: /OpenAI|models|API|docs/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'explore', 'recall'],
+        avoidWorkerTools: ['web_search'],
+        prompt: [
+            '실사용 답변 품질 테스트입니다. 파일은 수정하지 마세요.',
+            'OpenAI models API 공식 문서에서 models 관련 페이지를 찾아 제목과 URL, 그리고 왜 이 페이지가 질문에 맞는지 한 문장으로 알려주세요.',
+            '반드시 `search` 한 번으로 확인하고, `web_search`를 직접 호출하지 마세요. JSON으로 답하지 마세요.',
+        ].join('\n'),
+    },
+    real_recall_webhook: {
+        requireJson: false,
+        expectAll: [/webhook|웹훅/i, /projectaa/i, /tester-probe|probe/i],
+        jsonTextMatches: [/webhook|웹훅/i, /projectaa/i, /tester-probe|probe/i],
+        forbiddenAnswerPatterns: [/모르|찾을 수 없|no memory hits/i],
+        preferTools: ['recall'],
+        maxTotalIterations: 6,
+        maxToolCalls: 3,
+        noDuplicateToolCalls: true,
+        requireToolArgMatches: [
+            { tool: 'recall', pattern: /webhook|웹훅|projectaa|tester-probe/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'search', 'explore'],
+        prompt: [
+            '실사용 답변 품질 테스트입니다. 파일은 수정하지 마세요.',
+            '최근 기억에서 projectaa webhook tester-probe 웹훅 확인 건이 어떤 상태였는지 `recall` 한 번으로 찾아서, 핵심 결론과 근거를 자연어로 요약해주세요.',
+            'JSON으로 답하지 마세요. search/explore/grep/read는 쓰지 마세요.',
         ].join('\n'),
     },
     search_config_guard: {
+        skipIf: () => isSearchProviderConfigured()
+            ? 'search providers configured in this env — unconfigured-guard case is not applicable'
+            : null,
         expectAll: [/Search is not configured|not configured|search_unconfigured/i],
         preferTools: ['search'],
         maxTotalIterations: 2,
@@ -558,10 +735,11 @@ const CASES = {
             { tool: 'search', pattern: /OpenAI|official|docs/ },
         ],
         avoidTools: ['bash', 'grep', 'read', 'explore', 'recall'],
+        avoidWorkerTools: ['web_search'],
         prompt: [
             'You are a bridge worker running a live external-search routing smoke benchmark.',
             'Do not modify files. Do not use bash.',
-            'Task: This is an external web lookup. Use exactly one `search` call for "OpenAI official docs latest model", then report compact JSON. If the search tool says search is not configured, report {"case":"search_unconfigured","status":"not_configured"}. Do not use explore, recall, grep, or read.',
+            'Task: This is an external web lookup. Use exactly one `search` call for "OpenAI official docs latest model", then report compact JSON. If the search tool says search is not configured, report {"case":"search_unconfigured","status":"not_configured"}. Do not call `web_search` directly. Do not use explore, recall, grep, or read.',
         ].join('\n'),
     },
     explore: {
@@ -934,11 +1112,16 @@ function evaluateToolFit(spec, totals) {
     };
     const missingPreferred = (spec.preferTools || []).filter((name) => !hasTool(name));
     const avoidedUsed = (spec.avoidTools || []).filter((name) => used.has(name));
+    const avoidedWorkerUsed = (spec.avoidWorkerTools || []).filter((name) => tools.some((tool) => tool.name === name && tool.scope === 'worker'));
     const overBudget = spec.maxTotalIterations && totals.totalIterations > spec.maxTotalIterations;
     const overToolCalls = spec.maxToolCalls && totals.totalToolCalls > spec.maxToolCalls;
     const missingArgMatches = (spec.requireToolArgMatches || []).filter((req) => {
         const re = req.pattern instanceof RegExp ? req.pattern : new RegExp(String(req.pattern || ''), 'i');
         return !tools.some((tool) => tool.name === req.tool && re.test(compactJson(tool.args || {}, 2000)));
+    }).map((req) => `${req.tool}:${req.pattern}`);
+    const forbiddenArgMatches = (spec.forbidToolArgMatches || []).filter((req) => {
+        const re = req.pattern instanceof RegExp ? req.pattern : new RegExp(String(req.pattern || ''), 'i');
+        return tools.some((tool) => tool.name === req.tool && re.test(compactJson(tool.args || {}, 2000)));
     }).map((req) => `${req.tool}:${req.pattern}`);
     const seenCalls = new Set();
     const duplicateToolCalls = [];
@@ -950,11 +1133,13 @@ function evaluateToolFit(spec, totals) {
         }
     }
     return {
-        ok: missingPreferred.length === 0 && avoidedUsed.length === 0 && !overBudget && !overToolCalls && missingArgMatches.length === 0 && duplicateToolCalls.length === 0,
+        ok: missingPreferred.length === 0 && avoidedUsed.length === 0 && avoidedWorkerUsed.length === 0 && !overBudget && !overToolCalls && missingArgMatches.length === 0 && forbiddenArgMatches.length === 0 && duplicateToolCalls.length === 0,
         toolNames,
         missingPreferred,
         avoidedUsed,
+        avoidedWorkerUsed,
         missingArgMatches,
+        forbiddenArgMatches,
         duplicateToolCalls,
         overBudget: overBudget ? { max: spec.maxTotalIterations, actual: totals.totalIterations } : null,
         overToolCalls: overToolCalls ? { max: spec.maxToolCalls, actual: totals.totalToolCalls } : null,
@@ -964,6 +1149,48 @@ function evaluateToolFit(spec, totals) {
 function textMatchesSpec(spec, text) {
     const checks = spec.expectAll || (spec.expect ? [spec.expect] : []);
     return checks.every((re) => re.test(String(text || '')));
+}
+
+function describePattern(pattern) {
+    return pattern instanceof RegExp ? pattern.toString() : String(pattern);
+}
+
+function answerQualityBody(parsed, text) {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return String(text || '');
+    try { return JSON.stringify(parsed); } catch { return String(text || ''); }
+}
+
+function valueAtPath(object, path) {
+    if (!path) return object;
+    return String(path).split('.').reduce((cur, key) => (cur && typeof cur === 'object') ? cur[key] : undefined, object);
+}
+
+function evaluateAnswerQuality(spec, text) {
+    const issues = [];
+    const parsed = parseJsonObject(text);
+    const requireJson = spec.requireJson !== false;
+    if (requireJson && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) {
+        issues.push('missing JSON object');
+    }
+    const body = answerQualityBody(parsed, text);
+    for (const key of spec.jsonRequiredFields || []) {
+        const value = valueAtPath(parsed, key);
+        if (value === undefined || value === null || value === '') issues.push(`missing json field: ${key}`);
+    }
+    for (const req of spec.jsonFieldMatches || []) {
+        const value = valueAtPath(parsed, req.path);
+        const re = req.pattern instanceof RegExp ? req.pattern : new RegExp(String(req.pattern || ''), 'i');
+        if (!re.test(String(value ?? ''))) issues.push(`field mismatch ${req.path}: ${describePattern(req.pattern)}`);
+    }
+    for (const pattern of spec.jsonTextMatches || []) {
+        const re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern || ''), 'i');
+        if (!re.test(body)) issues.push(`missing answer evidence: ${describePattern(pattern)}`);
+    }
+    for (const pattern of spec.forbiddenAnswerPatterns || []) {
+        const re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern || ''), 'i');
+        if (re.test(body)) issues.push(`forbidden answer evidence: ${describePattern(pattern)}`);
+    }
+    return { ok: issues.length === 0, issues, parsed };
 }
 
 async function registerLiveSyntheticTools(rt) {
@@ -1071,7 +1298,7 @@ function searchMemoryRows(db, query, limit) {
 }
 
 async function liveMemorySearch(args = {}) {
-    const serviceResult = await callLiveMemoryService(args);
+    const serviceResult = await callLiveMemoryTool('search_memories', args);
     if (serviceResult) return serviceResult;
     const queries = Array.isArray(args.query) ? args.query : [args.query || ''];
     const limit = Math.min(10, Math.max(1, Number(args.limit) || 5));
@@ -1098,7 +1325,7 @@ async function liveMemorySearch(args = {}) {
     }
 }
 
-async function callLiveMemoryService(args = {}) {
+async function callLiveMemoryTool(name, args = {}) {
     let port = null;
     try {
         port = Number(readFileSync(join(tmpdir(), 'mixdog-memory', 'memory-port'), 'utf8').trim());
@@ -1113,7 +1340,7 @@ async function callLiveMemoryService(args = {}) {
         const response = await fetch(`${baseUrl}/api/tool`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: 'search_memories', arguments: args || {} }),
+            body: JSON.stringify({ name, arguments: args || {} }),
             signal: AbortSignal.timeout(120000),
         });
         if (!response.ok) return null;
@@ -1134,13 +1361,27 @@ async function liveWebSearch(args = {}) {
 async function seedRecallMemoryIfNeeded(cases) {
     if (!cases.some(([, spec]) => spec.seedRecall)) return [];
     ensureLocalPluginEnv();
-    const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
-    const db = new DatabaseSync(dbPath);
-    const nowMs = Date.now();
-    const sourceRef = `live-smoke:${nowMs}-${process.pid}`;
+    recallSeedReady = true;
+    recallSeedError = null;
     const summary = 'Live smoke recall marker for routing benchmark; safe to forget after the run.';
-    db.exec('BEGIN');
+    const serviceResult = await callLiveMemoryTool('memory', {
+        action: 'remember',
+        element: RECALL_TARGET,
+        summary,
+        category: 'fact',
+    });
+    const serviceText = decodeToolText(serviceResult || {});
+    if (serviceResult && !serviceResult.isError && /remembered/i.test(serviceText)) {
+        const id = Number(serviceText.match(/\bid=(\d+)/)?.[1] || 0);
+        return [{ id: Number.isFinite(id) && id > 0 ? id : null, element: RECALL_TARGET, via: 'service' }];
+    }
+    const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
+    let db = null;
     try {
+        db = new DatabaseSync(dbPath);
+        const nowMs = Date.now();
+        const sourceRef = `live-smoke:${nowMs}-${process.pid}`;
+        db.exec('BEGIN');
         const result = db.prepare(`
             INSERT INTO entries(ts, role, content, source_ref, session_id)
             VALUES (?, 'system', ?, ?, NULL)
@@ -1149,25 +1390,39 @@ async function seedRecallMemoryIfNeeded(cases) {
         db.prepare(`
             UPDATE entries
             SET chunk_root = ?, is_root = 1, element = ?, category = 'fact', summary = ?,
-                status = 'active', score = 1.6, last_seen_at = ?
-            WHERE id = ?
+            status = 'active', score = 1.6, last_seen_at = ?
+        WHERE id = ?
         `).run(id, RECALL_TARGET, summary, nowMs, id);
         db.exec('COMMIT');
         db.close();
-        return [id];
+        return [{ id, element: RECALL_TARGET, via: 'db' }];
     } catch (err) {
-        try { db.exec('ROLLBACK'); } catch {}
-        try { db.close(); } catch {}
-        throw err;
+        recallSeedReady = false;
+        recallSeedError = err instanceof Error ? err.message : String(err);
+        try { db?.exec('ROLLBACK'); } catch {}
+        try { db?.close(); } catch {}
+        return [];
     }
 }
 
-async function cleanupRecallSeeds(ids) {
-    if (!Array.isArray(ids) || ids.length === 0) return;
+async function cleanupRecallSeeds(seeds) {
+    if (!Array.isArray(seeds) || seeds.length === 0) return;
+    for (const seed of seeds) {
+        if (seed?.via !== 'service') continue;
+        try {
+            const args = seed.id ? { action: 'forget', id: seed.id } : { action: 'forget', element: seed.element || RECALL_TARGET };
+            await callLiveMemoryTool('memory', args);
+        } catch {
+            // best-effort cleanup; benchmark result should not hinge on it
+        }
+    }
     ensureLocalPluginEnv();
     const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
-    const db = new DatabaseSync(dbPath);
-    for (const id of ids) {
+    let db = null;
+    try { db = new DatabaseSync(dbPath); } catch { return; }
+    for (const seed of seeds) {
+        const id = typeof seed === 'number' ? seed : Number(seed?.id || 0);
+        if (!Number.isFinite(id) || id <= 0) continue;
         try {
             db.prepare(`UPDATE entries SET status = 'archived' WHERE id = ?`).run(id);
         } catch {
@@ -1194,6 +1449,25 @@ function classifyRunError(err) {
 async function runCase({ name, spec, opts, workspace, runIndex }) {
     const startOffset = traceOffset();
     const t0 = performance.now();
+    if (typeof spec.skipIf === 'function') {
+        let skipReason = null;
+        try { skipReason = spec.skipIf(); } catch { skipReason = null; }
+        if (skipReason) {
+            return {
+                case: name,
+                run: runIndex,
+                ok: true,
+                skipped: true,
+                skipReason: String(skipReason),
+                totalIterations: 0,
+                totalToolCalls: 0,
+                durationMs: Math.round(performance.now() - t0),
+                agents: [],
+                toolFit: { ok: true, toolNames: [], missingPreferred: [], avoidedUsed: [], overBudget: null, overToolCalls: null },
+                answerQuality: { ok: true, issues: [] },
+            };
+        }
+    }
     const args = { role: opts.role, prompt: spec.prompt, cwd: workspace };
     if (opts.preset) args.preset = opts.preset;
     try {
@@ -1201,6 +1475,7 @@ async function runCase({ name, spec, opts, workspace, runIndex }) {
         const traceRows = await waitForTraceRows(startOffset, bridge.bridgeResponse.sessionId);
         const totals = summarizeTrace(traceRows, bridge.bridgeResponse.sessionId, opts.role, { allowPrefixFallback: !opts.parallel });
         const classification = classifyRunError(bridge.finalText);
+        const answerQuality = evaluateAnswerQuality(spec, bridge.finalText);
         return {
             case: name,
             run: runIndex,
@@ -1208,6 +1483,7 @@ async function runCase({ name, spec, opts, workspace, runIndex }) {
             blocked: classification.infra,
             errorType: classification.infra ? classification.type : null,
             toolFit: evaluateToolFit(spec, totals),
+            answerQuality,
             bridge: bridge.bridgeResponse,
             totalIterations: totals.totalIterations,
             totalToolCalls: totals.totalToolCalls,
@@ -1230,18 +1506,21 @@ async function runCase({ name, spec, opts, workspace, runIndex }) {
             durationMs: Math.round(performance.now() - t0),
             agents: [],
             toolFit: { ok: false, toolNames: [], missingPreferred: spec.preferTools || [], avoidedUsed: [], overBudget: null, overToolCalls: null },
+            answerQuality: { ok: false, issues: ['missing JSON object'] },
             error: err instanceof Error ? err.message : String(err),
         };
     }
 }
 
 function aggregate(results) {
-    const passed = results.filter((r) => r.ok && r.toolFit?.ok !== false).length;
+    const passed = results.filter((r) => !r.skipped && r.ok && r.toolFit?.ok !== false && r.answerQuality?.ok !== false).length;
+    const skipped = results.filter((r) => r.skipped).length;
     const blocked = results.filter((r) => r.blocked).length;
     return {
-        ok: passed === results.length,
+        ok: (passed + skipped) === results.length,
         cases: results.length,
         passed,
+        skipped,
         blocked,
         avgIterations: results.length ? results.reduce((n, r) => n + (r.totalIterations || 0), 0) / results.length : null,
         totalIterations: results.reduce((n, r) => n + (r.totalIterations || 0), 0),
@@ -1288,14 +1567,16 @@ function formatCacheShare(check) {
 
 function printHuman(summary, results, workspace) {
     console.log(`live-io-smoke bridge workspace: ${workspace}`);
-    console.log(`status: ${summary.ok ? 'PASS' : 'FAIL'} (${summary.passed}/${summary.cases}${summary.blocked ? `, blocked=${summary.blocked}` : ''})`);
+    console.log(`status: ${summary.ok ? 'PASS' : 'FAIL'} (${summary.passed}/${summary.cases}${summary.skipped ? `, skipped=${summary.skipped}` : ''}${summary.blocked ? `, blocked=${summary.blocked}` : ''})`);
     if (summary.avgIterations !== null) console.log(`avg total iterations: ${summary.avgIterations.toFixed(2)}`);
     console.log(`total iterations: ${summary.totalIterations}`);
     console.log(`total tool calls: ${summary.totalToolCalls}`);
     console.log(`total duration: ${(summary.totalDurationMs / 1000).toFixed(1)}s`);
     for (const r of results) {
-        const status = r.ok ? 'ok' : (r.blocked ? 'BLOCKED' : 'FAIL');
-        console.log(`${status}\t${r.case}#${r.run}\ttotal_iter=${r.totalIterations}\tcalls=${r.totalToolCalls}\t${(r.durationMs / 1000).toFixed(1)}s\tsession=${r.bridge?.sessionId || '?'}`);
+        const passed = r.ok && r.toolFit?.ok !== false && r.answerQuality?.ok !== false;
+        const status = r.skipped ? 'SKIP' : (passed ? 'ok' : (r.blocked ? 'BLOCKED' : 'FAIL'));
+        const sessionLabel = r.skipped ? `reason=${r.skipReason || 'skipped'}` : `session=${r.bridge?.sessionId || '?'}`;
+        console.log(`${status}\t${r.case}#${r.run}\ttotal_iter=${r.totalIterations}\tcalls=${r.totalToolCalls}\t${(r.durationMs / 1000).toFixed(1)}s\t${sessionLabel}`);
         for (const a of r.agents || []) {
             const cacheText = formatAgentCache(a);
             console.log(`  ${a.scope}\titer=${a.iterations}\tcalls=${a.toolCalls}\t${a.toolChain.join(' > ')}${cacheText ? `\t${cacheText}` : ''}`);
@@ -1307,14 +1588,19 @@ function printHuman(summary, results, workspace) {
             const notes = [];
             if (r.toolFit.missingPreferred?.length) notes.push(`missing preferred: ${r.toolFit.missingPreferred.join(',')}`);
             if (r.toolFit.missingArgMatches?.length) notes.push(`missing tool-arg evidence: ${r.toolFit.missingArgMatches.join(',')}`);
+            if (r.toolFit.forbiddenArgMatches?.length) notes.push(`forbidden tool-arg evidence: ${r.toolFit.forbiddenArgMatches.join(',')}`);
             if (r.toolFit.duplicateToolCalls?.length) notes.push(`duplicate calls: ${[...new Set(r.toolFit.duplicateToolCalls)].join(',')}`);
             if (r.toolFit.avoidedUsed?.length) notes.push(`avoid used: ${r.toolFit.avoidedUsed.join(',')}`);
+            if (r.toolFit.avoidedWorkerUsed?.length) notes.push(`worker avoid used: ${r.toolFit.avoidedWorkerUsed.join(',')}`);
             if (r.toolFit.overBudget) notes.push(`iter budget ${r.toolFit.overBudget.actual}/${r.toolFit.overBudget.max}`);
             if (r.toolFit.overToolCalls) notes.push(`tool-call budget ${r.toolFit.overToolCalls.actual}/${r.toolFit.overToolCalls.max}`);
             console.log(`  tool-fit: watch (${notes.join('; ')})`);
         }
+        if (r.answerQuality && !r.answerQuality.ok && !r.blocked) {
+            console.log(`  answer-quality: watch (${r.answerQuality.issues.join('; ')})`);
+        }
         if (r.error) console.log(`  error${r.errorType ? `(${r.errorType})` : ''}: ${r.error}`);
-        if (!r.ok && r.finalPreview) console.log(`  final: ${r.finalPreview.replace(/\s+/g, ' ').slice(0, 500)}`);
+        if ((!r.ok || r.answerQuality?.ok === false) && r.finalPreview) console.log(`  final: ${r.finalPreview.replace(/\s+/g, ' ').slice(0, 500)}`);
     }
 }
 

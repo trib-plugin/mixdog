@@ -1341,7 +1341,7 @@ function _findSymbolHits(graph, symbol, { language = null } = {}) {
     });
   }
 
-  if (!hits.length) return '(no symbol matches)';
+  if (!hits.length) return [];
 
   hits.sort((a, b) =>
     Number(b.declarationLike) - Number(a.declarationLike)

@@ -18,7 +18,7 @@
 export const SYNTHETIC_TOOL_DEFS = Object.freeze([
     {
         name: 'memory_search',
-        description: 'Search long-term memory. Returns ranked root entries matching the query. Supports exact time filtering via `period`, pagination via `offset`, alternate sort order, and child-member expansion. Pass `query` as an array to fan out across multiple angles in a single tool call — output groups results per query with `### Query: <text>` headers.',
+        description: 'Search long-term memory. Returns ranked root entries matching the query. Supports exact time filtering via `period`, pagination via `offset`, alternate sort order, and child-member expansion. Pass `query` as an array to fan out across multiple angles in a single tool call — output groups results per query with `### Query: <text>` headers. Do not repeat an identical memory_search call; if the first result is not useful, change query/period/limit or synthesize.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -57,17 +57,17 @@ export const SYNTHETIC_TOOL_DEFS = Object.freeze([
     },
     {
         name: 'web_search',
-        description: 'Search the web, GitHub, or restricted domains. Supports plain web search, site filters, search type (web/news/images), and GitHub search/read (repositories, code, issues, files). For GitHub read ops (file/repo/issue/pulls), omit `keywords` and pass `owner`+`repo` (+ `path`/`number` as needed).',
+        description: 'Search the web, GitHub, or restricted domains. Supports plain web search, site filters, search type (web/news/images), and GitHub search/read (repositories, code, issues, files). For official/domain web searches, pass only `keywords`, optional `site`, optional `type`; never include GitHub fields. For GitHub read ops (file/repo/issue/pulls), omit `keywords` and pass `owner`+`repo` (+ `path`/`number` as needed). Omit unused optional fields entirely; empty strings and zero placeholders are invalid.',
         inputSchema: {
             type: 'object',
             properties: {
                 keywords: {
                     type: 'string',
-                    description: 'Search query. Required unless running a GitHub read op (file/repo/issue/pulls).',
+                    description: 'Search query. Required unless running a GitHub read op (file/repo/issue/pulls). For GitHub read ops, omit this field entirely instead of sending an empty string.',
                 },
                 site: {
                     type: 'string',
-                    description: 'Restrict results to a domain (e.g. "github.com", "anthropic.com").',
+                    description: 'Restrict results to a domain (e.g. "github.com", "anthropic.com"). Omit when not needed; do not send an empty string.',
                 },
                 type: {
                     type: 'string',
@@ -77,7 +77,7 @@ export const SYNTHETIC_TOOL_DEFS = Object.freeze([
                 github_type: {
                     type: 'string',
                     enum: ['repositories', 'code', 'issues', 'file', 'repo', 'issue', 'pulls'],
-                    description: 'GitHub mode. Search (repositories/code/issues) uses keywords. Read (file/repo/issue/pulls) uses owner+repo.',
+                    description: 'GitHub mode. Search (repositories/code/issues) uses keywords. Read (file/repo/issue/pulls) uses owner+repo. Omit for normal web or non-GitHub site searches.',
                 },
                 owner: { type: 'string', description: 'GitHub owner (user or org). Required for github_type file/repo/issue/pulls.' },
                 repo:  { type: 'string', description: 'GitHub repo name. Required for github_type file/repo/issue/pulls.' },
