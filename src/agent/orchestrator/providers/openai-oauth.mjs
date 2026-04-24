@@ -97,6 +97,7 @@ function _codexFamily(id) {
     if (s.includes('nano')) return 'gpt-nano';
     if (s.includes('mini')) return 'gpt-mini';
     if (s.includes('codex')) return 'gpt-codex';
+    if (s.startsWith('gpt-5.5')) return 'gpt-5.5';
     if (s.startsWith('gpt-5.4')) return 'gpt-5.4';
     if (s.startsWith('gpt-5.2')) return 'gpt-5.2';
     if (s.startsWith('gpt-5')) return 'gpt-5';
@@ -344,7 +345,7 @@ export class OpenAIOAuthProvider {
         const onToolCall = typeof opts.onToolCall === 'function' ? opts.onToolCall : null;
         const externalSignal = opts.signal || null;
         let auth = await this.ensureAuth();
-        const useModel = model || 'gpt-5.4';
+        const useModel = model || 'gpt-5.5';
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
         // Split into two keys to satisfy both constraints simultaneously:
         //   - poolKey:  per-call unique, so parallel bridge invocations get

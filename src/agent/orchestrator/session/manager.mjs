@@ -290,11 +290,11 @@ let nextId = Date.now();
 // this map trimmed to live models; older generations slow down reads
 // without buying anything.
 const CONTEXT_WINDOWS = {
-    // OpenAI GPT-5.4 family
-    'gpt-5.4': 1000000,
+    // OpenAI GPT-5.x family
+    'gpt-5.5': 1000000,
+    'gpt-5.5-pro': 1000000,
     'gpt-5.4-mini': 1000000,
     'gpt-5.4-nano': 1000000,
-    'gpt-5.4-pro': 1000000,
     // Anthropic Claude 4.x
     'claude-opus-4-7': 1000000,
     'claude-sonnet-4-6': 1000000,

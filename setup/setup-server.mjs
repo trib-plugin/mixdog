@@ -384,8 +384,8 @@ async function detectAuth(config = {}) {
 const STATIC_MODELS = {
   anthropic: ['claude-opus-4-6','claude-sonnet-4-6','claude-haiku-4-5-20251001'],
   gemini: ['gemini-3.1-pro-preview','gemini-3-flash-preview','gemini-2.5-pro','gemini-2.5-flash'],
-  openai: ['gpt-5.4','gpt-5.4-mini','gpt-5.4-nano'],
-  'openai-oauth': ['gpt-5.4','gpt-5.4-mini','gpt-5.3-codex'],
+  openai: ['gpt-5.5','gpt-5.4-mini','gpt-5.4-nano'],
+  'openai-oauth': ['gpt-5.5','gpt-5.4-mini','gpt-5.3-codex'],
 };
 
 // Try the live provider registry first (dynamic catalog via /v1/models,

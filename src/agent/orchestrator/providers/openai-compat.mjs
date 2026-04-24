@@ -4,7 +4,7 @@ import { warnBridgeOnce } from '../bridge-trace.mjs';
 const PRESETS = {
     openai: {
         baseURL: 'https://api.openai.com/v1',
-        defaultModel: 'gpt-5.4',
+        defaultModel: 'gpt-5.5',
     },
     groq: {
         baseURL: 'https://api.groq.com/openai/v1',

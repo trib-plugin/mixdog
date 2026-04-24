@@ -42,7 +42,12 @@ function findAncestorPid() {
       if (Number.isFinite(pid) && pid > 0) return pid;
     }
   } catch {}
-  return immediate;
+  // Grandparent lookup failed — the immediate parent is the shell wrapping
+  // `node launch.mjs`, which exits as soon as launch.mjs returns. Passing it
+  // to the watchdog would make setup-server commit suicide on the next tick.
+  // Return 0 so the caller skips MIXDOG_SETUP_PARENT_PID and the watchdog
+  // stays disabled — the detached server simply keeps running.
+  return 0;
 }
 
 function requestOpen() {
