@@ -195,26 +195,6 @@ try {
   log(`[session-cleanup] failed: ${e && (e.stack || e.message) || e}`)
 }
 
-// ── Bridge worktree sweeper (v0.6.243) ──────────────────────────────
-// Previous MCP process may have died mid-dispatch, leaving orphaned
-// worktrees under .mixdog-worktrees/<sessionId>/. Any directory whose
-// sessionId isn't in the live session set (after the stale-bridge
-// closeSession sweep above) is an orphan and safe to reclaim.
-try {
-  const { listSessions } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.mjs')).href)
-  const { sweepOrphanedWorktrees } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/bridge-worktree.mjs')).href)
-  const live = new Set()
-  for (const s of listSessions()) {
-    if (s.owner === 'bridge' && (s.status === 'running' || s.status === 'tool_running')) live.add(s.id)
-  }
-  const result = sweepOrphanedWorktrees(PLUGIN_ROOT, live, { log: (m) => log(m) })
-  if (result.scanned > 0) {
-    log(`[worktree-cleanup] scanned=${result.scanned} cleaned=${result.cleaned.length} failed=${result.failures.length}`)
-  }
-} catch (e) {
-  log(`[worktree-cleanup] failed: ${e && (e.stack || e.message) || e}`)
-}
-
 // ── MCP server ──────────────────────────────────────────────────────
 const SERVER_INSTRUCTIONS = [
   `mixdog MCP server v${PLUGIN_VERSION}.`,
