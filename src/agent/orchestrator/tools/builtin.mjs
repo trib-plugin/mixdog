@@ -679,7 +679,7 @@ export const BUILTIN_TOOLS = [
         name: 'multi_read',
         title: 'Multi Read',
         annotations: { title: 'Multi Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read multiple files in ONE call. Use this when 2+ file paths are already known. Each entry supports the same options as `read` (`mode`, `n`, `offset`, `limit`, `full`) and runs in parallel.',
+        description: 'Read multiple files in ONE call. Use this when 2+ file paths are already known, or when one file needs multiple modes at once (for example `count` + `tail`). Each entry supports the same options as `read` (`mode`, `n`, `offset`, `limit`, `full`) and runs in parallel. Treat the returned batch as authoritative; do not repeat an identical `multi_read` batch in the next turn.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -974,7 +974,7 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob pattern(s).' },
+                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob pattern(s). Use one array containing every requested filename category; e.g. route files + policy JSON => ["**/*route*.mjs","**/*policy*.json"].' },
                 path: { type: 'string', description: 'Base dir. Default: cwd. Capped at 100.' },
                 head_limit: { type: 'number', description: 'Max file paths to return. Default 100; 0 = unlimited.' },
                 offset: { type: 'number', description: 'Skip N file paths before applying head_limit.' },
@@ -986,7 +986,7 @@ export const BUILTIN_TOOLS = [
         name: 'list',
         title: 'List Directory',
         annotations: { title: 'List Directory', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). Use `find` mode to filter by filename pattern within a directory tree; for repository-wide filename pattern search use `glob` instead, and for in-file content search use `grep`. Use `find_symbol` for identifier lookup.',
+        description: 'Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). For newest-file tasks, use `list` with `sort:"mtime", type:"file"` or `find` and read the top hit directly; do not list the workspace root again just to verify. Use `find` mode to filter by filename pattern within a directory tree; for repository-wide filename pattern search use `glob` instead, and for in-file content search use `grep`. Use `find_symbol` for identifier lookup.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -2867,19 +2867,30 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // Per-file errors come back as their own string and are pasted
             // into the aggregate rather than aborting the whole batch.
             const results = await Promise.all(reads.map(async (entry) => {
-                if (!entry || !entry.path) return { path: '(missing-path)', body: 'Error: path is required' };
+                if (!entry || !entry.path) return { path: '(missing-path)', mode: 'full', body: 'Error: path is required' };
                 const body = await executeChildBuiltinTool('read', entry, workDir);
-                return { path: entry.path, body };
+                return { path: entry.path, mode: entry.mode || 'full', n: entry.n, body };
             }));
             // Header path → forward slash; error bodies already normalised
             // inside the read case's catch blocks. When `read` emitted a
             // smart-cap marker, surface the truncation state in the header
             // so downstream skimming spots it without parsing the body.
-            return results.map(r => {
+            const summaries = [];
+            for (const r of results) {
+                if (r.mode === 'count') {
+                    const m = String(r.body || '').match(/lines\t(\d+)/);
+                    if (m) summaries.push(`${normalizeOutputPath(r.path)} has ${m[1]} lines`);
+                }
+            }
+            const summaryLine = summaries.length ? `\nSummary: ${summaries.join('; ')}.` : '';
+            const header = `### multi_read complete (${results.length} reads)${summaryLine}\nUse these results; do not repeat an identical multi_read batch.`;
+            const body = results.map(r => {
                 const match = /\[TRUNCATED — file is (\d+) lines \/ (\d+) KB\./.exec(r.body || '');
                 const suffix = match ? ` (truncated, ${match[1]} total lines / ${match[2]} KB — pass full:true or offset/limit for more)` : '';
-                return `### ${normalizeOutputPath(r.path)}${suffix}\n${r.body}`;
+                const mode = r.n !== undefined ? `${r.mode} n=${r.n}` : r.mode;
+                return `### ${normalizeOutputPath(r.path)} [mode=${mode}]${suffix}\n${r.body}`;
             }).join('\n\n');
+            return `${header}\n\n${body}`;
         }
         case 'write_many': {
             return executeChildBuiltinTool('write', { writes: args.writes }, workDir);

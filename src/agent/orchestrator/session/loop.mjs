@@ -135,7 +135,7 @@ async function executeTool(name, args, cwd, callerSessionId, sessionRef) {
         // callerSessionId propagates into server.mjs dispatchTool so that
         // dispatchAiWrapped can detect and reject recursive calls from a
         // hidden-role session (recall/search/explore → self).
-        return executeInternalTool(name, args, { callerSessionId });
+        return executeInternalTool(name, args, { callerSessionId, callerCwd: cwd });
     }
     if (name === 'bash') {
         const routedArgs = buildBridgeBashSessionArgs(args, sessionRef);

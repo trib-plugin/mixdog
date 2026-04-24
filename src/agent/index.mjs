@@ -310,7 +310,7 @@ const TOOLS = [
     name: 'bridge_spawn',
     title: 'Spawn Bridge Agent',
     public: false,
-    description: 'Create a Smart Bridge agent session with a role/taskType and optionally send the first prompt. Replacement for native Agent/TeamCreate flow — no team container required, sessions are standalone. When wait=true, returns the agent\'s first response synchronously. When wait=false, returns sessionId immediately for later bridge_send calls.',
+    description: 'Create a Smart Bridge agent session with a role/taskType and optionally send the first prompt. Prefer `explore` for ordinary filesystem/code lookup; use `bridge_spawn` only when a standalone role session is explicitly needed. Replacement for native Agent/TeamCreate flow — no team container required, sessions are standalone. For one-shot lookup/research, put the exact file/line/evidence requirements in the first prompt and wait for that response; do not spawn multiple agents for the same question unless the first answer is missing a clearly required field. When wait=true, returns the agent\'s first response synchronously. When wait=false, returns sessionId immediately for later bridge_send calls.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -425,6 +425,7 @@ export async function handleToolCall(name, args, opts = {}) {
   const elicit = typeof opts.elicitFn === 'function' ? opts.elicitFn : null;
   const requestSignal = opts.requestSignal instanceof AbortSignal ? opts.requestSignal : null;
   const callerSessionId = typeof opts.callerSessionId === 'string' && opts.callerSessionId ? opts.callerSessionId : null;
+  const callerCwd = typeof opts.callerCwd === 'string' && opts.callerCwd ? opts.callerCwd : null;
   // Idempotent fallback — server.mjs populates the registry at boot via
   // loadModule('agent').then(...), but if eager init failed (missing deps,
   // file error), the first tool call still restores it here. Re-registration
@@ -457,7 +458,7 @@ export async function handleToolCall(name, args, opts = {}) {
           role: args.role,
           taskType: args.taskType,
           profileId: args.profileId,
-          cwd: args.cwd || process.cwd(),
+          cwd: args.cwd || callerCwd || process.cwd(),
           owner: 'bridge',
           lane: 'bridge',
           systemPrompt: args.systemPrompt,

@@ -2156,7 +2156,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_symbol',
     title: 'Find Symbol',
     annotations: { title: 'Find Symbol', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Find a symbol/identifier across the repository and return the best declaration/reference candidates with file:line and nearby code. Prefer this over grep when you know the symbol name but not the file. If a best declaration candidate is returned, read that file directly instead of running another grep on the same identifier.',
+    description: 'Find a symbol/identifier across the repository and return the best declaration/reference candidates with file:line and nearby code. Prefer this over grep when you know the symbol name but not the file. If a best declaration candidate is returned, read that file directly instead of running another grep on the same identifier. If the nearby declaration/import code already identifies the requested helper or caller name, answer from that evidence; do not read the helper implementation unless the task asks what the helper does.',
     inputSchema: {
       type: 'object',
       properties: {

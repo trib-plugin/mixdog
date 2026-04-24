@@ -165,7 +165,7 @@ const CASES = {
     },
     discovery: {
         expectAll: [/smokeNeedleTarget|IO_SMOKE_NEEDLE/i],
-        preferTools: ['grep', 'read'],
+        preferTools: ['grep'],
         maxTotalIterations: 3,
         avoidTools: ['bash'],
         prompt: [
@@ -179,7 +179,6 @@ const CASES = {
         preferTools: ['read'],
         maxTotalIterations: 2,
         maxToolCalls: 1,
-        requireToolArgMatches: [{ tool: 'glob', pattern: /policy/i }],
         avoidTools: ['bash'],
         prompt: [
             'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
@@ -192,11 +191,12 @@ const CASES = {
         preferTools: ['glob'],
         maxTotalIterations: 2,
         maxToolCalls: 1,
+        requireToolArgMatches: [{ tool: 'glob', pattern: /policy/i }],
         avoidTools: ['bash'],
         prompt: [
             'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
             'Do not modify files. Do not use bash.',
-            'Task: Locate both route modules and policy JSON files under `src` using filename patterns. Answer compact JSON with keys: case, routes, policies. Both categories are required.',
+            'Task: Locate both route modules and policy JSON files under `src` using filename patterns. Use one `glob` call whose pattern array includes both route patterns and policy patterns. Answer compact JSON with keys: case, routes, policies. Both categories are required.',
         ].join('\n'),
     },
     list_recent: {
@@ -212,7 +212,7 @@ const CASES = {
     },
     symbol_lookup: {
         expectAll: [/buildCheckoutPipeline|pipeline\.mjs|SYMBOL_TARGET/i],
-        preferTools: ['find_symbol', 'read'],
+        preferTools: ['find_symbol'],
         maxTotalIterations: 3,
         avoidTools: ['bash'],
         prompt: [
@@ -225,6 +225,7 @@ const CASES = {
         expectAll: [/120/i, /TAIL_TARGET|violet-tail/i],
         preferTools: ['read'],
         maxTotalIterations: 3,
+        noDuplicateToolCalls: true,
         avoidTools: ['bash'],
         prompt: [
             'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
@@ -449,7 +450,12 @@ function evaluateToolFit(spec, totals) {
     const tools = totals.rows.flatMap((r) => (r.tools || []).map((t) => ({ ...t, scope: r.scope })));
     const toolNames = tools.map((t) => t.name).filter(Boolean);
     const used = new Set(toolNames);
-    const missingPreferred = (spec.preferTools || []).filter((name) => !used.has(name));
+    const hasTool = (name) => {
+        if (used.has(name)) return true;
+        if (name === 'read') return used.has('multi_read');
+        return false;
+    };
+    const missingPreferred = (spec.preferTools || []).filter((name) => !hasTool(name));
     const avoidedUsed = (spec.avoidTools || []).filter((name) => used.has(name));
     const overBudget = spec.maxTotalIterations && totals.totalIterations > spec.maxTotalIterations;
     const overToolCalls = spec.maxToolCalls && totals.totalToolCalls > spec.maxToolCalls;
@@ -457,12 +463,22 @@ function evaluateToolFit(spec, totals) {
         const re = req.pattern instanceof RegExp ? req.pattern : new RegExp(String(req.pattern || ''), 'i');
         return !tools.some((tool) => tool.name === req.tool && re.test(compactJson(tool.args || {}, 2000)));
     }).map((req) => `${req.tool}:${req.pattern}`);
+    const seenCalls = new Set();
+    const duplicateToolCalls = [];
+    if (spec.noDuplicateToolCalls) {
+        for (const tool of tools) {
+            const sig = `${tool.name}:${compactJson(tool.args || {}, 2000)}`;
+            if (seenCalls.has(sig)) duplicateToolCalls.push(tool.name);
+            else seenCalls.add(sig);
+        }
+    }
     return {
-        ok: missingPreferred.length === 0 && avoidedUsed.length === 0 && !overBudget && !overToolCalls && missingArgMatches.length === 0,
+        ok: missingPreferred.length === 0 && avoidedUsed.length === 0 && !overBudget && !overToolCalls && missingArgMatches.length === 0 && duplicateToolCalls.length === 0,
         toolNames,
         missingPreferred,
         avoidedUsed,
         missingArgMatches,
+        duplicateToolCalls,
         overBudget: overBudget ? { max: spec.maxTotalIterations, actual: totals.totalIterations } : null,
         overToolCalls: overToolCalls ? { max: spec.maxToolCalls, actual: totals.totalToolCalls } : null,
     };
@@ -539,6 +555,7 @@ function printHuman(summary, results, workspace) {
             const notes = [];
             if (r.toolFit.missingPreferred?.length) notes.push(`missing preferred: ${r.toolFit.missingPreferred.join(',')}`);
             if (r.toolFit.missingArgMatches?.length) notes.push(`missing tool-arg evidence: ${r.toolFit.missingArgMatches.join(',')}`);
+            if (r.toolFit.duplicateToolCalls?.length) notes.push(`duplicate calls: ${[...new Set(r.toolFit.duplicateToolCalls)].join(',')}`);
             if (r.toolFit.avoidedUsed?.length) notes.push(`avoid used: ${r.toolFit.avoidedUsed.join(',')}`);
             if (r.toolFit.overBudget) notes.push(`iter budget ${r.toolFit.overBudget.actual}/${r.toolFit.overBudget.max}`);
             if (r.toolFit.overToolCalls) notes.push(`tool-call budget ${r.toolFit.overToolCalls.actual}/${r.toolFit.overToolCalls.max}`);

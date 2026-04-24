@@ -814,7 +814,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read multiple files in ONE call. Use this when 2+ file paths are already known. Each entry supports the same options as `read` (`mode`, `n`, `offset`, `limit`, `full`) and runs in parallel.",
+    "description": "Read multiple files in ONE call. Use this when 2+ file paths are already known, or when one file needs multiple modes at once (for example `count` + `tail`). Each entry supports the same options as `read` (`mode`, `n`, `offset`, `limit`, `full`) and runs in parallel. Treat the returned batch as authoritative; do not repeat an identical `multi_read` batch in the next turn.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1486,7 +1486,7 @@
               "minItems": 1
             }
           ],
-          "description": "Glob pattern(s)."
+          "description": "Glob pattern(s). Use one array containing every requested filename category; e.g. route files + policy JSON => [\"**/*route*.mjs\",\"**/*policy*.json\"]."
         },
         "path": {
           "type": "string",
@@ -1517,7 +1517,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). Use `find` mode to filter by filename pattern within a directory tree; for repository-wide filename pattern search use `glob` instead, and for in-file content search use `grep`. Use `find_symbol` for identifier lookup.",
+    "description": "Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). For newest-file tasks, use `list` with `sort:\"mtime\", type:\"file\"` or `find` and read the top hit directly; do not list the workspace root again just to verify. Use `find` mode to filter by filename pattern within a directory tree; for repository-wide filename pattern search use `glob` instead, and for in-file content search use `grep`. Use `find_symbol` for identifier lookup.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1697,7 +1697,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Find a symbol/identifier across the repository and return the best declaration/reference candidates with file:line and nearby code. Prefer this over grep when you know the symbol name but not the file. If a best declaration candidate is returned, read that file directly instead of running another grep on the same identifier.",
+    "description": "Find a symbol/identifier across the repository and return the best declaration/reference candidates with file:line and nearby code. Prefer this over grep when you know the symbol name but not the file. If a best declaration candidate is returned, read that file directly instead of running another grep on the same identifier. If the nearby declaration/import code already identifies the requested helper or caller name, answer from that evidence; do not read the helper implementation unless the task asks what the helper does.",
     "inputSchema": {
       "type": "object",
       "properties": {
