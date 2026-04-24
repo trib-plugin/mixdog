@@ -132,7 +132,7 @@ async function executeTool(name, args, cwd, callerSessionId, sessionRef) {
     if (name === 'bash') {
         const routedArgs = buildBridgeBashSessionArgs(args, sessionRef);
         if (!routedArgs) {
-            return executeBuiltinTool(name, args, cwd);
+            return executeBuiltinTool(name, args, cwd, { sessionId: callerSessionId });
         }
         const result = await executeBashSessionTool('bash_session', routedArgs, cwd);
         const sessionId = extractBashSessionId(result);
@@ -143,10 +143,10 @@ async function executeTool(name, args, cwd, callerSessionId, sessionRef) {
         return executeBashSessionTool(name, args, cwd);
     }
     if (name === 'apply_patch') {
-        return executePatchTool(name, args, cwd);
+        return executePatchTool(name, args, cwd, { sessionId: callerSessionId });
     }
     if (isBuiltinTool(name)) {
-        return executeBuiltinTool(name, args, cwd);
+        return executeBuiltinTool(name, args, cwd, { sessionId: callerSessionId });
     }
     return `Error: unknown tool "${name}"`;
 }
@@ -246,18 +246,31 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         // remaining SSE parse. Writes and unknown tools wait until send()
         // returns and run serially in the call-order loop below.
         const pending = new Map();
-        opts.onToolCall = (call) => {
-            if (!call?.id || !isEagerDispatchable(call.name)) return;
+        const startEagerTool = (call) => {
+            if (!call?.id || pending.has(call.id) || !isEagerDispatchable(call.name)) return null;
             const toolKind = getToolKind(call.name);
-            if (isBlockedByPermission(call.name, toolKind, effectiveToolPermission(sessionRef))) return;
-            // endedAt is stamped by finally so `toolMs` reflects the true
-            // execution duration — independent of when the serial for-loop
-            // consumes the result (otherwise later eager calls would inflate
-            // by the await delay of earlier ones).
+            if (isBlockedByPermission(call.name, toolKind, effectiveToolPermission(sessionRef))) return null;
             const entry = { startedAt: Date.now(), endedAt: null };
-            entry.promise = executeTool(call.name, call.arguments, cwd, sessionId)
+            entry.promise = (async () => {
+                try {
+                    return { ok: true, value: await executeTool(call.name, call.arguments, cwd, sessionId, sessionRef) };
+                } catch (error) {
+                    return { ok: false, error };
+                }
+            })()
                 .finally(() => { entry.endedAt = Date.now(); });
             pending.set(call.id, entry);
+            return entry;
+        };
+        const startEagerRun = (calls, startIndex) => {
+            for (let j = startIndex; j < calls.length; j += 1) {
+                const call = calls[j];
+                if (!call?.id || !isEagerDispatchable(call.name)) break;
+                if (!startEagerTool(call) && !pending.has(call.id)) break;
+            }
+        };
+        opts.onToolCall = (call) => {
+            startEagerTool(call);
         };
         const sendStartedAt = Date.now();
         response = await provider.send(messages, model, tools.length ? tools : undefined, opts);
@@ -339,17 +352,26 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             toolCalls: calls,
         });
         // Execute each tool and append results
-        for (const call of calls) {
+        for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
+            const call = calls[callIndex];
             if (sessionId) markSessionToolCall(sessionId, call.name);
             let result;
             let toolStartedAt;
             let toolEndedAt;
             const toolKind = getToolKind(call.name);
             try {
+                // Fallback for providers that don't stream tool calls early:
+                // execute a contiguous read-only run in parallel, but never
+                // cross a write/bash/MCP boundary that may change state.
+                if (isEagerDispatchable(call.name)) {
+                    startEagerRun(calls, callIndex);
+                }
                 const eager = pending.get(call.id);
                 if (eager !== undefined) {
                     toolStartedAt = eager.startedAt;
-                    result = await eager.promise;
+                    const settled = await eager.promise;
+                    if (!settled.ok) throw settled.error;
+                    result = settled.value;
                     toolEndedAt = eager.endedAt ?? Date.now();
                 } else {
                     toolStartedAt = Date.now();

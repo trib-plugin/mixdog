@@ -8,6 +8,7 @@ function estimateMessagesTokens(messages) {
     return messages.reduce((sum, m) => sum + estimateTokens(m.content) + 4, 0);
 }
 const TOOL_TRUNCATE_THRESHOLD = 500;
+const TOOL_TRUNCATE_HEAD_RATIO = 0.6;
 // Hermes-style pre-prune: any older tool result larger than this is replaced
 // with a stub. Kept tighter than TOOL_TRUNCATE_THRESHOLD so we recover more
 // bytes before the byte-budget cut runs.
@@ -15,6 +16,22 @@ const PRUNE_OLD_TOOL_MIN_CHARS = 200;
 const PRUNE_STUB_TEXT = '[Old tool output cleared to save context space]';
 const DEFAULT_PROTECT_TAIL = 20;
 const TOOL_MISSING_STUB = '[Result from earlier conversation — see context summary above]';
+
+function compactToolText(text, maxChars = TOOL_TRUNCATE_THRESHOLD) {
+    const s = String(text ?? '');
+    if (s.length <= maxChars) return s;
+    const headBudget = Math.max(1, Math.floor(maxChars * TOOL_TRUNCATE_HEAD_RATIO));
+    const tailBudget = Math.max(1, maxChars - headBudget);
+    let head = s.slice(0, headBudget);
+    const headCut = head.lastIndexOf('\n');
+    if (headCut > Math.floor(headBudget * 0.5)) head = head.slice(0, headCut);
+    let tail = s.slice(Math.max(0, s.length - tailBudget));
+    const tailCut = tail.indexOf('\n');
+    if (tailCut !== -1 && tailCut < Math.floor(tailBudget * 0.5)) tail = tail.slice(tailCut + 1);
+    const omitted = Math.max(0, s.length - head.length - tail.length);
+    return `${head}\n[truncated middle: ${omitted} chars]\n${tail}`;
+}
+
 /**
  * Truncate long tool_result messages to save tokens.
  * Returns a shallow copy with truncated content where applicable.
@@ -31,7 +48,7 @@ function truncateToolResults(messages) {
             && typeof m.content === 'string'
             && m.content.length > TOOL_TRUNCATE_THRESHOLD
             && !isOffloadedToolResultText(m.content)) {
-            return { ...m, content: m.content.slice(0, TOOL_TRUNCATE_THRESHOLD) + '\n[truncated]' };
+            return { ...m, content: compactToolText(m.content) };
         }
         return m;
     });

@@ -6,6 +6,9 @@
   "license": "MIT",
   "private": false,
   "type": "module",
+  "bin": {
+    "mcfg": "./setup/launch.mjs"
+  },
   "engines": {
     "node": ">=20.10.0"
   },

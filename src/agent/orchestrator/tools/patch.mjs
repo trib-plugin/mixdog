@@ -107,11 +107,12 @@ function countHunkChanges(hunks) {
   return { added, removed };
 }
 
-async function apply_patch(args, cwd) {
+async function apply_patch(args, cwd, options = {}) {
   const patchStr = typeof args?.patch === 'string' ? args.patch : '';
   if (!patchStr.trim()) {
     throw new Error('apply_patch: "patch" is required (unified diff string)');
   }
+  const readStateScope = options?.readStateScope ?? options?.sessionId ?? null;
   const basePath = resolveBasePath(cwd, args?.base_path);
   const dryRun = args?.dry_run === true;
   // B2: capability-gated HOME access. Scope check below honours the same
@@ -421,8 +422,8 @@ async function apply_patch(args, cwd) {
     invalidateBuiltinResultCache(written.map((p) => p.fullPath));
     markCodeGraphDirtyPaths(cwd, written.map((p) => p.fullPath));
     for (const p of written) {
-      if (p.kind === 'delete') clearReadSnapshotForPath(p.fullPath);
-      else recordReadSnapshotForPath(p.fullPath);
+      if (p.kind === 'delete') clearReadSnapshotForPath(p.fullPath, readStateScope);
+      else recordReadSnapshotForPath(p.fullPath, readStateScope);
     }
   }
   for (const p of written) {
@@ -460,10 +461,10 @@ export const PATCH_TOOL_DEFS = [
   },
 ];
 
-export async function executePatchTool(name, args, cwd) {
+export async function executePatchTool(name, args, cwd, options = {}) {
   const effectiveCwd = cwd || process.cwd();
   switch (name) {
-    case 'apply_patch': return apply_patch(args || {}, effectiveCwd);
+    case 'apply_patch': return apply_patch(args || {}, effectiveCwd, options);
     default: throw new Error(`Unknown patch tool: ${name}`);
   }
 }

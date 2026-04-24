@@ -434,11 +434,8 @@ const DEFAULT_IGNORE_GLOBS = [
 
 function capShellOutput(content) {
     const s = typeof content === 'string' ? content : String(content ?? '');
-    if (s.length <= SHELL_OUTPUT_MAX_CHARS) return s;
-    const head = s.slice(0, SHELL_OUTPUT_MAX_CHARS);
-    const tail = s.slice(SHELL_OUTPUT_MAX_CHARS);
-    const remainingLines = (tail.match(/\n/g) || []).length + 1;
-    return `${head}\n\n... [${remainingLines} lines truncated] ...`;
+    if (s.length <= SHELL_OUTPUT_MAX_CHARS && s.split('\n').length <= SMART_BASH_MAX_LINES) return s;
+    return smartMiddleTruncate(s);
 }
 // Read tool caps. Two-stage protection mirrors Anthropic Claude Code's
 // FileReadTool/limits.ts pattern: pre-stat byte cap throws ~100B error vs
@@ -1143,13 +1140,21 @@ export function invalidateBuiltinResultCache(paths = null) {
     }
     _cacheInvalidateAll();
 }
-export function recordReadSnapshotForPath(fullPath) {
+export function recordReadSnapshotForPath(fullPath, scope = null) {
     try {
-        _recordReadSnapshot(fullPath);
+        _recordReadSnapshot(fullPath, undefined, scope);
     } catch { /* ignore snapshot failures */ }
 }
-export function clearReadSnapshotForPath(fullPath) {
-    try { _readFiles.delete(fullPath); } catch { /* ignore */ }
+export function clearReadSnapshotForPath(fullPath, scope = null) {
+    try {
+        if (scope !== null && scope !== undefined) {
+            _readFilesForScope(scope).delete(fullPath);
+            return;
+        }
+        for (const readFiles of _readFilesByScope.values()) {
+            readFiles.delete(fullPath);
+        }
+    } catch { /* ignore */ }
 }
 export function resetBuiltinCacheStatsForTesting() {
     BUILTIN_CACHE_STATS.hits = 0;
@@ -1177,19 +1182,39 @@ export function getBuiltinCacheStatsForTesting() {
 // file again and reject with error [code 7] when the current mtime has
 // advanced — detects lint/formatter/external-write drift the way
 // Anthropic's readFileState timestamp check does.
-const _readFiles = new Map(); // fullPath → { mtimeMs, size }
+const DEFAULT_READ_STATE_SCOPE = '__global__';
+const _readFilesByScope = new Map(); // scope → Map(fullPath → { mtimeMs, size })
 
-function _recordReadSnapshot(fullPath, st) {
+function _readScopeKey(scope) {
+    return scope ? String(scope) : DEFAULT_READ_STATE_SCOPE;
+}
+
+function _readFilesForScope(scope) {
+    const key = _readScopeKey(scope);
+    let readFiles = _readFilesByScope.get(key);
+    if (!readFiles) {
+        readFiles = new Map();
+        _readFilesByScope.set(key, readFiles);
+    }
+    return readFiles;
+}
+
+function _recordReadSnapshot(fullPath, st, scope = null) {
+    const readFiles = _readFilesForScope(scope);
     try {
         if (st && typeof st.mtimeMs === 'number') {
-            _readFiles.set(fullPath, { mtimeMs: st.mtimeMs, size: st.size });
+            readFiles.set(fullPath, { mtimeMs: st.mtimeMs, size: st.size });
             return;
         }
         const fresh = statSync(fullPath);
-        _readFiles.set(fullPath, { mtimeMs: fresh.mtimeMs, size: fresh.size });
+        readFiles.set(fullPath, { mtimeMs: fresh.mtimeMs, size: fresh.size });
     } catch {
-        _readFiles.set(fullPath, { mtimeMs: Date.now(), size: 0 });
+        readFiles.set(fullPath, { mtimeMs: Date.now(), size: 0 });
     }
+}
+
+function _getReadSnapshot(fullPath, scope = null) {
+    return _readFilesForScope(scope).get(fullPath);
 }
 
 function getShellJobsDir() {
@@ -1235,6 +1260,20 @@ function isPidAlive(pid) {
     if (!Number.isFinite(pid) || pid <= 0) return false;
     try {
         process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+function killProcessTree(pid, signal = 'SIGTERM') {
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+    try {
+        if (process.platform === 'win32') {
+            spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
+        } else {
+            try { process.kill(-pid, signal); }
+            catch { process.kill(pid, signal); }
+        }
         return true;
     } catch {
         return false;
@@ -1381,6 +1420,17 @@ function refreshShellJob(jobId) {
         writeShellJobDetail(detail);
         return detail;
     }
+    const timeoutMs = Number(detail.timeoutMs || 0);
+    const startedAtMs = Date.parse(detail.startedAt || '');
+    if (timeoutMs > 0 && Number.isFinite(startedAtMs) && Date.now() - startedAtMs > timeoutMs) {
+        killProcessTree(detail.pid, 'SIGTERM');
+        detail.status = 'failed';
+        detail.exitCode = 124;
+        detail.finishedAt = new Date().toISOString();
+        detail.error = `timed out after ${timeoutMs} ms`;
+        writeShellJobDetail(detail);
+        return detail;
+    }
     if (detail.pid && !isPidAlive(detail.pid)) {
         detail.status = 'failed';
         detail.finishedAt = new Date().toISOString();
@@ -1426,6 +1476,8 @@ function startBackgroundShellJob({ command, timeoutMs, workDir, mergeStderr, spa
         startedAt: new Date().toISOString(),
     };
     writeShellJobDetail(detail);
+    const timer = setTimeout(() => { refreshShellJob(jobId); }, timeoutMs + 25);
+    if (typeof timer.unref === 'function') timer.unref();
     return detail;
 }
 
@@ -2342,8 +2394,11 @@ function computeUnifiedDiff(a, b, ctx, fromLabel, toLabel) {
 }
 
 // --- Tool execution ---
-export async function executeBuiltinTool(name, args, cwd) {
+export async function executeBuiltinTool(name, args, cwd, options = {}) {
     const workDir = cwd || process.cwd();
+    const readStateScope = options?.readStateScope ?? options?.sessionId ?? null;
+    const executeChildBuiltinTool = (childName, childArgs, childCwd = workDir) =>
+        executeBuiltinTool(childName, childArgs, childCwd, options);
     // B2 path policy: capability-gated HOME access. When
     // `capabilities.homeAccess` is false (default), all path-validation
     // helpers below reject any path outside `workDir`; when true, the
@@ -2509,16 +2564,16 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!path) return `Error: ${stream} path missing for job ${jobId}`;
             const mode = args.mode || 'tail';
             const jobCwd = getPluginData();
-            if (mode === 'head') return executeBuiltinTool('head', { path, n: args.n || 40 }, jobCwd);
-            if (mode === 'count') return executeBuiltinTool('wc', { path }, jobCwd);
+            if (mode === 'head') return executeChildBuiltinTool('head', { path, n: args.n || 40 }, jobCwd);
+            if (mode === 'count') return executeChildBuiltinTool('wc', { path }, jobCwd);
             if (mode === 'full') {
-                return executeBuiltinTool('read', {
+                return executeChildBuiltinTool('read', {
                     path,
                     offset: typeof args.offset === 'number' ? args.offset : 0,
                     limit: typeof args.limit === 'number' ? args.limit : 2000,
                 }, jobCwd);
             }
-            return executeBuiltinTool('tail', { path, n: args.n || 40 }, jobCwd);
+            return executeChildBuiltinTool('tail', { path, n: args.n || 40 }, jobCwd);
         }
         case 'job_cancel': {
             const jobId = typeof args.job_id === 'string' ? args.job_id : '';
@@ -2534,7 +2589,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return `Job ${jobId} is no longer running`;
             }
             try {
-                process.kill(job.pid, 'SIGTERM');
+                killProcessTree(job.pid, 'SIGTERM');
             } catch (err) {
                 return `Error: failed to cancel ${jobId}: ${err?.message || String(err)}`;
             }
@@ -2564,11 +2619,11 @@ export async function executeBuiltinTool(name, args, cwd) {
                     if (args.full !== undefined) entry.full = args.full;
                     return entry;
                 });
-                return executeBuiltinTool('multi_read', { reads }, workDir);
+                return executeChildBuiltinTool('multi_read', { reads }, workDir);
             }
-            if (args.mode === 'head') return executeBuiltinTool('head', { path: args.path, n: args.n }, workDir);
-            if (args.mode === 'tail') return executeBuiltinTool('tail', { path: args.path, n: args.n }, workDir);
-            if (args.mode === 'count') return executeBuiltinTool('wc', { path: args.path }, workDir);
+            if (args.mode === 'head') return executeChildBuiltinTool('head', { path: args.path, n: args.n }, workDir);
+            if (args.mode === 'tail') return executeChildBuiltinTool('tail', { path: args.path, n: args.n }, workDir);
+            if (args.mode === 'count') return executeChildBuiltinTool('wc', { path: args.path }, workDir);
             args.path = normalizeInputPath(args.path);
             const filePath = args.path;
             if (!filePath)
@@ -2598,7 +2653,10 @@ export async function executeBuiltinTool(name, args, cwd) {
             const wantFull = args.full === true;
             const cacheKey = `read|${fullPath}|${st.mtimeMs}|${st.size}|${typeof args.offset === 'number' ? args.offset : 'd'}|${typeof args.limit === 'number' ? args.limit : 'd'}|${wantFull ? 'f' : 's'}`;
             const cached = _cacheGet(cacheKey);
-            if (cached !== null) return cached;
+            if (cached !== null) {
+                _recordReadSnapshot(fullPath, st, readStateScope);
+                return cached;
+            }
             if (st.size > READ_MAX_SIZE_BYTES) {
                 if (!hasRangeArgs) {
                     return `Error: file size ${st.size} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap. Use offset+limit to read a range.`;
@@ -2609,7 +2667,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 try {
                     const out = await streamReadRange(fullPath, offset, limit);
                     _cacheSet(cacheKey, out, { paths: [fullPath] });
-                    _recordReadSnapshot(fullPath, st);
+                    _recordReadSnapshot(fullPath, st, readStateScope);
                     return out;
                 } catch (err) {
                     return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
@@ -2641,7 +2699,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     out = text;
                 }
                 _cacheSet(cacheKey, out, { paths: [fullPath] });
-                _recordReadSnapshot(fullPath, st);
+                _recordReadSnapshot(fullPath, st, readStateScope);
                 return out;
             }
             catch (err) {
@@ -2658,7 +2716,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             // into the aggregate rather than aborting the whole batch.
             const results = await Promise.all(reads.map(async (entry) => {
                 if (!entry || !entry.path) return { path: '(missing-path)', body: 'Error: path is required' };
-                const body = await executeBuiltinTool('read', entry, workDir);
+                const body = await executeChildBuiltinTool('read', entry, workDir);
                 return { path: entry.path, body };
             }));
             // Header path → forward slash; error bodies already normalised
@@ -2672,7 +2730,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             }).join('\n\n');
         }
         case 'write_many': {
-            return executeBuiltinTool('write', { writes: args.writes }, workDir);
+            return executeChildBuiltinTool('write', { writes: args.writes }, workDir);
         }
         case 'multi_edit': {
             // Claude Code native MultiEdit semantics: one file, many ordered
@@ -2700,7 +2758,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 }
                 return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
-            const mEditSnapshot = _readFiles.get(fullPath);
+            const mEditSnapshot = _getReadSnapshot(fullPath, readStateScope);
             if (!mEditSnapshot) {
                 return `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
             }
@@ -2742,7 +2800,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 await atomicWrite(fullPath, content);
                 invalidateBuiltinResultCache([fullPath]);
                 markCodeGraphDirtyPaths(workDir, [fullPath]);
-                _recordReadSnapshot(fullPath);
+                _recordReadSnapshot(fullPath, undefined, readStateScope);
                 return `Edited: ${normalizeOutputPath(filePath)} (${edits.length} replacements applied)`;
             } catch (err) {
                 return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
@@ -2770,13 +2828,13 @@ export async function executeBuiltinTool(name, args, cwd) {
             };
             const groupResults = await Promise.all([...groups.entries()].map(async ([path, items]) => {
                 if (items.length === 1) {
-                    const body = await executeBuiltinTool('edit', items[0], workDir);
+                    const body = await executeChildBuiltinTool('edit', items[0], workDir);
                     const errMsg = parseLeadError(body);
                     return errMsg
                         ? `FAIL ${normalizeOutputPath(path)}: ${errMsg}`
                         : `OK ${normalizeOutputPath(path)}`;
                 }
-                const body = await executeBuiltinTool('multi_edit', {
+                const body = await executeChildBuiltinTool('multi_edit', {
                     path,
                     edits: items.map(({ path: _p, ...rest }) => rest),
                 }, workDir);
@@ -2812,7 +2870,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                         mkdirSync(dirname(fullPath), { recursive: true });
                         await atomicWrite(fullPath, content);
                         dirtyPaths.push(fullPath);
-                        _recordReadSnapshot(fullPath);
+                        _recordReadSnapshot(fullPath, undefined, readStateScope);
                         results.push(`OK ${normalizeOutputPath(filePath)}`);
                     }
                     catch (err) {
@@ -2854,7 +2912,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // Write establishes the on-disk state the model just
                 // authored, so a subsequent Edit does not need a fresh
                 // Read round-trip.
-                _recordReadSnapshot(fullPath);
+                _recordReadSnapshot(fullPath, undefined, readStateScope);
                 return `Written: ${normalizeOutputPath(filePath)}`;
             }
             catch (err) {
@@ -2878,12 +2936,12 @@ export async function executeBuiltinTool(name, args, cwd) {
                 if (paths.size === 0) return 'Error: each edit requires a path (either on the item or at top level)';
                 if (paths.size === 1) {
                     const onePath = [...paths][0];
-                    return executeBuiltinTool('multi_edit', {
+                    return executeChildBuiltinTool('multi_edit', {
                         path: onePath,
                         edits: items.map(({ path: _p, ...rest }) => rest),
                     }, workDir);
                 }
-                return executeBuiltinTool('batch_edit', {
+                return executeChildBuiltinTool('batch_edit', {
                     edits: items.map((x) => ({
                         path: x.path, old_string: x.old_string, new_string: x.new_string, replace_all: x.replace_all,
                     })),
@@ -2916,7 +2974,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             // Error [code 6]: Read-before-Edit enforcement. Prevents phantom
             // edits where the model invents an old_string based on cached
             // assumptions against a file that has drifted.
-            const editSnapshot = _readFiles.get(fullPath);
+            const editSnapshot = _getReadSnapshot(fullPath, readStateScope);
             if (!editSnapshot) {
                 return `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
             }
@@ -2943,7 +3001,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // Refresh the snapshot to the post-write mtime so a chain
                 // of edits against the same file doesn't trip the stale
                 // check on the second hop.
-                _recordReadSnapshot(fullPath);
+                _recordReadSnapshot(fullPath, undefined, readStateScope);
                 return `Edited: ${normalizeOutputPath(filePath)}`;
             }
             catch (err) {
@@ -2976,7 +3034,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 }
                 return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
-            const elSnapshot = _readFiles.get(fullPath);
+            const elSnapshot = _getReadSnapshot(fullPath, readStateScope);
             if (!elSnapshot) {
                 return `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
             }
@@ -3003,7 +3061,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 await atomicWrite(fullPath, newFileContent);
                 invalidateBuiltinResultCache([fullPath]);
                 markCodeGraphDirtyPaths(workDir, [fullPath]);
-                _recordReadSnapshot(fullPath);
+                _recordReadSnapshot(fullPath, undefined, readStateScope);
                 const replacedCount = endLine - startLine + 1;
                 const insertedCount = newLines.length;
                 return `Edited: ${normalizeOutputPath(filePath)} (lines ${startLine}-${endLine} replaced, ${replacedCount} -> ${insertedCount} lines)`;
@@ -3194,8 +3252,8 @@ export async function executeBuiltinTool(name, args, cwd) {
             //   mode:'tree'  → tree handler (ASCII visualization)
             //   mode:'find'  → find_files handler (name/size/mtime filter)
             //   default      → list below (metadata rows).
-            if (args.mode === 'tree') return executeBuiltinTool('tree', args, workDir);
-            if (args.mode === 'find') return executeBuiltinTool('find_files', args, workDir);
+            if (args.mode === 'tree') return executeChildBuiltinTool('tree', args, workDir);
+            if (args.mode === 'find') return executeChildBuiltinTool('find_files', args, workDir);
             args.path = normalizeInputPath(args.path);
             const inputPath = args.path || '.';
             const depth = Math.min(Math.max(parseInt(args.depth ?? 1, 10) || 1, 1), 10);
@@ -3433,7 +3491,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             // Thin wrapper around `read` with offset:0+limit:n. Keeps all
             // caching, safe-path, and size-cap semantics in one place.
             const n = Math.max(1, Math.min(parseInt(args.n ?? 20, 10) || 20, 2000));
-            return executeBuiltinTool('read', { path: args.path, offset: 0, limit: n }, workDir);
+            return executeChildBuiltinTool('read', { path: args.path, offset: 0, limit: n }, workDir);
         }
         case 'tail': {
             const n = Math.max(1, Math.min(parseInt(args.n ?? 20, 10) || 20, 2000));
@@ -3561,7 +3619,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             const fromLines = splitLines(fromContent);
             const toLines = splitLines(toContent);
             const out = computeUnifiedDiff(fromLines, toLines, context, fromLabel, toLabel);
-            return out || '(no differences)';
+            return capShellOutput(out || '(no differences)');
         }
         default:
             return `Error: unknown builtin tool "${name}"`;
