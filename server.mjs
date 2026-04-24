@@ -77,6 +77,24 @@ globalThis.__tribFastEntry = true
 // ── Unified config sync ────────────────────────────────────────────
 // mixdog-config.json is the single source. On boot, split into individual
 // files so each module can read its own file without changes.
+const GENERATED_CONFIG_MARKER = 'from mixdog-config.json — edits will be overwritten on next boot'
+
+function stripGeneratedMarker(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  if (!Object.prototype.hasOwnProperty.call(value, '_generated')) return value
+  const { _generated, ...rest } = value
+  return rest
+}
+
+function withGeneratedMarker(value) {
+  const section = stripGeneratedMarker(value)
+  if (!section || typeof section !== 'object' || Array.isArray(section)) return section
+  return {
+    _generated: GENERATED_CONFIG_MARKER,
+    ...section,
+  }
+}
+
 try {
   const mixdogCfgPath = join(PLUGIN_DATA, 'mixdog-config.json')
   const SECTION_FILES = { channels: 'config.json', agent: 'agent-config.json', memory: 'memory-config.json', search: 'search-config.json' }
@@ -84,13 +102,14 @@ try {
   try { tribCfg = JSON.parse(readFileSync(mixdogCfgPath, 'utf8')) } catch { tribCfg = null }
   if (tribCfg) {
     for (const [section, file] of Object.entries(SECTION_FILES)) {
-      if (tribCfg[section]) writeFileSync(join(PLUGIN_DATA, file), JSON.stringify(tribCfg[section], null, 2) + '\n')
+      const generated = withGeneratedMarker(tribCfg[section])
+      if (generated) writeFileSync(join(PLUGIN_DATA, file), JSON.stringify(generated, null, 2) + '\n')
     }
   } else {
     // First run: merge individual files into mixdog-config.json
     const merged = {}
     for (const [section, file] of Object.entries(SECTION_FILES)) {
-      try { merged[section] = JSON.parse(readFileSync(join(PLUGIN_DATA, file), 'utf8')) } catch {}
+      try { merged[section] = stripGeneratedMarker(JSON.parse(readFileSync(join(PLUGIN_DATA, file), 'utf8'))) } catch {}
     }
     if (Object.keys(merged).length > 0) writeFileSync(mixdogCfgPath, JSON.stringify(merged, null, 2) + '\n')
   }

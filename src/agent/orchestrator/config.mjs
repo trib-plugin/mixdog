@@ -1,8 +1,9 @@
-import { readFileSync, existsSync, renameSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { loadGitHubToken } from './providers/copilot-auth.mjs';
 import { resolvePluginData } from '../../shared/plugin-paths.mjs';
+import { readSection, updateSection, stripGeneratedMarker } from '../../shared/config.mjs';
 
 /**
  * Back-compat alias. Delegates to the shared `resolvePluginData()` helper
@@ -107,6 +108,24 @@ function buildDefaultConfig() {
     providers.lmstudio = { enabled: false, baseURL: 'http://localhost:1234/v1' };
     return { providers };
 }
+
+function hasKeys(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
+}
+
+function readLegacyAgentConfig(configPath) {
+    try {
+        return stripGeneratedMarker(JSON.parse(readFileSync(configPath, 'utf-8')));
+    }
+    catch {
+        return null;
+    }
+}
+
+function persistAgentConfig(config) {
+    updateSection('agent', () => config);
+}
+
 /**
  * One-time migration: if a legacy mcp-tools.json sits next to config.json,
  * merge its `mcpServers` into config.json and rename the legacy file to .bak.
@@ -117,13 +136,11 @@ function migrateMcpToolsFile(configPath) {
     const legacyPath = join(dir, 'mcp-tools.json');
     if (!existsSync(legacyPath))
         return;
-    let configRaw = {};
-    try {
-        configRaw = JSON.parse(readFileSync(configPath, 'utf-8'));
-    }
-    catch {
+    let configRaw = readSection('agent');
+    if (!hasKeys(configRaw)) {
+        configRaw = readLegacyAgentConfig(configPath);
         // config.json malformed; bail without touching legacy file
-        return;
+        if (!configRaw) return;
     }
     if (configRaw.mcpServers && Object.keys(configRaw.mcpServers).length > 0) {
         // Already migrated — leave the legacy file alone for the user to clean up
@@ -142,10 +159,7 @@ function migrateMcpToolsFile(configPath) {
     }
     configRaw.mcpServers = legacyServers;
     try {
-        mkdirSync(dirname(configPath), { recursive: true });
-        const tmp = configPath + '.tmp';
-        writeFileSync(tmp, JSON.stringify(configRaw, null, 2) + '\n', 'utf-8');
-        renameSync(tmp, configPath);
+        updateSection('agent', (current) => ({ ...current, ...configRaw }));
         renameSync(legacyPath, legacyPath + '.bak');
         process.stderr.write(`[mixdog-agent] Migrated mcp-tools.json -> config.json (backup at ${legacyPath}.bak)\n`);
     }
@@ -158,10 +172,11 @@ function getConfigPath() {
 }
 export function loadConfig() {
     const configPath = getConfigPath();
-    if (existsSync(configPath)) {
-        migrateMcpToolsFile(configPath);
+    migrateMcpToolsFile(configPath);
+    const sectionRaw = readSection('agent');
+    if (hasKeys(sectionRaw) || existsSync(configPath)) {
         try {
-            let raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+            let raw = hasKeys(sectionRaw) ? sectionRaw : readLegacyAgentConfig(configPath);
             // If config has an 'agent' section, use it (unified config format)
             if (raw.agent && raw.agent.providers) {
                 raw = raw.agent;
@@ -193,9 +208,7 @@ export function loadConfig() {
                 delete mcpServers['trib-plugin'];
                 raw.mcpServers = mcpServers;
                 try {
-                    const tmp = configPath + '.tmp';
-                    writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
-                    renameSync(tmp, configPath);
+                    persistAgentConfig(raw);
                     process.stderr.write(`[config] migrated: removed legacy self-ref mcpServers.mixdog / mcpServers["trib-plugin"]\n`);
                 } catch (e) {
                     process.stderr.write(`[config] self-ref migration persist failed: ${e.message}\n`);
@@ -209,9 +222,8 @@ export function loadConfig() {
             if (hadLegacy) {
                 try {
                     const migrated = { ...raw, presets: normalizedPresets };
-                    const tmp = configPath + '.tmp';
-                    writeFileSync(tmp, JSON.stringify(migrated, null, 2) + '\n', 'utf-8');
-                    renameSync(tmp, configPath);
+                    persistAgentConfig(migrated);
+                    raw = migrated;
                     process.stderr.write(`[config] migrated: ${rawPresets.filter(p => isLegacyPresetShape(p)).length} legacy preset(s) → bridge\n`);
                 } catch (e) {
                     process.stderr.write(`[config] native→bridge migration persist failed: ${e.message}\n`);
@@ -247,21 +259,15 @@ export function loadConfig() {
     };
 }
 /**
- * Atomically save config.json. Caller passes the full config object.
- * Only persists mcpServers, presets, default, and user-set provider entries
- * (apiKey, enabled, baseURL) — defaults are recomputed on next load.
+ * Atomically save the agent section in mixdog-config.json. Caller passes the
+ * full config object. Only persists mcpServers, presets, default, and user-set
+ * provider entries (apiKey, enabled, baseURL) — defaults are recomputed on
+ * next load.
  */
 export function saveConfig(config) {
     const path = getConfigPath();
-    mkdirSync(dirname(path), { recursive: true });
-    let existingRaw = {};
-    try {
-        if (existsSync(path)) {
-            existingRaw = JSON.parse(readFileSync(path, 'utf-8'));
-        }
-    } catch {
-        existingRaw = {};
-    }
+    let existingRaw = readSection('agent');
+    if (!hasKeys(existingRaw)) existingRaw = readLegacyAgentConfig(path) || {};
     // Strip ephemeral defaults from providers but preserve any unknown
     // per-provider subkey so future schema additions round-trip through
     // the setup UI without changes here.
@@ -296,9 +302,7 @@ export function saveConfig(config) {
         skillSuggest: config.skillSuggest || {},
         bridge: config.bridge || {},
     };
-    const tmp = path + '.tmp';
-    writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-    renameSync(tmp, path);
+    persistAgentConfig(payload);
 }
 // --- Preset helpers ---
 // preset shape: { id, name, type: 'bridge', provider, model, effort?, fast?, tools? }

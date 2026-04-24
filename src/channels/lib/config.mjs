@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { DiscordBackend } from "../backends/discord.mjs";
+import { updateSection, CONFIG_PATH as MIXDOG_CONFIG_PATH, stripGeneratedMarker } from "../../shared/config.mjs";
 if (!process.env.CLAUDE_PLUGIN_DATA) {
   process.stderr.write(
     "mixdog: CLAUDE_PLUGIN_DATA not set.\n  This plugin must be run through Claude Code.\n"
@@ -26,7 +27,7 @@ const DEFAULT_CONFIG = {
 };
 function loadConfig() {
   try {
-    const raw = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
+    const raw = stripGeneratedMarker(JSON.parse(readFileSync(CONFIG_FILE, "utf8")));
     const items = raw.schedules?.items;
     if (items && Array.isArray(items)) {
       if (!raw.nonInteractive) {
@@ -54,9 +55,9 @@ function loadConfig() {
   } catch (err) {
     if (err.code === "ENOENT") {
       mkdirSync(DATA_DIR, { recursive: true });
-      writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n");
+      updateSection("channels", () => DEFAULT_CONFIG);
       process.stderr.write(
-        `mixdog: default config created at ${CONFIG_FILE}
+        `mixdog: default channels config created in ${MIXDOG_CONFIG_PATH}
   edit discord.token and channelsConfig.main.channelId to connect.
 `
       );

@@ -23,6 +23,7 @@ import {
 import { join, sep } from "path";
 import { chunk } from "../lib/format.mjs";
 import { withConfigLock } from "../lib/config-lock.mjs";
+import { updateSection } from "../../shared/config.mjs";
 const MAX_CHUNK_LIMIT = 2e3;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const RECENT_SENT_CAP = 200;
@@ -432,19 +433,24 @@ class DiscordBackend {
           return {};
         }
       })();
+      const access = {
+        dmPolicy: a.dmPolicy,
+        allowFrom: a.allowFrom,
+        channels: a.channels,
+        pending: a.pending,
+        ...a.mentionPatterns ? { mentionPatterns: a.mentionPatterns } : {},
+        ...a.ackReaction ? { ackReaction: a.ackReaction } : {},
+        ...a.replyToMode ? { replyToMode: a.replyToMode } : {},
+        ...a.textChunkLimit ? { textChunkLimit: a.textChunkLimit } : {},
+        ...a.chunkMode ? { chunkMode: a.chunkMode } : {}
+      };
+      updateSection("channels", (channels) => ({
+        ...channels,
+        access
+      }));
       const next = {
         ...current,
-        access: {
-          dmPolicy: a.dmPolicy,
-          allowFrom: a.allowFrom,
-          channels: a.channels,
-          pending: a.pending,
-          ...a.mentionPatterns ? { mentionPatterns: a.mentionPatterns } : {},
-          ...a.ackReaction ? { ackReaction: a.ackReaction } : {},
-          ...a.replyToMode ? { replyToMode: a.replyToMode } : {},
-          ...a.textChunkLimit ? { textChunkLimit: a.textChunkLimit } : {},
-          ...a.chunkMode ? { chunkMode: a.chunkMode } : {}
-        }
+        access
       };
       const tmp = this.configFile + ".tmp";
       writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n", { mode: 384 });

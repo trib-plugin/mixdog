@@ -1,5 +1,4 @@
-import { writeFileSync } from 'fs'
-import { CONFIG_PATH, loadConfig } from './config.mjs'
+import { loadConfig, saveConfig } from './config.mjs'
 
 function mask(key) {
   if (!key) return '  not set'
@@ -78,7 +77,7 @@ function applyKeys(config, section, data) {
 }
 
 function save(config) {
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', 'utf8')
+  saveConfig(config)
 }
 
 export async function handleSetup(server) {

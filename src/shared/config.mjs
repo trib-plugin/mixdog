@@ -10,6 +10,19 @@ const DATA_DIR = resolvePluginData()
 
 const CONFIG_PATH = join(DATA_DIR, 'mixdog-config.json')
 
+const GENERATED_KEY = '_generated'
+export const GENERATED_MARKER = 'from mixdog-config.json — edits will be overwritten on next boot'
+
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+export function stripGeneratedMarker(data) {
+  if (!isPlainObject(data) || !Object.prototype.hasOwnProperty.call(data, GENERATED_KEY)) return data
+  const { [GENERATED_KEY]: _generated, ...rest } = data
+  return rest
+}
+
 // Legacy file paths for one-time migration
 const LEGACY_FILES = {
   channels: 'config.json',
@@ -38,7 +51,7 @@ function readAll() {
   const merged = {}
   for (const [section, filename] of Object.entries(LEGACY_FILES)) {
     const legacy = readJsonFile(join(DATA_DIR, filename))
-    if (legacy) merged[section] = legacy
+    if (legacy) merged[section] = stripGeneratedMarker(legacy)
   }
   if (Object.keys(merged).length > 0) {
     writeJsonFile(CONFIG_PATH, merged)
@@ -51,18 +64,19 @@ function writeAll(data) {
 }
 
 export function readSection(section) {
-  return readAll()[section] || {}
+  return stripGeneratedMarker(readAll()[section] || {})
 }
 
 export function writeSection(section, data) {
   const all = readAll()
-  all[section] = data
+  all[section] = stripGeneratedMarker(data)
   writeAll(all)
 }
 
 export function updateSection(section, updater) {
   const all = readAll()
-  all[section] = updater(all[section] || {})
+  const current = stripGeneratedMarker(all[section] || {})
+  all[section] = stripGeneratedMarker(typeof updater === 'function' ? updater(current) : updater)
   writeAll(all)
 }
 

@@ -12,6 +12,7 @@ import { ensureDataSeeds } from '../src/shared/seed.mjs';
 import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memory-cycle.mjs';
 import { runFullBackfill } from '../src/memory/lib/memory-ops-policy.mjs';
 import { cleanMemoryText } from '../src/memory/lib/memory.mjs';
+import { readSection, writeSection } from '../src/shared/config.mjs';
 
 // C2 — Origin/Referer guard for mutating routes.
 // Returns true when the request is safe to handle (no browser origin, or origin
@@ -99,21 +100,6 @@ const MEMORY_DB_PATH = join(MEMORY_DATA_DIR, 'memory.sqlite');
 const SEARCH_DATA_DIR = DATA_DIR;
 const SEARCH_CONFIG_PATH = join(SEARCH_DATA_DIR, 'search-config.json');
 
-// -- Unified config sync --
-const MIXDOG_CONFIG_PATH = join(DATA_DIR, 'mixdog-config.json');
-const SECTION_FILES = { channels: CONFIG_PATH, agent: AGENT_CONFIG_PATH, memory: MEMORY_CONFIG_PATH, search: SEARCH_CONFIG_PATH };
-
-function syncToTribConfig() {
-  try {
-    const merged = {};
-    const SECTION_NAMES = { channels: 'config.json', agent: 'agent-config.json', memory: 'memory-config.json', search: 'search-config.json' };
-    for (const [section, filePath] of Object.entries(SECTION_FILES)) {
-      try { merged[section] = JSON.parse(readFileSync(filePath, 'utf8')); } catch {}
-    }
-    writeJsonFile(MIXDOG_CONFIG_PATH, merged);
-  } catch {}
-}
-
 const PORT = 3458;
 const APP_WIDTH = 950;
 const APP_HEIGHT = 900;
@@ -158,17 +144,17 @@ function writeJsonFile(path, data) {
   renameSync(tmp, path);
 }
 
-function readConfig() { return readJsonFile(CONFIG_PATH); }
-function writeConfig(data) { writeJsonFile(CONFIG_PATH, data); syncToTribConfig(); }
+function readConfig() { return readSection('channels'); }
+function writeConfig(data) { writeSection('channels', data); }
 
-function readAgentConfig() { return readJsonFile(AGENT_CONFIG_PATH); }
-function writeAgentConfig(data) { writeJsonFile(AGENT_CONFIG_PATH, data); syncToTribConfig(); }
+function readAgentConfig() { return readSection('agent'); }
+function writeAgentConfig(data) { writeSection('agent', data); }
 
-function readMemoryConfig() { return readJsonFile(MEMORY_CONFIG_PATH); }
-function writeMemoryConfig(data) { writeJsonFile(MEMORY_CONFIG_PATH, data); syncToTribConfig(); }
+function readMemoryConfig() { return readSection('memory'); }
+function writeMemoryConfig(data) { writeSection('memory', data); }
 
-function readSearchConfig() { return readJsonFile(SEARCH_CONFIG_PATH); }
-function writeSearchConfig(data) { writeJsonFile(SEARCH_CONFIG_PATH, data); syncToTribConfig(); }
+function readSearchConfig() { return readSection('search'); }
+function writeSearchConfig(data) { writeSection('search', data); }
 
 function readUserWorkflow() {
   if (!existsSync(USER_WORKFLOW_PATH)) return DEFAULT_USER_WORKFLOW;

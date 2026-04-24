@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { resolvePluginData } from '../../shared/plugin-paths.mjs'
+import { readSection, updateSection, stripGeneratedMarker, CONFIG_PATH as MIXDOG_CONFIG_PATH } from '../../shared/config.mjs'
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url))
 export const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(currentDir, '..')
@@ -81,17 +82,32 @@ function normalizeLegacyConfig(config) {
   return config
 }
 
-export function loadConfig() {
-  ensureDataDir()
-  let config = readJson(CONFIG_PATH, null)
+function hasKeys(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0
+}
+
+function readSplitConfig() {
+  let config = stripGeneratedMarker(readJson(CONFIG_PATH, null))
   // If config has a 'search' section, use it (unified config format)
   if (config && config.search && config.search.rawSearch) {
     config = config.search
   }
-  if (!config) {
-    writeJson(CONFIG_PATH, DEFAULT_CONFIG)
+  return stripGeneratedMarker(config)
+}
+
+export function saveConfig(config) {
+  updateSection('search', () => stripGeneratedMarker(config) || {})
+}
+
+export function loadConfig() {
+  ensureDataDir()
+  let config = readSection('search')
+  if (!hasKeys(config)) config = readSplitConfig()
+  if (!hasKeys(config)) {
+    saveConfig(DEFAULT_CONFIG)
+    config = DEFAULT_CONFIG
     process.stderr.write(
-      `mixdog-search: default config created at ${CONFIG_PATH}\n` +
+      `mixdog-search: default config created in ${MIXDOG_CONFIG_PATH} (section: search)\n` +
       '  use /setup to change provider priority and crawl defaults.\n',
     )
   }
