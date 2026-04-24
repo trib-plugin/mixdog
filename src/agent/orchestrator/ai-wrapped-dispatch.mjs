@@ -298,7 +298,7 @@ async function runExploreFilenamePatternFastPath(query, cwd) {
 async function runExploreCallerFastPath(query, cwd) {
   if (!cwd) return null
   const text = String(query || '').trim()
-  if (!/\b(who\s+calls|callers?\s+of|called\s+by|caller\s+file|caller\s+function)\b/i.test(text)) return null
+  if (!/\b(who\s+calls|caller(?:s|\(s\))?\s+of|called\s+by|caller\s+file|caller\s+function)\b/i.test(text)) return null
   if (/\b(list\s+all|all\s+references|reference\s+graph|impact|trace|audit|review)\b/i.test(text)) return null
   if (text.split(/\s+/).filter(Boolean).length > 50) return null
   const identifier = extractIdentifierCandidate(text)

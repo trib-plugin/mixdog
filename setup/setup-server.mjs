@@ -13,6 +13,7 @@ import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memor
 import { runFullBackfill } from '../src/memory/lib/memory-ops-policy.mjs';
 import { cleanMemoryText } from '../src/memory/lib/memory.mjs';
 import { readSection, writeSection } from '../src/shared/config.mjs';
+import { applyDefaults as applyChannelsDefaults } from '../src/channels/lib/config.mjs';
 
 // C2 — Origin/Referer guard for mutating routes.
 // Returns true when the request is safe to handle (no browser origin, or origin
@@ -1104,7 +1105,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && path === '/config') {
-    const config = readConfig();
+    const config = applyChannelsDefaults(readConfig());
     const bot = readJsonFile(BOT_PATH);
     config._bot = bot;
     res.writeHead(200, { 'Content-Type': 'application/json' });

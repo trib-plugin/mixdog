@@ -133,8 +133,19 @@ export function loadSkillContent(name, cwd) {
  * repeated Pool C fan-out).
  */
 let _skillToolDefsCache = null;
-export function buildSkillToolDefs(skills) {
-    if (!skills.length) return [];
+/**
+ * @param {Array} skills       — discovered skill frontmatter list (may be empty)
+ * @param {object} [opts]
+ * @param {boolean} [opts.ownerIsBridge=false]
+ *   Bridge sessions ALWAYS include the 3 meta-tools regardless of the current
+ *   cwd's skill inventory — the concrete skill list is resolved at tool-call
+ *   time (cwd-scoped) so the tool schema stays bit-identical across roles /
+ *   cwds and the provider cache shard does not fragment.
+ *   Non-bridge sessions keep the historical "empty when skills.length===0"
+ *   behaviour.
+ */
+export function buildSkillToolDefs(skills, { ownerIsBridge = false } = {}) {
+    if (!ownerIsBridge && !skills.length) return [];
     if (_skillToolDefsCache) return _skillToolDefsCache;
     _skillToolDefsCache = [
         {

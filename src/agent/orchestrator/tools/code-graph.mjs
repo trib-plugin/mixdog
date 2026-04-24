@@ -1382,7 +1382,8 @@ function _resolveReferenceLanguageNode(graph, symbol, rel, cwd, language = null)
     const node = graph.nodes.get(rel);
     if (node) return node;
   }
-  const hits = _findSymbolHits(graph, symbol, { language });
+  let hits = _findSymbolHits(graph, symbol, { language });
+  if (!hits.length && language) hits = _findSymbolHits(graph, symbol, { language: null });
   if (!hits.length) return null;
   const primary = hits.find((hit) => hit.declarationLike) || hits[0];
   return primary?.rel ? graph.nodes.get(primary.rel) || null : null;
@@ -2202,7 +2203,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
         mode: { type: 'string', enum: ['overview', 'imports', 'dependents', 'related', 'impact', 'symbols', 'find_symbol', 'references', 'callers'], description: 'Graph query mode.' },
         file: { type: 'string', description: 'Path to the target file. Required for non-overview modes.' },
         symbol: { type: 'string', description: 'Symbol name. Required for find_symbol/references/callers.' },
-        language: { type: 'string', description: 'Optional language filter for find_symbol (e.g. javascript, typescript, python).' },
+        language: { type: 'string', description: 'Optional language filter for find_symbol/references/callers only when known; omit if unsure.' },
         limit: { type: 'number', description: 'Optional result cap for find_symbol. Default 20, max 50.' },
       },
       required: ['mode'],

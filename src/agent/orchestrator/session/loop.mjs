@@ -38,7 +38,55 @@ const DIRECT_HIDDEN_TOOLS = new Set(['memory_search', 'web_search']);
 // during SSE parsing so tool work overlaps with the rest of the stream.
 // Writes, bash, MCP and skills stay serial after send() returns.
 const EAGER_TOOLS = new Set(['read', 'multi_read', 'grep', 'glob', 'list']);
+const COMPLETION_HINT_TOOLS = new Set(['read', 'multi_read', 'grep', 'glob', 'list']);
+const EXPLICIT_TOOL_VERBS = String.raw`(?:use|call|run|invoke|prefer)`
+const EXPLICIT_TOOL_NEGATION = String.raw`(?:do\s+not|don't|never)\s+${EXPLICIT_TOOL_VERBS}`
 function isEagerDispatchable(name) { return EAGER_TOOLS.has(name); }
+function withToolCompletionHint(name, result) {
+    if (!COMPLETION_HINT_TOOLS.has(name)) return result;
+    const text = String(result ?? '');
+    if (!text || text.startsWith('Error:')) return result;
+    return [
+        `[${name} complete: if the requested value/evidence is present above, answer now. Do not repeat an identical ${name} call just to re-check the same result.]`,
+        '',
+        text,
+    ].join('\n');
+}
+function escapeRegex(text) {
+    return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function userTextsNewestFirst(messages) {
+    if (!Array.isArray(messages)) return [];
+    const texts = [];
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const msg = messages[i];
+        if (msg?.role !== 'user') continue;
+        if (typeof msg.content === 'string') {
+            if (!msg.content.startsWith('<system-reminder>')) texts.push(msg.content);
+            continue;
+        }
+        if (Array.isArray(msg.content)) {
+            const text = msg.content.map(item => typeof item?.text === 'string' ? item.text : '').filter(Boolean).join('\n');
+            if (text && !text.startsWith('<system-reminder>')) texts.push(text);
+        }
+    }
+    return texts;
+}
+function explicitToolChoiceName(messages, tools) {
+    const texts = userTextsNewestFirst(messages);
+    if (!texts.length || !Array.isArray(tools) || !tools.length) return null;
+    const names = tools.map(tool => tool?.name).filter(Boolean).sort((a, b) => b.length - a.length);
+    for (const text of texts) {
+        for (const name of names) {
+            const escaped = escapeRegex(name);
+            const quotedName = '`?' + escaped + '`?';
+            const positive = new RegExp(`\\b${EXPLICIT_TOOL_VERBS}\\s+(?:exactly\\s+one\\s+|one\\s+)?${quotedName}\\b`, 'i');
+            const negative = new RegExp(`\\b${EXPLICIT_TOOL_NEGATION}\\s+${quotedName}\\b`, 'i');
+            if (positive.test(text) && !negative.test(text)) return name;
+        }
+    }
+    return null;
+}
 function effectiveToolPermission(sessionRef) {
     return sessionRef?.toolPermission || sessionRef?.permission || null;
 }
@@ -191,6 +239,10 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     const emergencyIterationFuse = Number.isFinite(Number(opts.iterationEmergencyFuse))
         ? Number(opts.iterationEmergencyFuse)
         : EMERGENCY_ITERATION_FUSE;
+    const forcedFirstTool = opts.forcedFirstTool || explicitToolChoiceName(messages, tools);
+    const forcedFirstToolDef = forcedFirstTool
+        ? tools.find(tool => tool?.name === forcedFirstTool)
+        : null;
     const warnedIterationThresholds = new Set();
     // Opaque providerState passthrough. The loop never inspects it; only the
     // originating provider does. Seed from sendOpts.providerState if the
@@ -256,6 +308,12 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         const nextIteration = iterations + 1;
         opts.iteration = nextIteration;
         opts.providerState = providerState;
+        if (forcedFirstTool && toolCallsTotal === 0) {
+            opts.toolChoice = 'required';
+        } else {
+            delete opts.toolChoice;
+        }
+        const sendTools = forcedFirstToolDef && toolCallsTotal === 0 ? [forcedFirstToolDef] : tools;
         // Eager-dispatch queue: when the provider streams a tool-call event,
         // start read-only tools immediately so execution overlaps with the
         // remaining SSE parse. Writes and unknown tools wait until send()
@@ -288,7 +346,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             startEagerTool(call);
         };
         const sendStartedAt = Date.now();
-        response = await provider.send(messages, model, tools.length ? tools : undefined, opts);
+        response = await provider.send(messages, model, sendTools.length ? sendTools : undefined, opts);
         opts.onToolCall = undefined;
         // Capture opaque state for the next turn (may be undefined — that's
         // the stateless contract for providers that don't use continuation).
@@ -299,7 +357,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             iteration: iterations,
             sendMs: Date.now() - sendStartedAt,
             messageCount: Array.isArray(messages) ? messages.length : 0,
-            bodyBytesEst: estimateProviderPayloadBytes(messages, model, tools),
+            bodyBytesEst: estimateProviderPayloadBytes(messages, model, sendTools),
         });
         // Accumulate usage across iterations — every billable slot, not just
         // input/output. Anthropic cache_read/cache_write typically stay 0 on
@@ -416,6 +474,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 result = `Error: ${err instanceof Error ? err.message : String(err)}`;
             }
             result = maybeOffloadToolResult(sessionId, call.id, call.name, result);
+            result = withToolCompletionHint(call.name, result);
             traceBridgeTool({
                 sessionId,
                 iteration: iterations,

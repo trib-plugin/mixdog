@@ -247,7 +247,7 @@ function buildRequestBody(messages, model, tools, sendOpts) {
         reasoning: { effort: opts.effort || 'medium' },
         text: { verbosity: 'medium' },
         include: ['reasoning.encrypted_content'],
-        tool_choice: 'auto',
+        tool_choice: opts.toolChoice || 'auto',
         parallel_tool_calls: true,
     };
     const cacheKey = opts.promptCacheKey || opts.sessionId;

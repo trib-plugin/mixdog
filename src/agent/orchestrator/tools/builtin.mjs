@@ -550,6 +550,17 @@ function parseLineLimitArg(value, defaultValue) {
     return Number.isFinite(n) ? Math.max(1, Math.trunc(n)) : defaultValue;
 }
 
+const READ_MAX_RENDERED_LINE_CHARS = 520;
+function renderReadLine(lineNo, line, { truncateLongLine = true } = {}) {
+    let text = String(line ?? '');
+    if (truncateLongLine && text.length > READ_MAX_RENDERED_LINE_CHARS) {
+        const head = text.slice(0, 360);
+        const tail = text.slice(-80);
+        text = `${head} ... [line truncated: ${text.length} chars total] ... ${tail}`;
+    }
+    return `${lineNo}\t${text}`;
+}
+
 // Shared file-open prologue for read-flavoured tools (tail / wc / diff).
 // Consolidates the normalize → isSafePath → stat → findSimilarFile-hint →
 // size-cap sequence so every consumer funnels through the same pipeline
@@ -661,7 +672,7 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.',
+        description: 'Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). If the requested marker/value/field is visible in the returned lines, answer immediately; do not repeat an identical read. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -2817,7 +2828,9 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 const lines = content.split(/\r?\n/);
                 if (lines.length > 0 && lines[0].charCodeAt(0) === 0xFEFF) lines[0] = lines[0].slice(1);
                 const sliced = lines.slice(offset, offset + limit);
-                const rendered = sliced.map((line, i) => `${offset + i + 1}\t${line}`).join('\n');
+                const rendered = sliced
+                    .map((line, i) => renderReadLine(offset + i + 1, line, { truncateLongLine: !wantFull }))
+                    .join('\n');
                 // Output byte cap protects against many-line slices that
                 // individually pass the file-size check but explode after
                 // line-number prefixing.

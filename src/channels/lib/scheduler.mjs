@@ -145,7 +145,12 @@ class Scheduler {
     } else {
       this.holidayCountry = null;
     }
-    this.quietSchedule = botConfig?.quiet?.schedule ?? null;
+    // Prefer top-level channelsConfig.quiet.schedule (shared DND),
+    // fall back to legacy bot.quiet.schedule.
+    this.quietSchedule = channelsConfig?.quiet?.schedule ?? botConfig?.quiet?.schedule ?? null;
+    // Opt-in flags from shared config.
+    this.respectQuietProactive = channelsConfig?.proactive?.respectQuiet !== false;
+    this.respectQuietSchedules = channelsConfig?.schedules?.respectQuiet !== false;
   }
   setInjectHandler(fn) {
     this.injectFn = fn;
@@ -322,7 +327,7 @@ ${Scheduler.INSTANCE_UUID}`;
         }
       } catch {}
     }
-    if (schedule.dnd && this.isQuietHours(now, tz)) return;
+    if ((schedule.dnd || this.respectQuietSchedules) && this.isQuietHours(now, tz)) return;
     if (this.shouldSkip(schedule.name)) return;
     this.lastFired.set(schedule.name, now.toISOString());
     this.fireTimed(schedule, type).catch(
@@ -376,7 +381,9 @@ ${Scheduler.INSTANCE_UUID}`;
     } else {
       this.holidayCountry = null;
     }
-    this.quietSchedule = botConfig?.quiet?.schedule ?? null;
+    this.quietSchedule = channelsConfig?.quiet?.schedule ?? botConfig?.quiet?.schedule ?? null;
+    this.respectQuietProactive = channelsConfig?.proactive?.respectQuiet !== false;
+    this.respectQuietSchedules = channelsConfig?.schedules?.respectQuiet !== false;
     this.holidayChecked = "";
     this.todayIsHoliday = false;
     // Period-based proactive state reset (D4): clear fire counter +
@@ -520,7 +527,7 @@ ${Scheduler.INSTANCE_UUID}`;
         }
         continue;
       }
-      if (s.dnd && this.isQuietHours(now, tz)) continue;
+      if ((s.dnd || this.respectQuietSchedules) && this.isQuietHours(now, tz)) continue;
       const intervalMatch = s.time.match(/^every(\d+)m$/);
       let shouldFire = false;
       if (intervalMatch) {
@@ -568,7 +575,17 @@ ${Scheduler.INSTANCE_UUID}`;
   }
   tickProactive(now, _dateStr) {
     if (!this.proactive) return;
-    if (this.isQuietHours(now)) return;
+    if (this.respectQuietProactive && this.isQuietHours(now)) {
+      // One-liner so operators can see the skip without flooding the log.
+      // Period-based cycle is preserved: we do NOT advance the baseline here.
+      if (!this._quietSkipLogged) {
+        logSchedule(`skipping proactive — quiet hours ${this.quietSchedule}
+`);
+        this._quietSkipLogged = true;
+      }
+      return;
+    }
+    this._quietSkipLogged = false;
     if (this.shouldSkip('proactive')) return;
     const periodMs = this.proactivePeriodMs();
     const baseline = this.proactiveLastFireAt || this.proactiveStartAt;

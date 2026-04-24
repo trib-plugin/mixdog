@@ -115,10 +115,23 @@ export function buildProviderCacheOpts(cacheType, provider, sessionId) {
  * Excludes the volatile user message — only the stable prefix (tools,
  * system) determines whether our cache is "still warm". The Pool B prefix
  * is workspace-wide, so a single hash represents every Pool B caller.
+ *
+ * `systemPrompt` accepts either a single string (legacy callers — hashed
+ * as a single-element sequence) or an array of system-role message
+ * contents in their send order (BP1 / BP2 / ...). Arrays are serialized
+ * deterministically as a JSON array so the registry hash captures the
+ * full ordered provider prefix — missing BP2 (role catalog) caused the
+ * registry snapshot to be incomplete.
  */
 export function computePrefixContent(systemPrompt, tools) {
+    let systemMessages;
+    if (Array.isArray(systemPrompt)) {
+        systemMessages = systemPrompt.map(s => s == null ? '' : String(s));
+    } else {
+        systemMessages = [systemPrompt == null ? '' : String(systemPrompt)];
+    }
     return {
-        systemPrompt: systemPrompt || '',
+        systemPrompt: JSON.stringify(systemMessages),
         tools: (tools || []).map(t => ({
             name: t.name,
             description: t.description,

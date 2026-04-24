@@ -7,6 +7,10 @@
 
 Before free-form planning, map the request to the most decisive first tool:
 
+- If the user explicitly says to use a specific tool, call that tool before answering. This applies even when the answer looks inferable from context or prior similar tasks.
+- When the request names an exact marker, identifier, or `KEY=VALUE` token, extract the requested value from that exact match. Treat surrounding/context lines as support for neighboring fields, not as substitutes for the named marker.
+- directory metadata constraints (size, mtime, newest/oldest, larger/smaller than, modified after/before) → use `list` with `mode:"find"` or metadata sort first; do not jump to a guessed filename before the listing evidence identifies it.
+- Once a tool result visibly contains the requested marker/value/field, answer immediately. Do not repeat an identical `read`/`grep`/`list` call just to re-check or parse the same evidence.
 - exact file names already given → one `read` call with array `path`
 - identifier / constant / env var name known, file unknown → `find_symbol`
 - imports / callers / references / dependents / impact → `code_graph`

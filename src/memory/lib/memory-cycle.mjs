@@ -77,6 +77,9 @@ async function invokeLlm(prompt, options, mode, preset, timeout) {
     mode,
     preset,
     timeout,
+    // See cycle1 dispatch below — pin cwd=null so every memory cycle
+    // call hits the same bridge cache shard regardless of MCP launch dir.
+    cwd: null,
   }, prompt)
 }
 
@@ -191,6 +194,13 @@ export async function runCycle1(db, config = {}, options = {}) {
         mode: 'cycle1',
         preset,
         timeout,
+        // Pin cwd to null so the bridge session does not inherit the
+        // memory subsystem's process.cwd() (which varies with how the
+        // MCP server was launched). Combined with the frozen skill
+        // meta-tools policy (see collect.mjs buildSkillToolDefs), this
+        // keeps the provider cache shard identical across every memory
+        // cycle invocation.
+        cwd: null,
       }, userMessage)
     } catch (err) {
       process.stderr.write(`[cycle1] LLM error (session=${String(sessionId).slice(0, 16)}): ${err.message}\n`)

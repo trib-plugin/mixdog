@@ -25,6 +25,39 @@ const DEFAULT_CONFIG = {
     main: { channelId: "", mode: "interactive" }
   }
 };
+// Shared defaults layer (DND / proactive / per-channel respectQuiet).
+// Merge semantics: user values win; defaults only fill missing fields.
+// Helper is exported so the setup UI and runtime both produce the same
+// shape when the file has missing sections.
+const CONFIG_DEFAULTS = {
+  quiet: { schedule: "23:00-09:00", holidays: false },
+  proactive: { enabled: true, idleMinutes: 30, model: "sonnet-mid", respectQuiet: true },
+  schedules: { respectQuiet: true },
+  webhook: { respectQuiet: false }
+};
+function applyDefaults(config) {
+  const out = { ...(config || {}) };
+  out.quiet = { ...CONFIG_DEFAULTS.quiet, ...(out.quiet || {}) };
+  out.proactive = { ...CONFIG_DEFAULTS.proactive, ...(out.proactive || {}) };
+  out.schedules = { ...CONFIG_DEFAULTS.schedules, ...(out.schedules || {}) };
+  out.webhook = { ...CONFIG_DEFAULTS.webhook, ...(out.webhook || {}) };
+  // Migration: if legacy bot.quiet.schedule exists (via loadBotConfig merge at
+  // callsite) and the new top-level quiet.schedule was missing, the merge above
+  // already filled it from the default. Callers that need legacy-aware
+  // migration should pass the copied value in before applyDefaults runs.
+  return out;
+}
+/** Shared quiet-window helper used by scheduler + webhook.
+ *  `schedule` is "HH:MM-HH:MM"; returns true when `now` falls inside. */
+function isInQuietWindow(schedule, now = new Date()) {
+  if (!schedule || typeof schedule !== "string") return false;
+  const parts = schedule.split("-");
+  if (parts.length !== 2) return false;
+  const [start, end] = parts;
+  const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  if (start > end) return hhmm >= start || hhmm < end;
+  return hhmm >= start && hhmm < end;
+}
 function loadConfig() {
   try {
     const raw = stripGeneratedMarker(JSON.parse(readFileSync(CONFIG_FILE, "utf8")));
@@ -40,7 +73,7 @@ function loadConfig() {
       }
     }
     const accessChannels = { ...raw.access?.channels ?? {} };
-    return {
+    return applyDefaults({
       ...DEFAULT_CONFIG,
       ...raw,
       backend: "discord",
@@ -51,7 +84,7 @@ function loadConfig() {
         channels: accessChannels,
         pending: raw.access?.pending ?? {}
       }
-    };
+    });
   } catch (err) {
     if (err.code === "ENOENT") {
       mkdirSync(DATA_DIR, { recursive: true });
@@ -61,7 +94,7 @@ function loadConfig() {
   edit discord.token and channelsConfig.main.channelId to connect.
 `
       );
-      return DEFAULT_CONFIG;
+      return applyDefaults(DEFAULT_CONFIG);
     }
     throw err;
   }
@@ -131,7 +164,9 @@ function saveProfileConfig(profile) {
 export {
   DATA_DIR,
   PLUGIN_ROOT,
+  applyDefaults,
   createBackend,
+  isInQuietWindow,
   loadBotConfig,
   loadConfig,
   loadProfileConfig,

@@ -2,7 +2,7 @@ import * as http from "http";
 import * as crypto from "crypto";
 import { join } from "path";
 import { spawn, spawnSync } from "child_process";
-import { DATA_DIR } from "./config.mjs";
+import { DATA_DIR, isInQuietWindow } from "./config.mjs";
 import { appendFileSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, statSync, existsSync, watch as fsWatch } from "fs";
 import { randomUUID } from "crypto";
 import { homedir } from "os";
@@ -275,8 +275,9 @@ class WebhookServer {
   noSecretWarned = false;
   ngrokProcess = null;
   ngrokStarting = false;
-  constructor(config, _channelsConfig) {
+  constructor(config, channelsConfig) {
     this.config = config;
+    this.channelsConfig = channelsConfig ?? null;
   }
   setEventPipeline(pipeline) {
     this.eventPipeline = pipeline;
@@ -350,6 +351,16 @@ class WebhookServer {
               logWebhook(`${name}: skip event=${eventType || "<none>"} action=${eventAction || "<none>"} (id=${deliveryId})`);
               res.writeHead(200, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ status: "skip", event: eventType, action: eventAction, id: deliveryId }));
+              return;
+            }
+            // Quiet-hours skip: drop (do not queue) when webhook opt-in is on
+            // and current time falls inside the shared quiet window.
+            const webhookRespect = this.channelsConfig?.webhook?.respectQuiet === true;
+            const quietSchedule = this.channelsConfig?.quiet?.schedule ?? null;
+            if (webhookRespect && isInQuietWindow(quietSchedule, new Date())) {
+              logWebhook(`${name}: quiet-skip event=${eventType || "<none>"} action=${eventAction || "<none>"} (id=${deliveryId})`);
+              res.writeHead(202, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ status: "quiet-skip", event: eventType, action: eventAction, id: deliveryId }));
               return;
             }
             appendDelivery(name, {

@@ -152,9 +152,13 @@ export function makeBridgeLlm(opts = {}) {
 
         // Callers (e.g. aiWrapped explore dispatch) may pass an explicit
         // `cwd` to scope the agent's filesystem view. Absolute path expected
-        // (aiWrapped already expands `~` and resolves relatives). Falls back
-        // to the MCP server's process cwd when unset.
-        const cwd = (typeof opts.cwd === 'string' && opts.cwd) ? opts.cwd : process.cwd();
+        // (aiWrapped already expands `~` and resolves relatives). When unset
+        // we pass `null` through instead of falling back to `process.cwd()`
+        // — the MCP server's launch dir is not deterministic across callers,
+        // and the downstream skill-discovery path tolerates null. Combined
+        // with the frozen bridge skill meta-tools (collect.mjs) this keeps
+        // every caller on the same provider cache shard.
+        const cwd = (typeof opts.cwd === 'string' && opts.cwd) ? opts.cwd : null;
 
         // Unified dispatch: Pool B/C share bit-identical tools + system prompt
         // so every role lands on the same provider-side cache shard. Per-role

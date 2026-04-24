@@ -7,7 +7,7 @@ import { getProvider } from '../providers/registry.mjs';
 import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
 import { getInternalTools, executeInternalTool } from '../internal-tools.mjs';
-import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
+import { BUILTIN_TOOLS, executeBuiltinTool } from '../tools/builtin.mjs';
 import { BASH_SESSION_TOOL_DEFS } from '../tools/bash-session.mjs';
 import { PATCH_TOOL_DEFS } from '../tools/patch.mjs';
 import { CODE_GRAPH_TOOL_DEFS } from '../tools/code-graph.mjs';
@@ -18,6 +18,7 @@ import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
 import { classifyPromptIntent } from '../intent-classifier.mjs';
 import { resolvePluginData, DEFAULT_PLUGIN, DEFAULT_MARKETPLACE } from '../../../shared/plugin-paths.mjs';
+import { traceBridgeTool } from '../bridge-trace.mjs';
 
 // Phase B: Pool B Tier 2 content builder (common rules only).
 // Loaded once per process via createRequire so the CJS module reaches us.
@@ -164,9 +165,13 @@ const ALL_BUILTIN_SESSION_TOOLS = _dedupByName([
     ...CODE_GRAPH_TOOL_DEFS,
 ]);
 
-function resolveSessionTools(toolSpec, skills) {
+function resolveSessionTools(toolSpec, skills, { ownerIsBridge = false } = {}) {
     const mcp = _getMcpToolsCached();
-    const skillTools = buildSkillToolDefs(skills);
+    // Bridge sessions freeze the 3 skill meta-tools into the schema
+    // unconditionally — concrete skill resolution is cwd-scoped at tool-call
+    // time (loop.mjs), so the schema bytes stay bit-identical across roles /
+    // cwds and the provider cache shard does not fragment.
+    const skillTools = buildSkillToolDefs(skills, { ownerIsBridge });
     return _computeBaseTools(toolSpec, mcp, skillTools);
 }
 
@@ -546,6 +551,66 @@ function _summarizeEnvFlagFastPath(identifier, candidate) {
     return parts.join('\n\n');
 }
 
+const EXPLICIT_PROMPT_TOOL_VERBS = String.raw`(?:use|call|run|invoke|prefer)`;
+const EXPLICIT_PROMPT_TOOL_NEGATION = String.raw`(?:do\s+not|don't|never)\s+${EXPLICIT_PROMPT_TOOL_VERBS}`;
+function _escapeToolRegex(text) {
+    return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function _explicitPromptToolChoiceName(prompt, tools) {
+    const text = String(prompt || '');
+    if (!text || !Array.isArray(tools) || tools.length === 0) return null;
+    const names = tools.map(tool => tool?.name).filter(Boolean).sort((a, b) => b.length - a.length);
+    for (const name of names) {
+        const escaped = _escapeToolRegex(name);
+        const quotedName = '`?' + escaped + '`?';
+        const positive = new RegExp(`\\b${EXPLICIT_PROMPT_TOOL_VERBS}\\s+(?:exactly\\s+one\\s+|one\\s+)?${quotedName}\\b`, 'i');
+        const negative = new RegExp(`\\b${EXPLICIT_PROMPT_TOOL_NEGATION}\\s+${quotedName}\\b`, 'i');
+        if (positive.test(text) && !negative.test(text)) return name;
+    }
+    return null;
+}
+
+function _extractDirectoryMetadataRequest(prompt) {
+    const text = String(prompt || '');
+    if (!/\bsize\b|\bbytes?\b|\bmtime\b|\bmodified\b|\bnewest\b|\boldest\b/i.test(text)) return null;
+    const pathMatch = text.match(/\b(?:under|in|within)\s+`([^`]+)`/i)
+        || text.match(/\b(?:under|in|within)\s+([./~A-Za-z0-9_-]+)/i);
+    const path = pathMatch?.[1]?.trim();
+    if (!path) return null;
+    const minSizeMatch = text.match(/\b(?:larger|greater|more)\s+than\s+(\d+)\s*bytes?\b/i)
+        || text.match(/\b(?:over|above)\s+(\d+)\s*bytes?\b/i);
+    const maxSizeMatch = text.match(/\b(?:smaller|less)\s+than\s+(\d+)\s*bytes?\b/i)
+        || text.match(/\b(?:under|below)\s+(\d+)\s*bytes?\b/i);
+    const name = /\bjson\b/i.test(text) ? '*.json' : '*';
+    const newest = /\bnewest\b|\blatest\b|\bmost\s+recent\b/i.test(text);
+    const oldest = /\boldest\b/i.test(text);
+    return {
+        path,
+        name,
+        mode: newest || oldest ? 'list' : 'find',
+        sort: newest || oldest ? 'mtime' : 'name',
+        min_size: minSizeMatch ? Number(minSizeMatch[1]) : 0,
+        max_size: maxSizeMatch ? Number(maxSizeMatch[1]) : 0,
+    };
+}
+
+function _metadataRequestNeedsSelectedFileRead(prompt) {
+    const text = String(prompt || '');
+    return /\bread\b/i.test(text)
+        || /\b(?:codename|marker|payload|content|value|field)\b/i.test(text)
+        || /\bextract\b/i.test(text);
+}
+
+function _firstListedPath(listText) {
+    for (const line of String(listText || '').split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('Error:') || trimmed.startsWith('path\t')) continue;
+        const first = trimmed.split(/\t/)[0]?.trim();
+        if (first && !first.startsWith('(')) return first;
+    }
+    return null;
+}
+
 function _extractRepoSearchEvidence(owner, repo, searchText) {
     const lines = String(searchText || '').split('\n').map((line) => line.trim()).filter(Boolean);
     if (!lines.length) return null;
@@ -760,6 +825,58 @@ async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCa
         }
     }
 
+    const metadataRequest = _extractDirectoryMetadataRequest(prompt);
+    if (metadataRequest) {
+        // If the user explicitly asked the worker to call a concrete tool, let
+        // the normal loop satisfy that instruction. Prefetching in front of an
+        // explicit list/read benchmark can otherwise produce duplicate calls.
+        if (_explicitPromptToolChoiceName(prompt, session.tools)) return null;
+        const listArgs = {
+            path: metadataRequest.path,
+            mode: metadataRequest.mode,
+            depth: metadataRequest.mode === 'find' ? 10 : 1,
+            type: 'file',
+            name: metadataRequest.name,
+            min_size: metadataRequest.min_size,
+            max_size: metadataRequest.max_size,
+            head_limit: 20,
+            sort: metadataRequest.sort,
+        };
+        const callerCwd = effectiveCwd || session.cwd || process.cwd();
+        const listStartedAt = Date.now();
+        const listOut = await executeBuiltinTool('list', listArgs, callerCwd, { sessionId: session.id }).catch(() => null);
+        if (listOut && !String(listOut).startsWith('Error:')) {
+            onToolCall?.(1, [{ name: 'list', arguments: listArgs }]);
+            traceBridgeTool({
+                sessionId: session.id,
+                iteration: 1,
+                toolName: 'list',
+                toolKind: 'builtin',
+                toolMs: Date.now() - listStartedAt,
+                toolArgs: listArgs,
+            });
+            const firstPath = _firstListedPath(listOut);
+            if (firstPath && _metadataRequestNeedsSelectedFileRead(prompt)) {
+                const readArgs = { path: firstPath, mode: 'full', n: 20, offset: 0, limit: 2000, full: false };
+                const readStartedAt = Date.now();
+                const readOut = await executeBuiltinTool('read', readArgs, callerCwd, { sessionId: session.id }).catch(() => null);
+                if (readOut && !String(readOut).startsWith('Error:')) {
+                    onToolCall?.(2, [{ name: 'read', arguments: readArgs }]);
+                    traceBridgeTool({
+                        sessionId: session.id,
+                        iteration: 2,
+                        toolName: 'read',
+                        toolKind: 'builtin',
+                        toolMs: Date.now() - readStartedAt,
+                        toolArgs: readArgs,
+                    });
+                    return `Prefetched directory metadata and the selected file. The requested list/read work is complete. Answer from this evidence and do NOT call any tool again for this request.\n\n### list\n${listOut}\n\n### read ${firstPath}\n${readOut}`;
+                }
+            }
+            return `Prefetched directory metadata. Answer from this listing and do NOT call any tool again for this request.\n\n${listOut}`;
+        }
+    }
+
     if (knownFiles.length < 2) return null;
     const reads = knownFiles.map((filePath) => ({
         path: filePath,
@@ -874,7 +991,7 @@ export function createSession(opts) {
         || roleTemplate?.permission
         || permissionFromToolSpec(toolPreset)
         || null;
-    const toolsForRouting = resolveSessionTools(toolSpec, skills);
+    const toolsForRouting = resolveSessionTools(toolSpec, skills, { ownerIsBridge: opts.owner === 'bridge' });
 
     const { baseRules, roleCatalog, sessionMarker, volatileTail } = composeSystemPrompt({
         userPrompt: opts.systemPrompt,
@@ -1240,10 +1357,10 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 session.updatedAt = Date.now();
                 session.lastUsedAt = Date.now();
                 saveSession(session);
-                unlock();
                 return fastPath;
             }
             const outgoing = [...session.messages, { role: 'user', content: prompt }];
+            const forcedFirstTool = prefetchedContext ? null : _explicitPromptToolChoiceName(prompt, session.tools);
             const result = await _api_call_with_interrupt(sessionId, (signal) =>
                 agentLoop(provider, outgoing, session.model, session.tools, onToolCall, effectiveCwd, {
                     effort: session.effort || null,
@@ -1257,6 +1374,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                     // don't get overridden by defaults. When session has no profile,
                     // providerCacheOpts is null and this spread is a no-op.
                     ...(session.providerCacheOpts || {}),
+                    forcedFirstTool,
                     onStageChange: (stage) => updateSessionStage(sessionId, stage),
                     onStreamDelta: () => markSessionStreamDelta(sessionId),
                 }),
@@ -1293,9 +1411,16 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 try {
                     const profile = _smartBridgeApi.getProfile(session.profileId);
                     if (profile) {
-                        const systemMsg = session.messages[0]?.role === 'system' ? session.messages[0].content : '';
+                        // Collect every leading system-role message (BP1, BP2, ...)
+                        // until the first non-system message so the registry hash
+                        // captures the full ordered provider prefix, not just BP1.
+                        const systemMsgs = [];
+                        for (const m of session.messages) {
+                            if (m?.role !== 'system') break;
+                            systemMsgs.push(typeof m.content === 'string' ? m.content : '');
+                        }
                         _smartBridgeApi.recordCall(profile, session.provider, {
-                            systemPrompt: systemMsg,
+                            systemPrompt: systemMsgs,
                             tools: session.tools || [],
                             usage: result.usage,
                         });
@@ -1416,7 +1541,7 @@ export function resumeSession(sessionId, preset) {
             if (Array.isArray(profile?.tools)) toolSpec = profile.tools;
         } catch { /* ignore lookup failures, keep preset fallback */ }
     }
-    session.tools = resolveSessionTools(toolSpec, skills);
+    session.tools = resolveSessionTools(toolSpec, skills, { ownerIsBridge: session.owner === 'bridge' });
     const newTools = session.tools;
     const missing = oldTools.filter(t => !newTools.find(n => n.name === t.name));
     if (missing.length) {

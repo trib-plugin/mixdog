@@ -313,13 +313,16 @@ const CASES = {
     },
     list_recent: {
         expectAll: [/release-2026-04-24\.json|aurora|RELEASE_AURORA/i],
+        jsonFieldMatches: [
+            { path: 'codename', pattern: /^aurora$/i },
+        ],
         preferTools: ['list', 'read'],
         maxTotalIterations: 3,
         avoidTools: ['bash'],
         prompt: [
             'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
             'Do not modify files. Do not use bash.',
-            'Task: Using directory metadata, identify the newest file under `releases`, then report its codename as compact JSON.',
+            'Task: Using directory metadata, identify the newest file under `releases`, then report the codename value from that JSON file as compact JSON with keys: case, file, codename.',
         ].join('\n'),
     },
     symbol_lookup: {
@@ -386,7 +389,7 @@ const CASES = {
         prompt: [
             'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
             'Do not modify files. Do not use bash.',
-            'Task: In `logs/status.log`, find STATUS_TARGET and the owner on the following line. Prefer one `grep` content call with after/context lines. Answer compact JSON with keys: case, status, owner.',
+            'Task: In `logs/status.log`, find STATUS_TARGET and the owner on the following line. Prefer one `grep` content call with after/context lines. Answer compact JSON with keys: case, target_status, owner. The target_status value must come from `STATUS_TARGET=...`, not from any nearby `status:` context line.',
         ].join('\n'),
     },
     grep_count: {
@@ -407,6 +410,7 @@ const CASES = {
     },
     list_find_size: {
         expectAll: [/LARGE_ARTIFACT_TARGET/i],
+        jsonTextMatches: [/LARGE_ARTIFACT_TARGET/i],
         preferTools: ['list', 'read'],
         maxTotalIterations: 3,
         requireToolArgMatches: [
@@ -416,7 +420,7 @@ const CASES = {
         prompt: [
             'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
             'Do not modify files. Do not use bash.',
-            'Task: Under `artifacts`, use a filename/size filtered directory query to identify the JSON report larger than 1000 bytes, then read it and report its marker as compact JSON.',
+            'Task: Under `artifacts`, use exactly one `list` call with mode `find` and a size filter to identify the JSON report larger than 1000 bytes, then read it and report its marker as compact JSON. Do not guess the filename before the list result.',
         ].join('\n'),
     },
     list_find_mtime: {
@@ -614,8 +618,8 @@ const CASES = {
         ].join('\n'),
     },
     search_official_site_platform: {
-        expectAll: [/OpenAI|platform\.openai\.com|docs|models/i],
-        jsonTextMatches: [/OpenAI/i, /platform\.openai\.com/i, /models/i],
+        expectAll: [/OpenAI|(?:platform|developers)\.openai\.com|docs|models/i],
+        jsonTextMatches: [/OpenAI/i, /(?:platform|developers)\.openai\.com/i, /models/i],
         forbiddenAnswerPatterns: [/lookup_failed|requires authentication|authentication error|url"?\s*:\s*null/i],
         preferTools: ['search'],
         maxTotalIterations: 6,
@@ -836,19 +840,93 @@ function readTraceSince(offset) {
     }
 }
 
+function readTraceWindow(offset, bytes = 5 * 1024 * 1024) {
+    const start = Math.max(0, Number(offset || 0) - bytes);
+    return readTraceSince(start);
+}
+
+function rowsForSessionFamily(rows, parentSessionId) {
+    const prefix = sessionProcessPrefix(parentSessionId);
+    const parentOrdinal = sessionStartOrdinal(parentSessionId);
+    return (rows || []).filter((r) => {
+        if (r?.sessionId === parentSessionId) return true;
+        if (r?.parent_session_id === parentSessionId) return true;
+        if (!prefix || typeof r?.sessionId !== 'string' || !r.sessionId.startsWith(prefix)) return false;
+        const ordinal = sessionStartOrdinal(r.sessionId);
+        return !Number.isFinite(parentOrdinal) || !Number.isFinite(ordinal) || ordinal >= parentOrdinal;
+    });
+}
+
+function rowsForExactSessionFamily(rows, parentSessionId) {
+    const allRows = rows || [];
+    const ids = new Set([parentSessionId]);
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const row of allRows) {
+            if (row?.sessionId && row?.parent_session_id && ids.has(row.parent_session_id) && !ids.has(row.sessionId)) {
+                ids.add(row.sessionId);
+                changed = true;
+            }
+        }
+    }
+    return allRows.filter((r) => ids.has(r?.sessionId) || ids.has(r?.parent_session_id));
+}
+
+function mergeTraceRows(...groups) {
+    const seen = new Set();
+    const out = [];
+    for (const rows of groups) {
+        for (const row of rows || []) {
+            const key = JSON.stringify(row);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(row);
+        }
+    }
+    return out;
+}
+
 async function waitForTraceRows(offset, parentSessionId) {
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + 30000;
+    let stableSince = 0;
+    let lastSize = -1;
     while (Date.now() < deadline) {
         const rows = readTraceSince(offset);
-        if (rows.some((r) => r.sessionId === parentSessionId && r.kind === 'loop')) return rows;
+        const hasUsage = rows.some((r) => r.sessionId === parentSessionId && r.kind === 'usage');
+        if (hasUsage) {
+            const size = rows.length;
+            if (size !== lastSize) {
+                lastSize = size;
+                stableSince = Date.now();
+            } else if (Date.now() - stableSince >= 600) {
+                return mergeTraceRows(
+                    rowsForExactSessionFamily(rows, parentSessionId),
+                    rowsForExactSessionFamily(readTraceWindow(offset), parentSessionId),
+                );
+            }
+        }
         await new Promise((r) => setTimeout(r, 200));
     }
-    return readTraceSince(offset);
+    const rows = readTraceSince(offset);
+    const exactFallback = rowsForExactSessionFamily(readTraceWindow(offset), parentSessionId);
+    if (rows.some((r) => r.sessionId === parentSessionId)) {
+        return mergeTraceRows(rowsForExactSessionFamily(rows, parentSessionId), exactFallback);
+    }
+    const prefixFallback = rowsForSessionFamily(readTraceWindow(offset), parentSessionId);
+    return mergeTraceRows(rowsForSessionFamily(rows, parentSessionId), prefixFallback);
 }
 
 function sessionProcessPrefix(sessionId) {
     const m = String(sessionId || '').match(/^(sess_[^_]+_)/);
     return m ? m[1] : '';
+}
+
+function sessionStartOrdinal(sessionId) {
+    const m = String(sessionId || '').match(/^sess_[^_]+_(\d+)_/);
+    if (!m) return NaN;
+    const n = Number(m[1]);
+    return Number.isFinite(n) ? n : NaN;
 }
 
 function compactJson(value, max = 220) {
@@ -862,6 +940,30 @@ function formatToolStep(row) {
     return `${row.iteration}:${row.tool_name}${args}`;
 }
 
+function recoverSessionToolRows(sessionId) {
+    try {
+        const session = readJsonIfExists(join(process.env.CLAUDE_PLUGIN_DATA, 'sessions', `${sessionId}.json`));
+        const messages = Array.isArray(session?.messages) ? session.messages : [];
+        const tools = [];
+        let iteration = 0;
+        for (const msg of messages) {
+            if (msg?.role !== 'assistant') continue;
+            iteration += 1;
+            for (const call of msg.toolCalls || []) {
+                if (!call?.name) continue;
+                tools.push({
+                    iteration,
+                    name: call.name,
+                    args: call.arguments || null,
+                });
+            }
+        }
+        return tools;
+    } catch {
+        return [];
+    }
+}
+
 function asNumber(value) {
     const n = Number(value);
     return Number.isFinite(n) ? n : 0;
@@ -873,6 +975,15 @@ function observedCacheReadTokens(agent) {
 
 function observedCacheWriteTokens(agent) {
     return Math.max(asNumber(agent?.cache?.writeTokens), asNumber(agent?.cache?.rawCacheWriteTokens));
+}
+
+function cacheModelKey(model) {
+    return String(model || '').replace(/-\d{4}-\d{2}-\d{2}$/u, '');
+}
+
+function sameCacheModel(a, b) {
+    if (!a || !b) return false;
+    return a === b || cacheModelKey(a) === cacheModelKey(b);
 }
 
 const CACHE_OBSERVABLE_PROVIDERS = new Set([
@@ -892,7 +1003,7 @@ function analyzePoolCacheShare(rows, parentSessionId) {
         .filter((r) => r.sessionId !== parent.sessionId && r.parentSessionId === parent.sessionId)
         .map((child) => {
             const sameProvider = Boolean(parent.provider && child.provider && parent.provider === child.provider);
-            const sameModel = Boolean(parent.model && child.model && parent.model === child.model);
+            const sameModel = sameCacheModel(parent.model, child.model);
             const provider = child.provider || parent.provider || null;
             const observable = CACHE_OBSERVABLE_PROVIDERS.has(provider);
             const childRead = observedCacheReadTokens(child);
@@ -1066,6 +1177,14 @@ function summarizeTrace(rows, parentSessionId, parentScope, { allowPrefixFallbac
     for (const s of selected) {
         if (s.sessionId === parentSessionId && !s.scope) s.scope = parentScope || 'worker';
         else if (!s.scope) s.scope = 'nested';
+        if (s.toolCalls === 0) {
+            const recoveredTools = recoverSessionToolRows(s.sessionId);
+            for (const tool of recoveredTools) {
+                s.toolCalls += 1;
+                s.toolChain.push(`${tool.iteration}:${tool.name}${tool.args ? ` ${compactJson(tool.args)}` : ''}`);
+                s.tools.push(tool);
+            }
+        }
     }
     const rowsOut = selected.map((r) => ({
             sessionId: r.sessionId,

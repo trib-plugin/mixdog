@@ -57,24 +57,27 @@ const DEFAULT_CONFIG = Object.freeze({
         Object.freeze({
             key: 'structure_probe',
             threshold: 10,
+            repeatEvery: 8,
             minDistinctTools: 2,
             tools: Object.freeze(['read', 'multi_read', 'grep', 'glob', 'list']),
         }),
         Object.freeze({
             key: 'edit_roundtrip',
             threshold: 5,
+            repeatEvery: 4,
             minDistinctTools: 2,
             tools: Object.freeze(['edit', 'multi_edit', 'batch_edit', 'edit_lines']),
         }),
         Object.freeze({
             key: 'search_fanout',
             threshold: 10,
+            repeatEvery: 6,
             minDistinctTools: 2,
             tools: Object.freeze(['search', 'recall', 'explore', 'web_search', 'memory_search']),
         }),
     ]),
     toolFamilyAbortThresholds: DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS,
-    totalToolWarnThresholds: Object.freeze([48, 96]),
+    totalToolWarnThresholds: Object.freeze([24, 48, 72, 96]),
     totalToolAbortThresholds: Object.freeze([100]),
 });
 let _runtimeConfig = null;
@@ -107,6 +110,7 @@ function buildRuntimeConfig(overrides = {}) {
             .map((rule) => ({
                 key: rule.key,
                 threshold: rule.threshold,
+                repeatEvery: rule.repeatEvery,
                 minDistinctTools: rule.minDistinctTools,
                 tools: new Set(rule.tools),
             })),
@@ -310,11 +314,11 @@ export function buildToolFamilyWarn(info) {
     const toolList = tools.length ? tools.map((t) => `\`${t}\``).join(', ') : '`tool`';
     const lines = [
         `⚠ Mixed-tool soft-warn: this session has made ${count} consecutive low-level ${family.replace(/_/g, ' ')} calls across ${toolList}.`,
-        `Before issuing another similar tool call, consider switching up a level:`,
+        `Tools remain available, but before issuing another similar low-level call, switch strategy or narrow sharply:`,
     ];
     if (family === 'structure_probe') {
-        lines.push(`- If this is about imports, dependents, symbols, references, callers, or impact, prefer \`code_graph\` now instead of another raw \`read\` / \`grep\` / \`glob\` / \`list\` pass.`);
-        lines.push(`- If you already have enough scattered hits, synthesize the answer instead of probing a 3rd/4th angle.`);
+        lines.push(`- Prefer \`code_graph\` or \`explore\` for the next lookup unless you have a specific new path/range.`);
+        lines.push(`- If the needed file/value is already visible, move to \`edit\`/\`apply_patch\` or answer from that evidence instead of another broad \`grep\`/\`read\` pass.`);
     } else if (family === 'edit_roundtrip') {
         lines.push(`- Prefer \`apply_patch\` for the next step instead of another \`edit\` / \`multi_edit\` round-trip.`);
         lines.push(`- If the exact change is already clear, emit one multi-file patch and move on.`);
@@ -322,7 +326,7 @@ export function buildToolFamilyWarn(info) {
         lines.push(`- Batch the next search questions into one call, or synthesize from the evidence you already gathered.`);
         lines.push(`- If the answer is already repo-local, switch from external / memory search back to local tools.`);
     } else {
-        lines.push(`- A higher-level tool or a synthesis step will likely yield more than another low-level probe.`);
+        lines.push(`- A higher-level tool or a narrower next call will likely yield more than another broad probe.`);
     }
     if (abortThreshold) {
         lines.push(`- Hard stop: at ${abortThreshold} consecutive ${family.replace(/_/g, ' ')} calls this session will abort.`);
@@ -336,7 +340,7 @@ export function buildToolBudgetWarn(info) {
     const abortThreshold = Number.isFinite(info?.abortThreshold) ? info.abortThreshold : null;
     const lines = [
         `⚠ Tool-budget soft-warn: this session has already made ${count} tool calls.`,
-        `Before calling another low-level tool, pause and consider:`,
+        `Tools remain available, but before calling another low-level tool, pause and consider:`,
         `- Do you already have enough evidence to synthesize an answer or patch?`,
         `- If not, can you switch up a level: \`code_graph\` for structure, \`apply_patch\` for clear edits, \`bash_session\` for stateful shell work?`,
         `- If you still need another call, make it meaningfully narrower than the previous one.`,
@@ -444,6 +448,7 @@ export function checkToolCall(guard, event) {
             count: 0,
             distinctTools: new Set(),
             warned: false,
+            warnedAt: 0,
         };
         const familyAbortThreshold = cfg.toolFamilyAbortThresholds.get(rule.key) ?? null;
         if (rule.tools.has(toolKey)) {
@@ -472,13 +477,16 @@ export function checkToolCall(guard, event) {
                     },
                 };
             }
-            if (!prev.warned
-                && prev.count >= rule.threshold
+            const repeatEvery = Number.isFinite(Number(rule.repeatEvery)) ? Number(rule.repeatEvery) : rule.threshold;
+            if (prev.count >= rule.threshold
+                && (!prev.warned || prev.count - (prev.warnedAt || 0) >= repeatEvery)
                 && prev.distinctTools.size >= rule.minDistinctTools) {
                 prev.warned = true;
+                prev.warnedAt = prev.count;
                 familyWarn = {
                     familyKey: rule.key,
                     count: prev.count,
+                    threshold: rule.threshold,
                     tools: [...prev.distinctTools].sort(),
                     text: buildToolFamilyWarn({
                         familyKey: rule.key,
@@ -492,6 +500,7 @@ export function checkToolCall(guard, event) {
             prev.count = 0;
             prev.distinctTools = new Set();
             prev.warned = false;
+            prev.warnedAt = 0;
         }
         guard.familyRuns.set(rule.key, prev);
     }
@@ -570,7 +579,7 @@ export function checkToolCall(guard, event) {
             return {
                 action: 'family_warn',
                 warnText: familyWarn.text,
-                info: { familyKey: familyWarn.familyKey, count: familyWarn.count, tools: familyWarn.tools },
+                info: { familyKey: familyWarn.familyKey, count: familyWarn.count, threshold: familyWarn.threshold, tools: familyWarn.tools },
             };
         }
         if (budgetWarn) {
@@ -635,7 +644,7 @@ export function checkToolCall(guard, event) {
         return {
             action: 'family_warn',
             warnText: familyWarn.text,
-            info: { familyKey: familyWarn.familyKey, count: familyWarn.count, tools: familyWarn.tools },
+            info: { familyKey: familyWarn.familyKey, count: familyWarn.count, threshold: familyWarn.threshold, tools: familyWarn.tools },
         };
     }
     if (budgetWarn) {

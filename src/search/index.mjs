@@ -112,6 +112,15 @@ function normalizeSearchArgs(rawArgs) {
   if (args.number === 0 && args.github_type !== 'issue') {
     delete args.number
   }
+  if (args.github_type && args.site && !/(^|\.)github\.com$/i.test(args.site)) {
+    delete args.github_type
+    delete args.owner
+    delete args.repo
+    delete args.path
+    delete args.number
+    delete args.ref
+    delete args.state
+  }
   if (['file', 'repo', 'issue', 'pulls'].includes(args.github_type)) {
     delete args.keywords
     delete args.site
@@ -133,15 +142,6 @@ function normalizeSearchArgs(rawArgs) {
     delete args.path
     delete args.number
     delete args.ref
-  }
-  if (args.github_type && args.site && !/(^|\.)github\.com$/i.test(args.site)) {
-    delete args.github_type
-    delete args.owner
-    delete args.repo
-    delete args.path
-    delete args.number
-    delete args.ref
-    delete args.state
   }
   if (['file', 'repo', 'issue', 'pulls'].includes(args.github_type) && (!args.owner || !args.repo)) {
     delete args.github_type
@@ -391,7 +391,10 @@ async function fetchDocIndex(url, timeoutMs) {
   const contentLength = Number(response.headers.get('content-length') || 0)
   if (contentLength > DOC_INDEX_MAX_BYTES) throw new Error(`docs index too large: ${contentLength}`)
   const text = await response.text()
-  return text.length > DOC_INDEX_MAX_BYTES ? text.slice(0, DOC_INDEX_MAX_BYTES) : text
+  return {
+    text: text.length > DOC_INDEX_MAX_BYTES ? text.slice(0, DOC_INDEX_MAX_BYTES) : text,
+    url: response.url || url,
+  }
 }
 
 function parseDocIndexLinks(text, sourceUrl) {
@@ -458,21 +461,33 @@ function isDocIndexLink(url) {
   }
 }
 
-function baseDomainFromUrl(url) {
+function hostFromUrl(url) {
   try {
-    const host = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.toLowerCase()
-    const parts = host.split('.').filter(Boolean)
-    return parts.length <= 2 ? host : parts.slice(-2).join('.')
+    return new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.toLowerCase()
   } catch {
     return ''
   }
 }
 
-function sameSiteFamily(url, site, sourceUrl) {
-  const linkBase = baseDomainFromUrl(url)
-  if (!linkBase) return false
-  const allowed = new Set([baseDomainFromUrl(site), baseDomainFromUrl(sourceUrl)].filter(Boolean))
-  return allowed.has(linkBase)
+function isBaseHost(host) {
+  return host.split('.').filter(Boolean).length <= 2
+}
+
+function hostMatchesScope(host, scopedHost) {
+  if (!host || !scopedHost) return false
+  if (host === scopedHost) return true
+  return isBaseHost(scopedHost) && host.endsWith(`.${scopedHost}`)
+}
+
+function sameDocIndexScope(url, site, fetchedIndexUrl, requestedIndexUrl) {
+  const linkHost = hostFromUrl(url)
+  if (!linkHost) return false
+  const scopes = [
+    hostFromUrl(site),
+    hostFromUrl(fetchedIndexUrl),
+    hostFromUrl(requestedIndexUrl),
+  ].filter(Boolean)
+  return scopes.some(scope => hostMatchesScope(linkHost, scope))
 }
 
 async function discoverDocsIndexResults(args, timeoutMs) {
@@ -488,19 +503,20 @@ async function discoverDocsIndexResults(args, timeoutMs) {
     const indexUrl = queue.shift()
     if (!indexUrl || seenIndexes.has(indexUrl)) continue
     seenIndexes.add(indexUrl)
-    let text = ''
+    let index = null
     try {
-      text = await fetchDocIndex(indexUrl, timeoutMs)
+      index = await fetchDocIndex(indexUrl, timeoutMs)
     } catch {
       continue
     }
-    const links = parseDocIndexLinks(text, indexUrl)
+    const sourceUrl = index.url || indexUrl
+    const links = parseDocIndexLinks(index.text, sourceUrl)
     for (const link of links) {
       if (isDocIndexLink(link.url)) {
         if (!seenIndexes.has(link.url) && queue.length + seenIndexes.size < DOC_INDEX_MAX_FETCHES) queue.push(link.url)
         continue
       }
-      if (!sameSiteFamily(link.url, args.site, indexUrl)) continue
+      if (!sameDocIndexScope(link.url, args.site, sourceUrl, indexUrl)) continue
       const score = docLinkScore(link, tokens)
       if (score <= 0) continue
       candidates.push({
@@ -741,7 +757,7 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) 
     site: args.site || null,
     type: args.type || 'web',
     github_type: args.github_type || null,
-    docs_index: args.site && (args.type || 'web') === 'web' ? 3 : null,
+    docs_index: args.site && (args.type || 'web') === 'web' ? 4 : null,
     maxResults: args.maxResults || getRawSearchMaxResults(config),
   })
   const cachedSearch = getCachedEntry(cacheState, searchCacheKey)

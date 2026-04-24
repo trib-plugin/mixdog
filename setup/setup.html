@@ -762,6 +762,7 @@
     <div class="cat-item" data-panel="channels" onclick="switchCat(this)">Channels</div>
     <div class="cat-item" data-panel="access" onclick="switchCat(this)">Access</div>
     <div class="cat-item" data-panel="bot" onclick="switchCat(this)">Bot</div>
+    <div class="cat-item" data-panel="dnd" onclick="switchCat(this)">Do Not Disturb</div>
     <div class="cat-item" data-panel="autotalk" onclick="switchCat(this)">Proactive</div>
     <div class="cat-item" data-panel="schedules" onclick="switchCat(this)">Schedules</div>
     <div class="cat-item" data-panel="webhooks" onclick="switchCat(this)">Webhooks</div>
@@ -871,27 +872,8 @@
     <div class="panel" id="panel-bot">
       <div class="hdr"><h1>Bot</h1></div>
       <div class="sec">
-        <div class="sec-title">Quiet hours</div>
+        <div class="sec-title">Behavior</div>
         <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Do not disturb <span class="tip">?<span class="tip-text">Bot will not send automatic messages during this time window</span></span></span>
-            <select class="r-select" id="bot-quiet-preset" style="width:160px;flex:none;" onchange="onQuietPresetChange()">
-              <option value="none">None</option>
-              <option value="23:00-07:00">23:00 - 07:00</option>
-              <option value="22:00-08:00">22:00 - 08:00</option>
-              <option value="00:00-09:00">00:00 - 09:00</option>
-              <option value="custom">Custom</option>
-            </select>
-            <div class="time-row hidden" id="bot-quiet-custom">
-              <input class="r-input" id="bot-quiet-start" type="text" placeholder="HH:MM">
-              <span class="time-sep">-</span>
-              <input class="r-input" id="bot-quiet-end" type="text" placeholder="HH:MM">
-            </div>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Holidays <span class="tip">?<span class="tip-text">Skip scheduled tasks on public holidays</span></span></span>
-            <div class="r-toggle" id="bot-holidays" onclick="this.classList.toggle('on')"></div>
-          </div>
           <div class="r">
             <span class="r-name-wide">Sleep Mode <span class="tip">?<span class="tip-text">Auto-sleep the bot at a set time</span></span></span>
             <select class="r-select" id="bot-sleep-preset" onchange="onSleepPresetChange()">
@@ -918,6 +900,57 @@
       </div>
       <div class="save-area">
         <div class="warn-msg" id="warn-bot"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- DND (Do Not Disturb) -->
+    <div class="panel" id="panel-dnd">
+      <div class="hdr"><h1>Do Not Disturb</h1></div>
+      <div class="sec">
+        <div class="sec-title">Quiet hours</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Schedule <span class="tip">?<span class="tip-text">Time window during which opted-in systems stay quiet</span></span></span>
+            <select class="r-select" id="dnd-quiet-preset" style="width:160px;flex:none;" onchange="onQuietPresetChange()">
+              <option value="none">None</option>
+              <option value="23:00-09:00">23:00 - 09:00</option>
+              <option value="23:00-07:00">23:00 - 07:00</option>
+              <option value="22:00-08:00">22:00 - 08:00</option>
+              <option value="00:00-09:00">00:00 - 09:00</option>
+              <option value="custom">Custom</option>
+            </select>
+            <div class="time-row hidden" id="dnd-quiet-custom">
+              <input class="r-input" id="dnd-quiet-start" type="text" placeholder="HH:MM">
+              <span class="time-sep">-</span>
+              <input class="r-input" id="dnd-quiet-end" type="text" placeholder="HH:MM">
+            </div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Holidays <span class="tip">?<span class="tip-text">Skip during public holidays as well</span></span></span>
+            <div class="r-toggle" id="dnd-holidays" onclick="this.classList.toggle('on')"></div>
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Apply to <span class="tip">?<span class="tip-text">Which systems respect the quiet window above</span></span></div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Webhook <span class="tip">?<span class="tip-text">If on, incoming webhook events during quiet hours are dropped (no dispatch, no queue)</span></span></span>
+            <div class="r-toggle" id="dnd-respect-webhook" onclick="this.classList.toggle('on')"></div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Schedule <span class="tip">?<span class="tip-text">If on, scheduled tasks during quiet hours are skipped</span></span></span>
+            <div class="r-toggle on" id="dnd-respect-schedule" onclick="this.classList.toggle('on')"></div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Proactive <span class="tip">?<span class="tip-text">If on, proactive ticks during quiet hours are suppressed</span></span></span>
+            <div class="r-toggle on" id="dnd-respect-proactive" onclick="this.classList.toggle('on')"></div>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-dnd"></div>
         <button class="save" onclick="savePanel()">Save</button>
       </div>
     </div>
@@ -2055,10 +2088,10 @@ function initSliders() {
   });
 }
 
-// -- Quiet hours --
+// -- Quiet hours (DND tab) --
 function onQuietPresetChange() {
-  const sel = document.getElementById('bot-quiet-preset');
-  const custom = document.getElementById('bot-quiet-custom');
+  const sel = document.getElementById('dnd-quiet-preset');
+  const custom = document.getElementById('dnd-quiet-custom');
   if (sel.value === 'custom') custom.classList.remove('hidden');
   else custom.classList.add('hidden');
 }
@@ -2601,12 +2634,16 @@ async function populateChannels(cfg) {
 
   // Bot
   const bot = chExtraData.bot || {};
-  const quiet = bot.quiet || {};
-  populateQuietHours(quiet.schedule);
-  if (quiet.holidays) document.getElementById('bot-holidays').classList.add('on');
-  // Sleep Cycle UI removed in v0.6.47 (Ship 4). bot.sleepEnabled / bot.sleepTime
-  // are no longer persisted; use quiet.schedule for quiet hours.
   if (bot.displayMode) document.getElementById('bot-display-mode').value = bot.displayMode;
+
+  // DND: top-level cfg.quiet, with legacy fallback to bot.quiet for old saves
+  const quiet = cfg?.quiet || bot.quiet || {};
+  populateQuietHours(quiet.schedule);
+  if (quiet.holidays) document.getElementById('dnd-holidays').classList.add('on');
+  const setToggle = (id, on) => { const el = document.getElementById(id); if (!el) return; if (on) el.classList.add('on'); else el.classList.remove('on'); };
+  setToggle('dnd-respect-webhook', cfg?.webhook?.respectQuiet ?? false);
+  setToggle('dnd-respect-schedule', cfg?.schedules?.respectQuiet ?? true);
+  setToggle('dnd-respect-proactive', cfg?.proactive?.respectQuiet ?? true);
 
   // Proactive (non-preset fields)
   const proactive = cfg?.proactive || {};
@@ -2640,10 +2677,11 @@ async function populateChannels(cfg) {
 
 function populateQuietHours(schedule) {
   if (!schedule) return;
-  const presets = ['23:00-07:00', '22:00-08:00', '00:00-09:00'];
-  const sel = document.getElementById('bot-quiet-preset');
+  const presets = ['23:00-09:00', '23:00-07:00', '22:00-08:00', '00:00-09:00'];
+  const sel = document.getElementById('dnd-quiet-preset');
+  if (!sel) return;
   if (presets.includes(schedule)) { sel.value = schedule; }
-  else { sel.value = 'custom'; document.getElementById('bot-quiet-custom').classList.remove('hidden'); const parts = schedule.split('-'); if (parts.length === 2) { document.getElementById('bot-quiet-start').value = parts[0]; document.getElementById('bot-quiet-end').value = parts[1]; } }
+  else { sel.value = 'custom'; document.getElementById('dnd-quiet-custom').classList.remove('hidden'); const parts = schedule.split('-'); if (parts.length === 2) { document.getElementById('dnd-quiet-start').value = parts[0]; document.getElementById('dnd-quiet-end').value = parts[1]; } }
 }
 
 // -- Channels build data --
@@ -2658,10 +2696,14 @@ function buildChannelsData() {
     if (chId) { channelsConfig[label] = { channelId: chId, mode }; if (isMain) mainChannel = label; }
   });
 
-  const quietPreset = document.getElementById('bot-quiet-preset').value;
+  const quietPreset = document.getElementById('dnd-quiet-preset').value;
   let quietSchedule = '';
-  if (quietPreset === 'custom') { const s = document.getElementById('bot-quiet-start').value.trim(); const e = document.getElementById('bot-quiet-end').value.trim(); if (s && e) quietSchedule = s + '-' + e; }
+  if (quietPreset === 'custom') { const s = document.getElementById('dnd-quiet-start').value.trim(); const e = document.getElementById('dnd-quiet-end').value.trim(); if (s && e) quietSchedule = s + '-' + e; }
   else if (quietPreset !== 'none') { quietSchedule = quietPreset; }
+  const quietHolidays = document.getElementById('dnd-holidays').classList.contains('on');
+  const respectWebhook = document.getElementById('dnd-respect-webhook').classList.contains('on');
+  const respectSchedule = document.getElementById('dnd-respect-schedule').classList.contains('on');
+  const respectProactive = document.getElementById('dnd-respect-proactive').classList.contains('on');
 
   const scheduleItems = [];
   document.querySelectorAll('#sched-tasks .card').forEach(card => {
@@ -2681,18 +2723,22 @@ function buildChannelsData() {
   const voiceCmd = document.getElementById('voice-command');
   if (voiceCmd) { voice.command = voiceCmd.value; voice.model = document.getElementById('voice-model')?.value || ''; voice.language = document.getElementById('voice-language')?.value || 'auto'; voice.pythonModel = document.getElementById('voice-python-model')?.value || ''; }
 
-  const webhook = {};
+  const webhook = { respectQuiet: respectWebhook };
   const webhookAuthtoken = document.getElementById('ch-webhook-authtoken');
   if (webhookAuthtoken) { webhook.enabled = document.getElementById('ch-webhook-enabled')?.classList.contains('on') || false; webhook.authtoken = webhookAuthtoken.value; webhook.domain = document.getElementById('ch-webhook-domain')?.value || undefined; webhook.port = parseInt(document.getElementById('ch-webhook-port')?.value) || undefined; webhook.batchInterval = parseInt(document.getElementById('ch-webhook-batch-interval')?.value) || undefined; }
+
+  const proactiveOut = buildProactiveData();
+  proactiveOut.respectQuiet = respectProactive;
 
   return {
     discord: { token: document.getElementById('ch-discord-token').value, applicationId: document.getElementById('ch-discord-appid').value },
     channelsConfig, mainChannel,
     access: { dmPolicy: document.getElementById('ch-dm-policy').value, allowFrom: getTagValues('ch-allowfrom'), mentionPatterns: getTagValues('ch-mentionpatterns'), ackReaction: document.getElementById('ch-ackreaction').classList.contains('on') },
-    voice, schedules: { items: scheduleItems },
-    proactive: buildProactiveData(),
+    voice, schedules: { items: scheduleItems, respectQuiet: respectSchedule },
+    proactive: proactiveOut,
     webhook,
-    _bot: { quiet: { schedule: quietSchedule, holidays: document.getElementById('bot-holidays').classList.contains('on') }, sleepEnabled: document.getElementById('bot-sleep-preset').value !== 'off', sleepTime: (function(){ const v = document.getElementById('bot-sleep-preset').value; return v === 'off' ? undefined : v === 'custom' ? document.getElementById('bot-sleep-custom').value || undefined : v; })(), model: document.getElementById('bot-model').value || 'sonnet-mid', displayMode: document.getElementById('bot-display-mode').value },
+    quiet: { schedule: quietSchedule, holidays: quietHolidays },
+    _bot: { sleepEnabled: document.getElementById('bot-sleep-preset').value !== 'off', sleepTime: (function(){ const v = document.getElementById('bot-sleep-preset').value; return v === 'off' ? undefined : v === 'custom' ? document.getElementById('bot-sleep-custom').value || undefined : v; })(), model: document.getElementById('bot-model').value || 'sonnet-mid', displayMode: document.getElementById('bot-display-mode').value },
   };
 }
 
