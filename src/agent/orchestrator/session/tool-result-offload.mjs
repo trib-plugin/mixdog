@@ -17,10 +17,19 @@ function buildPreview(text, maxChars = TOOL_RESULT_PREVIEW_CHARS) {
     if (text.length <= maxChars) {
         return { preview: text, truncated: false };
     }
-    const head = text.slice(0, maxChars);
-    const lastNewline = head.lastIndexOf('\n');
-    const cut = lastNewline > Math.floor(maxChars * 0.6) ? lastNewline : maxChars;
-    return { preview: text.slice(0, cut), truncated: true };
+    const headBudget = Math.floor(maxChars * 0.6);
+    const tailBudget = maxChars - headBudget;
+    let head = text.slice(0, headBudget);
+    const headCut = head.lastIndexOf('\n');
+    if (headCut > Math.floor(headBudget * 0.6)) head = head.slice(0, headCut);
+    let tail = text.slice(Math.max(0, text.length - tailBudget));
+    const tailCut = tail.indexOf('\n');
+    if (tailCut !== -1 && tailCut < Math.floor(tailBudget * 0.4)) tail = tail.slice(tailCut + 1);
+    const omittedKb = Math.max(1, Math.round((text.length - head.length - tail.length) / 1024));
+    return {
+        preview: `${head}\n\n... [preview middle omitted — ${omittedKb} KB] ...\n\n${tail}`,
+        truncated: true,
+    };
 }
 
 function countLines(text) {

@@ -2487,7 +2487,7 @@ const server = http.createServer(async (req, res) => {
   // ROLE MD ROUTES (Phase B §4) — UI-managed agent role files.
   // Each role lives at <data>/roles/<name>.md with frontmatter
   // (name, description, permission) + optional body. Permission is one of
-  // "read" | "read-write".
+  // "read" | "read-write" | "mcp".
 
   if (req.method === 'GET' && path === '/md/role') {
     const rolesDir = join(getPluginData(), 'roles');
@@ -2528,9 +2528,9 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'name required' }));
       return;
     }
-    if (permission && permission !== 'read' && permission !== 'read-write') {
+    if (permission && permission !== 'read' && permission !== 'read-write' && permission !== 'mcp') {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'permission must be "read" or "read-write"' }));
+      res.end(JSON.stringify({ error: 'permission must be "read", "read-write", or "mcp"' }));
       return;
     }
     const fmLines = [`name: ${name}`];

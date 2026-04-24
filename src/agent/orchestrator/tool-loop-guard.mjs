@@ -1,16 +1,12 @@
 /**
- * Tool loop guard — detects repeated identical failures and aborts.
+ * Tool loop guard — warns on repeated identical failures, aborts only at the ceiling.
  *
  * Signature = sha256(toolName + normalizedArgs + errorCategory).
- * 4 consecutive same-signature failures -> 'detected' — telemetry + a
- *   synthetic soft-warn string (see buildSoftWarn) that callers are
- *   expected to PREPEND onto the just-returned tool result. This gives
- *   the model a chance to self-correct before the hard abort.
- * 5 consecutive same-signature failures -> 'abort' (throw ToolLoopAbortError).
+ * Warn-first policy: detectThreshold emits a synthetic soft-warn string
+ *   (see buildSoftWarn) that callers PREPEND onto the just-returned tool
+ *   result. Massive legit runs stay alive; the 100-per-axis abort is a
+ *   last-resort ceiling, not an early cutoff.
  * Any success, different tool, or different error category resets the state.
- *
- * The warn is emitted exactly once per run-up (on the 4th call of a run;
- * if the 5th call differs the counter resets without re-emitting).
  * Recovery guidance lives here as a per-call sidecar — intentionally
  * actionable rather than a standing system-prompt hint.
  */
@@ -33,12 +29,13 @@ const DEFAULT_SAME_TOOL_THRESHOLDS = Object.freeze({
     bash: 20,
     bash_session: 20,
 });
+// Unified abort ceiling: warn freely, only hard-stop at 100 per axis.
 const DEFAULT_SAME_TOOL_ABORT_THRESHOLDS = Object.freeze(
-    Object.fromEntries(Object.entries(DEFAULT_SAME_TOOL_THRESHOLDS).map(([name, value]) => [name, value * 2])),
+    Object.fromEntries(Object.keys(DEFAULT_SAME_TOOL_THRESHOLDS).map((name) => [name, 100])),
 );
 const DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS = Object.freeze({
-    structure_probe: 48, // 48: accommodates multi-site edits in large (~2000 LOC) files
-    search_fanout: 32,
+    structure_probe: 100,
+    search_fanout: 100,
 });
 
 // Tools whose success signals genuine progress (not probe grinding).
@@ -46,13 +43,14 @@ const DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS = Object.freeze({
 // search_fanout family counters so probe→edit→probe cycles don't
 // accumulate toward abort.
 const PRODUCTIVE_TOOLS = Object.freeze(new Set([
-    'edit', 'multi_edit', 'batch_edit', 'apply_patch', 'write',
+    'edit', 'multi_edit', 'batch_edit', 'edit_lines',
+    'apply_patch', 'write', 'write_many',
     'bash', 'bash_session',
 ]));
 
 const DEFAULT_CONFIG = Object.freeze({
     detectThreshold: 4,
-    abortThreshold: 5,
+    abortThreshold: 100,
     sameToolThresholds: DEFAULT_SAME_TOOL_THRESHOLDS,
     sameToolAbortThresholds: DEFAULT_SAME_TOOL_ABORT_THRESHOLDS,
     toolFamilyWarnRules: Object.freeze([
@@ -77,7 +75,7 @@ const DEFAULT_CONFIG = Object.freeze({
     ]),
     toolFamilyAbortThresholds: DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS,
     totalToolWarnThresholds: Object.freeze([48, 96]),
-    totalToolAbortThresholds: Object.freeze([120]),
+    totalToolAbortThresholds: Object.freeze([100]),
 });
 let _runtimeConfig = null;
 let _loadedRuntimeConfig = null;

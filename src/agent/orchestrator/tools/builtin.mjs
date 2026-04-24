@@ -203,6 +203,11 @@ export function normalizeInputPath(p) {
     return out;
 }
 
+function normalizeSearchPattern(p) {
+    if (typeof p !== 'string') return p;
+    try { return p.normalize('NFC'); } catch { return p; }
+}
+
 // Normalise output paths for display: on Windows, unify all separators to
 // forward slash so mixed-slash strings don't reach the model. Native Windows
 // APIs accept forward slashes too, so this is a purely cosmetic (and
@@ -635,7 +640,7 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Big files auto-return a head+tail summary unless `full:true` or offset/limit given — for in-file content search use `grep`, not a full read.',
+        description: 'Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -3012,10 +3017,13 @@ export async function executeBuiltinTool(name, args, cwd) {
             const rawPattern = args.pattern;
             const patterns = (Array.isArray(rawPattern)
                 ? rawPattern.filter(p => typeof p === 'string' && p)
-                : (rawPattern ? [String(rawPattern)] : [])).map(normalizeInputPath);
+                : (rawPattern ? [String(rawPattern)] : [])).map(normalizeSearchPattern);
             if (patterns.length === 0)
                 return 'Error: pattern is required';
             const searchPath = args.path || '.';
+            if (!isSafePath(searchPath, workDir, pathOpts)) {
+                return `Error: path outside allowed scope — ${normalizeOutputPath(searchPath)}`;
+            }
             const rawGlob = args.glob;
             const globPatterns = (Array.isArray(rawGlob)
                 ? rawGlob.filter(g => typeof g === 'string' && g)
@@ -3117,9 +3125,6 @@ export async function executeBuiltinTool(name, args, cwd) {
             const headLimitRaw = args.head_limit;
             const headLimit = headLimitRaw === 0 ? Infinity : (headLimitRaw || 100);
             const offset = typeof args.offset === 'number' && args.offset > 0 ? args.offset : 0;
-            const cacheKey = buildGlobCacheKey({ patterns, basePath, headLimit, offset });
-            const cached = _cacheGet(cacheKey);
-            if (cached !== null) return cached;
             // Group patterns by resolved baseDir so multiple absolute roots
             // (e.g. C:\a\**\*.js and D:\b\*.ts) each get their own rg pass.
             const groups = new Map();
@@ -3135,6 +3140,14 @@ export async function executeBuiltinTool(name, args, cwd) {
                     addToGroup(basePath, p);
                 }
             }
+            for (const root of groups.keys()) {
+                if (!isSafePath(root, workDir, pathOpts)) {
+                    return `Error: path outside allowed scope — ${normalizeOutputPath(root)}`;
+                }
+            }
+            const cacheKey = buildGlobCacheKey({ patterns, basePath, headLimit, offset });
+            const cached = _cacheGet(cacheKey);
+            if (cached !== null) return cached;
             const allFiles = [];
             for (const [root, rels] of groups) {
                 const rgArgs = ['--files'];
@@ -3158,7 +3171,8 @@ export async function executeBuiltinTool(name, args, cwd) {
             // to mtime=0 so missing/race-condition entries land at the
             // end rather than aborting the whole sort.
             const withStat = unique.map((p) => {
-                try { return { path: p, mtime: getCachedReadOnlyStat(p).mtimeMs }; }
+                const full = isAbsolute(p) ? p : resolveAgainstCwd(p, workDir);
+                try { return { path: p, full, mtime: getCachedReadOnlyStat(full).mtimeMs }; }
                 catch { return { path: p, mtime: 0 }; }
             });
             withStat.sort((a, b) => b.mtime - a.mtime);
@@ -3167,7 +3181,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // Relativise against workDir when the file lives inside it
                 // — matches Anthropic GlobTool toRelativePath and trims the
                 // redundant absolute prefix from the model's context.
-                const displayed = cwdRelativePath(entry.path, workDir);
+                const displayed = cwdRelativePath(entry.full || entry.path, workDir);
                 return normalizeOutputPath(displayed);
             });
             const remaining = windowed.length - capped.length;
@@ -3202,11 +3216,11 @@ export async function executeBuiltinTool(name, args, cwd) {
                 headLimit,
                 offset,
             });
-            const cached = _cacheGet(cacheKey);
-            if (cached !== null) return cached;
             if (!isSafePath(inputPath, workDir, pathOpts)) {
                 return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
             }
+            const cached = _cacheGet(cacheKey);
+            if (cached !== null) return cached;
             const fullPath = resolveAgainstCwd(inputPath, workDir);
             let st;
             try { st = getCachedReadOnlyStat(fullPath); }
@@ -3281,11 +3295,11 @@ export async function executeBuiltinTool(name, args, cwd) {
                 headLimit,
                 offset,
             });
-            const cached = _cacheGet(cacheKey);
-            if (cached !== null) return cached;
             if (!isSafePath(inputPath, workDir, pathOpts)) {
                 return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
             }
+            const cached = _cacheGet(cacheKey);
+            if (cached !== null) return cached;
             const fullPath = resolveAgainstCwd(inputPath, workDir);
             let st;
             try { st = getCachedReadOnlyStat(fullPath); }
@@ -3350,6 +3364,9 @@ export async function executeBuiltinTool(name, args, cwd) {
                 modifiedAfter: args.modified_after || '',
                 modifiedBefore: args.modified_before || '',
             });
+            if (!isSafePath(inputPath, workDir, pathOpts)) {
+                return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
+            }
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
 
@@ -3371,9 +3388,6 @@ export async function executeBuiltinTool(name, args, cwd) {
             // note lives in one place (see compileSimpleGlob).
             const nameRegex = compileSimpleGlob(namePattern);
 
-            if (!isSafePath(inputPath, workDir, pathOpts)) {
-                return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
-            }
             const fullPath = resolveAgainstCwd(inputPath, workDir);
             let rootStat;
             try { rootStat = getCachedReadOnlyStat(fullPath); }
@@ -3509,6 +3523,10 @@ export async function executeBuiltinTool(name, args, cwd) {
             try {
                 if (args.from_text) {
                     fromContent = String(args.from ?? '');
+                    const bytes = Buffer.byteLength(fromContent, 'utf-8');
+                    if (bytes > READ_MAX_SIZE_BYTES) {
+                        return `Error: from inline text ${bytes} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap`;
+                    }
                 } else {
                     if (args.from == null || args.from === '') return 'Error: from is required';
                     const opened = await openForRead(args.from, workDir, pathOpts);
@@ -3517,6 +3535,10 @@ export async function executeBuiltinTool(name, args, cwd) {
                 }
                 if (args.to_text) {
                     toContent = String(args.to ?? '');
+                    const bytes = Buffer.byteLength(toContent, 'utf-8');
+                    if (bytes > READ_MAX_SIZE_BYTES) {
+                        return `Error: to inline text ${bytes} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap`;
+                    }
                 } else {
                     if (args.to == null || args.to === '') return 'Error: to is required';
                     const opened = await openForRead(args.to, workDir, pathOpts);

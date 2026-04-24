@@ -378,6 +378,8 @@ export function composeSystemPrompt(opts) {
                 ? 'read-only; write/edit/bash rejected'
                 : permission === 'read-write'
                     ? 'read + write/edit/bash'
+                    : permission === 'mcp'
+                        ? 'MCP/internal retrieval tools only; file/shell/edit tools rejected'
                     : permission === 'full'
                         ? 'full — all tools'
                         : 'unknown — treat as read-only';

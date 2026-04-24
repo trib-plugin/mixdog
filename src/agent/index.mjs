@@ -26,12 +26,12 @@ import { join } from 'path';
  * @typedef {Object} RoleConfig
  * @property {string}      name               - unique role identifier
  * @property {string}      preset             - preset name from agent-config presets
- * @property {'read'|'read-write'|'full'} permission - tool permission category
+ * @property {'read'|'read-write'|'mcp'|'full'} permission - tool permission category
  * @property {string|null} desc_path          - relative to CLAUDE_PLUGIN_ROOT
  * @property {'stateful'|'stateless'} behavior - pool-reuse semantics; drives cache strategy
  */
 
-const VALID_PERMISSIONS = new Set(['read', 'read-write', 'full']);
+const VALID_PERMISSIONS = new Set(['read', 'read-write', 'mcp', 'full']);
 const VALID_BEHAVIORS = new Set(['stateful', 'stateless']);
 
 // Default behavior per-role when user-workflow.json omits the field.

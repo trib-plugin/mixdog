@@ -22,12 +22,29 @@ const EMERGENCY_ITERATION_FUSE = 1000;
 // Write-class tools that a permission=read session must not execute. The
 // schema still advertises them to keep one unified shard; this runtime set
 // is the fail-safe reject at call time.
-const READ_BLOCKED_TOOLS = new Set(['bash', 'bash_session', 'write', 'edit', 'multi_edit', 'batch_edit', 'apply_patch', 'job_cancel', 'rename_symbol_refs', 'rename_file_refs']);
+const READ_BLOCKED_TOOLS = new Set([
+    'bash', 'bash_session',
+    'write', 'write_many',
+    'edit', 'multi_edit', 'batch_edit', 'edit_lines',
+    'apply_patch',
+    'job_cancel',
+    'rename_symbol_refs', 'rename_file_refs',
+    'sg_rewrite',
+]);
+const MCP_ONLY_ALLOWED_KINDS = new Set(['mcp', 'internal', 'skill']);
 // Eager-dispatch allowlist: read-only builtins can safely start executing
 // during SSE parsing so tool work overlaps with the rest of the stream.
 // Writes, bash, MCP and skills stay serial after send() returns.
 const EAGER_TOOLS = new Set(['read', 'multi_read', 'grep', 'glob', 'list']);
 function isEagerDispatchable(name) { return EAGER_TOOLS.has(name); }
+function effectiveToolPermission(sessionRef) {
+    return sessionRef?.toolPermission || sessionRef?.permission || null;
+}
+function isBlockedByPermission(toolName, toolKind, permission) {
+    if (permission === 'mcp') return !MCP_ONLY_ALLOWED_KINDS.has(toolKind);
+    if (permission === 'read') return READ_BLOCKED_TOOLS.has(toolName);
+    return false;
+}
 const SKILL_TOOL_NAMES = new Set(['skills_list', 'skill_view', 'skill_execute']);
 const SPECIAL_TOOL_NAMES = new Set(['bash_session', 'apply_patch', 'code_graph']);
 const BASH_SESSION_HEADER_RE = /\[session: ([^\]\r\n]+)\]/;
@@ -231,6 +248,8 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         const pending = new Map();
         opts.onToolCall = (call) => {
             if (!call?.id || !isEagerDispatchable(call.name)) return;
+            const toolKind = getToolKind(call.name);
+            if (isBlockedByPermission(call.name, toolKind, effectiveToolPermission(sessionRef))) return;
             // endedAt is stamped by finally so `toolMs` reflects the true
             // execution duration — independent of when the serial for-loop
             // consumes the result (otherwise later eager calls would inflate
@@ -334,11 +353,15 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                     toolEndedAt = eager.endedAt ?? Date.now();
                 } else {
                     toolStartedAt = Date.now();
-                    // Runtime permission guard — block write-class tools for
-                    // read-permission sessions before dispatch. tools schema
-                    // stays full so every role shares one cache shard; the
-                    // guard happens at call time, not at schema build time.
-                    if (sessionRef?.permission === 'read' && READ_BLOCKED_TOOLS.has(call.name)) {
+                    // Runtime permission guard. The tools schema stays full
+                    // so every role shares one cache shard; restrictions are
+                    // enforced at call time, not at schema build time.
+                    const effectivePermission = effectiveToolPermission(sessionRef);
+                    const permissionBlocked = isBlockedByPermission(call.name, toolKind, effectivePermission);
+                    if (permissionBlocked && effectivePermission === 'mcp') {
+                        result = `Error: tool "${call.name}" is not available on this session (permission=mcp). Use MCP/internal retrieval tools only.`;
+                        toolEndedAt = Date.now();
+                    } else if (permissionBlocked && effectivePermission === 'read') {
                         result = `Error: tool "${call.name}" is not available on this session (permission=read). Use read/multi_read/grep/glob/recall/search/explore or the read-only MCP tools instead.`;
                         toolEndedAt = Date.now();
                     } else {

@@ -8,7 +8,7 @@
  *
  *   • buildVirtualProfile(roleConfig)
  *       Turn a 5-field user-workflow.json role into the shape older code
- *       expected (`{id, taskType, cacheType, behavior, description}`).
+ *       expected (`{id, taskType, cacheType, behavior, permission, description}`).
  *       `cacheType` is derived from role.behavior: stateless roles use the
  *       stateless cache strategy, stateful roles use the stateful strategy.
  *
@@ -35,6 +35,7 @@ export function buildVirtualProfile(roleConfig) {
         cacheType: behavior,
         behavior,
         tools: ROLE_TOOLS_UNIFIED,
+        permission: roleConfig.permission && roleConfig.permission !== 'full' ? roleConfig.permission : null,
         fallbackPreset: roleConfig.preset || null,
         description: roleConfig.desc_path || null,
     };

@@ -244,12 +244,13 @@ function buildBashEnv() {
     return env;
 }
 
-function _spawnSession(id) {
+function _spawnSession(id, initialCwd = process.cwd()) {
     _evictOldestIfFull();
     const shell = resolveBash();
     const proc = spawn(shell, [], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: buildBashEnv(),
+        cwd: initialCwd,
         windowsHide: true,
         // detached:true on posix gives the child its own process group so
         // _killProcessTree can signal the whole group (catches `sleep 1000 &`
@@ -263,7 +264,7 @@ function _spawnSession(id) {
     const entry = {
         proc,
         lastUsed: Date.now(),
-        cwd: process.cwd(),
+        cwd: initialCwd,
         stdoutBuf: '',
         stderrBuf: '',
         busy: false,
@@ -286,14 +287,14 @@ function _spawnSession(id) {
     return entry;
 }
 
-function _getOrCreate(sessionId) {
+function _getOrCreate(sessionId, initialCwd = process.cwd()) {
     const id = sessionId || `sess_${randomUUID()}`;
     let entry = _sessions.get(id);
     if (entry && entry.dead) {
         _sessions.delete(id);
         entry = null;
     }
-    if (!entry) entry = _spawnSession(id);
+    if (!entry) entry = _spawnSession(id, initialCwd);
     return { id, entry };
 }
 
@@ -409,7 +410,7 @@ async function _syncSessionCwd(entry, timeoutMs) {
     }
 }
 
-async function bash_session(args) {
+async function bash_session(args, cwd = process.cwd()) {
     const command = typeof args?.command === 'string' ? args.command : '';
     if (!command) return 'Error: command is required';
     if (isBlocked(command)) {
@@ -421,7 +422,7 @@ async function bash_session(args) {
             const existing = _sessions.get(explicitId);
             if (existing?.cwd) return existing.cwd;
         }
-        return process.cwd();
+        return cwd || process.cwd();
     })();
     const largeProbe = preflightShellLargeFileProbe(command, baseCwd);
     if (largeProbe) return `Error: ${largeProbe.message}`;
@@ -433,8 +434,8 @@ async function bash_session(args) {
     const effectiveTimeout = Math.min(Math.max(timeoutMs, 1000), MAX_TIMEOUT_MS);
     const close = args?.close === true;
 
-    const { id, entry } = _getOrCreate(args?.session_id);
-    const shellEffects = analyzeShellCommandEffects(command, entry.cwd || process.cwd());
+    const { id, entry } = _getOrCreate(args?.session_id, baseCwd);
+    const shellEffects = analyzeShellCommandEffects(command, entry.cwd || baseCwd);
 
     if (entry.busy) {
         return `Error: session "${id}" is busy executing a prior command`;
@@ -454,7 +455,7 @@ async function bash_session(args) {
     }
     if (shellEffects.mutationMode === 'paths') {
         invalidateBuiltinResultCache(shellEffects.paths);
-        markCodeGraphDirtyPaths(entry.cwd || process.cwd(), shellEffects.paths);
+        markCodeGraphDirtyPaths(entry.cwd || baseCwd, shellEffects.paths);
     } else if (shellEffects.mutationMode === 'global') {
         invalidateBuiltinResultCache();
     }
@@ -513,7 +514,7 @@ export const BASH_SESSION_TOOL_DEFS = [
 export async function executeBashSessionTool(name, args, _cwd) {
     switch (name) {
         case 'bash_session':
-            return bash_session(args || {});
+            return bash_session(args || {}, _cwd || process.cwd());
         default:
             throw new Error(`Unknown bash-session tool: ${name}`);
     }

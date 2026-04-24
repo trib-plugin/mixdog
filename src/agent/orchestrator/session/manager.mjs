@@ -152,10 +152,10 @@ function _getMcpToolsCached() {
 // Unified-shard policy — the session's tool array never narrows with
 // permission or role. Every bridge session ships the same tool schema so
 // BP_1 stays bit-identical and the provider-side cache shard is shared
-// workspace-wide. Write-class tools are still rejected at call time by
-// loop.mjs's READ_BLOCKED_TOOLS guard (for permission=read) and the
-// bridge-deny list (for Lead-only admin surface); those operate AFTER the
-// schema is built, so cache integrity is preserved.
+// workspace-wide. Disallowed tools are still rejected at call time by
+// loop.mjs's permission guards (read / mcp) and the bridge-deny list (for
+// Lead-only admin surface); those operate AFTER the schema is built, so
+// cache integrity is preserved.
 
 const ALL_BUILTIN_SESSION_TOOLS = _dedupByName([
     ...BUILTIN_TOOLS,
@@ -281,6 +281,21 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
         default:
             return _dedupByName([...ALL_BUILTIN_SESSION_TOOLS, ...mcp, ...skillTools]);
     }
+}
+
+function permissionFromToolSpec(toolSpec) {
+    if (toolSpec === 'readonly') return 'read';
+    if (toolSpec === 'mcp') return 'mcp';
+    if (Array.isArray(toolSpec)) {
+        const tags = new Set(toolSpec.map(t => String(t || '').trim()));
+        const hasWriteOrShell = tags.has('full')
+            || tags.has('tools:filesystem')
+            || tags.has('tools:bash')
+            || tags.has('tools:git')
+            || tags.has('tools:analysis');
+        if (tags.has('tools:readonly') && !hasWriteOrShell) return 'read';
+    }
+    return null;
 }
 
 let nextId = Date.now();
@@ -838,13 +853,21 @@ export function createSession(opts) {
     // subset, which is how BP_1 actually gets shaped per Phase B spec. When
     // no profile resolves, fall back to the preset.tools string ('full' /
     // 'readonly' / 'mcp') so raw createSession callers still work.
-    const toolSpec = Array.isArray(profile?.tools) ? profile.tools : toolPreset;
+    const toolSpec = Array.isArray(profile?.tools)
+        ? profile.tools
+        : (opts.owner === 'bridge' && (toolPreset === 'readonly' || toolPreset === 'mcp') ? 'full' : toolPreset);
 
-    // Permission is metadata only — tool schema stays bit-identical regardless
-    // of role or permission (unified-shard policy). Write-blocking for
-    // `permission=read` happens at call time in loop.mjs's READ_BLOCKED_TOOLS
-    // guard, not at schema build time.
-    const permission = opts.permission || profile?.permission || roleTemplate?.permission || null;
+    // Prompt permission is metadata only. Preset tool restrictions must NOT
+    // enter the prompt, or they split the shared bridge cache tail; they map
+    // to toolPermission below and are enforced only at call time.
+    const permission = opts.permission
+        || roleTemplate?.permission
+        || null;
+    const toolPermission = opts.permission
+        || profile?.permission
+        || roleTemplate?.permission
+        || permissionFromToolSpec(toolPreset)
+        || null;
     const toolsForRouting = resolveSessionTools(toolSpec, skills);
 
     const { baseRules, roleCatalog, sessionMarker, volatileTail } = composeSystemPrompt({
@@ -926,7 +949,7 @@ export function createSession(opts) {
     // Do NOT re-introduce an `opts.allowedTools` whitelist here — it would
     // fragment the shard and force every role onto its own cache prefix.
     if (resolvedRole) {
-        process.stderr.write(`[session] role=${resolvedRole} permission=${permission || 'full'} tools=${tools.length}\n`);
+        process.stderr.write(`[session] role=${resolvedRole} permission=${permission || 'full'} toolPermission=${toolPermission || 'full'} tools=${tools.length}\n`);
     }
     const session = {
         id,
@@ -956,10 +979,10 @@ export function createSession(opts) {
         lastUsedAt: Date.now(),
         tokensCumulative: 0,
         role: opts.role || null,
-        // Permission persisted on the session so loop.mjs can apply the
-        // runtime call-time guard (READ_BLOCKED_TOOLS) without having to
-        // re-derive it from the profile / role each turn.
+        // Prompt permission is separate from runtime toolPermission so preset
+        // restrictions do not fragment the bridge cache prefix.
         permission: permission || null,
+        toolPermission: toolPermission || null,
         // Origin tag written into every bridge-trace usage row so analytics
         // can slice by (sourceType, sourceName) — e.g. maintenance/cycle1,
         // scheduler/daily-standup, webhook/github-push, lead/worker.

@@ -122,6 +122,9 @@ async function apply_patch(args, cwd) {
   const pathOpts = { allowHome };
   // Default true — atomic batch semantics match batch_edit.
   const rejectPartial = args?.reject_partial !== false;
+  if (!isSafePath(basePath, cwd, pathOpts)) {
+    return `Error: base_path outside allowed scope — ${normalizeOutputPath(basePath)}`;
+  }
 
   let parsed;
   try {
