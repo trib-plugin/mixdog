@@ -25,7 +25,7 @@ const EMERGENCY_ITERATION_FUSE = 1000;
 // is the fail-safe reject at call time.
 const READ_BLOCKED_TOOLS = new Set([
     'bash', 'bash_session',
-    'write', 'write_many',
+    'write',
     'edit', 'edit_lines',
     'apply_patch',
     'sg_rewrite',

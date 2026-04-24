@@ -54,7 +54,7 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 - Broader structural graph question / impact / mixed graph query → `code_graph`
 - "I know the file already" → `read`
 - "I need 2+ known files" → one `read` call with array `path`
-- "I need to create/replace several whole files" → `write_many`
+- "I need to create/replace several whole files" → `write` with `writes` array
 - "I need broad text search / regex / config phrase lookup" → `grep`
 - "I need file path discovery / filename patterns" → `glob`
 - "I need quick directory shape / recent files / mtime clues" → `list`
@@ -69,7 +69,7 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 
 - Do not call `find_symbol` and `grep` for the same identifier in the same round unless `find_symbol` returned no declaration candidate.
 - Do not serially `read` files one by one when the candidate list is already known.
-- Do not serially `write` several whole files when `write_many` can do it in one call.
+- Do not serially `write` several whole files when one call with a `writes` array can do it.
 - Do not `read` a whole large file when `find_symbol`, `code_graph`, or `grep` can narrow the line window first.
 
 ## Scope boundaries

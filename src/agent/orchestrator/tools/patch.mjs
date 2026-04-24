@@ -343,13 +343,13 @@ async function apply_patch(args, cwd, options = {}) {
       unlinkSync(p.fullPath);
     } else if (p.kind === 'create') {
       mkdirSync(dirname(p.fullPath), { recursive: true });
-      await atomicWrite(p.fullPath, p.newContent);
+      await atomicWrite(p.fullPath, p.newContent, { sessionId: options?.sessionId });
     } else {
       const curStat = statSync(p.fullPath);
       if (curStat.mtimeMs > p.preMtime + 1) {
         throw Object.assign(new Error('file modified since read (mtime drift)'), { __skip: true });
       }
-      await atomicWrite(p.fullPath, p.newContent);
+      await atomicWrite(p.fullPath, p.newContent, { sessionId: options?.sessionId });
     }
   };
 
@@ -366,7 +366,7 @@ async function apply_patch(args, cwd, options = {}) {
       // modify / delete — restore original bytes. For delete, this
       // recreates the file; for modify, it rewrites with the pre-patch
       // content. atomicWrite is crash-safe here too.
-      await atomicWrite(p.fullPath, p.preContent ?? '');
+      await atomicWrite(p.fullPath, p.preContent ?? '', { sessionId: options?.sessionId });
     }
   };
 

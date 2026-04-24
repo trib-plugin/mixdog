@@ -60,11 +60,10 @@ async function main() {
     }
 
     const required = [
-      'read', 'multi_read', 'edit', 'multi_edit', 'batch_edit', 'write', 'write_many',
-      'bash', 'bash_session', 'jobs_list', 'job_status', 'job_wait', 'job_read', 'job_cancel',
+      'read', 'multi_read', 'edit', 'write',
+      'bash', 'bash_session', 'job_wait',
       'grep', 'glob', 'list', 'apply_patch', 'code_graph', 'find_symbol',
-      'rename_file_refs', 'rename_symbol_refs',
-      'explore', 'fetch_many', 'memory_search', 'recall', 'search', 'web_search',
+      'explore', 'memory_search', 'recall', 'search', 'web_search',
       'skills_list', 'skill_view', 'skill_execute',
     ];
     const bSet = new Set(bNames);

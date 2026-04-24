@@ -10,6 +10,7 @@ import { createHash, randomBytes } from 'crypto';
 import { getPluginData } from '../config.mjs';
 import { markCodeGraphDirtyPaths } from './code-graph.mjs';
 import { getCapabilities } from '../../../shared/config.mjs';
+import { getAbortSignalForSession } from '../session/abort-lookup.mjs';
 const execAsync = promisify(exec);
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
@@ -63,13 +64,22 @@ const WINDOWS_RENAME_RETRY_DELAY_MS = 50;
 
 function _sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-export async function atomicWrite(targetPath, content, { mode } = {}) {
+export async function atomicWrite(targetPath, content, { mode, signal, sessionId } = {}) {
+    let resolvedSignal = signal;
+    if (!resolvedSignal && sessionId) {
+        try { resolvedSignal = await getAbortSignalForSession(sessionId); } catch { resolvedSignal = null; }
+    }
+    const _abortReason = () => {
+        const r = resolvedSignal?.reason;
+        if (r instanceof Error) return r;
+        if (typeof r === 'string' && r) return new Error(r);
+        return new Error('atomicWrite aborted');
+    };
+    if (resolvedSignal?.aborted) throw _abortReason();
+
     const dir = dirname(targetPath);
     const rnd = randomBytes(4).toString('hex');
     const tmp = join(dir, `.${basename(targetPath)}.mixdog-tmp-${rnd}`);
-    // Preserve existing file mode on overwrite so we don't inadvertently
-    // widen permissions via the default 0o644. Only applied when the
-    // caller didn't pin an explicit mode.
     let effectiveMode = mode;
     if (effectiveMode === undefined) {
         try {
@@ -79,8 +89,6 @@ export async function atomicWrite(targetPath, content, { mode } = {}) {
     }
     if (effectiveMode === undefined) effectiveMode = 0o644;
 
-    // Open + write + fsync + close. Any failure here is caught and the
-    // tempfile is unlinked before we rethrow so no residue remains.
     let fh = null;
     try {
         fh = await fsPromises.open(tmp, 'w', effectiveMode);
@@ -97,8 +105,14 @@ export async function atomicWrite(targetPath, content, { mode } = {}) {
     }
     try { await fh.close(); } catch { /* already closed */ }
 
-    // Rename with Windows-specific retry. On POSIX `rename(2)` is atomic
-    // within a filesystem and the retry loop is a no-op.
+    // Abort that arrived during the write phase: drop the tempfile and
+    // throw so the caller sees a clean cancellation rather than a
+    // half-published rename.
+    if (resolvedSignal?.aborted) {
+        try { await fsPromises.unlink(tmp); } catch { /* already gone */ }
+        throw _abortReason();
+    }
+
     const renameFn = typeof _atomicRenameOverride === 'function'
         ? _atomicRenameOverride
         : (src, dst) => fsPromises.rename(src, dst);
@@ -118,7 +132,6 @@ export async function atomicWrite(targetPath, content, { mode } = {}) {
             break;
         }
     }
-    // Rename failed — clean up the tempfile so no residue is left.
     try { await fsPromises.unlink(tmp); } catch { /* already gone */ }
     throw lastErr;
 }
@@ -787,31 +800,6 @@ export const BUILTIN_TOOLS = [
                 },
             },
             required: [],
-        },
-    },
-    {
-        name: 'write_many',
-        title: 'Write Many',
-        annotations: { title: 'Write Many', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Create or overwrite multiple files in one call. Use this for batch whole-file writes; prefer `apply_patch` for multi-file edits that depend on surrounding context.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                writes: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            path: { type: 'string', description: 'Target file path.' },
-                            content: { type: 'string', description: 'UTF-8 content.' },
-                        },
-                        required: ['path', 'content'],
-                    },
-                    minItems: 1,
-                    description: 'Batch whole-file writes. Each item writes one file.',
-                },
-            },
-            required: ['writes'],
         },
     },
     {
@@ -2412,7 +2400,7 @@ function computeUnifiedDiff(a, b, ctx, fromLabel, toLabel) {
     return out.join('\n');
 }
 
-async function _runMultiEdit(args, workDir, readStateScope, pathOpts) {
+async function _runMultiEdit(args, workDir, readStateScope, pathOpts, options = {}) {
     args.path = normalizeInputPath(args.path);
     const filePath = args.path;
     const edits = Array.isArray(args.edits) ? args.edits : [];
@@ -2472,7 +2460,7 @@ async function _runMultiEdit(args, workDir, readStateScope, pathOpts) {
                 content = content.replace(old_string, () => new_string);
             }
         }
-        await atomicWrite(fullPath, content);
+        await atomicWrite(fullPath, content, { sessionId: options?.sessionId });
         invalidateBuiltinResultCache([fullPath]);
         markCodeGraphDirtyPaths(workDir, [fullPath]);
         _recordReadSnapshot(fullPath, undefined, readStateScope, {
@@ -2486,7 +2474,7 @@ async function _runMultiEdit(args, workDir, readStateScope, pathOpts) {
     }
 }
 
-async function _runBatchEdit(args, workDir, readStateScope, pathOpts, executeChildBuiltinTool) {
+async function _runBatchEdit(args, workDir, readStateScope, pathOpts, executeChildBuiltinTool, options = {}) {
     const edits = Array.isArray(args.edits) ? args.edits : [];
     if (edits.length === 0) return 'Error: edits array is required';
     for (const e of edits) { if (e && typeof e === 'object') e.path = normalizeInputPath(e.path); }
@@ -2518,7 +2506,7 @@ async function _runBatchEdit(args, workDir, readStateScope, pathOpts, executeChi
         const body = await _runMultiEdit({
             path,
             edits: items.map(({ path: _p, ...rest }) => rest),
-        }, workDir, readStateScope, pathOpts);
+        }, workDir, readStateScope, pathOpts, options);
         const errMsg = parseLeadError(body);
         return errMsg
             ? `FAIL ${normalizeOutputPath(path)}: ${errMsg}`
@@ -2844,9 +2832,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }).join('\n\n');
             return `${header}\n\n${body}`;
         }
-        case 'write_many': {
-            return executeChildBuiltinTool('write', { writes: args.writes }, workDir);
-        }
         case 'write': {
             if (Array.isArray(args.writes) && args.writes.length > 0) {
                 const items = args.writes.map((entry) => ({
@@ -2869,7 +2854,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     try {
                         const fullPath = resolveAgainstCwd(filePath, workDir);
                         mkdirSync(dirname(fullPath), { recursive: true });
-                        await atomicWrite(fullPath, content);
+                        await atomicWrite(fullPath, content, { sessionId: options?.sessionId });
                         dirtyPaths.push(fullPath);
                         _recordReadSnapshot(fullPath, undefined, readStateScope, {
                             source: 'write',
@@ -2911,7 +2896,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // when a bridge worker's SSE stream hung during an Edit on
                 // openai-oauth-ws.mjs). atomicWrite preserves the file mode
                 // on overwrite so we don't inadvertently widen 0o600 → 0o644.
-                await atomicWrite(fullPath, content);
+                await atomicWrite(fullPath, content, { sessionId: options?.sessionId });
                 invalidateBuiltinResultCache([fullPath]);
                 markCodeGraphDirtyPaths(workDir, [fullPath]);
                 // Write establishes the on-disk state the model just
@@ -2948,13 +2933,13 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     return _runMultiEdit({
                         path: onePath,
                         edits: items.map(({ path: _p, ...rest }) => rest),
-                    }, workDir, readStateScope, pathOpts);
+                    }, workDir, readStateScope, pathOpts, options);
                 }
                 return _runBatchEdit({
                     edits: items.map((x) => ({
                         path: x.path, old_string: x.old_string, new_string: x.new_string, replace_all: x.replace_all,
                     })),
-                }, workDir, readStateScope, pathOpts, executeChildBuiltinTool);
+                }, workDir, readStateScope, pathOpts, executeChildBuiltinTool, options);
             }
             args.path = normalizeInputPath(args.path);
             const filePath = args.path;
@@ -3016,7 +3001,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     ? content.split(oldStr).join(newStr)
                     : content.replace(oldStr, () => newStr);
                 // v0.6.248: atomic write — see `write` handler for rationale.
-                await atomicWrite(fullPath, updated);
+                await atomicWrite(fullPath, updated, { sessionId: options?.sessionId });
                 invalidateBuiltinResultCache([fullPath]);
                 markCodeGraphDirtyPaths(workDir, [fullPath]);
                 // Refresh the snapshot to the post-write mtime so a chain
@@ -3095,7 +3080,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 ];
                 const newFileContent = updated.join('\n');
                 // v0.6.248: atomic write — tempfile + fsync + rename.
-                await atomicWrite(fullPath, newFileContent);
+                await atomicWrite(fullPath, newFileContent, { sessionId: options?.sessionId });
                 invalidateBuiltinResultCache([fullPath]);
                 markCodeGraphDirtyPaths(workDir, [fullPath]);
                 _recordReadSnapshot(fullPath, undefined, readStateScope, {

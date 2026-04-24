@@ -1265,6 +1265,9 @@ export function getSessionRuntime(id) {
 export function forEachSessionRuntime() {
     return _runtimeState.entries();
 }
+export function getSessionAbortSignal(sessionId) {
+    return _runtimeState.get(sessionId)?.controller?.signal ?? null;
+}
 function _clearSessionRuntime(id) {
     if (id) _runtimeState.delete(id);
 }

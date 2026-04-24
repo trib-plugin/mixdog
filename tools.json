@@ -991,49 +991,6 @@
     "module": "builtin"
   },
   {
-    "name": "write_many",
-    "title": "Write Many",
-    "annotations": {
-      "title": "Write Many",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    },
-    "description": "Create or overwrite multiple files in one call. Use this for batch whole-file writes; prefer `apply_patch` for multi-file edits that depend on surrounding context.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "writes": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "path": {
-                "type": "string",
-                "description": "Target file path."
-              },
-              "content": {
-                "type": "string",
-                "description": "UTF-8 content."
-              }
-            },
-            "required": [
-              "path",
-              "content"
-            ]
-          },
-          "minItems": 1,
-          "description": "Batch whole-file writes. Each item writes one file."
-        }
-      },
-      "required": [
-        "writes"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
     "name": "bash",
     "title": "Bash",
     "annotations": {

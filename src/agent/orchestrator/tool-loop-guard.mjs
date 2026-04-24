@@ -42,7 +42,7 @@ const DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS = Object.freeze({
 // accumulate toward abort.
 const PRODUCTIVE_TOOLS = Object.freeze(new Set([
     'edit', 'edit_lines',
-    'apply_patch', 'write', 'write_many',
+    'apply_patch', 'write',
     'bash', 'bash_session',
 ]));
 

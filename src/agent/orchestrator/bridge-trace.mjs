@@ -135,7 +135,6 @@ const TOOL_ARG_KEYS = {
     edit: ['path', 'replace_all', 'edits'],
     edit_many: ['edits'],
     write: ['path', 'writes'],
-    write_many: ['writes'],
     apply_patch: ['base_path', 'dry_run', 'reject_partial'],
 };
 
