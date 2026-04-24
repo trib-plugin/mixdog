@@ -10,6 +10,7 @@ import { markSessionToolCall, updateSessionStage, SessionClosedError } from './m
 import { trimMessages } from './trim.mjs';
 import { createGuard, checkToolCall, ToolLoopAbortError } from '../tool-loop-guard.mjs';
 import { maybeOffloadToolResult } from './tool-result-offload.mjs';
+import { isHiddenRole } from '../internal-roles.mjs';
 import {
     shouldCompress,
     compress,
@@ -32,6 +33,7 @@ const READ_BLOCKED_TOOLS = new Set([
     'sg_rewrite',
 ]);
 const MCP_ONLY_ALLOWED_KINDS = new Set(['mcp', 'internal', 'skill']);
+const DIRECT_HIDDEN_TOOLS = new Set(['memory_search', 'web_search']);
 // Eager-dispatch allowlist: read-only builtins can safely start executing
 // during SSE parsing so tool work overlaps with the rest of the stream.
 // Writes, bash, MCP and skills stay serial after send() returns.
@@ -44,6 +46,11 @@ function isBlockedByPermission(toolName, toolKind, permission) {
     if (permission === 'mcp') return !MCP_ONLY_ALLOWED_KINDS.has(toolKind);
     if (permission === 'read') return READ_BLOCKED_TOOLS.has(toolName);
     return false;
+}
+function isBlockedDirectHiddenTool(toolName, sessionRef) {
+    if (!DIRECT_HIDDEN_TOOLS.has(toolName)) return false;
+    if (sessionRef?.owner !== 'bridge') return false;
+    return !isHiddenRole(sessionRef?.role);
 }
 function messagesArrayChanged(before, after) {
     if (!Array.isArray(before) || !Array.isArray(after)) return before !== after;
@@ -388,7 +395,10 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                     // enforced at call time, not at schema build time.
                     const effectivePermission = effectiveToolPermission(sessionRef);
                     const permissionBlocked = isBlockedByPermission(call.name, toolKind, effectivePermission);
-                    if (permissionBlocked && effectivePermission === 'mcp') {
+                    if (isBlockedDirectHiddenTool(call.name, sessionRef)) {
+                        result = `Error: tool "${call.name}" is only available inside Pool C hidden retrieval roles. Use recall/search/explore instead.`;
+                        toolEndedAt = Date.now();
+                    } else if (permissionBlocked && effectivePermission === 'mcp') {
                         result = `Error: tool "${call.name}" is not available on this session (permission=mcp). Use MCP/internal retrieval tools only.`;
                         toolEndedAt = Date.now();
                     } else if (permissionBlocked && effectivePermission === 'read') {

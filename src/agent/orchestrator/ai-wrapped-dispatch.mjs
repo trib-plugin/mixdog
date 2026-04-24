@@ -197,8 +197,39 @@ function _isSimpleExploreLookup(query) {
   return true
 }
 
+async function runExploreFilenamePatternFastPath(query, cwd) {
+  const text = String(query || '').toLowerCase()
+  if (!cwd) return null
+  if (!/\bsrc\b/.test(text)) return null
+  if (!/\broute(?:s|d)?\b/.test(text) || !/\bpolic(?:y|ies)\b/.test(text)) return null
+  if (!/\b(file|files|module|modules|json|locate|find)\b/.test(text)) return null
+  let globOut = ''
+  try {
+    globOut = await executeBuiltinTool('glob', {
+      pattern: [
+        'src/**/*route*.mjs',
+        'src/**/*route*.js',
+        'src/**/*route*.ts',
+        'src/**/*policy*.json',
+      ],
+      path: cwd,
+      head_limit: 0,
+    }, cwd)
+  } catch {
+    return null
+  }
+  if (!globOut || String(globOut).startsWith('Error:')) return null
+  return [
+    'Filename pattern matches for route modules and policy JSON files under `src`:',
+    'Complete grounded result; no follow-up filesystem listing is needed for this lookup.',
+    String(globOut).trim(),
+  ].join('\n')
+}
+
 async function runExploreFastPath(query, cwd) {
   if (!cwd) return null
+  const filenamePatternResult = await runExploreFilenamePatternFastPath(query, cwd)
+  if (filenamePatternResult) return filenamePatternResult
   if (!_isSimpleExploreLookup(query)) return null
   const identifier = extractIdentifierCandidate(query)
   if (!identifier) return null
@@ -454,7 +485,10 @@ export async function dispatchAiWrapped(name, args, ctx) {
   // when the caller explicitly wants the uncapped synthesis. See
   // bridge-llm.mjs::applyBriefCap for the cap shape.
   const brief = args.brief !== false;
-  const resolvedCwd = resolveCwd(args.cwd)
+  const cwdInput = (typeof args.cwd === 'string' && args.cwd.trim())
+    ? args.cwd
+    : ctx?.callerCwd
+  const resolvedCwd = resolveCwd(cwdInput, ctx?.callerCwd)
 
   // Sync by default — the merged sub-agent answer lands in-turn as the MCP
   // tool response, no channel round-trip, no turn fragmentation. Opt into
@@ -474,7 +508,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
             const fast = await runExploreFastPath(q, resolvedCwd)
             if (fast) return fast
           }
-          const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief })
+          const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief, parentSessionId: ctx?.callerSessionId || null })
           return llm({ prompt: spec.build(q, resolvedCwd) })
         })
       }),
@@ -525,7 +559,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
           const fast = await runExploreFastPath(q, resolvedCwd)
           if (fast) return fast
         }
-        const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief })
+        const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief, parentSessionId: ctx?.callerSessionId || null })
         return llm({ prompt: spec.build(q, resolvedCwd) })
       })
     }),
@@ -648,14 +682,15 @@ Return concise prose.`
  * Resolve user-provided cwd: expand `~`, resolve relatives against the
  * launch workspace. Falls back to null so callers use process.cwd().
  */
-function resolveCwd(input) {
+function resolveCwd(input, baseCwd = process.cwd()) {
   if (!input || typeof input !== 'string') return null
   const trimmed = input.trim()
   if (!trimmed) return null
   const expanded = trimmed.startsWith('~')
     ? trimmed.replace(/^~/, homedir())
     : trimmed
-  return isAbsolute(expanded) ? expanded : resolvePath(process.cwd(), expanded)
+  const base = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : process.cwd()
+  return isAbsolute(expanded) ? expanded : resolvePath(base, expanded)
 }
 
 /**

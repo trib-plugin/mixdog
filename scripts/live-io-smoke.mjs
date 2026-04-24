@@ -11,6 +11,8 @@ const REPO_ROOT = resolve(SCRIPT_DIR, '..');
 const RECALL_TARGET = 'LIVE_RECALL_TARGET=opal-memory-v1';
 let runtime = null;
 let syntheticToolsRegistered = false;
+let liveInternalToolDefs = [];
+const liveAiWrappedToolDefs = [];
 
 function readJsonIfExists(path) {
     try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
@@ -100,7 +102,7 @@ function printHelp() {
         'Options:',
         '  --role <name>              Bridge role to spawn. Default worker.',
         '  --preset <id|name>         Optional explicit preset passed to bridge.',
-        '  --case <all|name[,name...]>  pagination,discovery,multi_read,glob_multi,list_recent,symbol_lookup,count_tail,tree_shape,grep_multi,grep_context,grep_count,list_find_size,list_find_mtime,code_graph_callers,read_bookends,read_offset_window,explore_fast_symbol,explore_fanout,recall_single,search_live_official,search_config_guard,explore.',
+        '  --case <all|name[,name...]>  pagination,discovery,multi_read,glob_multi,list_recent,symbol_lookup,count_tail,tree_shape,grep_multi,grep_context,grep_count,list_find_size,list_find_mtime,code_graph_callers,read_bookends,read_offset_window,explore_fast_symbol,explore_fanout,explore_callers,recall_single,search_live_official,search_github_repo,search_config_guard,explore.',
         '  --runs <n>                 Repeat each case. Default 1.',
         '  --parallel                 Run selected cases concurrently within each run.',
         '  --workspace <path>         Reuse/create a fixture workspace at path.',
@@ -475,16 +477,31 @@ const CASES = {
     explore_fanout: {
         expectAll: [/order\.route\.mjs|profile\.route\.mjs/i, /refund\.policy\.json/i],
         preferTools: ['explore'],
+        maxTotalIterations: 2,
+        maxToolCalls: 1,
+        requireToolArgMatches: [
+            { tool: 'explore', pattern: /route|policy/ },
+        ],
+        avoidTools: ['bash', 'glob', 'list', 'grep', 'read'],
+        prompt: [
+            'You are a bridge worker running a live routing smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: This is a multi-angle local codebase lookup. Use exactly one `explore` call to locate both route modules and policy JSON files under `src`, then answer only from the explore result as compact JSON with keys: case, routes, policies. Do not call glob, list, grep, read, or bash after explore.',
+        ].join('\n'),
+    },
+    explore_callers: {
+        expectAll: [/runCheckoutSmoke|app\.mjs|GRAPH_CALLER_TARGET/i],
+        preferTools: ['explore'],
         maxTotalIterations: 8,
         maxToolCalls: 5,
         requireToolArgMatches: [
-            { tool: 'explore', pattern: /route|policy/ },
+            { tool: 'explore', pattern: /buildCheckoutPipeline|caller|call/ },
         ],
         avoidTools: ['bash'],
         prompt: [
             'You are a bridge worker running a live routing smoke benchmark in the current working directory.',
             'Do not modify files. Do not use bash.',
-            'Task: This is a multi-angle local codebase lookup. Use one rich `explore` query to locate both route modules and policy JSON files under `src`. Answer compact JSON with keys: case, routes, policies.',
+            'Task: This is a local codebase caller/reference lookup. Use exactly one `explore` call to find who calls `buildCheckoutPipeline`, then answer compact JSON with keys: case, caller_file, caller_function, evidence.',
         ].join('\n'),
     },
     recall_single: {
@@ -515,6 +532,21 @@ const CASES = {
             'You are a bridge worker running a live external-search routing smoke benchmark.',
             'Do not modify files. Do not use bash.',
             'Task: This is an external web lookup. Use exactly one `search` call for "OpenAI official docs models API", then answer compact JSON with keys: case, source, title, url. Do not use explore, recall, grep, or read.',
+        ].join('\n'),
+    },
+    search_github_repo: {
+        expectAll: [/openai\/codex|github\.com\/openai\/codex|Codex/i],
+        preferTools: ['search'],
+        maxTotalIterations: 6,
+        maxToolCalls: 3,
+        requireToolArgMatches: [
+            { tool: 'search', pattern: /openai\/codex|GitHub|repo/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'explore', 'recall'],
+        prompt: [
+            'You are a bridge worker running a live external-search routing smoke benchmark.',
+            'Do not modify files. Do not use bash.',
+            'Task: This is an external GitHub lookup. Use exactly one `search` call for "GitHub repo openai/codex", then answer compact JSON with keys: case, repo, url, evidence. Do not use explore, recall, grep, or read.',
         ].join('\n'),
     },
     search_config_guard: {
@@ -586,8 +618,8 @@ function bridgeCall(args, { timeoutMs }) {
     };
     const started = runtime.handleToolCall('bridge', args, {
         notifyFn,
-        toolExecutor: runtime.handleToolCall,
-        internalTools: runtime.TOOL_DEFS,
+        toolExecutor: liveDispatchTool,
+        internalTools: liveInternalToolDefs,
     });
     return started.then((result) => {
         const text = decodeToolText(result);
@@ -652,6 +684,97 @@ function formatToolStep(row) {
     return `${row.iteration}:${row.tool_name}${args}`;
 }
 
+function asNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+}
+
+function observedCacheReadTokens(agent) {
+    return Math.max(asNumber(agent?.cache?.readTokens), asNumber(agent?.cache?.rawCachedTokens));
+}
+
+function observedCacheWriteTokens(agent) {
+    return Math.max(asNumber(agent?.cache?.writeTokens), asNumber(agent?.cache?.rawCacheWriteTokens));
+}
+
+const CACHE_OBSERVABLE_PROVIDERS = new Set([
+    'anthropic',
+    'anthropic-oauth',
+    'openai',
+    'openai-oauth',
+    'gemini',
+    'groq',
+    'openrouter',
+]);
+
+function analyzePoolCacheShare(rows, parentSessionId) {
+    const parent = rows.find((r) => r.sessionId === parentSessionId) || rows.find((r) => !r.parentSessionId);
+    if (!parent) return { checks: [] };
+    const checks = rows
+        .filter((r) => r.sessionId !== parent.sessionId && r.parentSessionId === parent.sessionId)
+        .map((child) => {
+            const sameProvider = Boolean(parent.provider && child.provider && parent.provider === child.provider);
+            const sameModel = Boolean(parent.model && child.model && parent.model === child.model);
+            const provider = child.provider || parent.provider || null;
+            const observable = CACHE_OBSERVABLE_PROVIDERS.has(provider);
+            const childRead = observedCacheReadTokens(child);
+            const childWrite = observedCacheWriteTokens(child);
+            const parentRead = observedCacheReadTokens(parent);
+            const parentWrite = observedCacheWriteTokens(parent);
+            const parentHashes = new Set(parent.cache?.prefixHashes || []);
+            const childHashes = child.cache?.prefixHashes || [];
+            const registryPrefixMatch = childHashes.some((hash) => parentHashes.has(hash));
+            let status = 'unknown';
+            let applicable = true;
+            let ok = false;
+            if (!parent.provider || !child.provider) {
+                status = 'missing_provider';
+                applicable = false;
+            } else if (!sameProvider) {
+                status = 'provider_mismatch';
+                applicable = false;
+            } else if (!sameModel) {
+                status = 'model_mismatch';
+                applicable = false;
+            } else if (!observable) {
+                status = 'cache_unobservable';
+                applicable = false;
+            } else if (childRead > 0) {
+                status = 'observed_child_hit';
+                ok = true;
+            } else if (childWrite > 0 || parentWrite > 0) {
+                status = 'cold_write_no_child_hit';
+            } else if (parentRead > 0) {
+                status = 'parent_hit_only';
+            } else {
+                status = 'no_observed_hit';
+            }
+            return {
+                parentScope: parent.scope,
+                childScope: child.scope,
+                status,
+                applicable,
+                ok,
+                provider,
+                parentProvider: parent.provider || null,
+                childProvider: child.provider || null,
+                parentModel: parent.model || null,
+                childModel: child.model || null,
+                parentRead,
+                childRead,
+                parentWrite,
+                childWrite,
+                registryPrefixMatch,
+                parentPrefixHashes: parent.cache?.prefixHashes || [],
+                childPrefixHashes: child.cache?.prefixHashes || [],
+            };
+        });
+    return {
+        ok: checks.length > 0 && checks.every((c) => c.ok || c.applicable === false),
+        checks,
+    };
+}
+
 function summarizeTrace(rows, parentSessionId, parentScope, { allowPrefixFallback = false } = {}) {
     const parentPrefix = sessionProcessPrefix(parentSessionId);
     const sessions = new Map();
@@ -662,12 +785,24 @@ function summarizeTrace(rows, parentSessionId, parentScope, { allowPrefixFallbac
                 scope: null,
                 model: null,
                 provider: null,
+                presetName: null,
+                profileId: null,
+                sourceType: null,
+                sourceName: null,
                 parentSessionId: null,
                 iterations: 0,
                 toolCalls: 0,
                 toolChain: [],
                 tools: [],
                 durationMs: 0,
+                usageRows: [],
+                rawUsageRows: [],
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                rawCachedTokens: 0,
+                rawCacheWriteTokens: 0,
+                promptTokens: 0,
+                prefixHashes: new Set(),
             });
         }
         return sessions.get(sessionId);
@@ -680,6 +815,7 @@ function summarizeTrace(rows, parentSessionId, parentScope, { allowPrefixFallbac
             e.scope = row.role || e.scope;
             e.model = row.model || e.model;
             e.provider = row.provider || e.provider;
+            e.presetName = row.preset_name || e.presetName;
             e.parentSessionId = row.parent_session_id || e.parentSessionId;
         } else if (row.kind === 'loop') {
             const e = entry(sessionId);
@@ -694,7 +830,42 @@ function summarizeTrace(rows, parentSessionId, parentScope, { allowPrefixFallbac
         } else if (row.kind === 'usage_raw') {
             const e = entry(sessionId);
             e.model = row.model || e.model;
+            e.provider = row.provider || row.normalized?.provider || e.provider;
+            const raw = {
+                iteration: Number(row.iteration) || 0,
+                cachedTokens: asNumber(row.cached_tokens ?? row.normalized?.cache_hit_tokens),
+                cacheWriteTokens: asNumber(row.cache_write_tokens ?? row.normalized?.cache_write_tokens),
+                promptTokens: asNumber(row.prompt_tokens),
+                inputTokens: asNumber(row.input_tokens),
+                outputTokens: asNumber(row.output_tokens),
+                cacheObservable: row.normalized?.cache_observable ?? null,
+                cacheHitRatio: typeof row.normalized?.cache_hit_ratio === 'number' ? row.normalized.cache_hit_ratio : null,
+            };
+            e.rawUsageRows.push(raw);
+            e.rawCachedTokens += raw.cachedTokens;
+            e.rawCacheWriteTokens += raw.cacheWriteTokens;
+            e.promptTokens += raw.promptTokens;
+        } else if (row.kind === 'usage') {
+            const e = entry(sessionId);
+            e.model = row.model || e.model;
             e.provider = row.provider || e.provider;
+            e.presetName = row.preset || e.presetName;
+            e.profileId = row.profileId || e.profileId;
+            e.sourceType = row.sourceType || e.sourceType;
+            e.sourceName = row.sourceName || e.sourceName;
+            const usage = {
+                cacheReadTokens: asNumber(row.cacheReadTokens),
+                cacheWriteTokens: asNumber(row.cacheWriteTokens),
+                promptTokens: asNumber(row.promptTokens),
+                inputTokens: asNumber(row.inputTokens),
+                outputTokens: asNumber(row.outputTokens),
+                prefixHash: row.prefixHash || null,
+            };
+            e.usageRows.push(usage);
+            e.cacheReadTokens += usage.cacheReadTokens;
+            e.cacheWriteTokens += usage.cacheWriteTokens;
+            e.promptTokens += usage.promptTokens;
+            if (usage.prefixHash) e.prefixHashes.add(usage.prefixHash);
         }
     }
     const selectedIds = new Set([parentSessionId]);
@@ -718,20 +889,37 @@ function summarizeTrace(rows, parentSessionId, parentScope, { allowPrefixFallbac
         if (s.sessionId === parentSessionId && !s.scope) s.scope = parentScope || 'worker';
         else if (!s.scope) s.scope = 'nested';
     }
-    return {
-        totalIterations: selected.reduce((n, r) => n + (Number(r.iterations) || 0), 0),
-        totalToolCalls: selected.reduce((n, r) => n + (Number(r.toolCalls) || 0), 0),
-        rows: selected.map((r) => ({
+    const rowsOut = selected.map((r) => ({
             sessionId: r.sessionId,
             scope: r.scope,
             model: r.model,
+            provider: r.provider,
+            presetName: r.presetName,
+            profileId: r.profileId,
+            sourceType: r.sourceType,
+            sourceName: r.sourceName,
             parentSessionId: r.parentSessionId,
             iterations: Number(r.iterations) || 0,
             toolCalls: Number(r.toolCalls) || 0,
             toolChain: r.toolChain,
             tools: r.tools,
             durationMs: r.durationMs || 0,
-        })),
+            cache: {
+                readTokens: r.cacheReadTokens,
+                writeTokens: r.cacheWriteTokens,
+                rawCachedTokens: r.rawCachedTokens,
+                rawCacheWriteTokens: r.rawCacheWriteTokens,
+                promptTokens: r.promptTokens,
+                prefixHashes: [...r.prefixHashes],
+                usageRows: r.usageRows,
+                rawUsageRows: r.rawUsageRows,
+            },
+        }));
+    return {
+        totalIterations: rowsOut.reduce((n, r) => n + (Number(r.iterations) || 0), 0),
+        totalToolCalls: rowsOut.reduce((n, r) => n + (Number(r.toolCalls) || 0), 0),
+        rows: rowsOut,
+        cacheShare: analyzePoolCacheShare(rowsOut, parentSessionId),
     };
 }
 
@@ -781,11 +969,21 @@ function textMatchesSpec(spec, text) {
 async function registerLiveSyntheticTools(rt) {
     if (syntheticToolsRegistered) return;
     syntheticToolsRegistered = true;
+    liveAiWrappedToolDefs.length = 0;
+    liveAiWrappedToolDefs.push(...readJsonIfExists(join(REPO_ROOT, 'tools.json'))
+        ?.filter((tool) => tool?.aiWrapped && ['recall', 'search', 'explore'].includes(tool.name))
+        .map((tool) => ({
+            name: tool.name,
+            description: typeof tool.description === 'string' ? tool.description.slice(0, 2048) : '',
+            inputSchema: tool.inputSchema || { type: 'object', properties: {} },
+            annotations: tool.annotations || {},
+        })) || []);
+    liveInternalToolDefs = liveAiWrappedToolDefs;
     const [{ setInternalToolsProvider, addInternalTools }, { SYNTHETIC_TOOL_DEFS }] = await Promise.all([
         import('../src/agent/orchestrator/internal-tools.mjs'),
         import('../src/agent/orchestrator/synthetic-tools.mjs'),
     ]);
-    setInternalToolsProvider({ executor: rt.handleToolCall, tools: rt.TOOL_DEFS });
+    setInternalToolsProvider({ executor: liveDispatchTool, tools: liveInternalToolDefs });
     addInternalTools(SYNTHETIC_TOOL_DEFS.map((def) => ({
         def,
         executor: def.name === 'memory_search'
@@ -794,6 +992,18 @@ async function registerLiveSyntheticTools(rt) {
                 ? liveWebSearch
                 : null,
     })).filter((entry) => typeof entry.executor === 'function'));
+}
+
+async function liveDispatchTool(name, args, callerCtx = {}) {
+    if (liveAiWrappedToolDefs.some((tool) => tool.name === name)) {
+        const { dispatchAiWrapped } = await import('../src/agent/orchestrator/ai-wrapped-dispatch.mjs');
+        return dispatchAiWrapped(name, args || {}, {
+            callerSessionId: callerCtx.callerSessionId,
+            callerCwd: callerCtx.callerCwd,
+            notifyFn: () => {},
+        });
+    }
+    throw new Error(`live smoke unknown internal tool: ${name}`);
 }
 
 function truncateLine(text, max = 420) {
@@ -861,6 +1071,8 @@ function searchMemoryRows(db, query, limit) {
 }
 
 async function liveMemorySearch(args = {}) {
+    const serviceResult = await callLiveMemoryService(args);
+    if (serviceResult) return serviceResult;
     const queries = Array.isArray(args.query) ? args.query : [args.query || ''];
     const limit = Math.min(10, Math.max(1, Number(args.limit) || 5));
     let db = null;
@@ -884,6 +1096,33 @@ async function liveMemorySearch(args = {}) {
     } finally {
         try { db?.close(); } catch {}
     }
+}
+
+async function callLiveMemoryService(args = {}) {
+    let port = null;
+    try {
+        port = Number(readFileSync(join(tmpdir(), 'mixdog-memory', 'memory-port'), 'utf8').trim());
+    } catch {
+        return null;
+    }
+    if (!Number.isInteger(port) || port < 3350 || port > 3357) return null;
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+        const health = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2000) });
+        if (!health.ok) return null;
+        const response = await fetch(`${baseUrl}/api/tool`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'search_memories', arguments: args || {} }),
+            signal: AbortSignal.timeout(120000),
+        });
+        if (!response.ok) return null;
+        const payload = await response.json();
+        if (payload && typeof payload === 'object' && Array.isArray(payload.content)) return payload;
+    } catch {
+        return null;
+    }
+    return null;
 }
 
 async function liveWebSearch(args = {}) {
@@ -974,6 +1213,7 @@ async function runCase({ name, spec, opts, workspace, runIndex }) {
             totalToolCalls: totals.totalToolCalls,
             durationMs: Math.round(performance.now() - t0),
             agents: totals.rows,
+            cacheShare: totals.cacheShare,
             finalPreview: bridge.finalText.slice(0, 1200),
             notificationCount: bridge.notifications.length,
         };
@@ -1010,6 +1250,42 @@ function aggregate(results) {
     };
 }
 
+function shortHash(hash) {
+    return hash ? String(hash).slice(0, 12) : '-';
+}
+
+function formatAgentCache(agent) {
+    const providerModel = [agent.provider, agent.model].filter(Boolean).join('/');
+    const read = observedCacheReadTokens(agent);
+    const write = observedCacheWriteTokens(agent);
+    const prompt = asNumber(agent?.cache?.promptTokens);
+    const prefix = agent?.cache?.prefixHashes?.[0] || null;
+    if (!providerModel && !read && !write && !prompt && !prefix) return '';
+    return [
+        providerModel ? `model=${providerModel}` : null,
+        `cacheR=${read}`,
+        `cacheW=${write}`,
+        prompt ? `prompt=${prompt}` : null,
+        prefix ? `prefix=${shortHash(prefix)}` : null,
+    ].filter(Boolean).join('\t');
+}
+
+function formatCacheShare(check) {
+    const parent = `${check.parentProvider || '?'}/${check.parentModel || '?'}`;
+    const child = `${check.childProvider || '?'}/${check.childModel || '?'}`;
+    const prefix = check.registryPrefixMatch ? 'prefix=match' : 'prefix=split-or-partial';
+    return [
+        `cache-share ${check.childScope || 'child'}: ${check.status}`,
+        `parent=${parent}`,
+        `child=${child}`,
+        `parentR=${check.parentRead}`,
+        `childR=${check.childRead}`,
+        `parentW=${check.parentWrite}`,
+        `childW=${check.childWrite}`,
+        prefix,
+    ].join('\t');
+}
+
 function printHuman(summary, results, workspace) {
     console.log(`live-io-smoke bridge workspace: ${workspace}`);
     console.log(`status: ${summary.ok ? 'PASS' : 'FAIL'} (${summary.passed}/${summary.cases}${summary.blocked ? `, blocked=${summary.blocked}` : ''})`);
@@ -1021,7 +1297,11 @@ function printHuman(summary, results, workspace) {
         const status = r.ok ? 'ok' : (r.blocked ? 'BLOCKED' : 'FAIL');
         console.log(`${status}\t${r.case}#${r.run}\ttotal_iter=${r.totalIterations}\tcalls=${r.totalToolCalls}\t${(r.durationMs / 1000).toFixed(1)}s\tsession=${r.bridge?.sessionId || '?'}`);
         for (const a of r.agents || []) {
-            console.log(`  ${a.scope}\titer=${a.iterations}\tcalls=${a.toolCalls}\t${a.toolChain.join(' > ')}`);
+            const cacheText = formatAgentCache(a);
+            console.log(`  ${a.scope}\titer=${a.iterations}\tcalls=${a.toolCalls}\t${a.toolChain.join(' > ')}${cacheText ? `\t${cacheText}` : ''}`);
+        }
+        for (const check of r.cacheShare?.checks || []) {
+            console.log(`  ${formatCacheShare(check)}`);
         }
         if (r.toolFit && !r.toolFit.ok && !r.blocked) {
             const notes = [];

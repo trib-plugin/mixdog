@@ -113,6 +113,7 @@ export function resolvePresetName({ preset, optsPreset, role }) {
  * @param {string} opts.role        — REQUIRED; canonical role name (worker, cycle1-agent, scheduler-task, ...)
  * @param {string} [opts.taskType]  — optional internal classification stamped on the session
  * @param {string} [opts.preset]    — explicit preset override (bypasses role → preset lookup)
+ * @param {string} [opts.parentSessionId] — parent bridge session for trace aggregation
  * @returns {(args: { prompt, preset?, sourceName? }) => Promise<string>}
  */
 export function makeBridgeLlm(opts = {}) {
@@ -191,6 +192,7 @@ export function makeBridgeLlm(opts = {}) {
             sourceType: opts.sourceType,
             sourceName: sourceNameArg || opts.sourceName,
             taskType: opts.taskType,
+            parentSessionId: opts.parentSessionId || null,
             skipRoleReminder: isPoolC,
         });
 

@@ -3194,9 +3194,9 @@ function memRenderCoreMemory(items) {
   if(items.length===0){list.innerHTML='<div class="empty" id="mem-core-empty">No core memory entries yet — click + Add to create one</div>';return;}
   list.innerHTML=items.map(item=>`<div class="r" style="flex-direction:column;align-items:stretch;padding:10px 14px;gap:6px">
     <div style="display:flex;align-items:center;gap:8px">
+      <span style="font-weight:600">${escapeHtml(item.element||'')}</span>
       <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:rgba(100,100,200,0.15);color:var(--text-3);font-weight:600;text-transform:uppercase">${escapeHtml(item.category||'')}</span>
-      <span style="flex:1;font-weight:600">${escapeHtml(item.element||'')}</span>
-      <span style="font-size:10px;color:var(--text-4)">${Number(item.score||0).toFixed(2)}</span>
+      <span style="margin-left:auto;font-size:10px;color:var(--text-4)">${Number(item.score||0).toFixed(2)}</span>
       <span style="cursor:pointer;color:#e5534b;font-size:13px;font-weight:600;padding:4px 8px;border-radius:4px;background:rgba(229,83,75,0.1);white-space:nowrap" onclick="memDeleteCoreMemory(${item.id})">Delete</span>
     </div>
     <div style="font-size:11px;line-height:1.5;color:var(--text-2);padding:4px 2px">${escapeHtml(item.summary||'')}</div>

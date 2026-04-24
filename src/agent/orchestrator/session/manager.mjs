@@ -18,7 +18,6 @@ import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
 import { classifyPromptIntent } from '../intent-classifier.mjs';
 import { resolvePluginData, DEFAULT_PLUGIN, DEFAULT_MARKETPLACE } from '../../../shared/plugin-paths.mjs';
-import { isHiddenRole } from '../internal-roles.mjs';
 
 // Phase B: Pool B Tier 2 content builder (common rules only).
 // Loaded once per process via createRequire so the CJS module reaches us.
@@ -234,11 +233,6 @@ export const BRIDGE_DENY_TOOLS = Object.freeze([
     // `code_graph` / `find_symbol` directly, so carrying alias-only tools
     // here just bloats the shared BP_1 shard without adding capability.
     'find_imports', 'find_dependents', 'find_references', 'find_callers',
-]);
-
-const BRIDGE_DIRECT_HIDDEN_TOOL_DENY = Object.freeze([
-    'memory_search',
-    'web_search',
 ]);
 
 function _computeBaseTools(toolSpec, mcp, skillTools) {
@@ -939,12 +933,14 @@ export function createSession(opts) {
     //     lifecycle, schedule/config, bridge dispatch, memory admin, AST
     //     editors). See BRIDGE_DENY_TOOLS declaration for the full keep/strip
     //     rationale. Pool A (Lead) still sees the full tools.json.
+    //
+    // Pool C direct tools (memory_search / web_search) intentionally remain
+    // in Pool B schemas too. Runtime guards in loop.mjs reject them outside
+    // hidden roles, preserving behavior while keeping the B/C cache prefix
+    // bit-identical.
     const callerDeny = Array.isArray(opts.disallowedTools) ? opts.disallowedTools.map(n => String(n)) : [];
     const bridgeDeny = opts.owner === 'bridge' ? BRIDGE_DENY_TOOLS : [];
-    const hiddenDirectDeny = opts.owner === 'bridge' && !isHiddenRole(resolvedRole)
-        ? BRIDGE_DIRECT_HIDDEN_TOOL_DENY
-        : [];
-    const mergedDeny = [...new Set([...callerDeny, ...bridgeDeny, ...hiddenDirectDeny])];
+    const mergedDeny = [...new Set([...callerDeny, ...bridgeDeny])];
     if (mergedDeny.length) {
         const denySet = new Set(mergedDeny);
         const before = tools.length;
