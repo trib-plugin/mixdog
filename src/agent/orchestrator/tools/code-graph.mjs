@@ -1403,6 +1403,62 @@ function _collapseReferenceLinesToCallers(referenceText) {
   return [...files].sort().join('\n');
 }
 
+function _referenceKind(line, symbol) {
+  const escaped = String(symbol || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!escaped) return 'reference';
+  const text = String(line || '');
+  if (new RegExp(`\\b(?:function|class|interface|type|enum)\\s+${escaped}\\b`).test(text)) return 'declaration';
+  if (new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\b`).test(text)) return 'declaration';
+  if (new RegExp(`\\bimport\\b[\\s\\S]*\\b${escaped}\\b`).test(text)) return 'import';
+  if (new RegExp(`\\b${escaped}\\s*\\(`).test(text)) return 'call';
+  return 'reference';
+}
+
+function _nearestEnclosingSymbol(sourceText, lang, lineNumber) {
+  const symbols = _collectCheapSymbols(sourceText, lang)
+    .filter((item) => item.line <= lineNumber)
+    .sort((a, b) => b.line - a.line);
+  return symbols[0] || null;
+}
+
+function _formatCallerReferences(graph, symbol, referenceText, { limit = 40 } = {}) {
+  const entries = _parseReferenceEntries(referenceText);
+  if (!entries.length) return '(no callers)';
+  const detailed = [];
+  for (const entry of entries) {
+    const node = graph.nodes.get(entry.file);
+    if (!node) continue;
+    const sourceText = _getSourceTextForNode(graph, node);
+    const sourceLines = sourceText.split(/\r?\n/);
+    const line = String(sourceLines[entry.line - 1] || '').trim();
+    if (!line) continue;
+    const kind = _referenceKind(line, symbol);
+    const enclosing = _nearestEnclosingSymbol(sourceText, node.lang, entry.line);
+    detailed.push({
+      ...entry,
+      kind,
+      caller: kind === 'call' ? (enclosing?.name || '') : '',
+      lineText: line,
+    });
+  }
+  if (!detailed.length) return '(no callers)';
+
+  const callSites = detailed.filter((entry) => entry.kind === 'call');
+  const format = (entry) => {
+    const caller = entry.caller ? `\tcaller=${entry.caller}` : '';
+    return `${entry.file}:${entry.line}:${entry.col}\t${entry.kind}${caller}\t${entry.lineText.slice(0, 180)}`;
+  };
+  if (callSites.length) {
+    return ['# call sites', ...callSites.slice(0, limit).map(format)].join('\n');
+  }
+
+  const nonCallFiles = [...new Set(detailed.map((entry) => entry.file))].sort();
+  return [
+    '(no call sites)',
+    nonCallFiles.length ? `# non-call references\n${nonCallFiles.join('\n')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 function _referenceFiles(referenceText) {
   if (typeof referenceText !== 'string' || !referenceText.trim() || referenceText === '(no references)') {
     return [];
@@ -1727,7 +1783,7 @@ async function codeGraph(args, cwd) {
     const resolvedNode = _resolveReferenceLanguageNode(graph, symbol, rel, cwd, String(args?.language || '').trim() || null);
     if (!resolvedNode) return `code_graph callers: file not found in graph: ${normFile || '(missing file)'}`;
     const refs = _cheapReferenceSearch(graph, symbol, cwd, { language: resolvedNode.lang });
-    return _collapseReferenceLinesToCallers(refs);
+    return _formatCallerReferences(graph, symbol, refs);
   }
 
   throw new Error(`code_graph: unknown mode "${mode}"`);
@@ -2139,7 +2195,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'code_graph',
     title: 'Code Graph',
     annotations: { title: 'Code Graph', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. In the main session, prefer direct aliases (`find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`) when the question is that specific; use `code_graph` for broader graph/impact questions.',
+    description: 'Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. In bridge sessions, call the matching `mode` directly (for example `mode:"callers"`); alias tools may be absent. `callers` returns call-site lines and the enclosing caller symbol when possible, so answer from it before reading files. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. In main/public sessions where aliases exist, direct aliases (`find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`) are fine for exact questions.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2212,7 +2268,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_callers',
     title: 'Find Callers',
     annotations: { title: 'Find Callers', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Find caller files for a symbol across the repository. Use this instead of `code_graph(mode:"callers")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. Only matches call-site invocations — for non-function symbols (constants, type aliases, variables), prefer `find_references` instead.',
+    description: 'Find call sites for a symbol across the repository, including caller file, line, and enclosing caller symbol when possible. Use this instead of `code_graph(mode:"callers")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. Only matches call-site invocations — for non-function symbols (constants, type aliases, variables), prefer `find_references` instead.',
     inputSchema: {
       type: 'object',
       properties: {

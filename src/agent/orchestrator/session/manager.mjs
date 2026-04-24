@@ -204,8 +204,8 @@ function _dedupByName(tools) {
 //   - IO helpers: head, tail, wc, list, tree, find_files,
 //                 multi_read, multi_edit, batch_edit
 //   - Code graph / refactors: code_graph, rename_symbol_refs, rename_file_refs
-//   - memory read: recall (memory admin tool itself is Lead-only)
-//   - information retrieval: search, explore
+//   - memory read: recall / memory_search (memory admin tool itself is Lead-only)
+//   - information retrieval: search, web_search, explore, fetch_many
 export const BRIDGE_DENY_TOOLS = Object.freeze([
     // Discord / channel (Lead-only)
     'reply', 'react', 'edit_message', 'download_attachment', 'fetch',
@@ -216,7 +216,12 @@ export const BRIDGE_DENY_TOOLS = Object.freeze([
     'schedule_status', 'trigger_schedule', 'schedule_control', 'reload_config',
     // Bridge dispatch — Pool B/C agents do the work; Lead does the dispatch.
     // Recall/search/explore stay (info retrieval, not role delegation).
-    'bridge',
+    'bridge', 'bridge_send', 'bridge_spawn',
+    // Lead-side workflow / prompt admin and skill-mining surfaces. These are
+    // public:false helper tools for the main session, not bridge-agent work
+    // tools; stripping them from Pool B/C keeps the shared BP_1 shard lean and
+    // avoids exposing chain-spawn adjacent control planes.
+    'get_workflow', 'get_workflows', 'set_prompt', 'skill_suggest',
     // Memory admin — cycle1/cycle2/flush/rebuild/prune/remember are
     // maintenance ops Lead drives. Bridge agents read memory via `recall`.
     'memory',
@@ -848,14 +853,14 @@ export function createSession(opts) {
         ? loadRoleTemplate(resolvedRole, dataDir)
         : null;
 
-    // Profile wins over preset.tools — profile.tools carries toolset ids
-    // (['tools:filesystem','tools:search']) that expand to an explicit tool
-    // subset, which is how BP_1 actually gets shaped per Phase B spec. When
-    // no profile resolves, fall back to the preset.tools string ('full' /
-    // 'readonly' / 'mcp') so raw createSession callers still work.
-    const toolSpec = Array.isArray(profile?.tools)
-        ? profile.tools
-        : (opts.owner === 'bridge' && (toolPreset === 'readonly' || toolPreset === 'mcp') ? 'full' : toolPreset);
+    // Bridge sessions must not inherit role/profile/preset tool narrowing: Pool
+    // B and Pool C share one bit-identical tool schema for BP_1/BP_2 cache
+    // reuse, and permission differences are enforced only at call time. Raw
+    // non-bridge callers keep the historical profile.tools / preset.tools
+    // behaviour.
+    const toolSpec = opts.owner === 'bridge'
+        ? 'full'
+        : (Array.isArray(profile?.tools) ? profile.tools : toolPreset);
 
     // Prompt permission is metadata only. Preset tool restrictions must NOT
     // enter the prompt, or they split the shared bridge cache tail; they map

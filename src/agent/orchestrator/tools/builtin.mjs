@@ -3627,8 +3627,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const inputPath = args.path || '.';
             const namePattern = typeof args.name === 'string' ? args.name : null;
             const typeFilter = ['any', 'file', 'dir'].includes(args.type) ? args.type : 'any';
-            const minSize = typeof args.min_size === 'number' ? args.min_size : null;
-            const maxSize = typeof args.max_size === 'number' ? args.max_size : null;
+            const minSize = typeof args.min_size === 'number' && args.min_size > 0 ? args.min_size : null;
+            const maxSize = typeof args.max_size === 'number' && args.max_size > 0 ? args.max_size : null;
             const headLimit = parseInt(args.head_limit ?? 100, 10);
             const offset = typeof args.offset === 'number' && args.offset > 0 ? args.offset : 0;
             const cacheKey = buildListCacheKey({

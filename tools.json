@@ -733,6 +733,10 @@
         "file": {
           "type": "string",
           "description": "Read prompt from a file path."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for bridge agent tool execution."
         }
       },
       "required": [
@@ -1645,7 +1649,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. In the main session, prefer direct aliases (`find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`) when the question is that specific; use `code_graph` for broader graph/impact questions.",
+    "description": "Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. In bridge sessions, call the matching `mode` directly (for example `mode:\"callers\"`); alias tools may be absent. `callers` returns call-site lines and the enclosing caller symbol when possible, so answer from it before reading files. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. In main/public sessions where aliases exist, direct aliases (`find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`) are fine for exact questions.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1813,7 +1817,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Find caller files for a symbol across the repository. Use this instead of `code_graph(mode:\"callers\")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. Only matches call-site invocations — for non-function symbols (constants, type aliases, variables), prefer `find_references` instead.",
+    "description": "Find call sites for a symbol across the repository, including caller file, line, and enclosing caller symbol when possible. Use this instead of `code_graph(mode:\"callers\")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. Only matches call-site invocations — for non-function symbols (constants, type aliases, variables), prefer `find_references` instead.",
     "inputSchema": {
       "type": "object",
       "properties": {

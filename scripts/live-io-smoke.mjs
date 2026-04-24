@@ -1,10 +1,39 @@
 #!/usr/bin/env node
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, statSync, readFileSync, utimesSync } from 'fs';
-import { join, resolve } from 'path';
-import { tmpdir } from 'os';
+import { dirname, join, resolve } from 'path';
+import { homedir, tmpdir } from 'os';
+import { fileURLToPath } from 'url';
 import { performance } from 'perf_hooks';
-import { init, stop, handleToolCall, TOOL_DEFS } from '../src/agent/index.mjs';
-import { getPluginData } from '../src/agent/orchestrator/config.mjs';
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(SCRIPT_DIR, '..');
+let runtime = null;
+
+function readJsonIfExists(path) {
+    try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
+}
+
+function ensureLocalPluginEnv() {
+    if (!process.env.CLAUDE_PLUGIN_ROOT) process.env.CLAUDE_PLUGIN_ROOT = REPO_ROOT;
+    if (!process.env.CLAUDE_PLUGIN_DATA) {
+        const plugin = readJsonIfExists(join(REPO_ROOT, '.claude-plugin', 'plugin.json'))?.name || 'mixdog';
+        const marketplace = readJsonIfExists(join(REPO_ROOT, '.claude-plugin', 'marketplace.json'))?.name || 'trib-plugin';
+        process.env.CLAUDE_PLUGIN_DATA = join(homedir(), '.claude', 'plugins', 'data', `${plugin}-${marketplace}`);
+    }
+}
+
+async function loadRuntime() {
+    if (runtime) return runtime;
+    ensureLocalPluginEnv();
+    const agent = await import('../src/agent/index.mjs');
+    runtime = {
+        init: agent.init,
+        stop: agent.stop,
+        handleToolCall: agent.handleToolCall,
+        TOOL_DEFS: agent.TOOL_DEFS,
+    };
+    return runtime;
+}
 
 function parseArgs(argv) {
     const out = {
@@ -47,7 +76,7 @@ function printHelp() {
         'Options:',
         '  --role <name>              Bridge role to spawn. Default worker.',
         '  --preset <id|name>         Optional explicit preset passed to bridge.',
-        '  --case <all|name[,name...]>  pagination,discovery,multi_read,glob_multi,list_recent,symbol_lookup,count_tail,tree_shape,explore.',
+        '  --case <all|name[,name...]>  pagination,discovery,multi_read,glob_multi,list_recent,symbol_lookup,count_tail,tree_shape,grep_multi,grep_context,grep_count,list_find_size,list_find_mtime,code_graph_callers,read_bookends,read_offset_window,explore.',
         '  --runs <n>                 Repeat each case. Default 1.',
         '  --parallel                 Run selected cases concurrently within each run.',
         '  --workspace <path>         Reuse/create a fixture workspace at path.',
@@ -64,6 +93,8 @@ function createFixture(workspace) {
         src: join(workspace, 'src'),
         configs: join(workspace, 'configs'),
         releases: join(workspace, 'releases'),
+        logs: join(workspace, 'logs'),
+        artifacts: join(workspace, 'artifacts'),
     };
     dirs.nested = join(dirs.src, 'nested');
     dirs.checkout = join(dirs.src, 'checkout');
@@ -126,6 +157,13 @@ function createFixture(workspace) {
         "    return retryFetch(`/refund/${refund.id}`, { retries: 1 });",
         '}',
     ].join('\n'), 'utf8');
+    writeFileSync(join(dirs.src, 'app.mjs'), [
+        "import { buildCheckoutPipeline } from './checkout/pipeline.mjs';",
+        '',
+        'export function runCheckoutSmoke(cart) {',
+        "    return buildCheckoutPipeline({ ...cart, source: 'GRAPH_CALLER_TARGET' });",
+        '}',
+    ].join('\n'), 'utf8');
     writeFileSync(join(dirs.routes, 'order.route.mjs'), "export const routeMarker = 'ROUTE_TARGET_ORDER';\n", 'utf8');
     writeFileSync(join(dirs.routes, 'profile.route.mjs'), "export const routeMarker = 'ROUTE_TARGET_PROFILE';\n", 'utf8');
     writeFileSync(join(dirs.policies, 'refund.policy.json'), JSON.stringify({
@@ -138,6 +176,35 @@ function createFixture(workspace) {
         return line === 118 ? 'line 118: TAIL_TARGET=violet-tail' : `line ${String(line).padStart(3, '0')}: ordinary log row`;
     });
     writeFileSync(join(dirs.docs, 'long-log.txt'), longLog.join('\n'), 'utf8');
+    writeFileSync(join(dirs.docs, 'bookends.txt'), [
+        'BOOKEND_HEAD=coral-start',
+        'ordinary middle 01',
+        'ordinary middle 02',
+        'ordinary middle 03',
+        'BOOKEND_TAIL=indigo-finish',
+    ].join('\n'), 'utf8');
+
+    writeFileSync(join(dirs.logs, 'events.log'), [
+        '2026-04-24T01:00:00Z INFO boot',
+        '2026-04-24T01:01:00Z ERROR_PAYMENT_TIMEOUT order=41 marker=PAYMENT_TIMEOUT_TARGET',
+        '2026-04-24T01:02:00Z WARN cache-warm',
+        '2026-04-24T01:03:00Z ERROR_INVENTORY_MISS sku=blue marker=INVENTORY_MISS_TARGET',
+        '2026-04-24T01:04:00Z INFO done',
+    ].join('\n'), 'utf8');
+    writeFileSync(join(dirs.logs, 'status.log'), [
+        'status: ordinary',
+        'STATUS_TARGET=amber',
+        'owner: platform-live-smoke',
+        'severity: medium',
+    ].join('\n'), 'utf8');
+
+    writeFileSync(join(dirs.artifacts, 'tiny-report.json'), JSON.stringify({
+        marker: 'SMALL_ARTIFACT',
+    }, null, 2), 'utf8');
+    writeFileSync(join(dirs.artifacts, 'large-report.json'), JSON.stringify({
+        marker: 'LARGE_ARTIFACT_TARGET',
+        payload: 'x'.repeat(1800),
+    }, null, 2), 'utf8');
 
     for (const [file, codename, ts] of [
         ['release-2026-04-20.json', 'atlas', '2026-04-20T10:00:00Z'],
@@ -245,6 +312,127 @@ const CASES = {
             'Task: Inspect the shape of `src` and report whether it contains checkout, routes, nested, and policies areas as compact JSON.',
         ].join('\n'),
     },
+    grep_multi: {
+        expectAll: [/PAYMENT_TIMEOUT_TARGET/i, /INVENTORY_MISS_TARGET/i],
+        preferTools: ['grep'],
+        maxTotalIterations: 2,
+        maxToolCalls: 1,
+        requireToolArgMatches: [
+            { tool: 'grep', pattern: /PAYMENT_TIMEOUT/ },
+            { tool: 'grep', pattern: /INVENTORY_MISS/ },
+        ],
+        avoidTools: ['bash'],
+        prompt: [
+            'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: In `logs/events.log`, find both PAYMENT_TIMEOUT and INVENTORY_MISS markers. Use one `grep` call whose pattern array includes both patterns. Answer compact JSON with keys: case, payment_marker, inventory_marker.',
+        ].join('\n'),
+    },
+    grep_context: {
+        expectAll: [/STATUS_TARGET=amber|status["\s:]+amber/i, /platform-live-smoke/i],
+        preferTools: ['grep'],
+        maxTotalIterations: 2,
+        maxToolCalls: 1,
+        requireToolArgMatches: [
+            { tool: 'grep', pattern: /STATUS_TARGET/ },
+            { tool: 'grep', pattern: /output_mode.*content|context|-A/ },
+        ],
+        avoidTools: ['bash'],
+        prompt: [
+            'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: In `logs/status.log`, find STATUS_TARGET and the owner on the following line. Prefer one `grep` content call with after/context lines. Answer compact JSON with keys: case, status, owner.',
+        ].join('\n'),
+    },
+    grep_count: {
+        expectAll: [/2|two/i, /ERROR/i],
+        preferTools: ['grep'],
+        maxTotalIterations: 2,
+        maxToolCalls: 1,
+        requireToolArgMatches: [
+            { tool: 'grep', pattern: /ERROR_/ },
+            { tool: 'grep', pattern: /output_mode.*count|count/ },
+        ],
+        avoidTools: ['bash'],
+        prompt: [
+            'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: In `logs/events.log`, count lines with ERROR_ markers. Use one `grep` call in count mode. Answer compact JSON with keys: case, error_lines.',
+        ].join('\n'),
+    },
+    list_find_size: {
+        expectAll: [/LARGE_ARTIFACT_TARGET/i],
+        preferTools: ['list', 'read'],
+        maxTotalIterations: 3,
+        requireToolArgMatches: [
+            { tool: 'list', pattern: /mode.*find|min_size/ },
+        ],
+        avoidTools: ['bash'],
+        prompt: [
+            'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: Under `artifacts`, use a filename/size filtered directory query to identify the JSON report larger than 1000 bytes, then read it and report its marker as compact JSON.',
+        ].join('\n'),
+    },
+    list_find_mtime: {
+        expectAll: [/release-2026-04-24\.json/i],
+        preferTools: ['list'],
+        maxTotalIterations: 2,
+        maxToolCalls: 1,
+        requireToolArgMatches: [
+            { tool: 'list', pattern: /mode.*find|modified_after/ },
+        ],
+        avoidTools: ['bash'],
+        prompt: [
+            'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: Under `releases`, use one directory find query filtered to files modified after `2026-04-23T23:00:00Z`. Report the matching filename as compact JSON.',
+        ].join('\n'),
+    },
+    code_graph_callers: {
+        expectAll: [/runCheckoutSmoke|app\.mjs|GRAPH_CALLER_TARGET/i],
+        preferTools: ['code_graph'],
+        maxTotalIterations: 2,
+        maxToolCalls: 1,
+        requireToolArgMatches: [
+            { tool: 'code_graph', pattern: /callers/ },
+            { tool: 'code_graph', pattern: /buildCheckoutPipeline/ },
+        ],
+        avoidTools: ['bash'],
+        prompt: [
+            'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: Use exactly one `code_graph` call with mode `callers` and symbol `buildCheckoutPipeline`. Answer from its call-site output as compact JSON with keys: case, caller_file, caller_function, evidence. Do not use read or find_symbol.',
+        ].join('\n'),
+    },
+    read_bookends: {
+        expectAll: [/BOOKEND_HEAD=coral-start|coral-start/i, /BOOKEND_TAIL=indigo-finish|indigo-finish/i],
+        preferTools: ['read'],
+        maxTotalIterations: 2,
+        maxToolCalls: 1,
+        avoidTools: ['bash'],
+        prompt: [
+            'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: For the already-known file `docs/bookends.txt`, report the first marker and last marker. Use exactly one `multi_read` call with head and tail entries; do not send two separate `read` calls. Answer compact JSON.',
+        ].join('\n'),
+    },
+    read_offset_window: {
+        expectAll: [/MARK_TARGET=aurora-next-offset|aurora-next-offset/i],
+        preferTools: ['read'],
+        maxTotalIterations: 2,
+        maxToolCalls: 1,
+        requireToolArgMatches: [
+            { tool: 'read', pattern: /offset/ },
+            { tool: 'read', pattern: /limit/ },
+        ],
+        avoidTools: ['bash'],
+        prompt: [
+            'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: In the already-known file `docs/paged.txt`, use one `read` call with offset 8 and limit 2 to report MARK_TARGET as compact JSON.',
+        ].join('\n'),
+    },
     explore: {
         expectAll: [/smokeNeedleTarget|IO_SMOKE_NEEDLE|module-13/i],
         preferTools: ['bridge_spawn'],
@@ -285,6 +473,7 @@ function isTerminalNotification(text) {
 }
 
 function bridgeCall(args, { timeoutMs }) {
+    if (!runtime) throw new Error('runtime not loaded');
     const notifications = [];
     let done = false;
     let resolveFinal;
@@ -296,10 +485,10 @@ function bridgeCall(args, { timeoutMs }) {
             resolveFinal(String(text || ''));
         }
     };
-    const started = handleToolCall('bridge', args, {
+    const started = runtime.handleToolCall('bridge', args, {
         notifyFn,
-        toolExecutor: handleToolCall,
-        internalTools: TOOL_DEFS,
+        toolExecutor: runtime.handleToolCall,
+        internalTools: runtime.TOOL_DEFS,
     });
     return started.then((result) => {
         const text = decodeToolText(result);
@@ -318,7 +507,8 @@ function bridgeCall(args, { timeoutMs }) {
 }
 
 function tracePath() {
-    return join(getPluginData(), 'history', 'bridge-trace.jsonl');
+    ensureLocalPluginEnv();
+    return join(process.env.CLAUDE_PLUGIN_DATA, 'history', 'bridge-trace.jsonl');
 }
 
 function traceOffset() {
@@ -489,6 +679,20 @@ function textMatchesSpec(spec, text) {
     return checks.every((re) => re.test(String(text || '')));
 }
 
+function classifyRunError(err) {
+    const message = err instanceof Error ? err.message : String(err || '');
+    if (/Invalid authentication credentials|authentication_error|Claude Code manages refresh|401\b/i.test(message)) {
+        return { type: 'auth', infra: true };
+    }
+    if (/role ".*" not found in user-workflow\.json|preset ".*" not found|preset unresolved/i.test(message)) {
+        return { type: 'config', infra: true };
+    }
+    if (/timed out|ETIMEDOUT|ECONNRESET|ENOTFOUND/i.test(message)) {
+        return { type: 'network', infra: true };
+    }
+    return { type: 'case', infra: false };
+}
+
 async function runCase({ name, spec, opts, workspace, runIndex }) {
     const startOffset = traceOffset();
     const t0 = performance.now();
@@ -498,10 +702,13 @@ async function runCase({ name, spec, opts, workspace, runIndex }) {
         const bridge = await bridgeCall(args, { timeoutMs: opts.timeoutMs });
         const traceRows = await waitForTraceRows(startOffset, bridge.bridgeResponse.sessionId);
         const totals = summarizeTrace(traceRows, bridge.bridgeResponse.sessionId, opts.role, { allowPrefixFallback: !opts.parallel });
+        const classification = classifyRunError(bridge.finalText);
         return {
             case: name,
             run: runIndex,
             ok: textMatchesSpec(spec, bridge.finalText),
+            blocked: classification.infra,
+            errorType: classification.infra ? classification.type : null,
             toolFit: evaluateToolFit(spec, totals),
             bridge: bridge.bridgeResponse,
             totalIterations: totals.totalIterations,
@@ -512,10 +719,13 @@ async function runCase({ name, spec, opts, workspace, runIndex }) {
             notificationCount: bridge.notifications.length,
         };
     } catch (err) {
+        const classification = classifyRunError(err);
         return {
             case: name,
             run: runIndex,
             ok: false,
+            blocked: classification.infra,
+            errorType: classification.type,
             totalIterations: 0,
             totalToolCalls: 0,
             durationMs: Math.round(performance.now() - t0),
@@ -528,10 +738,12 @@ async function runCase({ name, spec, opts, workspace, runIndex }) {
 
 function aggregate(results) {
     const passed = results.filter((r) => r.ok && r.toolFit?.ok !== false).length;
+    const blocked = results.filter((r) => r.blocked).length;
     return {
         ok: passed === results.length,
         cases: results.length,
         passed,
+        blocked,
         avgIterations: results.length ? results.reduce((n, r) => n + (r.totalIterations || 0), 0) / results.length : null,
         totalIterations: results.reduce((n, r) => n + (r.totalIterations || 0), 0),
         totalToolCalls: results.reduce((n, r) => n + (r.totalToolCalls || 0), 0),
@@ -541,17 +753,18 @@ function aggregate(results) {
 
 function printHuman(summary, results, workspace) {
     console.log(`live-io-smoke bridge workspace: ${workspace}`);
-    console.log(`status: ${summary.ok ? 'PASS' : 'FAIL'} (${summary.passed}/${summary.cases})`);
+    console.log(`status: ${summary.ok ? 'PASS' : 'FAIL'} (${summary.passed}/${summary.cases}${summary.blocked ? `, blocked=${summary.blocked}` : ''})`);
     if (summary.avgIterations !== null) console.log(`avg total iterations: ${summary.avgIterations.toFixed(2)}`);
     console.log(`total iterations: ${summary.totalIterations}`);
     console.log(`total tool calls: ${summary.totalToolCalls}`);
     console.log(`total duration: ${(summary.totalDurationMs / 1000).toFixed(1)}s`);
     for (const r of results) {
-        console.log(`${r.ok ? 'ok' : 'FAIL'}\t${r.case}#${r.run}\ttotal_iter=${r.totalIterations}\tcalls=${r.totalToolCalls}\t${(r.durationMs / 1000).toFixed(1)}s\tsession=${r.bridge?.sessionId || '?'}`);
+        const status = r.ok ? 'ok' : (r.blocked ? 'BLOCKED' : 'FAIL');
+        console.log(`${status}\t${r.case}#${r.run}\ttotal_iter=${r.totalIterations}\tcalls=${r.totalToolCalls}\t${(r.durationMs / 1000).toFixed(1)}s\tsession=${r.bridge?.sessionId || '?'}`);
         for (const a of r.agents || []) {
             console.log(`  ${a.scope}\titer=${a.iterations}\tcalls=${a.toolCalls}\t${a.toolChain.join(' > ')}`);
         }
-        if (r.toolFit && !r.toolFit.ok) {
+        if (r.toolFit && !r.toolFit.ok && !r.blocked) {
             const notes = [];
             if (r.toolFit.missingPreferred?.length) notes.push(`missing preferred: ${r.toolFit.missingPreferred.join(',')}`);
             if (r.toolFit.missingArgMatches?.length) notes.push(`missing tool-arg evidence: ${r.toolFit.missingArgMatches.join(',')}`);
@@ -561,7 +774,7 @@ function printHuman(summary, results, workspace) {
             if (r.toolFit.overToolCalls) notes.push(`tool-call budget ${r.toolFit.overToolCalls.actual}/${r.toolFit.overToolCalls.max}`);
             console.log(`  tool-fit: watch (${notes.join('; ')})`);
         }
-        if (r.error) console.log(`  error: ${r.error}`);
+        if (r.error) console.log(`  error${r.errorType ? `(${r.errorType})` : ''}: ${r.error}`);
         if (!r.ok && r.finalPreview) console.log(`  final: ${r.finalPreview.replace(/\s+/g, ' ').slice(0, 500)}`);
     }
 }
@@ -574,7 +787,8 @@ async function main() {
 
     const cases = selectedCases(opts.caseName);
     const results = [];
-    await init();
+    const rt = await loadRuntime();
+    await rt.init();
     try {
         for (let run = 1; run <= opts.runs; run++) {
             if (opts.parallel) {
@@ -586,7 +800,7 @@ async function main() {
             }
         }
     } finally {
-        try { await stop(); } catch {}
+        try { await rt.stop(); } catch {}
         if (!opts.keepWorkspace && !opts.workspace) rmSync(workspace, { recursive: true, force: true });
     }
 

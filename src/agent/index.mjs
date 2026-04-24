@@ -353,6 +353,7 @@ const TOOLS = [
         context: { type: 'string', description: 'Extra context appended to the prompt.' },
         ref: { type: 'string', description: 'Prompt store key (populated by prompt_store).' },
         file: { type: 'string', description: 'Read prompt from a file path.' },
+        cwd: { type: 'string', description: 'Working directory for bridge agent tool execution.' },
       },
       required: ['prompt', 'role'],
     },
@@ -759,16 +760,16 @@ export async function handleToolCall(name, args, opts = {}) {
         // completion path calls it in the finally block. Successful
         // completion with a clean `Done.` is the ONLY path that leaves
         // the worktree in place — the Lead decides whether to merge.
-        const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || effectiveCwd;
-        let workerWorktree = { path: pluginRoot, branch: null, fallback: true, reason: 'not-attempted' };
+        const worktreeRoot = args.cwd ? effectiveCwd : (process.env.CLAUDE_PLUGIN_ROOT || effectiveCwd);
+        let workerWorktree = { path: worktreeRoot, branch: null, fallback: true, reason: 'not-attempted' };
         try {
-          workerWorktree = createWorkerWorktree(session.id, pluginRoot);
+          workerWorktree = createWorkerWorktree(session.id, worktreeRoot);
         } catch (e) {
           // Validation errors (unsafe sessionId, escape attempt) land
           // here — log and fall back. Should never happen in practice
           // because sessionIds come from a monotonic internal counter.
           try { process.stderr.write(`[bridge] worktree create threw: ${e.message || e}\n`); } catch {}
-          workerWorktree = { path: pluginRoot, branch: null, fallback: true, reason: String(e.message || e) };
+          workerWorktree = { path: worktreeRoot, branch: null, fallback: true, reason: String(e.message || e) };
         }
         const workerCwd = workerWorktree.path;
 
@@ -837,7 +838,7 @@ export async function handleToolCall(name, args, opts = {}) {
             // worktree cleanup must never block session close.
             try {
               if (!workerWorktree.fallback) {
-                cleanupWorkerWorktree(session.id, pluginRoot, { reason: 'user-abort' });
+                cleanupWorkerWorktree(session.id, worktreeRoot, { reason: 'user-abort' });
               }
             } catch (e) {
               try { process.stderr.write(`[bridge] worktree cleanup on abort failed: ${e.message || e}\n`); } catch {}
@@ -985,7 +986,7 @@ export async function handleToolCall(name, args, opts = {}) {
             // override, so we skip that branch here to avoid double-remove.
             if (!completed && !abortHandle.fired() && !workerWorktree.fallback) {
               try {
-                cleanupWorkerWorktree(session.id, pluginRoot, { reason: `failure: ${errorMessage || 'unknown'}` });
+                cleanupWorkerWorktree(session.id, worktreeRoot, { reason: `failure: ${errorMessage || 'unknown'}` });
               } catch (e) {
                 try { process.stderr.write(`[bridge] worktree cleanup on failure failed: ${e.message || e}\n`); } catch {}
               }
@@ -1018,7 +1019,7 @@ export async function handleToolCall(name, args, opts = {}) {
           try { updateSessionStatus(session.id, 'error'); } catch {}
           if (!abortHandle.fired() && !workerWorktree.fallback) {
             try {
-              cleanupWorkerWorktree(session.id, pluginRoot, { reason: `runner-crash: ${err?.message || err}` });
+              cleanupWorkerWorktree(session.id, worktreeRoot, { reason: `runner-crash: ${err?.message || err}` });
             } catch (cleanupErr) {
               try { process.stderr.write(`[bridge] worktree cleanup on detached crash failed: ${cleanupErr?.message || cleanupErr}\n`); } catch {}
             }

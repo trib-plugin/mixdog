@@ -136,7 +136,7 @@ function _compareVersion(a, b) {
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
-const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
+const DEFAULT_CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 
 // Anthropic OAuth contract for first-party Claude Code clients.
 // Opus/Sonnet requests are gated on a specific system-prompt prefix.
@@ -237,13 +237,36 @@ const CACHE_TTL_VOLATILE = { type: 'ephemeral' };             // messages (5m de
 
 // --- Credential helpers ---
 
-function loadCredentials() {
-    if (!existsSync(CREDENTIALS_PATH)) return null;
+function _pushUnique(list, value) {
+    if (!value || typeof value !== 'string') return;
+    if (!list.includes(value)) list.push(value);
+}
+
+function _claudeCredentialsFromPluginRoot(root) {
+    const clean = String(root || '').replace(/\\/g, '/');
+    const marker = '/.claude/plugins/';
+    const idx = clean.indexOf(marker);
+    if (idx < 0) return null;
+    return `${clean.slice(0, idx)}/.claude/.credentials.json`;
+}
+
+function credentialCandidates() {
+    const paths = [];
+    _pushUnique(paths, process.env.CLAUDE_CODE_CREDENTIALS_PATH);
+    _pushUnique(paths, process.env.CLAUDE_CREDENTIALS_PATH);
+    _pushUnique(paths, _claudeCredentialsFromPluginRoot(process.env.CLAUDE_PLUGIN_ROOT));
+    _pushUnique(paths, DEFAULT_CREDENTIALS_PATH);
+    return paths;
+}
+
+function _loadCredentialsFile(path) {
+    if (!existsSync(path)) return null;
     try {
-        const raw = JSON.parse(readFileSync(CREDENTIALS_PATH, 'utf-8'));
+        const raw = JSON.parse(readFileSync(path, 'utf-8'));
         const oauth = raw?.claudeAiOauth;
         if (!oauth?.accessToken) return null;
         return {
+            path,
             accessToken: oauth.accessToken,
             refreshToken: oauth.refreshToken || null,
             expiresAt: typeof oauth.expiresAt === 'number' ? oauth.expiresAt : 0,
@@ -253,6 +276,15 @@ function loadCredentials() {
     } catch {
         return null;
     }
+}
+
+function loadCredentials() {
+    const loaded = credentialCandidates()
+        .map(_loadCredentialsFile)
+        .filter(Boolean);
+    if (!loaded.length) return null;
+    loaded.sort((a, b) => (Number(b.expiresAt) || 0) - (Number(a.expiresAt) || 0));
+    return loaded[0];
 }
 
 // --- Message conversion (mirrors anthropic.mjs) ---
