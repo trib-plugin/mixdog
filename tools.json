@@ -198,39 +198,6 @@
     "module": "channels"
   },
   {
-    "name": "fetch_many",
-    "title": "Fetch Many",
-    "annotations": {
-      "title": "Fetch Many",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": true
-    },
-    "description": "Fetch recent messages from multiple channels in one call. Use this when you need to look back across 2+ channels without serial fetches.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "channels": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "description": "Channel name labels as configured in channelsConfig"
-        },
-        "limit": {
-          "type": "number",
-          "description": "Max messages per channel (default 20, capped at 100)."
-        }
-      },
-      "required": [
-        "channels"
-      ]
-    },
-    "module": "channels"
-  },
-  {
     "name": "schedule_status",
     "title": "Schedule Status",
     "annotations": {
@@ -482,7 +449,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Internal codebase search. Local filesystem only — not web, not memory. `query`: single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). `cwd` is authoritative search root (no silent fan-out). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.",
+    "description": "Internal codebase search. Local filesystem only — not web, not memory. `query`: single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Omit `cwd` for the current workspace; set `cwd` only when the user explicitly names that root/path. Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -505,7 +472,7 @@
         },
         "cwd": {
           "type": "string",
-          "description": "Authoritative search root. Absolute path; `~` and forward slashes supported. Omit → launch workspace. Target plugin tree via `cwd: \"~/.claude/...\"`. No silent fan-out."
+          "description": "Optional search root. Omit for the current workspace. Use an absolute/`~` root only when the user explicitly names that path. No silent fan-out."
         },
         "background": {
           "type": "boolean",
@@ -756,7 +723,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.",
+    "description": "Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). If the requested marker/value/field is visible in the returned lines, answer immediately; do not repeat an identical read. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -935,104 +902,6 @@
     "module": "builtin"
   },
   {
-    "name": "multi_edit",
-    "title": "Multi Edit",
-    "annotations": {
-      "title": "Multi Edit",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    },
-    "description": "Apply multiple ordered replacements to ONE file in one call. Use this when the file is already known and you need several edits without serial `edit` turns. All-or-nothing on that file.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "Target file path."
-        },
-        "edits": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "old_string": {
-                "type": "string"
-              },
-              "new_string": {
-                "type": "string"
-              },
-              "replace_all": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "old_string",
-              "new_string"
-            ]
-          },
-          "minItems": 1,
-          "description": "Ordered replacements for the same file."
-        }
-      },
-      "required": [
-        "path",
-        "edits"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
-    "name": "batch_edit",
-    "title": "Batch Edit",
-    "annotations": {
-      "title": "Batch Edit",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    },
-    "description": "Apply edits across MULTIPLE files in one call. Different files run in parallel; repeated edits within the same file are grouped and executed as `multi_edit`. Use this instead of serial `edit` across several files.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "edits": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "path": {
-                "type": "string",
-                "description": "Target file path."
-              },
-              "old_string": {
-                "type": "string"
-              },
-              "new_string": {
-                "type": "string"
-              },
-              "replace_all": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "path",
-              "old_string",
-              "new_string"
-            ]
-          },
-          "minItems": 1,
-          "description": "Edits across one or more files."
-        }
-      },
-      "required": [
-        "edits"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
     "name": "edit_lines",
     "title": "Edit Lines (line-number based)",
     "annotations": {
@@ -1042,7 +911,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Replace lines [start_line, end_line] inclusive (1-based) with new_content. Use this when unique-string match in `edit` / `multi_edit` is awkward — large files, repeated substrings, or pure line-replace. Pair with `read` (note line numbers) -> `edit_lines`. mtime drift is enforced like `edit`: must `read` first; concurrent external writes return errorCode 7.",
+    "description": "Replace lines [start_line, end_line] inclusive (1-based) with new_content. Use this when unique-string match in `edit` is awkward — large files, repeated substrings, or pure line-replace. Pair with `read` (note line numbers) -> `edit_lines`. mtime drift is enforced like `edit`: must `read` first; concurrent external writes return errorCode 7.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1174,7 +1043,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Only opt into persistent shell state when you truly need cwd/env/venv continuity: pass `persistent:true` (bridge sessions) or call `bash_session` directly. Set `run_in_background:true` for long builds/tests/servers, then inspect with `job_status` / `job_wait` / `job_read` / `jobs_list`. Destructive patterns (rm -rf /, force-push, format) are blocked.",
+    "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Only opt into persistent shell state when you truly need cwd/env/venv continuity: pass `persistent:true` (bridge sessions) or call `bash_session` directly. Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1210,48 +1079,6 @@
     "module": "builtin"
   },
   {
-    "name": "jobs_list",
-    "title": "List Background Jobs",
-    "annotations": {
-      "title": "List Background Jobs",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "List recent background shell jobs with status, pid, and start time. Use this to discover job ids before `job_wait`, `job_status`, or `job_read`.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {}
-    },
-    "module": "builtin"
-  },
-  {
-    "name": "job_status",
-    "title": "Background Job Status",
-    "annotations": {
-      "title": "Background Job Status",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Get one snapshot for a background shell job: pid, command, output paths, and completion state. Do NOT poll this in a loop — prefer `job_wait` while the job is still running.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "job_id": {
-          "type": "string",
-          "description": "Background job id returned by bash with run_in_background:true."
-        }
-      },
-      "required": [
-        "job_id"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
     "name": "job_wait",
     "title": "Wait For Background Job",
     "annotations": {
@@ -1261,7 +1088,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Wait for a background shell job to finish and return its latest status/summary in one call. Prefer this over repeated job_status polling.",
+    "description": "Wait for a background shell job to finish and return its latest status/summary in one call.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1276,86 +1103,6 @@
         "poll_ms": {
           "type": "number",
           "description": "Polling interval while waiting. Default 250 ms."
-        }
-      },
-      "required": [
-        "job_id"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
-    "name": "job_read",
-    "title": "Read Background Job Output",
-    "annotations": {
-      "title": "Read Background Job Output",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Read stdout/stderr from a background shell job using the same line-oriented behavior as read/tail. Prefer `job_wait` first; use `job_read` when you need the actual log text after completion or when the status summary is insufficient.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "job_id": {
-          "type": "string",
-          "description": "Background job id."
-        },
-        "stream": {
-          "type": "string",
-          "enum": [
-            "stdout",
-            "stderr"
-          ],
-          "description": "Which stream to read. Default stdout."
-        },
-        "mode": {
-          "type": "string",
-          "enum": [
-            "full",
-            "head",
-            "tail",
-            "count"
-          ],
-          "description": "Read mode. Default tail."
-        },
-        "n": {
-          "type": "number",
-          "description": "Lines for head/tail mode. Default 40."
-        },
-        "offset": {
-          "type": "number",
-          "description": "Start line for full mode (0-based)."
-        },
-        "limit": {
-          "type": "number",
-          "description": "Max lines for full mode."
-        }
-      },
-      "required": [
-        "job_id"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
-    "name": "job_cancel",
-    "title": "Cancel Background Job",
-    "annotations": {
-      "title": "Cancel Background Job",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Terminate a running background shell job.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "job_id": {
-          "type": "string",
-          "description": "Background job id."
         }
       },
       "required": [
@@ -1607,7 +1354,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Unified diff between two files (or two raw strings). Useful for explaining a change before applying it via `edit` / `multi_edit`. Output is standard `--- from\n+++ to\n@@ ... @@` format. Pass `from_text:true` and/or `to_text:true` to treat the value as inline text instead of a path.",
+    "description": "Unified diff between two files (or two raw strings). Useful for explaining a change before applying it via `edit`. Output is standard `--- from\n+++ to\n@@ ... @@` format. Pass `from_text:true` and/or `to_text:true` to treat the value as inline text instead of a path.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1678,7 +1425,7 @@
         },
         "language": {
           "type": "string",
-          "description": "Optional language filter for find_symbol (e.g. javascript, typescript, python)."
+          "description": "Optional language filter for find_symbol/references/callers only when known; omit if unsure."
         },
         "limit": {
           "type": "number",
@@ -1836,79 +1583,6 @@
       },
       "required": [
         "symbol"
-      ]
-    },
-    "module": "code_graph"
-  },
-  {
-    "name": "rename_file_refs",
-    "title": "Rename File Refs",
-    "annotations": {
-      "title": "Rename File Refs",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    },
-    "description": "Rename or move a file and rewrite resolvable file references in the moved file and its local importers using the common code graph. Preview by default; set `apply:true` to write through apply_patch atomically.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "file": {
-          "type": "string",
-          "description": "Existing file to rename or move."
-        },
-        "new_path": {
-          "type": "string",
-          "description": "New path for the file."
-        },
-        "apply": {
-          "type": "boolean",
-          "description": "Apply the generated patch to disk. Default false = preview only."
-        }
-      },
-      "required": [
-        "file",
-        "new_path"
-      ]
-    },
-    "module": "code_graph"
-  },
-  {
-    "name": "rename_symbol_refs",
-    "title": "Rename Symbol Refs",
-    "annotations": {
-      "title": "Rename Symbol Refs",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    },
-    "description": "Rename a symbol reference across same-language files using the common code graph and exact token-boundary rewrites. Preview by default; set `apply:true` to write through apply_patch.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "symbol": {
-          "type": "string",
-          "description": "Current symbol name to rename."
-        },
-        "file": {
-          "type": "string",
-          "description": "File containing or importing the symbol."
-        },
-        "new_name": {
-          "type": "string",
-          "description": "New symbol name."
-        },
-        "apply": {
-          "type": "boolean",
-          "description": "Apply the rename to disk. Default false = preview only."
-        }
-      },
-      "required": [
-        "symbol",
-        "file",
-        "new_name"
       ]
     },
     "module": "code_graph"
