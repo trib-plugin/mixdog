@@ -34,6 +34,7 @@ const home = homedir();
 // -- Channels paths --
 const DATA_DIR = resolvePluginData();
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
+const MIXDOG_CONFIG_PATH = join(DATA_DIR, 'mixdog-config.json');
 const BOT_PATH = join(DATA_DIR, 'bot.json');
 const STATUS_SNAPSHOT_PATH = join(DATA_DIR, 'channels', 'status-snapshot.json');
 

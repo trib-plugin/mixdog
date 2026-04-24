@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, statSync, readFileSync, utimesSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { performance } from 'perf_hooks';
+import { DatabaseSync } from 'node:sqlite';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
+const RECALL_TARGET = 'LIVE_RECALL_TARGET=opal-memory-v1';
 let runtime = null;
+let syntheticToolsRegistered = false;
 
 function readJsonIfExists(path) {
     try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
@@ -18,8 +21,29 @@ function ensureLocalPluginEnv() {
     if (!process.env.CLAUDE_PLUGIN_DATA) {
         const plugin = readJsonIfExists(join(REPO_ROOT, '.claude-plugin', 'plugin.json'))?.name || 'mixdog';
         const marketplace = readJsonIfExists(join(REPO_ROOT, '.claude-plugin', 'marketplace.json'))?.name || 'trib-plugin';
-        process.env.CLAUDE_PLUGIN_DATA = join(homedir(), '.claude', 'plugins', 'data', `${plugin}-${marketplace}`);
+        process.env.CLAUDE_PLUGIN_DATA = resolvePluginDataCandidate(plugin, marketplace);
     }
+}
+
+function resolvePluginDataCandidate(plugin, marketplace) {
+    const suffix = `${plugin}-${marketplace}`;
+    const candidates = [];
+    const add = (p) => { if (p && !candidates.includes(p)) candidates.push(p); };
+    const roots = [process.env.CLAUDE_PLUGIN_ROOT, REPO_ROOT].filter(Boolean).map((p) => resolve(p));
+    for (const root of roots) {
+        const parent = dirname(root);
+        const grandparent = dirname(parent);
+        if (basename(parent) === 'marketplaces') {
+            add(join(grandparent, 'data', suffix));
+        }
+        if (basename(parent) === 'external_plugins' && basename(grandparent)) {
+            add(join(dirname(grandparent), 'data', `${plugin}-${basename(grandparent)}`));
+        }
+        const m = root.match(/^\/mnt\/([a-z])\/Users\/([^/]+)\//i);
+        if (m) add(`/mnt/${m[1]}/Users/${m[2]}/.claude/plugins/data/${suffix}`);
+    }
+    add(join(homedir(), '.claude', 'plugins', 'data', suffix));
+    return candidates.find((p) => existsSync(p)) || candidates[0];
 }
 
 async function loadRuntime() {
@@ -76,7 +100,7 @@ function printHelp() {
         'Options:',
         '  --role <name>              Bridge role to spawn. Default worker.',
         '  --preset <id|name>         Optional explicit preset passed to bridge.',
-        '  --case <all|name[,name...]>  pagination,discovery,multi_read,glob_multi,list_recent,symbol_lookup,count_tail,tree_shape,grep_multi,grep_context,grep_count,list_find_size,list_find_mtime,code_graph_callers,read_bookends,read_offset_window,explore.',
+        '  --case <all|name[,name...]>  pagination,discovery,multi_read,glob_multi,list_recent,symbol_lookup,count_tail,tree_shape,grep_multi,grep_context,grep_count,list_find_size,list_find_mtime,code_graph_callers,read_bookends,read_offset_window,explore_fast_symbol,explore_fanout,recall_single,search_live_official,search_config_guard,explore.',
         '  --runs <n>                 Repeat each case. Default 1.',
         '  --parallel                 Run selected cases concurrently within each run.',
         '  --workspace <path>         Reuse/create a fixture workspace at path.',
@@ -433,9 +457,84 @@ const CASES = {
             'Task: In the already-known file `docs/paged.txt`, use one `read` call with offset 8 and limit 2 to report MARK_TARGET as compact JSON.',
         ].join('\n'),
     },
+    explore_fast_symbol: {
+        expectAll: [/smokeNeedleTarget|IO_SMOKE_NEEDLE|module-13/i],
+        preferTools: ['explore'],
+        maxTotalIterations: 3,
+        maxToolCalls: 1,
+        requireToolArgMatches: [
+            { tool: 'explore', pattern: /IO_SMOKE_NEEDLE/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'glob'],
+        prompt: [
+            'You are a bridge worker running a live routing smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: This is a local filesystem lookup. Use exactly one `explore` call to find `IO_SMOKE_NEEDLE` and report the file and function as compact JSON. Do not call grep/read/glob directly.',
+        ].join('\n'),
+    },
+    explore_fanout: {
+        expectAll: [/order\.route\.mjs|profile\.route\.mjs/i, /refund\.policy\.json/i],
+        preferTools: ['explore'],
+        maxTotalIterations: 8,
+        maxToolCalls: 5,
+        requireToolArgMatches: [
+            { tool: 'explore', pattern: /route|policy/ },
+        ],
+        avoidTools: ['bash'],
+        prompt: [
+            'You are a bridge worker running a live routing smoke benchmark in the current working directory.',
+            'Do not modify files. Do not use bash.',
+            'Task: This is a multi-angle local codebase lookup. Use one rich `explore` query to locate both route modules and policy JSON files under `src`. Answer compact JSON with keys: case, routes, policies.',
+        ].join('\n'),
+    },
+    recall_single: {
+        expectAll: [/fast path|session\/manager|ai-wrapped-dispatch|iter/i],
+        preferTools: ['recall'],
+        maxTotalIterations: 6,
+        maxToolCalls: 3,
+        requireToolArgMatches: [
+            { tool: 'recall', pattern: /fast path|iter|게이트/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'search', 'explore'],
+        prompt: [
+            'You are a bridge worker running a live memory routing smoke benchmark.',
+            'Do not modify files. Do not use bash.',
+            'Task: This asks about past context. Use exactly one `recall` call for "fast path 게이트 보강 수정 iter 줄이기". Answer compact JSON with keys: case, remembered_change, evidence. Do not use search, explore, grep, or read.',
+        ].join('\n'),
+    },
+    search_live_official: {
+        expectAll: [/OpenAI|docs|platform\.openai\.com|models/i],
+        preferTools: ['search'],
+        maxTotalIterations: 6,
+        maxToolCalls: 3,
+        requireToolArgMatches: [
+            { tool: 'search', pattern: /OpenAI|official|docs|models/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'explore', 'recall'],
+        prompt: [
+            'You are a bridge worker running a live external-search routing smoke benchmark.',
+            'Do not modify files. Do not use bash.',
+            'Task: This is an external web lookup. Use exactly one `search` call for "OpenAI official docs models API", then answer compact JSON with keys: case, source, title, url. Do not use explore, recall, grep, or read.',
+        ].join('\n'),
+    },
+    search_config_guard: {
+        expectAll: [/Search is not configured|not configured|search_unconfigured/i],
+        preferTools: ['search'],
+        maxTotalIterations: 2,
+        maxToolCalls: 1,
+        requireToolArgMatches: [
+            { tool: 'search', pattern: /OpenAI|official|docs/ },
+        ],
+        avoidTools: ['bash', 'grep', 'read', 'explore', 'recall'],
+        prompt: [
+            'You are a bridge worker running a live external-search routing smoke benchmark.',
+            'Do not modify files. Do not use bash.',
+            'Task: This is an external web lookup. Use exactly one `search` call for "OpenAI official docs latest model", then report compact JSON. If the search tool says search is not configured, report {"case":"search_unconfigured","status":"not_configured"}. Do not use explore, recall, grep, or read.',
+        ].join('\n'),
+    },
     explore: {
         expectAll: [/smokeNeedleTarget|IO_SMOKE_NEEDLE|module-13/i],
-        preferTools: ['bridge_spawn'],
+        preferTools: ['explore'],
         maxTotalIterations: 12,
         avoidTools: ['bash'],
         prompt: [
@@ -679,6 +778,161 @@ function textMatchesSpec(spec, text) {
     return checks.every((re) => re.test(String(text || '')));
 }
 
+async function registerLiveSyntheticTools(rt) {
+    if (syntheticToolsRegistered) return;
+    syntheticToolsRegistered = true;
+    const [{ setInternalToolsProvider, addInternalTools }, { SYNTHETIC_TOOL_DEFS }] = await Promise.all([
+        import('../src/agent/orchestrator/internal-tools.mjs'),
+        import('../src/agent/orchestrator/synthetic-tools.mjs'),
+    ]);
+    setInternalToolsProvider({ executor: rt.handleToolCall, tools: rt.TOOL_DEFS });
+    addInternalTools(SYNTHETIC_TOOL_DEFS.map((def) => ({
+        def,
+        executor: def.name === 'memory_search'
+            ? liveMemorySearch
+            : def.name === 'web_search'
+                ? liveWebSearch
+                : null,
+    })).filter((entry) => typeof entry.executor === 'function'));
+}
+
+function truncateLine(text, max = 420) {
+    const single = String(text ?? '').replace(/\s+/g, ' ').trim();
+    return single.length > max ? `${single.slice(0, max)}...` : single;
+}
+
+function ftsQueryFor(text) {
+    const tokens = String(text || '')
+        .match(/[A-Za-z0-9_.:-]{3,}|[\p{Script=Hangul}]{2,}/gu);
+    const picked = [...new Set(tokens || [String(text || '').trim()].filter(Boolean))].slice(0, 8);
+    return picked.map((token) => `"${String(token).replace(/"/g, '""')}"`).join(' OR ');
+}
+
+function openMemoryDbReadOnly() {
+    ensureLocalPluginEnv();
+    const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
+    try {
+        return new DatabaseSync(dbPath, { readOnly: true });
+    } catch {
+        return new DatabaseSync(`file:${dbPath}?mode=ro&immutable=1`, { readOnly: true });
+    }
+}
+
+function searchMemoryRows(db, query, limit) {
+    const clean = String(query || '').trim();
+    if (!clean) {
+        return db.prepare(`
+            SELECT id, ts, role, content, element, category, summary, status, score
+            FROM entries
+            ORDER BY ts DESC
+            LIMIT ?
+        `).all(limit);
+    }
+    const ftsQuery = ftsQueryFor(clean);
+    if (ftsQuery) {
+        try {
+            const rows = db.prepare(`
+                SELECT e.id, e.ts, e.role, e.content, e.element, e.category, e.summary, e.status, e.score,
+                       bm25(entries_fts) AS bm25
+                FROM entries_fts
+                JOIN entries e ON e.id = entries_fts.rowid
+                WHERE entries_fts MATCH ?
+                ORDER BY bm25(entries_fts)
+                LIMIT ?
+            `).all(ftsQuery, limit);
+            if (rows.length > 0) return rows;
+        } catch {}
+    }
+    const tokens = String(clean).split(/\s+/).map((s) => s.trim()).filter((s) => s.length >= 2).slice(0, 8);
+    if (tokens.length === 0) return [];
+    const where = tokens.map(() => '(content LIKE ? OR summary LIKE ? OR element LIKE ?)').join(' OR ');
+    return db.prepare(`
+        SELECT id, ts, role, content, element, category, summary, status, score
+        FROM entries
+        WHERE ${where}
+        ORDER BY ts DESC
+        LIMIT ?
+    `).all(...tokens.flatMap((token) => [`%${token}%`, `%${token}%`, `%${token}%`]), limit);
+}
+
+async function liveMemorySearch(args = {}) {
+    const queries = Array.isArray(args.query) ? args.query : [args.query || ''];
+    const limit = Math.min(10, Math.max(1, Number(args.limit) || 5));
+    let db = null;
+    try {
+        db = openMemoryDbReadOnly();
+        const sections = queries.map((query) => {
+            const rows = searchMemoryRows(db, query, limit);
+            const body = rows.length > 0
+                ? rows.map((row, index) => [
+                    `${index + 1}. id=${row.id} ts=${new Date(Number(row.ts) || 0).toISOString()} category=${row.category || 'unknown'} status=${row.status || 'unknown'}`,
+                    row.element ? `   element: ${truncateLine(row.element, 240)}` : null,
+                    row.summary ? `   summary: ${truncateLine(row.summary)}` : null,
+                    `   content: ${truncateLine(row.content)}`,
+                ].filter(Boolean).join('\n')).join('\n')
+                : '(no memory hits)';
+            return `### Query: ${query || '(latest)'}\n${body}`;
+        });
+        return { content: [{ type: 'text', text: sections.join('\n\n') }] };
+    } catch (err) {
+        return { content: [{ type: 'text', text: `memory_search failed: ${err?.message || err}` }], isError: true };
+    } finally {
+        try { db?.close(); } catch {}
+    }
+}
+
+async function liveWebSearch(args = {}) {
+    ensureLocalPluginEnv();
+    const search = await import('../src/search/index.mjs');
+    return search.handleToolCall('search', args || {});
+}
+
+async function seedRecallMemoryIfNeeded(cases) {
+    if (!cases.some(([, spec]) => spec.seedRecall)) return [];
+    ensureLocalPluginEnv();
+    const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
+    const db = new DatabaseSync(dbPath);
+    const nowMs = Date.now();
+    const sourceRef = `live-smoke:${nowMs}-${process.pid}`;
+    const summary = 'Live smoke recall marker for routing benchmark; safe to forget after the run.';
+    db.exec('BEGIN');
+    try {
+        const result = db.prepare(`
+            INSERT INTO entries(ts, role, content, source_ref, session_id)
+            VALUES (?, 'system', ?, ?, NULL)
+        `).run(nowMs, `${RECALL_TARGET} - ${summary}`, sourceRef);
+        const id = Number(result.lastInsertRowid);
+        db.prepare(`
+            UPDATE entries
+            SET chunk_root = ?, is_root = 1, element = ?, category = 'fact', summary = ?,
+                status = 'active', score = 1.6, last_seen_at = ?
+            WHERE id = ?
+        `).run(id, RECALL_TARGET, summary, nowMs, id);
+        db.exec('COMMIT');
+        db.close();
+        return [id];
+    } catch (err) {
+        try { db.exec('ROLLBACK'); } catch {}
+        try { db.close(); } catch {}
+        throw err;
+    }
+}
+
+async function cleanupRecallSeeds(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    ensureLocalPluginEnv();
+    const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
+    const db = new DatabaseSync(dbPath);
+    for (const id of ids) {
+        try {
+            db.prepare(`UPDATE entries SET status = 'archived' WHERE id = ?`).run(id);
+        } catch {
+            // best-effort cleanup; benchmark result should not hinge on it
+        }
+    }
+    try { db.close(); } catch {}
+}
+
 function classifyRunError(err) {
     const message = err instanceof Error ? err.message : String(err || '');
     if (/Invalid authentication credentials|authentication_error|Claude Code manages refresh|401\b/i.test(message)) {
@@ -788,8 +1042,11 @@ async function main() {
     const cases = selectedCases(opts.caseName);
     const results = [];
     const rt = await loadRuntime();
+    let recallSeedIds = [];
     await rt.init();
+    await registerLiveSyntheticTools(rt);
     try {
+        recallSeedIds = await seedRecallMemoryIfNeeded(cases);
         for (let run = 1; run <= opts.runs; run++) {
             if (opts.parallel) {
                 results.push(...await Promise.all(cases.map(([name, spec]) => runCase({ name, spec, opts, workspace, runIndex: run }))));
@@ -800,6 +1057,7 @@ async function main() {
             }
         }
     } finally {
+        await cleanupRecallSeeds(recallSeedIds);
         try { await rt.stop(); } catch {}
         if (!opts.keepWorkspace && !opts.workspace) rmSync(workspace, { recursive: true, force: true });
     }

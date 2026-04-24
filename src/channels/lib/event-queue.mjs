@@ -85,6 +85,7 @@ class EventQueue {
     // active owner, do nothing. The runtime should only have started this
     // queue on the owner path, but an ownership hand-off can briefly leave
     // two processes both ticking — this short-circuits that window.
+    // This is multi-process active-owner gating, not HTTP authentication.
     if (this.ownerGetter) {
       let isOwner = true;
       try { isOwner = !!this.ownerGetter(); } catch { isOwner = true; }
@@ -146,6 +147,7 @@ class EventQueue {
     // active owner, do nothing. The runtime should only have started this
     // queue on the owner path, but an ownership hand-off can briefly leave
     // two processes both ticking — this short-circuits that window.
+    // This is multi-process active-owner gating, not HTTP authentication.
     if (this.ownerGetter) {
       let isOwner = true;
       try { isOwner = !!this.ownerGetter(); } catch { isOwner = true; }

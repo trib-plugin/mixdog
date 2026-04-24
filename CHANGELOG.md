@@ -4,6 +4,12 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.52] - Unreleased
+
+### Notes
+
+- **webhook/event owner-gated runtime** — "owner-gated" here means event queue ownership gating: in a multi-process channels runtime, only the active owner instance runs webhook/event ticks while standbys proxy or wait. It is not HTTP authentication; request-level auth remains separate signature/secret handling.
+
 ## [0.1.33] - Unreleased
 
 ### Fixed

@@ -3509,7 +3509,10 @@ let agMaintenanceDefaults = {};
 
 async function loadAgMaintenance() {
   try {
-    const r = await fetch('/agent/maintenance').then(r => r.json());
+    const [r] = await Promise.all([
+      fetch('/agent/maintenance').then(r => r.json()),
+      agPresets.length ? Promise.resolve() : agLoadPresets(),
+    ]);
     agMaintenance = r.maintenance || {};
     agMaintenanceDefaults = r.defaults || {};
   } catch { agMaintenance = {}; agMaintenanceDefaults = {}; }

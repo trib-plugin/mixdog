@@ -322,6 +322,8 @@ let bridgeOwnershipRefreshRunning = false;
 let bridgeOwnershipTimer = null;
 let lastOwnershipNote = "";
 const ACTIVE_OWNER_STALE_MS = 1e4;
+// Owner gating here is multi-process runtime coordination: only the active
+// owner runs webhook/event ticks. It is not webhook HTTP authentication.
 let proxyMode = false;
 let ownerHttpPort = 0;
 let ownerHttpServer = null;
