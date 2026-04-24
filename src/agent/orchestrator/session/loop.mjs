@@ -45,6 +45,14 @@ function isBlockedByPermission(toolName, toolKind, permission) {
     if (permission === 'read') return READ_BLOCKED_TOOLS.has(toolName);
     return false;
 }
+function messagesArrayChanged(before, after) {
+    if (!Array.isArray(before) || !Array.isArray(after)) return before !== after;
+    if (before.length !== after.length) return true;
+    for (let i = 0; i < before.length; i += 1) {
+        if (before[i] !== after[i]) return true;
+    }
+    return false;
+}
 const SKILL_TOOL_NAMES = new Set(['skills_list', 'skill_view', 'skill_execute']);
 const SPECIAL_TOOL_NAMES = new Set(['bash_session', 'apply_patch', 'code_graph']);
 const BASH_SESSION_HEADER_RE = /\[session: ([^\]\r\n]+)\]/;
@@ -233,7 +241,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             // context window — prevents sending bodies past provider limits.
             const safetyBudget = Math.floor(sessionRef.contextWindow * SAFETY_TRIM_PERCENT);
             const trimmed = trimMessages(messages, safetyBudget);
-            if (trimmed.length !== messages.length) {
+            if (messagesArrayChanged(messages, trimmed)) {
                 messages.length = 0;
                 messages.push(...trimmed);
             }

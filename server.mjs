@@ -335,6 +335,11 @@ function spawnWorker(name) {
       }
       return
     }
+    if (msg.type === 'recap_status' && msg.recap) {
+      recapStatusState = sanitizeRecapStatusState(msg.recap)
+      forwardRecapStatusToStatusServer()
+      return
+    }
     if (msg.type === 'notify' && msg.method) {
       // Worker → parent notification forwarding. The worker has no MCP
       // transport of its own; this is the single path that delivers Discord
@@ -820,6 +825,31 @@ setImmediate(() => {
 // ~/.claude/mixdog-status.json; bin/statusline.sh reads that file.
 const STATUS_ADVERTISE_PATH = join(homedir(), '.claude', 'mixdog-status.json')
 let statusServerChild = null
+let recapStatusState = { running: false, startedAt: null, lastCompletedAt: null }
+
+function normalizeRecapTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function sanitizeRecapStatusState(recap = {}) {
+  return {
+    running: recap.running === true,
+    startedAt: normalizeRecapTimestamp(recap.startedAt),
+    lastCompletedAt: normalizeRecapTimestamp(recap.lastCompletedAt),
+  }
+}
+
+function forwardRecapStatusToStatusServer() {
+  if (!statusServerChild || !statusServerChild.connected) return
+  try {
+    statusServerChild.send({ type: 'recap_status', recap: recapStatusState })
+  } catch (e) {
+    log(`[status-server] recap status forward failed: ${e && (e.message || e) || e}`)
+  }
+}
+
 setImmediate(() => {
   try {
     statusServerChild = fork(
@@ -837,6 +867,7 @@ setImmediate(() => {
     )
     statusServerChild.stdout?.on('data', (d) => log(String(d).trimEnd()))
     statusServerChild.stderr?.on('data', (d) => log(`[status-server] stderr: ${String(d).trimEnd()}`))
+    forwardRecapStatusToStatusServer()
     statusServerChild.on('exit', (code, signal) => {
       log(`[status-server] child exited code=${code} signal=${signal}`)
       statusServerChild = null

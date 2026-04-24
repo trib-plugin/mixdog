@@ -6,7 +6,7 @@ import { createInterface } from 'readline';
 import { promisify } from 'util';
 import * as nodeUtil from 'node:util';
 import { homedir } from 'os';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { getPluginData } from '../config.mjs';
 import { markCodeGraphDirtyPaths } from './code-graph.mjs';
 import { getCapabilities } from '../../../shared/config.mjs';
@@ -543,7 +543,8 @@ async function openForRead(filePath, workDir, opts = {}) {
     }
     const norm = normalizeInputPath(filePath);
     const allowHome = opts.allowHome === true;
-    if (!isSafePath(norm, workDir, { allowHome })) {
+    const allowPluginData = opts.allowPluginData === true;
+    if (!isSafePath(norm, workDir, { allowHome, allowPluginData })) {
         throw Object.assign(
             new Error(`path outside allowed scope — ${normalizeOutputPath(norm)}`),
             { code: 'EOUTSIDE' });
@@ -1010,7 +1011,7 @@ export const BUILTIN_TOOLS = [
 // the same query in a tight iter. Mutations invalidate affected cache
 // entries by path/scope where possible; shell commands still fall back to
 // a full clear because arbitrary commands can mutate anything.
-const RESULT_CACHE = new Map(); // key → { ts, value, paths, scopes }
+const RESULT_CACHE = new Map(); // key → { ts, value, paths, scopes, readSnapshotMeta }
 const RESULT_CACHE_TTL_MS = 30_000;
 const RESULT_CACHE_MAX_ENTRIES = 200;
 const STAT_CACHE = new Map(); // fullPath → { ts, stat }
@@ -1056,7 +1057,7 @@ function _cacheEntryOverlapsPaths(entry, affectedPaths) {
     }
     return false;
 }
-function _cacheGet(key) {
+function _cacheGetEntry(key) {
     const entry = RESULT_CACHE.get(key);
     if (!entry) {
         BUILTIN_CACHE_STATS.misses++;
@@ -1068,7 +1069,10 @@ function _cacheGet(key) {
         return null;
     }
     BUILTIN_CACHE_STATS.hits++;
-    return entry.value;
+    return entry;
+}
+function _cacheGet(key) {
+    return _cacheGetEntry(key)?.value ?? null;
 }
 function _cacheSet(key, value, meta = {}) {
     if (RESULT_CACHE.size >= RESULT_CACHE_MAX_ENTRIES) {
@@ -1080,6 +1084,7 @@ function _cacheSet(key, value, meta = {}) {
         value,
         paths: _normalizeCacheMetaPaths(meta.paths),
         scopes: _normalizeCacheMetaPaths(meta.scopes),
+        readSnapshotMeta: meta.readSnapshotMeta || null,
     });
     BUILTIN_CACHE_STATS.sets++;
 }
@@ -1140,9 +1145,9 @@ export function invalidateBuiltinResultCache(paths = null) {
     }
     _cacheInvalidateAll();
 }
-export function recordReadSnapshotForPath(fullPath, scope = null) {
+export function recordReadSnapshotForPath(fullPath, scope = null, meta = {}) {
     try {
-        _recordReadSnapshot(fullPath, undefined, scope);
+        _recordReadSnapshot(fullPath, undefined, scope, meta);
     } catch { /* ignore snapshot failures */ }
 }
 export function clearReadSnapshotForPath(fullPath, scope = null) {
@@ -1183,7 +1188,7 @@ export function getBuiltinCacheStatsForTesting() {
 // advanced — detects lint/formatter/external-write drift the way
 // Anthropic's readFileState timestamp check does.
 const DEFAULT_READ_STATE_SCOPE = '__global__';
-const _readFilesByScope = new Map(); // scope → Map(fullPath → { mtimeMs, size })
+const _readFilesByScope = new Map(); // scope → Map(fullPath → { mtimeMs, size, ...meta })
 
 function _readScopeKey(scope) {
     return scope ? String(scope) : DEFAULT_READ_STATE_SCOPE;
@@ -1199,22 +1204,114 @@ function _readFilesForScope(scope) {
     return readFiles;
 }
 
-function _recordReadSnapshot(fullPath, st, scope = null) {
+function _hashText(text) {
+    return createHash('sha256').update(String(text ?? '')).digest('hex');
+}
+
+function _recordReadSnapshot(fullPath, st, scope = null, meta = {}) {
     const readFiles = _readFilesForScope(scope);
     try {
         if (st && typeof st.mtimeMs === 'number') {
-            readFiles.set(fullPath, { mtimeMs: st.mtimeMs, size: st.size });
+            readFiles.set(fullPath, { mtimeMs: st.mtimeMs, size: st.size, ...meta });
             return;
         }
         const fresh = statSync(fullPath);
-        readFiles.set(fullPath, { mtimeMs: fresh.mtimeMs, size: fresh.size });
+        readFiles.set(fullPath, { mtimeMs: fresh.mtimeMs, size: fresh.size, ...meta });
     } catch {
-        readFiles.set(fullPath, { mtimeMs: Date.now(), size: 0 });
+        readFiles.set(fullPath, { mtimeMs: Date.now(), size: 0, ...meta });
     }
 }
 
 function _getReadSnapshot(fullPath, scope = null) {
     return _readFilesForScope(scope).get(fullPath);
+}
+
+function _isSnapshotStale(stat, snapshot) {
+    return stat.mtimeMs > snapshot.mtimeMs + 1;
+}
+
+function _readContentIfSnapshotHashMatches(fullPath, snapshot) {
+    if (!snapshot || snapshot.isPartialView || !snapshot.contentHash) return null;
+    try {
+        const content = readFileSync(fullPath, 'utf-8');
+        return _hashText(content) === snapshot.contentHash ? content : null;
+    } catch {
+        return null;
+    }
+}
+
+function _countOccurrences(haystack, needle) {
+    if (typeof needle !== 'string' || needle.length === 0) return 0;
+    let count = 0;
+    let idx = 0;
+    while ((idx = haystack.indexOf(needle, idx)) !== -1) {
+        count++;
+        idx += needle.length;
+    }
+    return count;
+}
+
+function _lineContextAround(content, startLine, endLine, radius = 3, maxChars = 1600) {
+    const lines = String(content ?? '').split('\n');
+    const total = lines.length;
+    const start = Math.max(1, Math.min(total, startLine) - radius);
+    const end = Math.min(total, Math.max(startLine, endLine) + radius);
+    let out = lines
+        .slice(start - 1, end)
+        .map((line, i) => `${start + i}\t${line}`)
+        .join('\n');
+    if (out.length > maxChars) {
+        const head = out.slice(0, Math.floor(maxChars * 0.6));
+        const tail = out.slice(Math.max(0, out.length - Math.floor(maxChars * 0.4)));
+        out = `${head}\n... [context middle omitted] ...\n${tail}`;
+    }
+    return out;
+}
+
+function _lineForIndex(content, index) {
+    if (index <= 0) return 1;
+    return content.slice(0, index).split('\n').length;
+}
+
+function _primeReadSnapshotForEdit({ fullPath, filePath, st, scope, oldStrings = [], lineRange = null }) {
+    if (!st || st.size > READ_MAX_SIZE_BYTES || isBinaryFile(fullPath)) return null;
+    let content;
+    try { content = readFileSync(fullPath, 'utf-8'); }
+    catch { return null; }
+    const lines = content.split('\n');
+    _recordReadSnapshot(fullPath, st, scope, {
+        source: 'auto_snapshot',
+        isPartialView: false,
+        contentHash: _hashText(content),
+    });
+
+    const out = [
+        `Error [code 6]: file has not been read yet — snapshot recorded now for ${normalizeOutputPath(filePath)}. Retry the edit directly; no separate read call is needed.`,
+    ];
+    const checks = [];
+    let firstContext = null;
+    for (let i = 0; i < Math.min(oldStrings.length, 5); i++) {
+        const entry = oldStrings[i] || {};
+        const label = entry.label || `edit ${i}`;
+        const oldString = entry.old_string;
+        if (typeof oldString !== 'string' || oldString.length === 0) continue;
+        const count = _countOccurrences(content, oldString);
+        checks.push(`${label}: old_string ${count === 1 ? 'found once' : count === 0 ? 'not found' : `found ${count} times`}`);
+        if (!firstContext && count > 0) {
+            const idx = content.indexOf(oldString);
+            const startLine = _lineForIndex(content, idx);
+            const endLine = startLine + oldString.split('\n').length - 1;
+            firstContext = _lineContextAround(content, startLine, endLine);
+        }
+    }
+    if (checks.length > 0) out.push(`Match check: ${checks.join('; ')}`);
+    if (lineRange) {
+        out.push(`Line check: requested ${lineRange.startLine}-${lineRange.endLine}; file has ${lines.length} lines.`);
+        out.push(`Context around requested lines:\n${_lineContextAround(content, lineRange.startLine, lineRange.endLine)}`);
+    } else if (firstContext) {
+        out.push(`Context around first match:\n${firstContext}`);
+    }
+    return out.join('\n');
 }
 
 function getShellJobsDir() {
@@ -1499,7 +1596,7 @@ const BLOCKED_PATTERNS = [
 const SHELL_MUTATION_PATTERN = /(?:^|[;&|\n]\s*)(?:touch|mkdir|mktemp|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+-i|perl\s+-pi|npm\s+(?:install|i|ci|uninstall)|pnpm\s+(?:install|i|add|remove|update|up)|yarn\s+(?:install|add|remove|up)|bun\s+(?:install|add|remove|update|up)|pip(?:3)?\s+install|python(?:3)?\s+-m\s+pip\s+install|git\s+(?:checkout|switch|restore|clean|apply|am|cherry-pick|merge|rebase|stash|pull|reset)|cargo\s+(?:build|install|clean)|go\s+(?:build|install|generate)|make|cmake)\b/i;
 const SHELL_READ_ONLY_SEGMENT_RE = /^(?:cd|pwd|echo|printf|env|printenv|set|unset|export|alias|unalias|source|\.|type|which|whereis|ls|dir|cat|head|tail|wc|grep|rg|find|git\s+(?:status|diff|show|log|rev-parse|branch|remote|ls-files)|stat|readlink|realpath|basename|dirname|sort|uniq|cut|sed\s+-n|awk|ps|whoami|uname|date|true|false|test|\[)\b/i;
 const SHELL_GLOBAL_MUTATORS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip3', 'python', 'python3', 'git', 'cargo', 'go', 'make', 'cmake', 'dd']);
-export function isSafePath(filePath, cwd, { allowHome = false } = {}) {
+export function isSafePath(filePath, cwd, { allowHome = false, allowPluginData = false } = {}) {
     const baseCwd = normalize(resolve(cwd));
     const normalized = normalize(resolve(baseCwd, filePath));
     // Boundary-aware containment check: a path is "inside" baseCwd iff
@@ -1513,14 +1610,24 @@ export function isSafePath(filePath, cwd, { allowHome = false } = {}) {
         if (c === p) return true;
         return c.startsWith(p.endsWith(sep) ? p : p + sep);
     };
-    if (!isInside(normalized, baseCwd)) {
-        // HOME fallback is now an explicit opt-in capability (B2). When
-        // `allowHome=false` (the default), paths outside cwd are rejected
-        // outright — no silent widening to $HOME. The main-agent path
-        // gate passes `allowHome` from `capabilities.homeAccess`.
-        if (!allowHome) return false;
+    const allowedRoots = [baseCwd];
+    // HOME fallback is now an explicit opt-in capability (B2). When
+    // `allowHome=false` (the default), paths outside cwd are rejected
+    // outright — no silent widening to $HOME. The main-agent path
+    // gate passes `allowHome` from `capabilities.homeAccess`.
+    if (allowHome) {
         const home = process.env.HOME || process.env.USERPROFILE || '';
-        if (home && isInside(normalized, normalize(home))) return true;
+        if (home) allowedRoots.push(normalize(home));
+    }
+    // Tool-result offload files live under the plugin data directory, which
+    // is often outside the workspace and sometimes outside HOME in tests.
+    // Read-like tools may opt into this root so the advertised "read saved
+    // output" recovery path actually works without widening write tools.
+    if (allowPluginData) {
+        try { allowedRoots.push(normalize(resolve(getPluginData()))); } catch { /* plugin data unavailable in standalone tests */ }
+    }
+    const isInsideAllowedRoot = (candidate) => allowedRoots.some((root) => isInside(candidate, root));
+    if (!isInsideAllowedRoot(normalized)) {
         return false;
     }
     // Symlink scope re-check. A symlink inside cwd (or any intermediate
@@ -1532,10 +1639,7 @@ export function isSafePath(filePath, cwd, { allowHome = false } = {}) {
     // (no escape is possible since the path never resolves).
     try {
         const real = normalize(realpathSync(normalized));
-        if (real !== normalized && !isInside(real, baseCwd)) {
-            if (!allowHome) return false;
-            const home = process.env.HOME || process.env.USERPROFILE || '';
-            if (home && isInside(real, normalize(home))) return true;
+        if (real !== normalized && !isInsideAllowedRoot(real)) {
             return false;
         }
     } catch { /* path doesn't resolve — let caller fail naturally */ }
@@ -2408,6 +2512,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
     let allowHome = false;
     try { allowHome = getCapabilities().homeAccess === true; } catch { allowHome = false; }
     const pathOpts = { allowHome };
+    const readPathOpts = { allowHome, allowPluginData: true };
     switch (name) {
         case 'bash': {
             const command = args.command;
@@ -2628,7 +2733,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const filePath = args.path;
             if (!filePath)
                 return 'Error: path is required';
-            if (!isSafePath(filePath, workDir, pathOpts))
+            if (!isSafePath(filePath, workDir, readPathOpts))
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             // Pre-read size cap (Anthropic FileReadTool/limits.ts pattern):
@@ -2652,10 +2757,10 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }
             const wantFull = args.full === true;
             const cacheKey = `read|${fullPath}|${st.mtimeMs}|${st.size}|${typeof args.offset === 'number' ? args.offset : 'd'}|${typeof args.limit === 'number' ? args.limit : 'd'}|${wantFull ? 'f' : 's'}`;
-            const cached = _cacheGet(cacheKey);
-            if (cached !== null) {
-                _recordReadSnapshot(fullPath, st, readStateScope);
-                return cached;
+            const cachedEntry = _cacheGetEntry(cacheKey);
+            if (cachedEntry !== null) {
+                _recordReadSnapshot(fullPath, st, readStateScope, cachedEntry.readSnapshotMeta || { source: 'read_cached' });
+                return cachedEntry.value;
             }
             if (st.size > READ_MAX_SIZE_BYTES) {
                 if (!hasRangeArgs) {
@@ -2666,8 +2771,14 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 }
                 try {
                     const out = await streamReadRange(fullPath, offset, limit);
-                    _cacheSet(cacheKey, out, { paths: [fullPath] });
-                    _recordReadSnapshot(fullPath, st, readStateScope);
+                    const snapshotMeta = {
+                        source: 'read',
+                        offset,
+                        limit,
+                        isPartialView: true,
+                    };
+                    _cacheSet(cacheKey, out, { paths: [fullPath], readSnapshotMeta: snapshotMeta });
+                    _recordReadSnapshot(fullPath, st, readStateScope, snapshotMeta);
                     return out;
                 } catch (err) {
                     return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
@@ -2698,8 +2809,16 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     const { text } = smartReadTruncate(out, lines.length, st.size);
                     out = text;
                 }
-                _cacheSet(cacheKey, out, { paths: [fullPath] });
-                _recordReadSnapshot(fullPath, st, readStateScope);
+                const isFullFileView = offset === 0 && offset + limit >= lines.length;
+                const snapshotMeta = {
+                    source: 'read',
+                    offset,
+                    limit,
+                    isPartialView: !isFullFileView,
+                    ...(isFullFileView ? { contentHash: _hashText(content) } : {}),
+                };
+                _cacheSet(cacheKey, out, { paths: [fullPath], readSnapshotMeta: snapshotMeta });
+                _recordReadSnapshot(fullPath, st, readStateScope, snapshotMeta);
                 return out;
             }
             catch (err) {
@@ -2760,14 +2879,27 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }
             const mEditSnapshot = _getReadSnapshot(fullPath, readStateScope);
             if (!mEditSnapshot) {
-                return `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
+                return _primeReadSnapshotForEdit({
+                    fullPath,
+                    filePath,
+                    st: mEditStat,
+                    scope: readStateScope,
+                    oldStrings: edits.map((entry, i) => ({
+                        label: `edit ${i}`,
+                        old_string: entry?.old_string,
+                    })),
+                }) || `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
             }
-            if (mEditStat.mtimeMs > mEditSnapshot.mtimeMs + 1) {
-                return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
+            let mEditPreloadedContent = null;
+            if (_isSnapshotStale(mEditStat, mEditSnapshot)) {
+                mEditPreloadedContent = _readContentIfSnapshotHashMatches(fullPath, mEditSnapshot);
+                if (mEditPreloadedContent === null) {
+                    return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
+                }
             }
             try {
-                let content;
-                try { content = readFileSync(fullPath, 'utf-8'); }
+                let content = mEditPreloadedContent;
+                try { if (content === null) content = readFileSync(fullPath, 'utf-8'); }
                 catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
                 for (let i = 0; i < edits.length; i++) {
                     const entry = edits[i];
@@ -2800,7 +2932,11 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 await atomicWrite(fullPath, content);
                 invalidateBuiltinResultCache([fullPath]);
                 markCodeGraphDirtyPaths(workDir, [fullPath]);
-                _recordReadSnapshot(fullPath, undefined, readStateScope);
+                _recordReadSnapshot(fullPath, undefined, readStateScope, {
+                    source: 'edit',
+                    isPartialView: false,
+                    contentHash: _hashText(content),
+                });
                 return `Edited: ${normalizeOutputPath(filePath)} (${edits.length} replacements applied)`;
             } catch (err) {
                 return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
@@ -2824,7 +2960,11 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 const first = String(body).split('\n')[0] || '';
                 if (!/^Error(\s|\[)/.test(first)) return null;
                 const colonIdx = first.indexOf(': ');
-                return colonIdx !== -1 ? first.slice(colonIdx + 2) : first;
+                const msg = colonIdx !== -1 ? first.slice(colonIdx + 2) : first;
+                const retryHint = String(body).includes('snapshot recorded now') && !msg.includes('Retry the edit directly')
+                    ? ' (snapshot recorded; retry the same edit directly, no read needed)'
+                    : '';
+                return `${msg}${retryHint}`;
             };
             const groupResults = await Promise.all([...groups.entries()].map(async ([path, items]) => {
                 if (items.length === 1) {
@@ -2870,7 +3010,11 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         mkdirSync(dirname(fullPath), { recursive: true });
                         await atomicWrite(fullPath, content);
                         dirtyPaths.push(fullPath);
-                        _recordReadSnapshot(fullPath, undefined, readStateScope);
+                        _recordReadSnapshot(fullPath, undefined, readStateScope, {
+                            source: 'write',
+                            isPartialView: false,
+                            contentHash: _hashText(content),
+                        });
                         results.push(`OK ${normalizeOutputPath(filePath)}`);
                     }
                     catch (err) {
@@ -2912,7 +3056,11 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // Write establishes the on-disk state the model just
                 // authored, so a subsequent Edit does not need a fresh
                 // Read round-trip.
-                _recordReadSnapshot(fullPath, undefined, readStateScope);
+                _recordReadSnapshot(fullPath, undefined, readStateScope, {
+                    source: 'write',
+                    isPartialView: false,
+                    contentHash: _hashText(content),
+                });
                 return `Written: ${normalizeOutputPath(filePath)}`;
             }
             catch (err) {
@@ -2976,16 +3124,28 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // assumptions against a file that has drifted.
             const editSnapshot = _getReadSnapshot(fullPath, readStateScope);
             if (!editSnapshot) {
-                return `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
+                return _primeReadSnapshotForEdit({
+                    fullPath,
+                    filePath,
+                    st: editStat,
+                    scope: readStateScope,
+                    oldStrings: [{ label: 'edit', old_string: oldStr }],
+                }) || `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
             }
             // Error [code 7]: detect stale read via mtime drift (Anthropic
             // readFileState timestamp check parity). +1ms slack absorbs
             // filesystem timestamp resolution noise on NTFS/exFAT.
-            if (editStat.mtimeMs > editSnapshot.mtimeMs + 1) {
-                return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
+            let editPreloadedContent = null;
+            if (_isSnapshotStale(editStat, editSnapshot)) {
+                editPreloadedContent = _readContentIfSnapshotHashMatches(fullPath, editSnapshot);
+                if (editPreloadedContent === null) {
+                    return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
+                }
             }
             try {
-                const content = readFileSync(fullPath, 'utf-8');
+                const content = editPreloadedContent === null
+                    ? readFileSync(fullPath, 'utf-8')
+                    : editPreloadedContent;
                 const count = content.split(oldStr).length - 1;
                 if (count === 0)
                     return `Error [code 8]: old_string not found in ${filePath}`;
@@ -3001,7 +3161,11 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // Refresh the snapshot to the post-write mtime so a chain
                 // of edits against the same file doesn't trip the stale
                 // check on the second hop.
-                _recordReadSnapshot(fullPath, undefined, readStateScope);
+                _recordReadSnapshot(fullPath, undefined, readStateScope, {
+                    source: 'edit',
+                    isPartialView: false,
+                    contentHash: _hashText(updated),
+                });
                 return `Edited: ${normalizeOutputPath(filePath)}`;
             }
             catch (err) {
@@ -3036,13 +3200,25 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }
             const elSnapshot = _getReadSnapshot(fullPath, readStateScope);
             if (!elSnapshot) {
-                return `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
+                return _primeReadSnapshotForEdit({
+                    fullPath,
+                    filePath,
+                    st: elStat,
+                    scope: readStateScope,
+                    lineRange: { startLine, endLine },
+                }) || `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
             }
-            if (elStat.mtimeMs > elSnapshot.mtimeMs + 1) {
-                return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
+            let elPreloadedContent = null;
+            if (_isSnapshotStale(elStat, elSnapshot)) {
+                elPreloadedContent = _readContentIfSnapshotHashMatches(fullPath, elSnapshot);
+                if (elPreloadedContent === null) {
+                    return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
+                }
             }
             try {
-                const content = readFileSync(fullPath, 'utf-8');
+                const content = elPreloadedContent === null
+                    ? readFileSync(fullPath, 'utf-8')
+                    : elPreloadedContent;
                 const lines = content.split('\n');
                 const totalLines = lines.length;
                 if (startLine > totalLines) return `Error: start_line ${startLine} exceeds file's ${totalLines} lines`;
@@ -3061,7 +3237,11 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 await atomicWrite(fullPath, newFileContent);
                 invalidateBuiltinResultCache([fullPath]);
                 markCodeGraphDirtyPaths(workDir, [fullPath]);
-                _recordReadSnapshot(fullPath, undefined, readStateScope);
+                _recordReadSnapshot(fullPath, undefined, readStateScope, {
+                    source: 'edit_lines',
+                    isPartialView: false,
+                    contentHash: _hashText(newFileContent),
+                });
                 const replacedCount = endLine - startLine + 1;
                 const insertedCount = newLines.length;
                 return `Edited: ${normalizeOutputPath(filePath)} (lines ${startLine}-${endLine} replaced, ${replacedCount} -> ${insertedCount} lines)`;
@@ -3499,7 +3679,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // via openForRead. ETOOBIG escapes to the large-file fallback
             // so behaviour is unchanged for files past READ_MAX_SIZE_BYTES.
             let opened;
-            try { opened = await openForRead(args.path, workDir, pathOpts); }
+            try { opened = await openForRead(args.path, workDir, readPathOpts); }
             catch (err) {
                 if (err && err.code === 'ETOOBIG') {
                     try {
@@ -3545,7 +3725,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // via openForRead. ETOOBIG escapes to the streaming fallback so
             // files past READ_MAX_SIZE_BYTES still report lines + bytes.
             let opened;
-            try { opened = await openForRead(args.path, workDir, pathOpts); }
+            try { opened = await openForRead(args.path, workDir, readPathOpts); }
             catch (err) {
                 if (err && err.code === 'ETOOBIG') {
                     // F11: words are skipped for files past the cap because
@@ -3587,7 +3767,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     }
                 } else {
                     if (args.from == null || args.from === '') return 'Error: from is required';
-                    const opened = await openForRead(args.from, workDir, pathOpts);
+                    const opened = await openForRead(args.from, workDir, readPathOpts);
                     fromContent = opened.content;
                     fromLabel = opened.displayPath;
                 }
@@ -3599,7 +3779,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     }
                 } else {
                     if (args.to == null || args.to === '') return 'Error: to is required';
-                    const opened = await openForRead(args.to, workDir, pathOpts);
+                    const opened = await openForRead(args.to, workDir, readPathOpts);
                     toContent = opened.content;
                     toLabel = opened.displayPath;
                 }

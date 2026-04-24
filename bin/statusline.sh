@@ -112,6 +112,9 @@ B_SCHED_ACTIVE=0
 B_SCHED_DEFERRED=0
 B_RECALL=0
 B_JOBS=0
+B_RECAP_RUNNING=false
+B_RECAP_STARTED_AT=""
+B_RECAP_LAST_COMPLETED_AT=""
 B_NGROK=0
 B_DISCORD_UNREAD=""
 
@@ -139,6 +142,9 @@ if [ -n "$BRIDGE_JSON" ]; then
 
   [[ $BRIDGE_JSON =~ \"recallLastHour\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && B_RECALL="${BASH_REMATCH[1]}"
   [[ $BRIDGE_JSON =~ \"jobs\"[[:space:]]*:[[:space:]]*\{[^}]*\"count\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && B_JOBS="${BASH_REMATCH[1]}"
+  [[ $BRIDGE_JSON =~ \"recap\"[[:space:]]*:[[:space:]]*\{[^}]*\"running\"[[:space:]]*:[[:space:]]*(true|false) ]] && B_RECAP_RUNNING="${BASH_REMATCH[1]}"
+  [[ $BRIDGE_JSON =~ \"recap\"[[:space:]]*:[[:space:]]*\{[^}]*\"startedAt\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && B_RECAP_STARTED_AT="${BASH_REMATCH[1]}"
+  [[ $BRIDGE_JSON =~ \"recap\"[[:space:]]*:[[:space:]]*\{[^}]*\"lastCompletedAt\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && B_RECAP_LAST_COMPLETED_AT="${BASH_REMATCH[1]}"
   [[ $BRIDGE_JSON =~ \"ngrok\"[[:space:]]*:[[:space:]]*\{[^}]*\"online\"[[:space:]]*:[[:space:]]*(true|false) ]] && {
     [ "${BASH_REMATCH[1]}" = "true" ] && B_NGROK=1 || B_NGROK=0
   }
@@ -306,8 +312,23 @@ if [ "$B_SESS_ACTIVE" -gt 0 ] 2>/dev/null; then
   fi
 fi
 
-# L2 is now agents-only. Jobs / Schedule / Roster / Discord / Recall segments
-# were removed — the sessions segment is the only one the user tracks.
+# Recap progress — compact in-progress indicator only.
+if [ "$B_RECAP_RUNNING" = "true" ] && [ -n "$B_RECAP_STARTED_AT" ]; then
+  _recap_now_s="$(date '+%s' 2>/dev/null || true)"
+  if [ -n "$_recap_now_s" ]; then
+    _recap_elapsed=$(( (_recap_now_s * 1000 - B_RECAP_STARTED_AT) / 1000 ))
+    [ "$_recap_elapsed" -lt 0 ] 2>/dev/null && _recap_elapsed=0
+    if [ "$_recap_elapsed" -gt 99 ] 2>/dev/null; then
+      _recap_elapsed_label="99s+"
+    else
+      _recap_elapsed_label="${_recap_elapsed}s"
+    fi
+    add_l2 "${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}recap${_ANSI_RESET} ${_ANSI_DIM}${_recap_elapsed_label}${_ANSI_RESET}"
+  fi
+  unset _recap_now_s _recap_elapsed _recap_elapsed_label
+fi
+
+# Jobs / Schedule / Roster / Discord / Recall segments remain removed.
 
 
 # If L2 is just "Idle", suppress — runtime line already conveys idle state.

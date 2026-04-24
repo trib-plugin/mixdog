@@ -3,9 +3,47 @@ import { join } from 'path';
 import { getPluginData } from '../config.mjs';
 import { normalizeOutputPath } from '../tools/builtin.mjs';
 
-const TOOL_RESULT_OFFLOAD_THRESHOLD_CHARS = 8_000;
+const TOOL_RESULT_OFFLOAD_THRESHOLD_CHARS = 16_000;
 const TOOL_RESULT_PREVIEW_CHARS = 2_000;
+const TOOL_RESULT_SHELL_THRESHOLD_CHARS = 30_000;
+const TOOL_RESULT_SEARCH_THRESHOLD_CHARS = 100_000;
 export const TOOL_RESULT_OFFLOAD_PREFIX = '[tool output offloaded:';
+
+// Claude Code declares per-tool persistence limits: Read opts out entirely
+// because it self-bounds, Glob/Grep stay inline up to 100k, while Bash uses
+// 30k. Codex OSS similarly truncates bounded output in place rather than
+// forcing the model to spend a follow-up turn reading a sidecar. Keep that
+// shape here so context-rich IO tools do not turn into "read saved output"
+// loops just because a useful result crossed the old 8k global threshold.
+const INLINE_THRESHOLD_BY_TOOL = new Map([
+    ['read', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['multi_read', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['head', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['tail', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['diff', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['grep', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['glob', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['list', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['tree', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['find_files', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['code_graph', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['find_symbol', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['find_imports', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['find_dependents', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['find_references', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['find_callers', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['sg_search', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
+    ['bash', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
+    ['bash_session', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
+    ['job_wait', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
+    ['job_read', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
+    ['job_status', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
+]);
+
+function getOffloadThreshold(toolName) {
+    const key = String(toolName || '').toLowerCase();
+    return INLINE_THRESHOLD_BY_TOOL.get(key) ?? TOOL_RESULT_OFFLOAD_THRESHOLD_CHARS;
+}
 
 function ensureToolResultsDir(sessionId) {
     const dir = join(getPluginData(), 'tool-results', sessionId);
@@ -40,11 +78,11 @@ function countLines(text) {
 export function maybeOffloadToolResult(sessionId, toolCallId, toolName, result) {
     if (!sessionId || !toolCallId) return result;
     if (typeof result !== 'string') return result;
-    if (result.length <= TOOL_RESULT_OFFLOAD_THRESHOLD_CHARS) return result;
+    if (result.length <= getOffloadThreshold(toolName)) return result;
     // Keep error surfaces inline. The model usually needs the exact error
     // immediately to self-correct; offloading would cost an extra read turn.
     const lower = result.trim().toLowerCase();
-    if (lower.startsWith('error:') || lower.startsWith('[error')) return result;
+    if (lower.startsWith('error:') || lower.startsWith('error [') || lower.startsWith('[error')) return result;
 
     const dir = ensureToolResultsDir(sessionId);
     const filePath = join(dir, `${toolCallId}.txt`);
@@ -71,6 +109,9 @@ export function compactOffloadedToolResultText(text) {
 
 export const _internals = {
     TOOL_RESULT_OFFLOAD_THRESHOLD_CHARS,
+    TOOL_RESULT_SHELL_THRESHOLD_CHARS,
+    TOOL_RESULT_SEARCH_THRESHOLD_CHARS,
+    getOffloadThreshold,
     TOOL_RESULT_PREVIEW_CHARS,
     buildPreview,
     countLines,

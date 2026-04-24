@@ -33,7 +33,21 @@ const SNAPSHOT_STALE_MS = 30_000;
 const TWELVE_H = 12 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 
-export async function buildBridgeStatus(dataDir) {
+function normalizeTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function buildRecapSegment(recap = {}) {
+  return {
+    running: recap.running === true,
+    startedAt: normalizeTimestamp(recap.startedAt),
+    lastCompletedAt: normalizeTimestamp(recap.lastCompletedAt),
+  };
+}
+
+export async function buildBridgeStatus(dataDir, options = {}) {
   const now = Date.now();
 
   const SESSIONS_DIR = join(dataDir, 'sessions');
@@ -216,6 +230,7 @@ export async function buildBridgeStatus(dataDir) {
       fireAtISO: new Date(nextSchedule.fireAt).toISOString(),
     } : null,
   };
+  const recapSegment = buildRecapSegment(options.recap);
 
   return {
     sessions: sessionSegment,
@@ -223,6 +238,7 @@ export async function buildBridgeStatus(dataDir) {
     schedule: scheduleSegment,
     recallLastHour: recallCount,
     jobs: { count: jobsCount },
+    recap: recapSegment,
     ngrok: { online: ngrokOnline, tunnelUrl: ngrokTunnelUrl ?? undefined },
     ...(discordTotalUnread !== null ? { discord: { totalUnread: discordTotalUnread } } : {}),
     snapshotFresh,

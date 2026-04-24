@@ -28,6 +28,7 @@
 // of `batch_edit` and keeps a failed patch from landing a half-applied
 // tree.
 
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, statSync } from 'node:fs';
 import { resolve as pathResolve, isAbsolute } from 'node:path';
 import { parsePatch, applyPatch } from 'diff';
@@ -44,6 +45,10 @@ import { markCodeGraphDirtyPaths } from './code-graph.mjs';
 import { getCapabilities } from '../../../shared/config.mjs';
 
 const DEV_NULL = /^\/dev\/null$/;
+
+function hashText(text) {
+  return createHash('sha256').update(String(text ?? '')).digest('hex');
+}
 
 // Strip the leading `a/` or `b/` prefix that `diff -u` / git emit by
 // default, plus timestamp suffixes (`\t2024-...`) that some tools append
@@ -423,7 +428,11 @@ async function apply_patch(args, cwd, options = {}) {
     markCodeGraphDirtyPaths(cwd, written.map((p) => p.fullPath));
     for (const p of written) {
       if (p.kind === 'delete') clearReadSnapshotForPath(p.fullPath, readStateScope);
-      else recordReadSnapshotForPath(p.fullPath, readStateScope);
+      else recordReadSnapshotForPath(p.fullPath, readStateScope, {
+        source: 'apply_patch',
+        isPartialView: false,
+        contentHash: hashText(p.newContent),
+      });
     }
   }
   for (const p of written) {

@@ -31,7 +31,25 @@ function writeAdvertisement(path, record) {
   renameSync(tmp, path);
 }
 
-export async function startStatusServer({ dataDir, advertisePath, log = () => {} }) {
+const recapState = { running: false, startedAt: null, lastCompletedAt: null };
+
+function normalizeTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function updateRecapState(next = {}) {
+  recapState.running = next.running === true;
+  recapState.startedAt = normalizeTimestamp(next.startedAt);
+  recapState.lastCompletedAt = normalizeTimestamp(next.lastCompletedAt);
+}
+
+function readRecapState() {
+  return { ...recapState };
+}
+
+export async function startStatusServer({ dataDir, advertisePath, log = () => {}, getRecapState = readRecapState }) {
   const server = http.createServer(async (req, res) => {
     // Loopback-only: reject non-localhost peers (belt-and-braces —
     // binding to 127.0.0.1 should already exclude them).
@@ -48,7 +66,7 @@ export async function startStatusServer({ dataDir, advertisePath, log = () => {}
       if (req.method === 'GET' && url.pathname === '/bridge/status') {
         const wantText = url.searchParams.get('format') === 'text'
           || (req.headers['accept'] || '').includes('text/plain');
-        const payload = await buildBridgeStatus(dataDir);
+        const payload = await buildBridgeStatus(dataDir, { recap: getRecapState() });
         if (wantText) {
           res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
           res.end(renderBridgeStatusText(payload));
@@ -107,6 +125,9 @@ if (isMain) {
   const log = (m) => process.stdout.write(m + '\n');
   let handle = null;
   let shuttingDown = false;
+  process.on('message', (msg) => {
+    if (msg?.type === 'recap_status') updateRecapState(msg.recap);
+  });
   const shutdown = async (reason) => {
     if (shuttingDown) return;
     shuttingDown = true;

@@ -146,6 +146,16 @@ function sendNotifyToParent(method, params) {
     try { process.stderr.write(`mixdog channels: notify IPC send failed: ${err && err.message || err}\n`); } catch {}
   }
 }
+
+const recapState = { running: false, startedAt: null, lastCompletedAt: null };
+function sendRecapStateToParent() {
+  if (!process.send) return;
+  try {
+    process.send({ type: 'recap_status', recap: { ...recapState } });
+  } catch (err) {
+    try { process.stderr.write(`mixdog channels: recap status IPC send failed: ${err && err.message || err}\n`); } catch {}
+  }
+}
 function resolveChannelLabel(channelsConfig, label) {
   if (!label || !channelsConfig) return label;
   const entry = channelsConfig[label];
@@ -560,6 +570,9 @@ async function startOwnerHttpServer() {
           if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
           const recapPrompt = String(body?.prompt || "");
           if (!recapPrompt) { res.writeHead(400); res.end(JSON.stringify({ error: "prompt required" })); return; }
+          recapState.running = true;
+          recapState.startedAt = Date.now();
+          sendRecapStateToParent();
           try {
             const recapLlm = makeBridgeLlm({ role: "recap-agent", taskType: "maintenance" });
             const userMessage = [
@@ -572,6 +585,10 @@ async function startOwnerHttpServer() {
             res.end(JSON.stringify({ summary: String(summary || "").trim() }));
           } catch (e) {
             res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
+          } finally {
+            recapState.running = false;
+            recapState.lastCompletedAt = Date.now();
+            sendRecapStateToParent();
           }
           return;
         }

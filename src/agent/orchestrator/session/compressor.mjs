@@ -24,7 +24,7 @@ import {
     alignBoundaryForward,
     sanitizeToolPairs,
     pruneOldToolResults,
-    estimateTokensShared,
+    estimateMessageTokensShared,
     estimateMessagesTokensShared,
 } from './trim.mjs';
 
@@ -74,7 +74,7 @@ function _findTailCutByTokens(messages, headEnd, tailTokenBudget) {
     const softCeiling = tailTokenBudget * 1.5;
     while (i > headEnd) {
         const m = messages[i - 1];
-        const c = estimateTokensShared(m?.content) + 4;
+        const c = estimateMessageTokensShared(m);
         if (cost + c > softCeiling) break;
         cost += c;
         i--;

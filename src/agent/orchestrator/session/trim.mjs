@@ -2,10 +2,23 @@ import { isOffloadedToolResultText, compactOffloadedToolResultText } from './too
 
 // Rough token estimate: ~4 chars per token
 function estimateTokens(text) {
-    return Math.ceil(text.length / 4);
+    return Math.ceil(String(text ?? '').length / 4);
+}
+function messageEstimateText(m) {
+    if (!m || typeof m !== 'object') return '';
+    let text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
+    if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length) {
+        try { text += `\n${JSON.stringify(m.toolCalls)}`; }
+        catch { text += `\n[${m.toolCalls.length} tool calls]`; }
+    }
+    if (m.role === 'tool' && m.toolCallId) text += `\n${m.toolCallId}`;
+    return text;
+}
+function estimateMessageTokens(m) {
+    return estimateTokens(messageEstimateText(m)) + 4;
 }
 function estimateMessagesTokens(messages) {
-    return messages.reduce((sum, m) => sum + estimateTokens(m.content) + 4, 0);
+    return messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
 }
 const TOOL_TRUNCATE_THRESHOLD = 500;
 const TOOL_TRUNCATE_HEAD_RATIO = 0.6;
@@ -118,10 +131,13 @@ export function alignBoundaryForward(messages, idx) {
 export function estimateTokensShared(text) {
     return Math.ceil(String(text ?? '').length / 4);
 }
+export function estimateMessageTokensShared(message) {
+    return estimateMessageTokens(message);
+}
 export function estimateMessagesTokensShared(messages) {
     if (!Array.isArray(messages)) return 0;
     let sum = 0;
-    for (const m of messages) sum += estimateTokensShared(m?.content) + 4;
+    for (const m of messages) sum += estimateMessageTokensShared(m);
     return sum;
 }
 /**
@@ -212,7 +228,7 @@ export function trimMessages(messages, budgetTokens, opts) {
         if (toolIdx === -1)
             break;
         const toolCallId = middle[toolIdx].toolCallId;
-        total -= estimateTokens(middle[toolIdx].content) + 4;
+        total -= estimateMessageTokens(middle[toolIdx]);
         middle.splice(toolIdx, 1);
         // Also drop the paired assistant message that issued this tool call
         if (toolCallId) {
@@ -227,7 +243,7 @@ export function trimMessages(messages, budgetTokens, opts) {
                     middle.some(m => m.role === 'tool' && m.toolCallId === tc.id)
                 );
                 if (remainingCalls.length === 0) {
-                    total -= estimateTokens(assistantMsg.content || '') + 4;
+                    total -= estimateMessageTokens(assistantMsg);
                     middle.splice(assistantIdx, 1);
                 }
             }
@@ -244,7 +260,7 @@ export function trimMessages(messages, budgetTokens, opts) {
     const startIdx = alignBoundaryBackward(middle, middle.length - 1);
     for (let i = startIdx; i >= 0; i--) {
         const m = middle[i];
-        const cost = estimateTokens(m.content || '') + 4;
+        const cost = estimateMessageTokens(m);
         if (remaining - cost < 0)
             break;
         // If this is a tool result, ensure its paired assistant is also in kept
@@ -254,7 +270,7 @@ export function trimMessages(messages, budgetTokens, opts) {
                 a.toolCalls.some(tc => tc.id === m.toolCallId)
             );
             if (pairedIdx !== -1 && !kept.includes(middle[pairedIdx])) {
-                const pairedCost = estimateTokens(middle[pairedIdx].content || '') + 4;
+                const pairedCost = estimateMessageTokens(middle[pairedIdx]);
                 if (remaining - cost - pairedCost < 0)
                     break;
                 remaining -= pairedCost;
@@ -268,7 +284,7 @@ export function trimMessages(messages, budgetTokens, opts) {
                     t.role === 'tool' && t.toolCallId === tc.id &&
                     !kept.includes(t)
                 );
-                return sum + (toolMsg ? estimateTokens(toolMsg.content || '') + 4 : 0);
+                return sum + (toolMsg ? estimateMessageTokens(toolMsg) : 0);
             }, 0);
             if (remaining - cost - toolResultCosts < 0)
                 break;
@@ -279,7 +295,7 @@ export function trimMessages(messages, budgetTokens, opts) {
                     !kept.includes(t)
                 );
                 if (toolMsg) {
-                    remaining -= estimateTokens(toolMsg.content || '') + 4;
+                    remaining -= estimateMessageTokens(toolMsg);
                     kept.push(toolMsg);
                 }
             }
