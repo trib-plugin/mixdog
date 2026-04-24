@@ -812,10 +812,15 @@ function openMemoryDbReadOnly() {
     ensureLocalPluginEnv();
     const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
     try {
-        return new DatabaseSync(dbPath, { readOnly: true });
-    } catch {
-        return new DatabaseSync(`file:${dbPath}?mode=ro&immutable=1`, { readOnly: true });
-    }
+        const db = new DatabaseSync(dbPath, { readOnly: true });
+        try {
+            db.prepare('SELECT count(*) AS n FROM sqlite_master').get();
+            return db;
+        } catch {
+            try { db.close(); } catch {}
+        }
+    } catch {}
+    return new DatabaseSync(`file:${dbPath}?mode=ro&immutable=1`, { readOnly: true });
 }
 
 function searchMemoryRows(db, query, limit) {

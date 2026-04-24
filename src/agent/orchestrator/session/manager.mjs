@@ -18,6 +18,7 @@ import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
 import { classifyPromptIntent } from '../intent-classifier.mjs';
 import { resolvePluginData, DEFAULT_PLUGIN, DEFAULT_MARKETPLACE } from '../../../shared/plugin-paths.mjs';
+import { isHiddenRole } from '../internal-roles.mjs';
 
 // Phase B: Pool B Tier 2 content builder (common rules only).
 // Loaded once per process via createRequire so the CJS module reaches us.
@@ -204,8 +205,9 @@ function _dedupByName(tools) {
 //   - IO helpers: head, tail, wc, list, tree, find_files,
 //                 multi_read, multi_edit, batch_edit
 //   - Code graph / refactors: code_graph, rename_symbol_refs, rename_file_refs
-//   - memory read: recall / memory_search (memory admin tool itself is Lead-only)
-//   - information retrieval: search, web_search, explore, fetch_many
+//   - memory read: recall (hidden recall-agent gets memory_search directly)
+//   - information retrieval: search, explore, fetch_many
+//     (hidden search-agent gets web_search directly)
 export const BRIDGE_DENY_TOOLS = Object.freeze([
     // Discord / channel (Lead-only)
     'reply', 'react', 'edit_message', 'download_attachment', 'fetch',
@@ -232,6 +234,11 @@ export const BRIDGE_DENY_TOOLS = Object.freeze([
     // `code_graph` / `find_symbol` directly, so carrying alias-only tools
     // here just bloats the shared BP_1 shard without adding capability.
     'find_imports', 'find_dependents', 'find_references', 'find_callers',
+]);
+
+const BRIDGE_DIRECT_HIDDEN_TOOL_DENY = Object.freeze([
+    'memory_search',
+    'web_search',
 ]);
 
 function _computeBaseTools(toolSpec, mcp, skillTools) {
@@ -934,7 +941,10 @@ export function createSession(opts) {
     //     rationale. Pool A (Lead) still sees the full tools.json.
     const callerDeny = Array.isArray(opts.disallowedTools) ? opts.disallowedTools.map(n => String(n)) : [];
     const bridgeDeny = opts.owner === 'bridge' ? BRIDGE_DENY_TOOLS : [];
-    const mergedDeny = [...new Set([...callerDeny, ...bridgeDeny])];
+    const hiddenDirectDeny = opts.owner === 'bridge' && !isHiddenRole(resolvedRole)
+        ? BRIDGE_DIRECT_HIDDEN_TOOL_DENY
+        : [];
+    const mergedDeny = [...new Set([...callerDeny, ...bridgeDeny, ...hiddenDirectDeny])];
     if (mergedDeny.length) {
         const denySet = new Set(mergedDeny);
         const before = tools.length;
