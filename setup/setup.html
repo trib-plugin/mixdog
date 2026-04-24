@@ -2302,13 +2302,14 @@ function addEventCard(data) {
     '<div class="card-content">' +
       '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Endpoint name (e.g. github-issues)" value="' + (d.name || '') + '" data-f="ev-name" style="flex:1;" oninput="this.closest(\'.card\').querySelector(\'[data-f=ev-title]\').textContent=this.value||\'Untitled\'">' + '</div>' +
       '<div class="r"><span class="r-name-wide">Channel</span><input class="r-input" type="text" placeholder="main" value="' + (d.channel || 'main') + '" data-f="ev-channel" style="flex:1;"></div>' +
-      '<div class="r"><span class="r-name-wide">Exec</span>' +
-        '<select class="r-select" data-f="ev-exec">' +
-        '<option value="interactive"' + (d.exec === 'interactive' ? ' selected' : '') + '>Interactive</option>' +
-        '<option value="non-interactive"' + (d.exec === 'non-interactive' || !d.exec ? ' selected' : '') + '>Non-interactive</option>' +
+      '<div class="r"><span class="r-name-wide">Mode</span>' +
+        '<select class="r-select" data-f="ev-mode">' +
+        '<option value="delegate"' + (d.mode === 'delegate' || !d.mode ? ' selected' : '') + '>Delegate (agent runs, result reports to Lead)</option>' +
+        '<option value="interactive"' + (d.mode === 'interactive' ? ' selected' : '') + '>Interactive (Lead receives payload directly)</option>' +
         '</select></div>' +
-      '<div class="r"><span class="r-name-wide">Model</span>' +
-        '<select class="r-select" data-f="ev-model" data-initial="' + (d.model || 'sonnet-mid') + '"></select></div>' +
+      '<div class="r" data-f="ev-role-row"><span class="r-name-wide">Role</span>' +
+        '<select class="r-select" data-f="ev-role" data-initial="' + (d.role || 'reviewer') + '"></select>' +
+        '<span style="font-size:11px;color:var(--text-3);margin-left:8px">(delegate mode only)</span></div>' +
       '<div class="r"><span class="r-name-wide">Secret</span><input class="r-input" type="password" value="' + (d.secret || '') + '" placeholder="Optional" data-f="ev-secret"></div>' +
       '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
         '<div style="display:flex;align-items:center;margin-bottom:6px">' +
@@ -2323,13 +2324,23 @@ function addEventCard(data) {
   const evTitleEl = card.querySelector('[data-f="ev-title"]');
   evNameInput?.addEventListener('input', () => { evTitleEl.textContent = evNameInput.value || 'Untitled'; });
   if (isExisting) card.classList.add('collapsed');
-  // Fill model dropdown immediately
-  const evModelSel = card.querySelector('[data-f="ev-model"]');
-  if (evModelSel) {
-    const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
-    const initial = evModelSel.dataset.initial || 'sonnet-mid';
-    evModelSel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (initial === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + '</option>').join('');
+  // Fill role dropdown from user-workflow roles; fall back to built-ins
+  // when the workflow hasn't loaded yet.
+  const evRoleSel = card.querySelector('[data-f="ev-role"]');
+  if (evRoleSel) {
+    const wfRoles = (wfConfig?.roles || []).map(r => r.name).filter(Boolean);
+    const roleNames = wfRoles.length ? wfRoles : ['worker', 'reviewer', 'debugger', 'tester'];
+    const initial = evRoleSel.dataset.initial || 'reviewer';
+    evRoleSel.innerHTML = roleNames.map(n =>
+      '<option value="' + n + '"' + (initial === n ? ' selected' : '') + '>' + n + '</option>'
+    ).join('');
   }
+  // Dim the role row when mode is interactive (role is unused there).
+  const evModeSel = card.querySelector('[data-f="ev-mode"]');
+  const roleRow = card.querySelector('[data-f="ev-role-row"]');
+  const syncRoleRow = () => { if (roleRow) roleRow.style.opacity = (evModeSel?.value === 'delegate') ? '1' : '0.5'; };
+  evModeSel?.addEventListener('change', syncRoleRow);
+  syncRoleRow();
 }
 
 async function deleteWebhook(card) {
@@ -2373,14 +2384,8 @@ function populatePresetDropdowns() {
   const proactive = chConfig?.proactive || {};
   document.getElementById('proactive-model').value = proactive.model || 'sonnet-mid';
 
-  // Webhook event cards — fill model dropdowns
-  document.querySelectorAll('#event-rules .card [data-f="ev-model"]').forEach(sel => {
-    const current = sel.value || sel.dataset.initial || 'sonnet-mid';
-    sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + '</option>').join('');
-  });
-
-  // Schedule + Webhook cards — fill model dropdowns
-  document.querySelectorAll('#sched-tasks .card [data-f="sc-model"], #event-rules .card [data-f="ev-model"]').forEach(sel => {
+  // Schedule cards — fill model dropdowns (webhook cards now use role, not model)
+  document.querySelectorAll('#sched-tasks .card [data-f="sc-model"]').forEach(sel => {
     const current = sel.value || sel.dataset.initial || 'sonnet-mid';
     sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + '</option>').join('');
   });
@@ -2702,7 +2707,15 @@ async function savePanel() {
     // Save webhooks individually
     const whCards = document.querySelectorAll('#event-rules .card');
     for (const card of whCards) {
-      const wh = { name: card.querySelector('[data-f="ev-name"]')?.value.trim() || '', channel: card.querySelector('[data-f="ev-channel"]')?.value || 'main', exec: card.querySelector('[data-f="ev-exec"]')?.value || 'non-interactive', model: card.querySelector('[data-f="ev-model"]')?.value || '', secret: card.querySelector('[data-f="ev-secret"]')?.value || undefined, instructions: card.querySelector('[data-f="ev-instructions"]')?.value || '' };
+      const modeVal = card.querySelector('[data-f="ev-mode"]')?.value || 'delegate';
+      const wh = {
+        name: card.querySelector('[data-f="ev-name"]')?.value.trim() || '',
+        channel: card.querySelector('[data-f="ev-channel"]')?.value || 'main',
+        mode: modeVal,
+        secret: card.querySelector('[data-f="ev-secret"]')?.value || undefined,
+        instructions: card.querySelector('[data-f="ev-instructions"]')?.value || ''
+      };
+      if (modeVal === 'delegate') wh.role = card.querySelector('[data-f="ev-role"]')?.value || 'reviewer';
       if (wh.name) { await fetch('/webhooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wh) }); card.dataset.originalName = wh.name; }
     }
     // Save schedules individually

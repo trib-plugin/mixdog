@@ -331,7 +331,8 @@ function normalizeCacheUrl(url) {
 }
 
 const DOC_INDEX_MAX_BYTES = 2 * 1024 * 1024
-const DOC_INDEX_MAX_FETCHES = 4
+const DOC_INDEX_MAX_FETCHES = 8
+const DOC_INDEX_COMMON_PATHS = ['docs', 'api', 'reference', 'api/reference']
 const DOC_INDEX_STOPWORDS = new Set([
   'about', 'after', 'again', 'also', 'and', 'are', 'can', 'com', 'doc', 'docs',
   'documentation', 'for', 'from', 'how', 'http', 'https', 'into', 'official',
@@ -352,7 +353,7 @@ function queryTokens(keywords) {
     .filter(token => token.length >= 3 && !DOC_INDEX_STOPWORDS.has(token)))]
 }
 
-function docIndexUrlCandidates(site) {
+function docIndexUrlCandidates(site, keywords) {
   if (!site) return []
   let parsed
   try {
@@ -371,6 +372,12 @@ function docIndexUrlCandidates(site) {
   for (let i = pathParts.length; i >= 0; i -= 1) {
     const prefix = pathParts.slice(0, i).join('/')
     add(`${parsed.origin}${prefix ? `/${prefix}` : ''}/llms.txt`)
+  }
+  const docsIntent = /\b(?:api|docs?|documentation|reference)\b/i.test(keywordsText(keywords))
+  if (docsIntent && pathParts.length === 0) {
+    for (const prefix of DOC_INDEX_COMMON_PATHS) {
+      add(`${parsed.origin}/${prefix}/llms.txt`)
+    }
   }
   return candidates
 }
@@ -435,10 +442,11 @@ function docLinkScore(link, tokens) {
     if (title === token || title === `${token}s` || `${title}s` === token) score += 8
     if (title.includes(token)) score += 4
     if (segments.includes(token)) score += 5
-    if (segments.at(-1) === token) score += 3
+    if (segments.at(-1) === token) score += 3 + Math.max(0, 7 - segments.length)
     if (url.includes(token)) score += 2
     if (snippet.includes(token)) score += 1
   }
+  if (/\.md$/i.test(pathname)) score -= 2
   return score
 }
 
@@ -450,12 +458,29 @@ function isDocIndexLink(url) {
   }
 }
 
+function baseDomainFromUrl(url) {
+  try {
+    const host = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.toLowerCase()
+    const parts = host.split('.').filter(Boolean)
+    return parts.length <= 2 ? host : parts.slice(-2).join('.')
+  } catch {
+    return ''
+  }
+}
+
+function sameSiteFamily(url, site, sourceUrl) {
+  const linkBase = baseDomainFromUrl(url)
+  if (!linkBase) return false
+  const allowed = new Set([baseDomainFromUrl(site), baseDomainFromUrl(sourceUrl)].filter(Boolean))
+  return allowed.has(linkBase)
+}
+
 async function discoverDocsIndexResults(args, timeoutMs) {
   if (!args?.site || (args.type && args.type !== 'web')) return []
   const tokens = queryTokens(args.keywords)
   if (!tokens.length) return []
 
-  const queue = docIndexUrlCandidates(args.site)
+  const queue = docIndexUrlCandidates(args.site, args.keywords)
   const seenIndexes = new Set()
   const candidates = []
 
@@ -475,6 +500,7 @@ async function discoverDocsIndexResults(args, timeoutMs) {
         if (!seenIndexes.has(link.url) && queue.length + seenIndexes.size < DOC_INDEX_MAX_FETCHES) queue.push(link.url)
         continue
       }
+      if (!sameSiteFamily(link.url, args.site, indexUrl)) continue
       const score = docLinkScore(link, tokens)
       if (score <= 0) continue
       candidates.push({
@@ -715,6 +741,7 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) 
     site: args.site || null,
     type: args.type || 'web',
     github_type: args.github_type || null,
+    docs_index: args.site && (args.type || 'web') === 'web' ? 3 : null,
     maxResults: args.maxResults || getRawSearchMaxResults(config),
   })
   const cachedSearch = getCachedEntry(cacheState, searchCacheKey)
