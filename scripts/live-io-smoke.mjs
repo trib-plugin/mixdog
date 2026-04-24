@@ -689,7 +689,7 @@ const CASES = {
         requireJson: false,
         expectAll: [/OpenAI/i, /models/i, /https:\/\/(?:platform|developers)\.openai\.com\/[^\s)]*models/i],
         jsonTextMatches: [/OpenAI/i, /models/i, /https:\/\/(?:platform|developers)\.openai\.com\/[^\s)]*models/i],
-        forbiddenAnswerPatterns: [/lookup_failed|requires authentication|authentication error|url"?\s*:\s*null|https:\/\/platform\.openai\.com\/(?:\s|$)/i],
+        forbiddenAnswerPatterns: [/lookup_failed|requires authentication|authentication error|url"?\s*:\s*null|https:\/\/platform\.openai\.com\/(?:\s|$)|page not found|확정하지 못|특정할 수|직접 확인하지 못|노출되지는 않았|보통|추정|추론/i],
         preferTools: ['search'],
         maxTotalIterations: 6,
         maxToolCalls: 3,

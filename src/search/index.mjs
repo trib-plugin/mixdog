@@ -217,9 +217,30 @@ function jsonText(payload) {
 }
 
 function formattedText(tool, payload) {
-  const text = formatResponse(tool, payload)
+  const text = formatResponse(tool, tool === 'search' ? dropInvalidSearchResults(payload) : payload)
   return {
     content: [{ type: 'text', text }],
+  }
+}
+
+function isInvalidSearchResult(result) {
+  const title = String(result?.title || '').trim()
+  return /\bpage not found\b|\b404\b.*\bnot found\b/i.test(title)
+}
+
+function dropInvalidSearchResults(payload) {
+  if (!payload || typeof payload !== 'object') return payload
+  const response = payload.response
+  if (!response || typeof response !== 'object' || !Array.isArray(response.results)) return payload
+  const results = response.results.filter(result => !isInvalidSearchResult(result))
+  if (results.length === response.results.length) return payload
+  return {
+    ...payload,
+    response: {
+      ...response,
+      results,
+      droppedInvalidResults: (response.droppedInvalidResults || 0) + (response.results.length - results.length),
+    },
   }
 }
 
@@ -233,16 +254,20 @@ const GITHUB_CODE_KEYWORDS = /\b(function|class|import|require|package|module|np
 const GITHUB_REPO_KEYWORDS = /\b(repo|repository|github|project|framework|boilerplate|starter|template|toolkit|open\s*source|oss)\b/
 const GITHUB_ISSUE_KEYWORDS = /\b(bug|issue|error|fix|patch|regression|crash|pr\b|pull\s*request|changelog|breaking\s*change|deprecat)/
 
-// slug: word-chars, dots, hyphens / same again. Guard: no file extension.
+// GitHub owner/repo slug. Guard: owner cannot be a dotted host, and repo
+// cannot look like a file extension path.
 // File paths like "src/foo.mjs" should NOT be treated as slugs.
-const SLUG_RE = /^[\w.-]+\/[\w.-]+$/
+const GITHUB_OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/
+const SLUG_RE = /^([^/\s]+)\/([^/\s]+)$/
 const FILE_EXT_RE = /\.[a-z0-9]{1,6}$/i
 
 function looksLikeGithubSlug(query) {
   const trimmed = (query || '').trim()
-  if (!SLUG_RE.test(trimmed)) return false
-  if (FILE_EXT_RE.test(trimmed.split('/').pop())) return false
-  const [owner, repo] = trimmed.split('/')
+  const match = trimmed.match(SLUG_RE)
+  if (!match) return false
+  const [, owner, repo] = match
+  if (!GITHUB_OWNER_RE.test(owner)) return false
+  if (FILE_EXT_RE.test(repo)) return false
   return owner.length > 0 && repo.length > 0
 }
 
@@ -305,6 +330,208 @@ function normalizeCacheUrl(url) {
   }
 }
 
+const DOC_INDEX_MAX_BYTES = 2 * 1024 * 1024
+const DOC_INDEX_MAX_FETCHES = 4
+const DOC_INDEX_STOPWORDS = new Set([
+  'about', 'after', 'again', 'also', 'and', 'are', 'can', 'com', 'doc', 'docs',
+  'documentation', 'for', 'from', 'how', 'http', 'https', 'into', 'official',
+  'page', 'pages', 'site', 'the', 'this', 'title', 'url', 'use', 'using', 'what',
+  'when', 'where', 'which', 'with', 'www',
+])
+
+function keywordsText(keywords) {
+  return Array.isArray(keywords) ? keywords.join(' ') : String(keywords || '')
+}
+
+function queryTokens(keywords) {
+  const tokens = keywordsText(keywords)
+    .toLowerCase()
+    .match(/[\p{L}\p{N}][\p{L}\p{N}._-]{1,}/gu) || []
+  return [...new Set(tokens
+    .map(token => token.replace(/^[-_.]+|[-_.]+$/g, ''))
+    .filter(token => token.length >= 3 && !DOC_INDEX_STOPWORDS.has(token)))]
+}
+
+function docIndexUrlCandidates(site) {
+  if (!site) return []
+  let parsed
+  try {
+    parsed = new URL(/^https?:\/\//i.test(site) ? site : `https://${site}`)
+  } catch {
+    return []
+  }
+  const candidates = []
+  const add = (url) => {
+    try {
+      const normalized = new URL(url).toString()
+      if (!candidates.includes(normalized)) candidates.push(normalized)
+    } catch {}
+  }
+  const pathParts = parsed.pathname.split('/').filter(Boolean)
+  for (let i = pathParts.length; i >= 0; i -= 1) {
+    const prefix = pathParts.slice(0, i).join('/')
+    add(`${parsed.origin}${prefix ? `/${prefix}` : ''}/llms.txt`)
+  }
+  return candidates
+}
+
+async function fetchDocIndex(url, timeoutMs) {
+  const response = await fetch(url, {
+    headers: { Accept: 'text/markdown,text/plain,text/*,*/*' },
+    signal: AbortSignal.timeout(Math.min(Math.max(Number(timeoutMs) || 10_000, 1000), 10_000)),
+  })
+  if (!response.ok) throw new Error(`docs index fetch failed: ${response.status}`)
+  const contentLength = Number(response.headers.get('content-length') || 0)
+  if (contentLength > DOC_INDEX_MAX_BYTES) throw new Error(`docs index too large: ${contentLength}`)
+  const text = await response.text()
+  return text.length > DOC_INDEX_MAX_BYTES ? text.slice(0, DOC_INDEX_MAX_BYTES) : text
+}
+
+function parseDocIndexLinks(text, sourceUrl) {
+  const links = []
+  const seen = new Set()
+  const add = (title, rawUrl, snippet = '') => {
+    if (!title || !rawUrl) return
+    let url
+    try {
+      url = new URL(rawUrl, sourceUrl).toString()
+    } catch {
+      return
+    }
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) return
+    seen.add(url)
+    links.push({
+      title: String(title).trim(),
+      url,
+      snippet: String(snippet || '').trim(),
+      sourceUrl,
+    })
+  }
+
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const item = line.match(/^\s*[-*]\s+\[([^\]]{1,180})\]\(([^)\s]+)\)\s*:?\s*(.*)$/)
+    if (item) add(item[1], item[2], item[3])
+  }
+  const inlineRe = /\[([^\]]{1,180})\]\((https?:\/\/[^)\s]+)\)/g
+  let match
+  while ((match = inlineRe.exec(String(text || '')))) {
+    add(match[1], match[2])
+  }
+  return links
+}
+
+function docLinkScore(link, tokens) {
+  if (!tokens.length) return 0
+  const title = String(link.title || '').toLowerCase()
+  const url = String(link.url || '').toLowerCase()
+  const snippet = String(link.snippet || '').toLowerCase()
+  let pathname = ''
+  try {
+    pathname = new URL(link.url).pathname.toLowerCase()
+  } catch {}
+  const segments = pathname.split('/').filter(Boolean).map(part => part.replace(/\.md$/i, ''))
+  let score = 0
+  for (const token of tokens) {
+    if (title === token || title === `${token}s` || `${title}s` === token) score += 8
+    if (title.includes(token)) score += 4
+    if (segments.includes(token)) score += 5
+    if (segments.at(-1) === token) score += 3
+    if (url.includes(token)) score += 2
+    if (snippet.includes(token)) score += 1
+  }
+  return score
+}
+
+function isDocIndexLink(url) {
+  try {
+    return /\/llms(?:-full)?\.txt$/i.test(new URL(url).pathname)
+  } catch {
+    return false
+  }
+}
+
+async function discoverDocsIndexResults(args, timeoutMs) {
+  if (!args?.site || (args.type && args.type !== 'web')) return []
+  const tokens = queryTokens(args.keywords)
+  if (!tokens.length) return []
+
+  const queue = docIndexUrlCandidates(args.site)
+  const seenIndexes = new Set()
+  const candidates = []
+
+  while (queue.length > 0 && seenIndexes.size < DOC_INDEX_MAX_FETCHES) {
+    const indexUrl = queue.shift()
+    if (!indexUrl || seenIndexes.has(indexUrl)) continue
+    seenIndexes.add(indexUrl)
+    let text = ''
+    try {
+      text = await fetchDocIndex(indexUrl, timeoutMs)
+    } catch {
+      continue
+    }
+    const links = parseDocIndexLinks(text, indexUrl)
+    for (const link of links) {
+      if (isDocIndexLink(link.url)) {
+        if (!seenIndexes.has(link.url) && queue.length + seenIndexes.size < DOC_INDEX_MAX_FETCHES) queue.push(link.url)
+        continue
+      }
+      const score = docLinkScore(link, tokens)
+      if (score <= 0) continue
+      candidates.push({
+        ...link,
+        score,
+      })
+    }
+  }
+
+  const seenUrls = new Set()
+  return candidates
+    .sort((a, b) => b.score - a.score)
+    .filter((item) => {
+      if (seenUrls.has(item.url)) return false
+      seenUrls.add(item.url)
+      return true
+    })
+    .slice(0, Math.min(Number(args.maxResults) || 5, 5))
+    .map(item => ({
+      title: item.title,
+      url: item.url,
+      snippet: item.snippet || `Matched docs index: ${item.sourceUrl}`,
+      source: 'docs-index',
+      provider: 'docs-index',
+      publishedDate: null,
+      meta: { score: item.score, sourceUrl: item.sourceUrl },
+    }))
+}
+
+async function augmentSearchPayloadWithDocsIndex(payload, args, timeoutMs) {
+  if (!payload || typeof payload !== 'object') return payload
+  const response = payload.response
+  if (!response || typeof response !== 'object' || !Array.isArray(response.results)) return payload
+  const indexResults = await discoverDocsIndexResults(args, timeoutMs)
+  if (!indexResults.length) return payload
+  const seen = new Set()
+  const results = []
+  for (const result of [...indexResults, ...response.results]) {
+    const url = String(result?.url || '')
+    const key = url || `${result?.title || ''}\n${result?.snippet || ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    results.push(result)
+  }
+  return {
+    ...payload,
+    response: {
+      ...response,
+      results: results.slice(0, Math.max(Number(args.maxResults) || results.length, indexResults.length)),
+      docsIndexAugmented: {
+        added: indexResults.length,
+        sources: [...new Set(indexResults.map(item => item.meta?.sourceUrl).filter(Boolean))],
+      },
+    },
+  }
+}
+
 async function writeStartupSnapshot() {
   const config = loadConfig()
   const usageState = loadUsageState()
@@ -350,7 +577,7 @@ async function writeStartupSnapshot() {
 
 // ── Core action implementations (shared by individual and batch handlers) ──
 
-async function _searchCore(args, { config, usageState, cacheState }) {
+async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) {
   const isGithubReadType = ['file', 'repo', 'issue', 'pulls'].includes(args.github_type)
   if (isGithubReadType) {
     try {
@@ -492,7 +719,11 @@ async function _searchCore(args, { config, usageState, cacheState }) {
   })
   const cachedSearch = getCachedEntry(cacheState, searchCacheKey)
   if (cachedSearch) {
-    return { ...cachedSearch.payload, cache: buildCacheMeta(cachedSearch, true) }
+    return augmentSearchPayloadWithDocsIndex(
+      { ...cachedSearch.payload, cache: buildCacheMeta(cachedSearch, true) },
+      args,
+      timeoutMs,
+    )
   }
 
   try {
@@ -512,13 +743,18 @@ async function _searchCore(args, { config, usageState, cacheState }) {
       rememberPreferredRawProviders(usageState, args.site, [response.usedProvider, ...providers.filter(item => item !== response.usedProvider)])
     }
 
+    const payload = await augmentSearchPayloadWithDocsIndex(
+      { tool: 'search', providers, response },
+      args,
+      timeoutMs,
+    )
     const cachedEntry = setCachedEntry(
       cacheState,
       searchCacheKey,
-      { tool: 'search', providers, response },
+      payload,
       getSearchCacheTtlMs(args.type || 'web'),
     )
-    return { tool: 'search', providers, response, cache: buildCacheMeta(cachedEntry, false) }
+    return { ...payload, cache: buildCacheMeta(cachedEntry, false) }
   } catch (error) {
     for (const provider of providers) {
       noteProviderFailure(usageState, provider, error instanceof Error ? error.message : String(error), 60000)
@@ -744,7 +980,7 @@ async function handleToolCall(name, rawArgs) {
         throw e
       }
       try {
-        const result = await _searchCore(args, { config, usageState, cacheState })
+        const result = await _searchCore(args, { config, usageState, cacheState, timeoutMs })
         saveUsageState(usageState)
         return formattedText('search', result)
       } catch (error) {

@@ -966,6 +966,43 @@ scheduler.setSendHandler(async (channelId, text) => {
 function wireWebhookHandlers() {
   if (!webhookServer) return;
   webhookServer.setEventPipeline(eventPipeline);
+  webhookServer.setBridgeDispatch(async ({ role, prompt, cwd, context }) => {
+    // Delegate-mode webhook → bridge orchestrator. Each bridge progress /
+    // final event is forwarded to the Lead via the same channel-notify
+    // path used by schedule & event-queue (injectAndRecord). Silent
+    // lifecycle pings keep routing only to Discord.
+    const agentMod = await import("../agent/index.mjs");
+    const channelId = resolveWebhookChannelId();
+    const endpoint = context?.endpoint || "unknown";
+    const event = context?.event || null;
+    const deliveryId = context?.deliveryId || null;
+    const label = `webhook:${endpoint}`;
+    const instruction = `Webhook review from role=${role} on endpoint "${endpoint}"`
+      + (event ? ` (event=${event})` : "")
+      + (deliveryId ? ` (delivery=${deliveryId})` : "")
+      + ". Relay the finding to the user naturally — summarize clearly, call out any issues, and note what needs a decision.";
+    const notifyFn = (text, meta = {}) => {
+      if (!text) return;
+      injectAndRecord(channelId, label, String(text), {
+        type: "webhook",
+        instruction,
+        silent_to_agent: meta?.silent_to_agent === true,
+      });
+    };
+    return agentMod.handleToolCall(
+      "bridge",
+      { role, prompt, cwd: cwd || process.env.CLAUDE_PLUGIN_ROOT || process.cwd() },
+      { notifyFn },
+    );
+  });
+}
+function resolveWebhookChannelId() {
+  const channels = config?.channelsConfig || {};
+  const main = channels.main?.channelId;
+  if (main) return main;
+  const firstKey = Object.keys(channels)[0];
+  if (firstKey && channels[firstKey]?.channelId) return channels[firstKey].channelId;
+  return statusState?.read?.().channelId || "";
 }
 function wireEventQueueHandlers(eventQueue) {
   if (!eventQueue) return;

@@ -3,12 +3,10 @@ import * as crypto from "crypto";
 import { join } from "path";
 import { spawn, spawnSync } from "child_process";
 import { DATA_DIR } from "./config.mjs";
-import { appendFileSync, readFileSync, readdirSync, writeFileSync, unlinkSync, statSync, existsSync, watch as fsWatch } from "fs";
+import { appendFileSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, statSync, existsSync, watch as fsWatch } from "fs";
+import { randomUUID } from "crypto";
 import { homedir } from "os";
 const WEBHOOKS_DIR = join(DATA_DIR, "webhooks");
-import { makeBridgeLlm } from '../../agent/orchestrator/smart-bridge/bridge-llm.mjs';
-
-const webhookLlm = makeBridgeLlm({ taskType: 'webhook-handler', role: 'webhook-handler', sourceType: 'webhook' });
 const WEBHOOK_LOG = join(DATA_DIR, "webhook.log");
 function logWebhook(msg) {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
@@ -63,7 +61,9 @@ function verifySignature(secret, rawBody, signatureValue, parser) {
 // ── Endpoint config loader ─────────────────────────────────────────────
 // Reads DATA_DIR/webhooks/<name>/config.json (written by setup-server.mjs
 // via POST /webhooks). Cached in-memory, invalidated by fs.watch on the
-// webhooks directory. Returns { secret, parser, channel, exec, model, analyze }.
+// webhooks directory. Returns { secret, parser, channel, mode, role }
+// where mode ∈ {"delegate","interactive"} and role names a user-workflow
+// entry (e.g. "reviewer") when mode=delegate.
 const _endpointCache = new Map();
 let _endpointWatcher = null;
 function _endpointConfigPath(name) {
@@ -101,6 +101,86 @@ function loadEndpointConfig(name) {
     return null;
   }
 }
+
+// ── Delivery tracking ─────────────────────────────────────────────────
+// Per-endpoint append-only log at WEBHOOKS_DIR/<name>/deliveries.jsonl.
+// Each POST writes at least two lines: {status:"pending"|"processing"}
+// then {status:"done"|"failed"|"dedup"}. Earlier fields (payloadPreview,
+// headersSummary) are kept on the first line only; later status updates
+// reference the same `id` and are merged latest-wins at read time.
+function _deliveriesPath(name) {
+  return join(WEBHOOKS_DIR, name, "deliveries.jsonl");
+}
+function appendDelivery(name, entry) {
+  try {
+    const dir = join(WEBHOOKS_DIR, name);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n";
+    appendFileSync(_deliveriesPath(name), line);
+  } catch (err) {
+    logWebhook(`${name}: deliveries append failed: ${err?.message ?? err}`);
+  }
+}
+function readDeliveries(name) {
+  const p = _deliveriesPath(name);
+  if (!existsSync(p)) return [];
+  const byId = new Map();
+  try {
+    const raw = readFileSync(p, "utf8");
+    for (const line of raw.split("\n")) {
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (!entry || !entry.id) continue;
+        const prior = byId.get(entry.id);
+        const merged = prior ? { ...prior, ...entry } : entry;
+        byId.set(entry.id, merged);
+      } catch {}
+    }
+  } catch {}
+  return [...byId.values()];
+}
+function deliveryDone(name, id) {
+  const list = readDeliveries(name);
+  const match = list.find((e) => e.id === id);
+  return match?.status === "done";
+}
+function extractDeliveryId(headers) {
+  return headers["x-github-delivery"]
+    || headers["x-delivery-id"]
+    || headers["x-request-id"]
+    || null;
+}
+function buildHeadersSummary(headers) {
+  const summary = {};
+  if (headers["x-github-event"]) summary.event_type = headers["x-github-event"];
+  if (headers["x-github-delivery"]) summary.delivery_id = headers["x-github-delivery"];
+  summary.signature_present = Boolean(
+    headers["x-hub-signature-256"] || headers["x-signature-256"]
+      || headers["stripe-signature"] || headers["sentry-hook-signature"]
+  );
+  if (headers["content-type"]) summary.content_type = headers["content-type"];
+  return summary;
+}
+// Public read helper — used by setup-server API to list deliveries across endpoints.
+function listAllDeliveries({ endpoint = null, status = null, limit = 100 } = {}) {
+  const out = [];
+  if (!existsSync(WEBHOOKS_DIR)) return out;
+  const names = endpoint
+    ? [endpoint]
+    : readdirSync(WEBHOOKS_DIR, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name);
+  for (const name of names) {
+    for (const entry of readDeliveries(name)) {
+      if (status && entry.status !== status) continue;
+      out.push({ endpoint: name, ...entry });
+    }
+  }
+  out.sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
+  return out.slice(0, limit);
+}
+export { listAllDeliveries };
 function resolveNgrokBin() {
   const isWin = process.platform === "win32";
   const cmd = isWin ? "where" : "which";
@@ -181,6 +261,7 @@ class WebhookServer {
   config;
   server = null;
   eventPipeline = null;
+  bridgeDispatch = null;
   boundPort = 0;
   noSecretWarned = false;
   ngrokProcess = null;
@@ -190,6 +271,12 @@ class WebhookServer {
   }
   setEventPipeline(pipeline) {
     this.eventPipeline = pipeline;
+  }
+  // fn({ role, prompt, cwd, context }) — invoked for delegate-mode webhooks.
+  // Wired from src/channels/index.mjs to call agent.handleToolCall('bridge')
+  // with a notifyFn that forwards bridge output as a channel notification.
+  setBridgeDispatch(fn) {
+    this.bridgeDispatch = typeof fn === "function" ? fn : null;
   }
   // ── HTTP server ───────────────────────────────────────────────────
   start() {
@@ -237,8 +324,26 @@ class WebhookServer {
                 logWebhook(`warning \u2014 no webhook secret configured, skipping signature verification`);
               }
             }
+            // Delivery ID + dedup. If a prior delivery with status=done
+            // exists for this ID, skip with 200 {status:"dedup"} so the
+            // sender (GitHub etc.) stops retrying the same event.
+            const deliveryId = extractDeliveryId(headers) || `gen-${randomUUID()}`;
+            if (deliveryDone(name, deliveryId)) {
+              logWebhook(`${name}: dedup ${deliveryId}`);
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ status: "dedup", id: deliveryId }));
+              return;
+            }
             const parsed = body ? JSON.parse(body) : {};
-            this.handleWebhook(name, parsed, headers, res);
+            appendDelivery(name, {
+              id: deliveryId,
+              endpoint: name,
+              status: "pending",
+              event: headers["x-github-event"] || null,
+              headersSummary: buildHeadersSummary(headers),
+              payloadPreview: String(body || "").slice(0, 512),
+            });
+            this.handleWebhook(name, parsed, headers, res, deliveryId);
           } catch (err) {
             logWebhook(`JSON parse error for ${name}: ${err}`);
             res.writeHead(400, { "Content-Type": "application/json" });
@@ -409,41 +514,25 @@ class WebhookServer {
     if (options.autoStart !== false && config.enabled) this.start();
   }
   // ── Delegate analysis via unified LLM runner ────────────────────────
-  async delegateAnalysis(name, prompt, model, channel, exec) {
-    const presetId = model || 'sonnet-mid';
-    try {
-      const result = await webhookLlm({ prompt, preset: presetId, mode: 'active', timeout: 120000, sourceName: name });
-      if (!result) {
-        logWebhook(`${name}: delegate returned empty`);
-        return;
-      }
-      logWebhook(`${name}: delegate done (${presetId}, ${result.length} chars)`);
-      if (this.eventPipeline) {
-        this.eventPipeline.enqueueDirect(name, result, channel, exec);
-      }
-    } catch (err) {
-      logWebhook(`${name}: delegate error: ${err.message}`);
-    }
-  }
+  // delegateAnalysis removed — delegate mode now invokes bridge directly
+  // via setBridgeDispatch(). See handleWebhook below.
   // ── Webhook handler ───────────────────────────────────────────────
-  handleWebhook(name, body, headers, res) {
+  handleWebhook(name, body, headers, res, deliveryId) {
     const folderPath = join(WEBHOOKS_DIR, name);
     const instructionsPath = join(folderPath, "instructions.md");
     if (existsSync(instructionsPath)) {
       try {
         const instructions = readFileSync(instructionsPath, "utf8").trim();
         let channel = "main";
-        let exec = "interactive";
-        let model = null;
-        let analyze = false;
+        let mode = "interactive";
+        let role = null;
         const configPath = join(folderPath, "config.json");
         if (existsSync(configPath)) {
           try {
             const cfg = JSON.parse(readFileSync(configPath, "utf8"));
             if (cfg.channel) channel = cfg.channel;
-            if (cfg.exec) exec = cfg.exec;
-            if (cfg.model) model = cfg.model;
-            if (cfg.analyze === true) analyze = true;
+            if (cfg.mode === "delegate" || cfg.mode === "interactive") mode = cfg.mode;
+            if (typeof cfg.role === "string" && cfg.role) role = cfg.role;
           } catch {
           }
         }
@@ -454,33 +543,60 @@ ${headersSummary}
 
 --- Webhook Payload ---
 ${payload}`;
-        const fullPrompt = `${instructions}
-
-${payloadContent}`;
-        if (analyze) {
-          this.delegateAnalysis(name, fullPrompt, model, channel, exec);
-          logWebhook(`${name}: folder-based \u2192 delegate (${model})`);
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ status: "accepted", handler: "delegate" }));
-          return;
+        if (mode === "delegate") {
+          if (!role) {
+            logWebhook(`${name}: delegate mode requires role \u2014 falling back to interactive`);
+            mode = "interactive";
+          } else if (!this.bridgeDispatch) {
+            logWebhook(`${name}: delegate mode but no bridge dispatch wired \u2014 falling back to interactive`);
+            mode = "interactive";
+          } else {
+            appendDelivery(name, { id: deliveryId, status: "processing" });
+            const fullPrompt = `${instructions}\n\n${payloadContent}`;
+            Promise.resolve(this.bridgeDispatch({
+              role,
+              prompt: fullPrompt,
+              cwd: this.config?.cwd,
+              context: {
+                source: "webhook",
+                endpoint: name,
+                deliveryId,
+                event: headers["x-github-event"] || null,
+              },
+            })).then(() => {
+              appendDelivery(name, { id: deliveryId, status: "done" });
+              logWebhook(`${name}: delegate dispatched to bridge (role=${role}, id=${deliveryId})`);
+            }).catch((err) => {
+              appendDelivery(name, { id: deliveryId, status: "failed", error: String(err?.message || err) });
+              logWebhook(`${name}: delegate dispatch failed: ${err?.message || err}`);
+            });
+            res.writeHead(202, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ status: "accepted", handler: "delegate", id: deliveryId }));
+            return;
+          }
         }
         if (this.eventPipeline) {
-          this.eventPipeline.enqueueDirect(name, payloadContent, channel, exec, instructions);
-          logWebhook(`${name}: folder-based \u2192 enqueued (${exec})`);
+          appendDelivery(name, { id: deliveryId, status: "processing" });
+          this.eventPipeline.enqueueDirect(name, payloadContent, channel, "interactive", instructions);
+          appendDelivery(name, { id: deliveryId, status: "done" });
+          logWebhook(`${name}: interactive enqueued (id=${deliveryId})`);
         }
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ status: "accepted", handler: "folder" }));
+        res.writeHead(202, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "accepted", handler: "interactive", id: deliveryId }));
         return;
       } catch (err) {
+        appendDelivery(name, { id: deliveryId, status: "failed", error: String(err?.message || err) });
         logWebhook(`${name}: folder handler error: ${err}`);
       }
     }
     if (this.eventPipeline?.handleWebhook(name, body, headers)) {
-      logWebhook(`${name}: routed to event pipeline`);
+      appendDelivery(name, { id: deliveryId, status: "done" });
+      logWebhook(`${name}: routed to event pipeline (id=${deliveryId})`);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "accepted" }));
+      res.end(JSON.stringify({ status: "accepted", id: deliveryId }));
       return;
     }
+    appendDelivery(name, { id: deliveryId, status: "failed", error: "unknown endpoint" });
     logWebhook(`unknown endpoint: ${name}`);
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "unknown endpoint" }));

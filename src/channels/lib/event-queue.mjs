@@ -2,11 +2,7 @@ import { readdirSync, readFileSync, writeFileSync, renameSync, existsSync as fsE
 import { join } from "path";
 import { DATA_DIR } from "./config.mjs";
 import { ensureDir } from "./state-file.mjs";
-import {
-  logEvent,
-  spawnClaudeP,
-  runScript
-} from "./executor.mjs";
+import { logEvent } from "./executor.mjs";
 const QUEUE_DIR = join(DATA_DIR, "events", "queue");
 const IN_PROGRESS_DIR = join(DATA_DIR, "events", "in-progress");
 const PROCESSED_DIR = join(DATA_DIR, "events", "processed");
@@ -74,7 +70,7 @@ class EventQueue {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const filename = `${item.priority === "high" ? "0" : item.priority === "normal" ? "1" : "2"}-${id}.json`;
     writeFileSync(join(QUEUE_DIR, filename), JSON.stringify(item, null, 2));
-    logEvent(`${item.name}: enqueued (${item.priority}, ${item.exec})`);
+    logEvent(`${item.name}: enqueued (${item.priority})`);
     if (item.priority === "high") {
       this.processQueue();
     }
@@ -199,52 +195,20 @@ ${p.item.prompt}`).join("\n\n")}`;
     }
   }
   // ── Execute ───────────────────────────────────────────────────────
+  // Only interactive items pass through the queue now. Delegate-mode
+  // webhooks invoke bridge directly and never enqueue here; the legacy
+  // non-interactive / script exec branches were removed.
   executeItem(item, file) {
-    if (item.exec === "interactive") {
-      if (this.injectFn) {
-        const opts = { type: "webhook" };
-        if (item.instruction) {
-          opts.instruction = `${item.instruction}\n\n${item.prompt}`;
-          this.injectFn("", `event:${item.name}`, " ", opts);
-        } else {
-          opts.instruction = item.prompt;
-          this.injectFn("", `event:${item.name}`, " ", opts);
-        }
+    if (this.injectFn) {
+      const opts = { type: "webhook" };
+      if (item.instruction) {
+        opts.instruction = `${item.instruction}\n\n${item.prompt}`;
+      } else {
+        opts.instruction = item.prompt;
       }
-      if (file) this.moveToProcessed(file, "injected");
-      return;
+      this.injectFn("", `event:${item.name}`, " ", opts);
     }
-    const channelId = this.resolveChannel(item.channel);
-    if (item.exec === "non-interactive") {
-      this.runningCount++;
-      spawnClaudeP(item.name, item.prompt, (result, _code) => {
-        this.runningCount--;
-        if (result && this.sendFn) {
-          this.sendFn(channelId, result).catch(
-            (err) => logEvent(`${item.name}: send failed: ${err}`)
-          );
-        }
-        logEvent(`${item.name}: result=${result.substring(0, 200)}`);
-        if (file) this.moveToProcessed(file, "done");
-      });
-      return;
-    }
-    if (item.exec === "script" && item.script) {
-      this.runningCount++;
-      runScript(item.name, item.script, (result, _code) => {
-        this.runningCount--;
-        if (result && this.sendFn) {
-          this.sendFn(channelId, result).catch(
-            (err) => logEvent(`${item.name}: send failed: ${err}`)
-          );
-        }
-        logEvent(`${item.name}: result=${result.substring(0, 200)}`);
-        if (file) this.moveToProcessed(file, "done");
-      });
-      return;
-    }
-    logEvent(`${item.name}: unknown exec type: ${item.exec}`);
-    if (file) this.moveToProcessed(file, "error");
+    if (file) this.moveToProcessed(file, "injected");
   }
   // ── Helpers ───────────────────────────────────────────────────────
   readQueueFiles() {

@@ -77,6 +77,13 @@ const QUERY_CACHE_DISK_MAX_CONTENT_CHARS = 64 * 1024
 let _diskCacheLoaded = false
 let _cacheFlushTimer = null
 
+const GITHUB_OWNER_PART = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?'
+const GITHUB_REPO_PART = '[A-Za-z0-9._-]+'
+const GITHUB_REPO_URL_RE = new RegExp(`(?:https?:\\/\\/)?(?:www\\.)?github\\.com\\/(${GITHUB_OWNER_PART})\\/(${GITHUB_REPO_PART})(?=$|[\\/#?\\s])`, 'i')
+const GITHUB_REPO_EXACT_RE = new RegExp(`^\\s*(${GITHUB_OWNER_PART})\\/(${GITHUB_REPO_PART})\\s*$`, 'i')
+const GITHUB_REPO_EMBEDDED_RE = new RegExp(`(?:^|[^\\w.-])(${GITHUB_OWNER_PART})\\/(${GITHUB_REPO_PART})(?=$|[^\\w.-])`, 'i')
+const FILE_EXT_RE = /\.[a-z0-9]{1,6}$/i
+
 function cacheTtlMs(tool) {
   return QUERY_RESULT_CACHE_TTLS_MS[tool] || 30_000
 }
@@ -100,6 +107,36 @@ function buildQueryCacheKey(tool, query, cwd, brief) {
     cwd || '',
     normalizeQueryForCache(query),
   ].join('|')
+}
+
+function normalizeGithubRepoName(repo) {
+  return String(repo || '')
+    .replace(/\.git$/i, '')
+    .replace(/[.,;:!?)]$/g, '')
+}
+
+function githubRepoTarget(owner, repo) {
+  const cleanOwner = String(owner || '').trim()
+  const cleanRepo = normalizeGithubRepoName(repo).trim()
+  if (!cleanOwner || !cleanRepo) return null
+  if (cleanOwner.includes('.') || cleanRepo.includes('/')) return null
+  if (FILE_EXT_RE.test(cleanRepo)) return null
+  return { owner: cleanOwner, repo: cleanRepo }
+}
+
+function extractGithubRepoReadTarget(query) {
+  const text = String(query || '').trim()
+  if (!text) return null
+
+  const urlMatch = text.match(GITHUB_REPO_URL_RE)
+  if (urlMatch) return githubRepoTarget(urlMatch[1], urlMatch[2])
+
+  const exactMatch = text.match(GITHUB_REPO_EXACT_RE)
+  if (exactMatch) return githubRepoTarget(exactMatch[1], exactMatch[2])
+
+  if (!/\b(?:github|repo|repository)\b/i.test(text)) return null
+  const embeddedMatch = text.match(GITHUB_REPO_EMBEDDED_RE)
+  return embeddedMatch ? githubRepoTarget(embeddedMatch[1], embeddedMatch[2]) : null
 }
 
 function extractIdentifierCandidate(query) {
@@ -222,8 +259,9 @@ function _isSimpleExploreLookup(query) {
   if (words.length > 12) {
     const strongIdentifiers = text.match(/\b(?:[A-Z][A-Z0-9_]{2,}|[a-z]+(?:[A-Z][A-Za-z0-9]*)+)\b/g) || []
     const uniqueStrong = [...new Set(strongIdentifiers)]
-    const lookupIntent = /\b(find|locate|where|file|function|definition|defined|contains|identifier|symbol)\b|찾|어디|파일|함수|위치|포함|식별자|심볼|근거/i.test(text)
-    if (words.length > 45 || uniqueStrong.length !== 1 || !lookupIntent) return false
+    const hasQuotedStrongIdentifier = uniqueStrong.length === 1 && text.includes(`\`${uniqueStrong[0]}\``)
+    const lookupIntent = /\b(find|locate|where|file|function|definition|defined|contains|identifier|symbol)\b/i.test(text)
+    if (words.length > 45 || uniqueStrong.length !== 1 || (!lookupIntent && !hasQuotedStrongIdentifier)) return false
   }
   return true
 }
@@ -329,10 +367,12 @@ async function runExploreGrepLiteralFastPath(identifier, cwd) {
 async function runExploreLiteralFastPath(query, cwd) {
   if (!cwd) return null
   const text = String(query || '').trim()
-  if (!/\b(literal|exact|contains|occurrence|identifier)\b|리터럴|문자열|어디|쓰이|사용|포함|근거/i.test(text)) return null
   if (/\b(list\s+all|all\s+references|reference\s+graph|impact|trace|audit|review)\b/i.test(text)) return null
   if (text.split(/\s+/).filter(Boolean).length > 60) return null
   const identifier = extractIdentifierCandidate(text)
+  const explicitIdentifier = identifier && (text.includes(`\`${identifier}\``) || /^[A-Z][A-Z0-9_]{2,}$/.test(identifier))
+  const literalIntent = /\b(literal|exact|contains|occurrence|identifier)\b/i.test(text)
+  if (!identifier || (!literalIntent && !explicitIdentifier)) return null
   if (!identifier || !/^(?:[A-Z][A-Z0-9_]{2,}|[a-z]+(?:[A-Z][A-Za-z0-9]*)+)$/.test(identifier)) return null
   return runExploreGrepLiteralFastPath(identifier, cwd)
 }
@@ -758,9 +798,9 @@ Return concise prose.`
 function buildSearchPrompt(query, _cwd) {
   // cwd has no effect on web_search semantics; second arg accepted for
   // builder signature uniformity.
-  const repoMatch = String(query || '').match(/\b([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/)
-  const repoRule = repoMatch
-    ? `\n- This is a GitHub repository read. Call \`web_search\` exactly once with \`github_type:\"repo\"\`, \`owner:\"${repoMatch[1]}\"\`, and \`repo:\"${repoMatch[2]}\"\`. Omit \`keywords\`, \`site\`, and \`type\`. The second-call exception does not apply to this query: stop after that one call unless the tool returns an explicit error or no GitHub repository URL. Do not run code/repository/free-text follow-up searches.`
+  const repoTarget = extractGithubRepoReadTarget(query)
+  const repoRule = repoTarget
+    ? `\n- This is a GitHub repository read. Call \`web_search\` exactly once with \`github_type:\"repo\"\`, \`owner:\"${repoTarget.owner}\"\`, and \`repo:\"${repoTarget.repo}\"\`. Omit \`keywords\`, \`site\`, and \`type\`. The second-call exception does not apply to this query: stop after that one call unless the tool returns an explicit error or no GitHub repository URL. Do not run code/repository/free-text follow-up searches.`
     : ''
   return `Query: ${query}
 
@@ -774,6 +814,10 @@ Rules:
 - If the first call returns a single GitHub read result (repo / file / issue / pulls) with concrete metadata, treat it as authoritative and answer immediately.
 - Prefer narrower \`site\` / \`type\` / GitHub-specific arguments over retrying with near-identical free text.
 - For specific documentation queries, choose a result whose title, URL, or snippet directly matches the requested topic. Do not answer with a generic homepage when the query asks for a specific page such as a models/API/reference page.
+- For a query naming a concrete resource, endpoint, package, page title, or API object, broad introduction/home/guide results are sparse unless their title, URL, or snippet directly contains that requested topic. In that case, use your one allowed second call with the missing topic terms made more explicit.
+- Treat documentation/API queries as normal web/domain searches unless the query explicitly asks for GitHub, repositories, source code, issues, or pull requests.
+- Cite only URLs that were returned by \`web_search\`; do not infer URLs from prior knowledge or site structure.
+- Do not treat a "page not found" result as a valid documentation match.
 - For GitHub repo questions, repository metadata (URL, description, stars/language/default branch/license) is enough evidence.
 - Only set \`github_type\` / \`owner\` / \`repo\` for explicit GitHub queries. For official docs or domain-restricted web searches, call \`web_search\` with \`keywords\`, optional \`site\`, optional \`type\`, and leave all GitHub fields omitted.
 - Do not send empty optional fields such as \`owner:""\`, \`repo:""\`, \`path:""\`, \`site:""\`, \`keywords:""\`, or placeholder \`number:0\`; omit unused fields entirely.

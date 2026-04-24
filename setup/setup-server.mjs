@@ -1331,6 +1331,44 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // -- Delivery log --
+  // Each endpoint keeps an append-only JSONL under its folder. Lists are
+  // latest-wins merged by id, filtered by ?name= / ?status=, sorted ts desc.
+  if (req.method === 'GET' && path === '/webhooks/deliveries') {
+    const name = url.searchParams.get('name') || null;
+    const status = url.searchParams.get('status') || null;
+    const limitRaw = parseInt(url.searchParams.get('limit') || '100', 10);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 100;
+    try {
+      const mod = await import('../src/channels/lib/webhook.mjs');
+      const list = mod.listAllDeliveries({ endpoint: name, status, limit });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(list));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err?.message || err) }));
+    }
+    return;
+  }
+
+  // Retry: payload is only preserved as a 512-char preview, so a silent
+  // replay would be misleading. Return 400 and ask the sender to redeliver.
+  if (req.method === 'POST' && path.startsWith('/webhooks/deliveries/') && path.endsWith('/retry')) {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
+    const id = decodeURIComponent(path.slice('/webhooks/deliveries/'.length, -'/retry'.length));
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: false,
+      id,
+      error: 'payload not retained — use the upstream Redeliver action (GitHub webhooks UI → Recent Deliveries → Redeliver)',
+    }));
+    return;
+  }
+
   if (req.method === 'GET' && path === '/cli-check') {
     // whisper: consider installed if mixdog-config.json has a valid voice.command
     // that points to an existing file (replaces the old pip-whisper PATH check).
