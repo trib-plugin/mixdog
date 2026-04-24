@@ -8,7 +8,7 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 
 - `recall` / `search` / `explore` — single rich NL query = ONE internal agent judges multi-angle probes & synthesizes. Array = N INDEPENDENT agents, mechanical merge, NO cross-synthesis. Default: single query. Array only for genuinely unrelated questions.
 - `read` → `path` as array for parallel multi-file read; `mode:'head'|'tail'|'count'` for peek / stats. NEVER serial `read`.
-- `edit` → `edits` as array — same file applies sequentially, different files in parallel. Covers old `multi_edit` / `batch_edit` in one call. NEVER serial `edit`.
+- `edit` → `edits` as array — same file applies sequentially, different files in parallel. NEVER serial `edit`.
 - `apply_patch` → prefer for non-trivial multi-file or large-context edits. One patch turn beats repeated `read` → `edit` loops.
 - `grep` → `pattern` and/or `glob` as array (OR-joined).
 - `glob` → `pattern` as array (OR-joined).
@@ -37,7 +37,7 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 - If you know an identifier / constant / function / class name but not the file, use `find_symbol` before `grep`.
 - Multi-file or already-clear edits: `apply_patch` before repeated `read` → `edit`.
 - Shell work across turns: `bash_session` reuses shell state — don't replay setup in repeated `bash` calls.
-- For long background commands, prefer `job_wait` over repeated `job_status` polling.
+- For long background commands, use `job_wait` to block until completion; `read` the stdout/stderr path for logs.
 - Large tool outputs may be saved to a path with a preview; only `read` that path if the preview is insufficient.
 - `recall` / `search` / `explore` — a single rich NL query is the default; internal agent judges multi-angle probes (glob/grep, web, memory) and returns a synthesized answer. Array only when asks are genuinely unrelated.
 
@@ -63,12 +63,11 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 - "I know the exact edit across multiple files" → `apply_patch`
 - "I need a small local replacement in one file" → `edit`
 - "I need shell state across turns" → `bash_session`
-- "I launched a long-running command in background" → `job_wait`, then `job_read` only if needed
+- "I launched a long-running command in background" → `job_wait`; `read` the stdout/stderr path for logs
 
 ## Anti-patterns
 
 - Do not call `find_symbol` and `grep` for the same identifier in the same round unless `find_symbol` returned no declaration candidate.
-- Do not poll `job_status` repeatedly when `job_wait` would answer in one call.
 - Do not serially `read` files one by one when the candidate list is already known.
 - Do not serially `write` several whole files when `write_many` can do it in one call.
 - Do not `read` a whole large file when `find_symbol`, `code_graph`, or `grep` can narrow the line window first.

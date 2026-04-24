@@ -24,8 +24,6 @@ const DEFAULT_SAME_TOOL_THRESHOLDS = Object.freeze({
     grep: 16,
     glob: 16,
     list: 16,
-    job_status: 6,
-    job_read: 10,
     bash: 20,
     bash_session: 20,
 });
@@ -43,7 +41,7 @@ const DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS = Object.freeze({
 // search_fanout family counters so probe→edit→probe cycles don't
 // accumulate toward abort.
 const PRODUCTIVE_TOOLS = Object.freeze(new Set([
-    'edit', 'multi_edit', 'batch_edit', 'edit_lines',
+    'edit', 'edit_lines',
     'apply_patch', 'write', 'write_many',
     'bash', 'bash_session',
 ]));
@@ -66,7 +64,7 @@ const DEFAULT_CONFIG = Object.freeze({
             threshold: 5,
             repeatEvery: 4,
             minDistinctTools: 2,
-            tools: Object.freeze(['edit', 'multi_edit', 'batch_edit', 'edit_lines']),
+            tools: Object.freeze(['edit', 'edit_lines']),
         }),
         Object.freeze({
             key: 'search_fanout',
@@ -271,12 +269,6 @@ export function buildSameToolWarn(info) {
     if (toolKey === 'read' || toolKey === 'multi_read') {
         lines.push(`- Batch file paths into one read call (array \`path\`) instead of serial reads.`);
         lines.push(`- If you are still locating the code, use \`grep\` / \`glob\` first; if you already know the hit, use \`offset\` / \`limit\` instead of re-reading whole files.`);
-    } else if (toolKey === 'job_status') {
-        lines.push(`- Prefer \`job_wait\` instead of polling \`job_status\` repeatedly.`);
-        lines.push(`- \`job_status\` already includes preview + summary; only \`job_read\` if that summary is insufficient.`);
-    } else if (toolKey === 'job_read') {
-        lines.push(`- If the job is still running, switch to \`job_wait\` instead of alternating \`job_status\` + \`job_read\`.`);
-        lines.push(`- If \`job_status.summary\` already explains the result, stop here instead of reading more log output.`);
     } else if (toolKey === 'grep') {
         lines.push(`- OR-join multiple patterns / globs in one \`grep\` call instead of serial probes.`);
         lines.push(`- If the exact file is known, switch to \`read\`; if this is a structural/symbol lookup, prefer \`code_graph\`.`);
@@ -320,7 +312,7 @@ export function buildToolFamilyWarn(info) {
         lines.push(`- Prefer \`code_graph\` or \`explore\` for the next lookup unless you have a specific new path/range.`);
         lines.push(`- If the needed file/value is already visible, move to \`edit\`/\`apply_patch\` or answer from that evidence instead of another broad \`grep\`/\`read\` pass.`);
     } else if (family === 'edit_roundtrip') {
-        lines.push(`- Prefer \`apply_patch\` for the next step instead of another \`edit\` / \`multi_edit\` round-trip.`);
+        lines.push(`- Prefer \`apply_patch\` for the next step instead of another \`edit\` round-trip.`);
         lines.push(`- If the exact change is already clear, emit one multi-file patch and move on.`);
     } else if (family === 'search_fanout') {
         lines.push(`- Batch the next search questions into one call, or synthesize from the evidence you already gathered.`);

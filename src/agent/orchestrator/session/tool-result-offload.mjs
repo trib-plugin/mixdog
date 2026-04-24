@@ -36,8 +36,6 @@ const INLINE_THRESHOLD_BY_TOOL = new Map([
     ['bash', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
     ['bash_session', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
     ['job_wait', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
-    ['job_read', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
-    ['job_status', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
 ]);
 
 function getOffloadThreshold(toolName) {

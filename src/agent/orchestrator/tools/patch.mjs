@@ -1,7 +1,7 @@
 // apply_patch — one-turn multi-file edits from a unified diff.
 //
 // Inverse of the `diff` tool. Typical Lead workflow without this tool is
-// `read` → `edit` (or `multi_edit` / `edit_lines`) per file, which costs
+// `read` → `edit` (or `edit_lines`) per file, which costs
 // N+1 turns for an N-file refactor. A unified diff already encodes every
 // hunk's surrounding context, so we can apply the whole patch server-side
 // and skip the read round-trips entirely.
@@ -11,7 +11,7 @@
 // hunks}`. `applyPatch(source, patch)` returns the new content or `false`
 // when any hunk can't be located (context mismatch).
 //
-// Safety model (diverges from edit/multi_edit/edit_lines):
+// Safety model (diverges from edit/edit_lines):
 //   - No Read-before-Edit requirement. The patch's context lines are
 //     themselves the "proof of read" — if they don't match, applyPatch
 //     rejects the hunk and nothing is written.
@@ -24,9 +24,8 @@
 //
 // With `reject_partial: true` (the default) the whole batch is two-phase:
 // we build every file's new content in memory first; only if all files
-// succeeded do we write any of them. This matches the atomic semantics
-// of `batch_edit` and keeps a failed patch from landing a half-applied
-// tree.
+// succeeded do we write any of them. Atomic batch semantics keep a
+// failed patch from landing a half-applied tree.
 
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, statSync } from 'node:fs';
@@ -126,7 +125,7 @@ async function apply_patch(args, cwd, options = {}) {
   let allowHome = false;
   try { allowHome = getCapabilities().homeAccess === true; } catch { allowHome = false; }
   const pathOpts = { allowHome };
-  // Default true — atomic batch semantics match batch_edit.
+  // Default true — atomic batch semantics.
   const rejectPartial = args?.reject_partial !== false;
   if (!isSafePath(basePath, cwd, pathOpts)) {
     return `Error: base_path outside allowed scope — ${normalizeOutputPath(basePath)}`;

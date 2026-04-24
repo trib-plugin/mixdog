@@ -26,10 +26,8 @@ const EMERGENCY_ITERATION_FUSE = 1000;
 const READ_BLOCKED_TOOLS = new Set([
     'bash', 'bash_session',
     'write', 'write_many',
-    'edit', 'multi_edit', 'batch_edit', 'edit_lines',
+    'edit', 'edit_lines',
     'apply_patch',
-    'job_cancel',
-    'rename_symbol_refs', 'rename_file_refs',
     'sg_rewrite',
 ]);
 const MCP_ONLY_ALLOWED_KINDS = new Set(['mcp', 'internal', 'skill']);

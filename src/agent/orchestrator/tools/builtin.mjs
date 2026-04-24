@@ -660,8 +660,8 @@ function walkDir(root, { hidden = false, maxDepth = Infinity, visit, sort } = {}
 // --- Tool definitions for external models ---
 //
 // Ordered to match the previous hand-maintained tools.json entries
-// (read / edit / write / bash / grep / glob / multi_edit / multi_read /
-// batch_edit) so build-tools-manifest reproduces the legacy ordering.
+// (read / edit / write / bash / grep / glob / multi_read) so
+// build-tools-manifest reproduces the legacy ordering.
 // Shape mirrors tools.json: title + annotations + compact descriptions.
 // The previous long-form descriptions have been trimmed to the tools.json
 // versions — those are what external models actually saw in the prefix.
@@ -747,64 +747,10 @@ export const BUILTIN_TOOLS = [
         },
     },
     {
-        name: 'multi_edit',
-        title: 'Multi Edit',
-        annotations: { title: 'Multi Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Apply multiple ordered replacements to ONE file in one call. Use this when the file is already known and you need several edits without serial `edit` turns. All-or-nothing on that file.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                path: { type: 'string', description: 'Target file path.' },
-                edits: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            old_string: { type: 'string' },
-                            new_string: { type: 'string' },
-                            replace_all: { type: 'boolean' },
-                        },
-                        required: ['old_string', 'new_string'],
-                    },
-                    minItems: 1,
-                    description: 'Ordered replacements for the same file.',
-                },
-            },
-            required: ['path', 'edits'],
-        },
-    },
-    {
-        name: 'batch_edit',
-        title: 'Batch Edit',
-        annotations: { title: 'Batch Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Apply edits across MULTIPLE files in one call. Different files run in parallel; repeated edits within the same file are grouped and executed as `multi_edit`. Use this instead of serial `edit` across several files.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                edits: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            path: { type: 'string', description: 'Target file path.' },
-                            old_string: { type: 'string' },
-                            new_string: { type: 'string' },
-                            replace_all: { type: 'boolean' },
-                        },
-                        required: ['path', 'old_string', 'new_string'],
-                    },
-                    minItems: 1,
-                    description: 'Edits across one or more files.',
-                },
-            },
-            required: ['edits'],
-        },
-    },
-    {
         name: 'edit_lines',
         title: 'Edit Lines (line-number based)',
         annotations: { title: 'Edit Lines', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Replace lines [start_line, end_line] inclusive (1-based) with new_content. Use this when unique-string match in `edit` / `multi_edit` is awkward — large files, repeated substrings, or pure line-replace. Pair with `read` (note line numbers) -> `edit_lines`. mtime drift is enforced like `edit`: must `read` first; concurrent external writes return errorCode 7.',
+        description: 'Replace lines [start_line, end_line] inclusive (1-based) with new_content. Use this when unique-string match in `edit` is awkward — large files, repeated substrings, or pure line-replace. Pair with `read` (note line numbers) -> `edit_lines`. mtime drift is enforced like `edit`: must `read` first; concurrent external writes return errorCode 7.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -872,7 +818,7 @@ export const BUILTIN_TOOLS = [
         name: 'bash',
         title: 'Bash',
         annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-        description: 'Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Only opt into persistent shell state when you truly need cwd/env/venv continuity: pass `persistent:true` (bridge sessions) or call `bash_session` directly. Set `run_in_background:true` for long builds/tests/servers, then inspect with `job_status` / `job_wait` / `job_read` / `jobs_list`. Destructive patterns (rm -rf /, force-push, format) are blocked.',
+        description: 'Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Only opt into persistent shell state when you truly need cwd/env/venv continuity: pass `persistent:true` (bridge sessions) or call `bash_session` directly. Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -887,67 +833,16 @@ export const BUILTIN_TOOLS = [
         },
     },
     {
-        name: 'jobs_list',
-        title: 'List Background Jobs',
-        annotations: { title: 'List Background Jobs', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'List recent background shell jobs with status, pid, and start time. Use this to discover job ids before `job_wait`, `job_status`, or `job_read`.',
-        inputSchema: { type: 'object', properties: {} },
-    },
-    {
-        name: 'job_status',
-        title: 'Background Job Status',
-        annotations: { title: 'Background Job Status', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Get one snapshot for a background shell job: pid, command, output paths, and completion state. Do NOT poll this in a loop — prefer `job_wait` while the job is still running.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                job_id: { type: 'string', description: 'Background job id returned by bash with run_in_background:true.' },
-            },
-            required: ['job_id'],
-        },
-    },
-    {
         name: 'job_wait',
         title: 'Wait For Background Job',
         annotations: { title: 'Wait For Background Job', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-        description: 'Wait for a background shell job to finish and return its latest status/summary in one call. Prefer this over repeated job_status polling.',
+        description: 'Wait for a background shell job to finish and return its latest status/summary in one call.',
         inputSchema: {
             type: 'object',
             properties: {
                 job_id: { type: 'string', description: 'Background job id returned by bash with run_in_background:true.' },
                 timeout_ms: { type: 'number', description: 'Maximum time to wait before returning the current running state. Default 30000.' },
                 poll_ms: { type: 'number', description: 'Polling interval while waiting. Default 250 ms.' },
-            },
-            required: ['job_id'],
-        },
-    },
-    {
-        name: 'job_read',
-        title: 'Read Background Job Output',
-        annotations: { title: 'Read Background Job Output', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read stdout/stderr from a background shell job using the same line-oriented behavior as read/tail. Prefer `job_wait` first; use `job_read` when you need the actual log text after completion or when the status summary is insufficient.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                job_id: { type: 'string', description: 'Background job id.' },
-                stream: { type: 'string', enum: ['stdout', 'stderr'], description: 'Which stream to read. Default stdout.' },
-                mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'], description: 'Read mode. Default tail.' },
-                n: { type: 'number', description: 'Lines for head/tail mode. Default 40.' },
-                offset: { type: 'number', description: 'Start line for full mode (0-based).' },
-                limit: { type: 'number', description: 'Max lines for full mode.' },
-            },
-            required: ['job_id'],
-        },
-    },
-    {
-        name: 'job_cancel',
-        title: 'Cancel Background Job',
-        annotations: { title: 'Cancel Background Job', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-        description: 'Terminate a running background shell job.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                job_id: { type: 'string', description: 'Background job id.' },
             },
             required: ['job_id'],
         },
@@ -1023,7 +918,7 @@ export const BUILTIN_TOOLS = [
         name: 'diff',
         title: 'Unified Diff',
         annotations: { title: 'Unified Diff', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Unified diff between two files (or two raw strings). Useful for explaining a change before applying it via `edit` / `multi_edit`. Output is standard `--- from\n+++ to\n@@ ... @@` format. Pass `from_text:true` and/or `to_text:true` to treat the value as inline text instead of a path.',
+        description: 'Unified diff between two files (or two raw strings). Useful for explaining a change before applying it via `edit`. Output is standard `--- from\n+++ to\n@@ ... @@` format. Pass `from_text:true` and/or `to_text:true` to treat the value as inline text instead of a path.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -1217,7 +1112,7 @@ export function getBuiltinCacheStatsForTesting() {
 // successful Write the path is marked read-known so a subsequent Edit
 // does not have to round-trip through Read.
 //
-// Value stores the mtime + size at read-time. Edit/multi_edit stat the
+// Value stores the mtime + size at read-time. Edit stats the
 // file again and reject with error [code 7] when the current mtime has
 // advanced — detects lint/formatter/external-write drift the way
 // Anthropic's readFileState timestamp check does.
@@ -1371,20 +1266,6 @@ function readShellJobDetail(jobId) {
         return JSON.parse(readFileSync(p, 'utf-8'));
     } catch {
         return null;
-    }
-}
-function listShellJobDetails() {
-    try {
-        return readdirSync(getShellJobsDir())
-            .filter((f) => f.endsWith('.json'))
-            .map((f) => {
-                try { return JSON.parse(readFileSync(join(getShellJobsDir(), f), 'utf-8')); }
-                catch { return null; }
-            })
-            .filter(Boolean)
-            .sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')));
-    } catch {
-        return [];
     }
 }
 function isPidAlive(pid) {
@@ -2531,6 +2412,122 @@ function computeUnifiedDiff(a, b, ctx, fromLabel, toLabel) {
     return out.join('\n');
 }
 
+async function _runMultiEdit(args, workDir, readStateScope, pathOpts) {
+    args.path = normalizeInputPath(args.path);
+    const filePath = args.path;
+    const edits = Array.isArray(args.edits) ? args.edits : [];
+    if (!filePath) return 'Error: path is required';
+    if (edits.length === 0) return 'Error: edits array is required';
+    if (!isSafePath(filePath, workDir, pathOpts)) return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
+    const fullPath = resolveAgainstCwd(filePath, workDir);
+    let mEditStat;
+    try { mEditStat = statSync(fullPath); }
+    catch (err) {
+        if (err && err.code === 'ENOENT') {
+            const similar = findSimilarFile(fullPath);
+            const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+            return `Error [code 4]: file not found: ${filePath}${hint}`;
+        }
+        return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+    }
+    const mEditSnapshot = _getReadSnapshot(fullPath, readStateScope);
+    if (!mEditSnapshot) {
+        return _primeReadSnapshotForEdit({
+            fullPath,
+            filePath,
+            st: mEditStat,
+            scope: readStateScope,
+            oldStrings: edits.map((entry, i) => ({
+                label: `edit ${i}`,
+                old_string: entry?.old_string,
+            })),
+        }) || `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
+    }
+    let mEditPreloadedContent = null;
+    if (_isSnapshotStale(mEditStat, mEditSnapshot)) {
+        mEditPreloadedContent = _readContentIfSnapshotHashMatches(fullPath, mEditSnapshot);
+        if (mEditPreloadedContent === null) {
+            return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
+        }
+    }
+    try {
+        let content = mEditPreloadedContent;
+        try { if (content === null) content = readFileSync(fullPath, 'utf-8'); }
+        catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
+        for (let i = 0; i < edits.length; i++) {
+            const entry = edits[i];
+            if (!entry || typeof entry.old_string !== 'string' || typeof entry.new_string !== 'string') {
+                return `Error: edit ${i} must have old_string and new_string`;
+            }
+            const { old_string, new_string, replace_all } = entry;
+            if (replace_all === true) {
+                if (!content.includes(old_string)) {
+                    return `Error [code 8]: edit ${i} — old_string not found in ${filePath}`;
+                }
+                content = content.split(old_string).join(new_string);
+            } else {
+                const count = content.split(old_string).length - 1;
+                if (count === 0) return `Error [code 8]: edit ${i} — old_string not found in ${filePath}`;
+                if (count > 1) return `Error [code 9]: edit ${i} — old_string found ${count} times in ${filePath}; set replace_all:true or provide more unique context`;
+                content = content.replace(old_string, () => new_string);
+            }
+        }
+        await atomicWrite(fullPath, content);
+        invalidateBuiltinResultCache([fullPath]);
+        markCodeGraphDirtyPaths(workDir, [fullPath]);
+        _recordReadSnapshot(fullPath, undefined, readStateScope, {
+            source: 'edit',
+            isPartialView: false,
+            contentHash: _hashText(content),
+        });
+        return `Edited: ${normalizeOutputPath(filePath)} (${edits.length} replacements applied)`;
+    } catch (err) {
+        return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+    }
+}
+
+async function _runBatchEdit(args, workDir, readStateScope, pathOpts, executeChildBuiltinTool) {
+    const edits = Array.isArray(args.edits) ? args.edits : [];
+    if (edits.length === 0) return 'Error: edits array is required';
+    for (const e of edits) { if (e && typeof e === 'object') e.path = normalizeInputPath(e.path); }
+    const groups = new Map();
+    const missingPath = [];
+    for (const e of edits) {
+        if (!e || !e.path) { missingPath.push(e); continue; }
+        if (!groups.has(e.path)) groups.set(e.path, []);
+        groups.get(e.path).push(e);
+    }
+    const parseLeadError = (body) => {
+        const first = String(body).split('\n')[0] || '';
+        if (!/^Error(\s|\[)/.test(first)) return null;
+        const colonIdx = first.indexOf(': ');
+        const msg = colonIdx !== -1 ? first.slice(colonIdx + 2) : first;
+        const retryHint = String(body).includes('snapshot recorded now') && !msg.includes('Retry the edit directly')
+            ? ' (snapshot recorded; retry the same edit directly, no read needed)'
+            : '';
+        return `${msg}${retryHint}`;
+    };
+    const groupResults = await Promise.all([...groups.entries()].map(async ([path, items]) => {
+        if (items.length === 1) {
+            const body = await executeChildBuiltinTool('edit', items[0], workDir);
+            const errMsg = parseLeadError(body);
+            return errMsg
+                ? `FAIL ${normalizeOutputPath(path)}: ${errMsg}`
+                : `OK ${normalizeOutputPath(path)}`;
+        }
+        const body = await _runMultiEdit({
+            path,
+            edits: items.map(({ path: _p, ...rest }) => rest),
+        }, workDir, readStateScope, pathOpts);
+        const errMsg = parseLeadError(body);
+        return errMsg
+            ? `FAIL ${normalizeOutputPath(path)}: ${errMsg}`
+            : `OK ${normalizeOutputPath(path)} (${items.length})`;
+    }));
+    const missingLines = missingPath.map(() => 'FAIL (missing-path): path is required');
+    return [...groupResults, ...missingLines].join('\n');
+}
+
 // --- Tool execution ---
 export async function executeBuiltinTool(name, args, cwd, options = {}) {
     const workDir = cwd || process.cwd();
@@ -2611,7 +2608,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         mergeStderr ? null : `[stderr: ${normalizeOutputPath(job.stderrPath)}]`,
                         '',
                         `Background job started for command: ${command}`,
-                        `Use jobs_list / job_status / job_read / job_cancel to inspect it.`,
+                        `Use job_wait to block until it finishes; read the stdout/stderr paths above for logs.`,
                     ].filter(Boolean).join('\n');
                 }
                 const result = spawnSync(shell, [shellArg, command], {
@@ -2669,20 +2666,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 } else if (shellEffects.mutationMode === 'global') invalidateBuiltinResultCache();
             }
         }
-        case 'jobs_list': {
-            const jobs = listShellJobDetails().map((detail) => attachJobInsights(refreshShellJob(detail.jobId) || detail));
-            if (jobs.length === 0) return '(no background jobs)';
-            return jobs.map((job) =>
-                `${job.jobId}\t${job.status}\tpid=${job.pid ?? '-'}\t${job.startedAt || '-'}\t${job.command || ''}${job.summary ? `\t${job.summary}` : ''}`
-            ).join('\n');
-        }
-        case 'job_status': {
-            const jobId = typeof args.job_id === 'string' ? args.job_id : '';
-            if (!jobId) return 'Error: job_id is required';
-            const job = refreshShellJob(jobId);
-            if (!job) return `Error: job not found: ${jobId}`;
-            return JSON.stringify(attachJobInsights(job), null, 2);
-        }
         case 'job_wait': {
             const jobId = typeof args.job_id === 'string' ? args.job_id : '';
             if (!jobId) return 'Error: job_id is required';
@@ -2692,50 +2675,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             });
             if (!job) return `Error: job not found: ${jobId}`;
             return JSON.stringify(job, null, 2);
-        }
-        case 'job_read': {
-            const jobId = typeof args.job_id === 'string' ? args.job_id : '';
-            if (!jobId) return 'Error: job_id is required';
-            const job = refreshShellJob(jobId);
-            if (!job) return `Error: job not found: ${jobId}`;
-            const stream = args.stream === 'stderr' ? 'stderr' : 'stdout';
-            const path = stream === 'stderr' ? job.stderrPath : job.stdoutPath;
-            if (!path) return `Error: ${stream} path missing for job ${jobId}`;
-            const mode = args.mode || 'tail';
-            const jobCwd = getPluginData();
-            if (mode === 'head') return executeChildBuiltinTool('head', { path, n: args.n || 40 }, jobCwd);
-            if (mode === 'count') return executeChildBuiltinTool('wc', { path }, jobCwd);
-            if (mode === 'full') {
-                return executeChildBuiltinTool('read', {
-                    path,
-                    offset: typeof args.offset === 'number' ? args.offset : 0,
-                    limit: typeof args.limit === 'number' ? args.limit : 2000,
-                }, jobCwd);
-            }
-            return executeChildBuiltinTool('tail', { path, n: args.n || 40 }, jobCwd);
-        }
-        case 'job_cancel': {
-            const jobId = typeof args.job_id === 'string' ? args.job_id : '';
-            if (!jobId) return 'Error: job_id is required';
-            const job = refreshShellJob(jobId);
-            if (!job) return `Error: job not found: ${jobId}`;
-            if (job.status !== 'running') return `Job ${jobId} already ${job.status}`;
-            if (!job.pid || !isPidAlive(job.pid)) {
-                job.status = 'failed';
-                job.finishedAt = new Date().toISOString();
-                job.error = 'process not running';
-                writeShellJobDetail(job);
-                return `Job ${jobId} is no longer running`;
-            }
-            try {
-                killProcessTree(job.pid, 'SIGTERM');
-            } catch (err) {
-                return `Error: failed to cancel ${jobId}: ${err?.message || String(err)}`;
-            }
-            job.status = 'cancelled';
-            job.finishedAt = new Date().toISOString();
-            writeShellJobDetail(job);
-            return `Cancelled job ${jobId}`;
         }
         case 'read': {
             // Unified-read dispatch (v0.6.283+):
@@ -2908,141 +2847,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
         case 'write_many': {
             return executeChildBuiltinTool('write', { writes: args.writes }, workDir);
         }
-        case 'multi_edit': {
-            // Claude Code native MultiEdit semantics: one file, many ordered
-            // replacements, all-or-nothing. We apply the chain in memory
-            // first — any failure aborts before the file is written so the
-            // tree never lands in a half-edited state.
-            args.path = normalizeInputPath(args.path);
-            const filePath = args.path;
-            const edits = Array.isArray(args.edits) ? args.edits : [];
-            if (!filePath) return 'Error: path is required';
-            if (edits.length === 0) return 'Error: edits array is required';
-            if (!isSafePath(filePath, workDir, pathOpts)) return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
-            const fullPath = resolveAgainstCwd(filePath, workDir);
-            // F2 fix: one stat syscall covers both existence check and mtime
-            // read. existsSync + statSync was a TOCTOU window where the file
-            // could vanish between probes; ENOENT from statSync now produces
-            // the same file-not-found hint the existsSync branch used to.
-            let mEditStat;
-            try { mEditStat = statSync(fullPath); }
-            catch (err) {
-                if (err && err.code === 'ENOENT') {
-                    const similar = findSimilarFile(fullPath);
-                    const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
-                    return `Error [code 4]: file not found: ${filePath}${hint}`;
-                }
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
-            }
-            const mEditSnapshot = _getReadSnapshot(fullPath, readStateScope);
-            if (!mEditSnapshot) {
-                return _primeReadSnapshotForEdit({
-                    fullPath,
-                    filePath,
-                    st: mEditStat,
-                    scope: readStateScope,
-                    oldStrings: edits.map((entry, i) => ({
-                        label: `edit ${i}`,
-                        old_string: entry?.old_string,
-                    })),
-                }) || `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
-            }
-            let mEditPreloadedContent = null;
-            if (_isSnapshotStale(mEditStat, mEditSnapshot)) {
-                mEditPreloadedContent = _readContentIfSnapshotHashMatches(fullPath, mEditSnapshot);
-                if (mEditPreloadedContent === null) {
-                    return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
-                }
-            }
-            try {
-                let content = mEditPreloadedContent;
-                try { if (content === null) content = readFileSync(fullPath, 'utf-8'); }
-                catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
-                for (let i = 0; i < edits.length; i++) {
-                    const entry = edits[i];
-                    if (!entry || typeof entry.old_string !== 'string' || typeof entry.new_string !== 'string') {
-                        return `Error: edit ${i} must have old_string and new_string`;
-                    }
-                    const { old_string, new_string, replace_all } = entry;
-                    if (replace_all === true) {
-                        if (!content.includes(old_string)) {
-                            return `Error [code 8]: edit ${i} — old_string not found in ${filePath}`;
-                        }
-                        content = content.split(old_string).join(new_string);
-                    } else {
-                        const count = content.split(old_string).length - 1;
-                        if (count === 0) return `Error [code 8]: edit ${i} — old_string not found in ${filePath}`;
-                        if (count > 1) return `Error [code 9]: edit ${i} — old_string found ${count} times in ${filePath}; set replace_all:true or provide more unique context`;
-                        // B35 fix: String.prototype.replace(str, str) interprets
-                        // substitution patterns (dollar-ampersand, dollar-digit,
-                        // double-dollar, etc.) in the second arg and splices the
-                        // matched text / capture groups / literal dollar into the
-                        // result. Corrupts any new_string that legitimately contains
-                        // such sequences (e.g. regex escape code in source). The
-                        // function form opts out of substitution entirely.
-                        content = content.replace(old_string, () => new_string);
-                    }
-                }
-                // v0.6.248: atomic write — tempfile + fsync + rename.
-                // Serial edits all land in `content`; a single atomicWrite
-                // publishes the final state.
-                await atomicWrite(fullPath, content);
-                invalidateBuiltinResultCache([fullPath]);
-                markCodeGraphDirtyPaths(workDir, [fullPath]);
-                _recordReadSnapshot(fullPath, undefined, readStateScope, {
-                    source: 'edit',
-                    isPartialView: false,
-                    contentHash: _hashText(content),
-                });
-                return `Edited: ${normalizeOutputPath(filePath)} (${edits.length} replacements applied)`;
-            } catch (err) {
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
-            }
-        }
-        case 'batch_edit': {
-            const edits = Array.isArray(args.edits) ? args.edits : [];
-            if (edits.length === 0) return 'Error: edits array is required';
-            for (const e of edits) { if (e && typeof e === 'object') e.path = normalizeInputPath(e.path); }
-            // Fan-out: group edits by path so different files run in parallel
-            // (Promise.all) while same-file edits stay sequential (via
-            // multi_edit) to avoid concurrent writes on the same target.
-            const groups = new Map();
-            const missingPath = [];
-            for (const e of edits) {
-                if (!e || !e.path) { missingPath.push(e); continue; }
-                if (!groups.has(e.path)) groups.set(e.path, []);
-                groups.get(e.path).push(e);
-            }
-            const parseLeadError = (body) => {
-                const first = String(body).split('\n')[0] || '';
-                if (!/^Error(\s|\[)/.test(first)) return null;
-                const colonIdx = first.indexOf(': ');
-                const msg = colonIdx !== -1 ? first.slice(colonIdx + 2) : first;
-                const retryHint = String(body).includes('snapshot recorded now') && !msg.includes('Retry the edit directly')
-                    ? ' (snapshot recorded; retry the same edit directly, no read needed)'
-                    : '';
-                return `${msg}${retryHint}`;
-            };
-            const groupResults = await Promise.all([...groups.entries()].map(async ([path, items]) => {
-                if (items.length === 1) {
-                    const body = await executeChildBuiltinTool('edit', items[0], workDir);
-                    const errMsg = parseLeadError(body);
-                    return errMsg
-                        ? `FAIL ${normalizeOutputPath(path)}: ${errMsg}`
-                        : `OK ${normalizeOutputPath(path)}`;
-                }
-                const body = await executeChildBuiltinTool('multi_edit', {
-                    path,
-                    edits: items.map(({ path: _p, ...rest }) => rest),
-                }, workDir);
-                const errMsg = parseLeadError(body);
-                return errMsg
-                    ? `FAIL ${normalizeOutputPath(path)}: ${errMsg}`
-                    : `OK ${normalizeOutputPath(path)} (${items.length})`;
-            }));
-            const missingLines = missingPath.map(() => 'FAIL (missing-path): path is required');
-            return [...groupResults, ...missingLines].join('\n');
-        }
         case 'write': {
             if (Array.isArray(args.writes) && args.writes.length > 0) {
                 const items = args.writes.map((entry) => ({
@@ -3125,9 +2929,9 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }
         }
         case 'edit': {
-            // Unified-edit dispatch (v0.6.283+):
-            //   edits array present → multi_edit (single file) or batch_edit
-            //     (multiple files), inferred from per-item path homogeneity.
+            // Unified-edit dispatch:
+            //   edits array present → single-file (same path across items) or
+            //     cross-file fan-out, inferred from per-item path homogeneity.
             //   Omitted path on an edit item falls back to top-level `path`.
             //   Otherwise single-edit semantics below.
             if (Array.isArray(args.edits) && args.edits.length > 0) {
@@ -3141,16 +2945,16 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 if (paths.size === 0) return 'Error: each edit requires a path (either on the item or at top level)';
                 if (paths.size === 1) {
                     const onePath = [...paths][0];
-                    return executeChildBuiltinTool('multi_edit', {
+                    return _runMultiEdit({
                         path: onePath,
                         edits: items.map(({ path: _p, ...rest }) => rest),
-                    }, workDir);
+                    }, workDir, readStateScope, pathOpts);
                 }
-                return executeChildBuiltinTool('batch_edit', {
+                return _runBatchEdit({
                     edits: items.map((x) => ({
                         path: x.path, old_string: x.old_string, new_string: x.new_string, replace_all: x.replace_all,
                     })),
-                }, workDir);
+                }, workDir, readStateScope, pathOpts, executeChildBuiltinTool);
             }
             args.path = normalizeInputPath(args.path);
             const filePath = args.path;
@@ -3230,10 +3034,10 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }
         }
         case 'edit_lines': {
-            // v0.6.223: line-number based replacement. Complement to `edit` /
-            // `multi_edit` for cases where unique-substring match is awkward
-            // (large files, repeated lines, or pure line-replace). Shares the
-            // same Read-before-Edit + mtime-drift contract as `edit`.
+            // v0.6.223: line-number based replacement. Complement to `edit`
+            // for cases where unique-substring match is awkward (large files,
+            // repeated lines, or pure line-replace). Shares the same
+            // Read-before-Edit + mtime-drift contract as `edit`.
             args.path = normalizeInputPath(args.path);
             const filePath = args.path;
             const startLine = parseInt(args.start_line, 10);

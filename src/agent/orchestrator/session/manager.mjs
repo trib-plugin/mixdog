@@ -206,11 +206,10 @@ function _dedupByName(tools) {
 //
 // KEEP (bridge agents can call):
 //   - core file / shell: read, edit, write, bash, bash_session, grep, glob
-//   - IO helpers: head, tail, wc, list, tree, find_files,
-//                 multi_read, multi_edit, batch_edit
-//   - Code graph / refactors: code_graph, rename_symbol_refs, rename_file_refs
+//   - IO helpers: head, tail, wc, list, tree, find_files, multi_read
+//   - Code graph / refactors: code_graph
 //   - memory read: recall (hidden recall-agent gets memory_search directly)
-//   - information retrieval: search, explore, fetch_many
+//   - information retrieval: search, explore
 //     (hidden search-agent gets web_search directly)
 export const BRIDGE_DENY_TOOLS = Object.freeze([
     // Discord / channel (Lead-only)

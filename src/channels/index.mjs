@@ -1556,28 +1556,6 @@ const TOOL_DEFS = [
     }
   },
   {
-    name: "fetch_many",
-    title: "Fetch Many",
-    annotations: { title: "Fetch Many", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: "Fetch recent messages from multiple channels in one call. Use this when you need to look back across 2+ channels without serial fetches.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        channels: {
-          type: "array",
-          items: { type: "string" },
-          minItems: 1,
-          description: "Channel name labels as configured in channelsConfig"
-        },
-        limit: {
-          type: "number",
-          description: "Max messages per channel (default 20, capped at 100)."
-        }
-      },
-      required: ["channels"]
-    }
-  },
-  {
     name: "schedule_status",
     title: "Schedule Status",
     annotations: { title: "Schedule Status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -1673,15 +1651,6 @@ function createHttpMcpServer() {
           const msgs = await backend.fetchMessages(_fetchChannelId, args.limit ?? 20);
           recordFetchedMessages(_fetchChannelId, args.channel !== _fetchChannelId ? args.channel : labelForChannelId(_fetchChannelId), msgs);
           return { content: [{ type: "text", text: JSON.stringify({ messages: msgs }) }] };
-        }
-        case "fetch_many": {
-          const channels = Array.isArray(args.channels) ? args.channels : [];
-          const limit = args.limit ?? 20;
-          const rows = await Promise.all(channels.map(async (channel) => ({
-            channel,
-            messages: await backend.fetchMessages(channel, limit),
-          })));
-          return { content: [{ type: "text", text: JSON.stringify({ channels: rows }) }] };
         }
         case "download_attachment": {
           const files = await backend.downloadAttachment(args.chat_id, args.message_id);
@@ -1864,20 +1833,6 @@ ${lines.join("\n")}` }] };
             return `[${m.ts}] ${m.user}: ${m.text}  (id: ${m.id}${atts})`;
           }).join("\n");
           result = { content: [{ type: "text", text }] };
-          break;
-        }
-        case "fetch_many": {
-          const labels = Array.isArray(args.channels) ? args.channels : [];
-          const rows = await Promise.all(labels.map(async (label) => {
-            const channelId = resolveChannelLabel(config.channelsConfig, label);
-            const msgs = await backend.fetchMessages(channelId, args.limit ?? 20);
-            const text = msgs.length === 0 ? "(no messages)" : msgs.map((m) => {
-              const atts = m.attachmentCount > 0 ? ` +${m.attachmentCount}att` : "";
-              return `[${m.ts}] ${m.user}: ${m.text}  (id: ${m.id}${atts})`;
-            }).join("\\n");
-            return `## ${label}\\n${text}`;
-          }));
-          result = { content: [{ type: "text", text: rows.join("\\n\\n") }] };
           break;
         }
         case "react": {

@@ -417,7 +417,7 @@ async function sgRewrite(args, cwd) {
   //
   // Until ast-grep adds a staging-dir flag (upstream issue to file),
   // `sg_rewrite apply:true` remains NON-ATOMIC per-file. Callers should
-  // prefer dry-run preview + explicit `edit` / `multi_edit` for
+  // prefer dry-run preview + explicit `edit` for
   // crash-sensitive paths. TODO(mixdog): revisit when ast-grep
   // ships `--output-dir` or equivalent.
   // ------------------------------------------------------------------
@@ -451,7 +451,7 @@ async function sgRewrite(args, cwd) {
     // the tool return.
     try { invalidateBuiltinResultCache(); } catch { /* ignore */ }
     try { markCodeGraphDirtyPaths(cwd, [absPath]); } catch { /* ignore */ }
-    const WARNING = '⚠ sg_rewrite apply is NOT atomic per-file — a crash during the `sg -U` run can leave individual files partially written. For crash-sensitive paths prefer dry-run preview + explicit `edit` / `multi_edit` (which use atomic rename).\n\n';
+    const WARNING = '⚠ sg_rewrite apply is NOT atomic per-file — a crash during the `sg -U` run can leave individual files partially written. For crash-sensitive paths prefer dry-run preview + explicit `edit` (which uses atomic rename).\n\n';
     return WARNING + capOutput([body, err].filter(Boolean).join('\n'));
   }
 
