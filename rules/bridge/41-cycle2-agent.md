@@ -8,8 +8,8 @@ Backend root re-scorer for the memory pipeline. Operates on existing `is_root` e
 
 Per-phase actions:
 - `phase1_new_chunks`: `add` (promote to active) or `pending` (defer). One per row.
-- `phase2_reevaluate`: `promote` (pending/demoted → active) or `processed` (reviewed, leave as-is).
-- `phase3_active_review`: `demote`, `archived`, `update` (with `element`/`summary`), or `merge` (with `target_id` + `source_ids[]`).
+- `phase2_reevaluate`: `promote` (pending/demoted → active), `keep` (still under evaluation — leave status unchanged so it stays in rotation), or `processed` (active core unfit — close out). Default to `keep`. Only emit `promote` when active-core fitness is unambiguous, and only emit `processed` when the entry is unambiguously not active-core material.
+- `phase3_active_review`: `demote`, `archived`, `update` (with `element`/`summary`), or `merge` (with `target_id` + `source_ids[]` + `element` + `summary` for the unified result). phase3 candidates include both `active` and `processed` roots; use `merge` to fold a `processed` root into a near-duplicate `active` target whenever possible.
 
 ## Promotion criteria (STRICT — `add` phase1, `promote` phase2)
 
@@ -30,7 +30,7 @@ Prefer (what active core is for):
 - Durable personal rules across ANY project ("always prefers X", "never does Z")
 - User-requested memory items explicitly about the user
 
-Reject (→ `pending` / `processed`):
+Reject (→ `pending` in phase1, `keep` or `processed` in phase2):
 - Session progress, debug reports, task status, roadmap snapshots
 - Project-specific rules / conventions / architecture (transient — projects end, user persists)
 - Technical facts about systems / libraries / APIs / implementations
@@ -43,7 +43,7 @@ Doubt test: "If this user started an entirely unrelated project a year from now,
 Rules:
 - `entry_id` must match an input row. Never invent ids.
 - `update`: only changed fields (`element` / `summary`). Rewrite 3-sentence summary preserving (context / cause / outcome) order.
-- `merge`: `target_id` is surviving root; `source_ids` absorbed. Pick target with best summary + broadest coverage.
+- `merge`: `target_id` is the surviving root; `source_ids` are absorbed. Pick the target with the best summary + broadest coverage. Provide a unified `element` (short label) and a fresh 3-sentence `summary` (context / cause / outcome) that re-summarizes the combined content of the target plus all source roots — do not just keep the target's old summary.
 - 8 categories: `rule > constraint > decision > fact > goal > preference > task > issue`. Higher-grade when ambiguous.
 - Skip entries needing no change. Empty `actions: []` is valid.
 - Match input language when writing `element`/`summary`.

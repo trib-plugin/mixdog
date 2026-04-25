@@ -431,7 +431,7 @@ export async function runCycle2(db, config = {}, options = {}) {
 
   const stats = {
     phase1: { added: 0, pending: 0 },
-    phase2: { promoted: 0, processed: 0 },
+    phase2: { promoted: 0, kept: 0, processed: 0 },
     phase3: { demoted: 0, merged: 0, archived: 0, updated: 0 },
   }
 
@@ -440,6 +440,13 @@ export async function runCycle2(db, config = {}, options = {}) {
      FROM entries WHERE is_root = 1 AND status = 'active'
      ORDER BY score DESC`,
   ).all()
+
+  const loadPhase3Candidates = () => db.prepare(
+    `SELECT id, element, category, summary, score, last_seen_at
+     FROM entries WHERE is_root = 1 AND status IN ('active', 'processed')
+     ORDER BY last_seen_at ASC, score DESC
+     LIMIT ?`,
+  ).all(batchSize)
 
   const phase1Rows = db.prepare(
     `SELECT id, element, category, summary, score
@@ -474,6 +481,7 @@ export async function runCycle2(db, config = {}, options = {}) {
       if (!Number.isFinite(entryId)) continue
       try {
         if (act.action === 'promote' && applyAddOrPromote(db, entryId, 'active', nowMs)) stats.phase2.promoted += 1
+        else if (act.action === 'keep') stats.phase2.kept += 1
         else if (act.action === 'processed' && applySimpleStatus(db, entryId, 'processed')) stats.phase2.processed += 1
       } catch (err) {
         process.stderr.write(`[cycle2] phase2 action error (id=${entryId}): ${err.message}\n`)
@@ -481,11 +489,12 @@ export async function runCycle2(db, config = {}, options = {}) {
     }
   }
 
-  const phase3Rows = loadActive()
+  const phase3Rows = loadPhase3Candidates()
   if (phase3Rows.length > 0) {
+    const activeContext = loadActive()
     const { actions } = await runPromotePhase(
-      db, 'phase3_active_review', phase3Rows, phase3Rows, config, options,
-      { ACTIVE_COUNT: phase3Rows.length, ACTIVE_CAP: activeCap },
+      db, 'phase3_active_review', phase3Rows, activeContext, config, options,
+      { ACTIVE_COUNT: activeContext.length, ACTIVE_CAP: activeCap },
     )
     for (const act of actions) {
       try {
@@ -501,7 +510,17 @@ export async function runCycle2(db, config = {}, options = {}) {
         } else if (act.action === 'merge') {
           const targetId = Number(act?.target_id)
           const sourceIds = Array.isArray(act?.source_ids) ? act.source_ids : []
-          stats.phase3.merged += applyMerge(db, targetId, sourceIds)
+          const moved = applyMerge(db, targetId, sourceIds)
+          if (moved > 0) {
+            stats.phase3.merged += moved
+            if (typeof act.element === 'string' || typeof act.summary === 'string') {
+              try {
+                if (await applyUpdate(db, targetId, act.element, act.summary)) stats.phase3.updated += 1
+              } catch (err) {
+                process.stderr.write(`[cycle2] merge target update failed (target=${targetId}): ${err.message}\n`)
+              }
+            }
+          }
         }
       } catch (err) {
         process.stderr.write(`[cycle2] phase3 action error: ${err.message}\n`)
@@ -511,7 +530,7 @@ export async function runCycle2(db, config = {}, options = {}) {
 
   process.stderr.write(
     `[cycle2] phase1 added=${stats.phase1.added} pending=${stats.phase1.pending}` +
-    ` | phase2 promoted=${stats.phase2.promoted} processed=${stats.phase2.processed}` +
+    ` | phase2 promoted=${stats.phase2.promoted} kept=${stats.phase2.kept} processed=${stats.phase2.processed}` +
     ` | phase3 demoted=${stats.phase3.demoted} merged=${stats.phase3.merged}` +
     ` archived=${stats.phase3.archived} updated=${stats.phase3.updated}\n`,
   )
