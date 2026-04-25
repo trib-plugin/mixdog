@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const http = require('http');
+const net = require('net');
 const { spawn } = require('child_process');
 const { DatabaseSync } = require('node:sqlite');
 const { resolvePluginData } = require(path.join(__dirname, '..', 'lib', 'plugin-paths.cjs'));
@@ -305,6 +306,27 @@ function readMemoryWorkerPort() {
   }
 }
 
+// TCP probe — resolves true if the port accepts a connection within probeMs,
+// false on ECONNREFUSED / EHOSTUNREACH / timeout / any other socket error.
+// Used by pollActiveInstance to skip stale active-instance.json entries left
+// over from a previous session whose channels owner is already dead.
+function probeTcpPort(port, probeMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (alive) => {
+      if (settled) return;
+      settled = true;
+      try { socket.destroy(); } catch {}
+      resolve(alive);
+    };
+    const socket = net.createConnection({ port, host: '127.0.0.1' });
+    socket.setTimeout(Math.max(1, probeMs));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+    socket.once('timeout', () => done(false));
+  });
+}
+
 async function pollActiveInstance(graceMs) {
   const activePath = path.join(os.tmpdir(), 'mixdog', 'active-instance.json');
   const deadline = Date.now() + Math.max(0, graceMs);
@@ -313,7 +335,15 @@ async function pollActiveInstance(graceMs) {
     try {
       if (fs.existsSync(activePath)) {
         const active = JSON.parse(fs.readFileSync(activePath, 'utf8'));
-        if (active && active.httpPort) return active;
+        if (active && active.httpPort) {
+          // Stale guard: previous session may have left active-instance.json
+          // behind with a port whose owner is already dead. TCP-probe it
+          // briefly; only return when something actually accepts a
+          // connection. Otherwise keep polling so a freshly-booting owner
+          // can register and be picked up.
+          const alive = await probeTcpPort(active.httpPort, 200);
+          if (alive) return active;
+        }
       }
     } catch {}
     await new Promise((r) => setTimeout(r, 100));
@@ -376,36 +406,57 @@ async function requestCycle1(timeoutMs, opts = {}) {
     // Route 1: memory worker direct — preferred because it skips channels owner relay.
     const memPort = readMemoryWorkerPort();
     if (memPort) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        return finish('memory-direct', { ok: false, reason: 'timeout' });
-      }
-      try {
-        const res = await httpPostJson({
-          hostname: '127.0.0.1',
-          port: memPort,
-          path: '/api/tool',
-          timeoutMs: remaining,
-          body: { name: 'memory', arguments: { action: 'cycle1', min_batch: 1, session_cap: 50 } },
-        });
-        if (res.statusCode === 200) {
-          try {
-            const parsed = JSON.parse(res.body);
-            // memory worker returns MCP envelope: { content:[...], isError:bool }.
-            // Success = isError !== true. Also accept legacy { ok:true } shape.
-            if (parsed && (parsed.isError === false || parsed.ok === true)) {
-              return finish('memory-direct', { ok: true, result: parsed.result ?? parsed });
-            }
-            return finish('memory-direct', { ok: false, reason: 'body-not-ok', statusCode: 200 });
-          } catch {
-            return finish('memory-direct', { ok: false, reason: 'parse-error', statusCode: 200 });
-          }
+      // Cold-start race: memory-port file lands on disk a few ms before the
+      // worker actually listen()s. Retry ECONNREFUSED specifically (up to
+      // 5 attempts × 200ms = ~1s) before giving up to channels fallback.
+      // Other failures (timeout / http-error / non-200) fall back immediately.
+      const MAX_ATTEMPTS = 5;
+      const RETRY_DELAY_MS = 200;
+      let memDirectSettled = false;
+      let lastResult = null;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          lastResult = finish('memory-direct', { ok: false, reason: 'timeout' });
+          memDirectSettled = true;
+          break;
         }
-        // Non-200 → fall through to channels route.
-        process.stderr.write(`[session-start] cycle1 slot=${slot} route=memory-direct reason=non-200 statusCode=${res.statusCode} elapsed=${Date.now() - start}ms (fallback)\n`);
-      } catch (e) {
-        process.stderr.write(`[session-start] cycle1 slot=${slot} route=memory-direct reason=${classifyError(e)} elapsed=${Date.now() - start}ms (fallback)\n`);
+        try {
+          const res = await httpPostJson({
+            hostname: '127.0.0.1',
+            port: memPort,
+            path: '/api/tool',
+            timeoutMs: remaining,
+            body: { name: 'memory', arguments: { action: 'cycle1', min_batch: 1, session_cap: 50 } },
+          });
+          if (res.statusCode === 200) {
+            try {
+              const parsed = JSON.parse(res.body);
+              // memory worker returns MCP envelope: { content:[...], isError:bool }.
+              // Success = isError !== true. Also accept legacy { ok:true } shape.
+              if (parsed && (parsed.isError === false || parsed.ok === true)) {
+                return finish('memory-direct', { ok: true, result: parsed.result ?? parsed });
+              }
+              return finish('memory-direct', { ok: false, reason: 'body-not-ok', statusCode: 200 });
+            } catch {
+              return finish('memory-direct', { ok: false, reason: 'parse-error', statusCode: 200 });
+            }
+          }
+          // Non-200 → fall through to channels route immediately.
+          process.stderr.write(`[session-start] cycle1 slot=${slot} route=memory-direct attempt=${attempt} reason=non-200 statusCode=${res.statusCode} elapsed=${Date.now() - start}ms (fallback)\n`);
+          break;
+        } catch (e) {
+          const reason = classifyError(e);
+          process.stderr.write(`[session-start] cycle1 slot=${slot} route=memory-direct attempt=${attempt} reason=${reason} elapsed=${Date.now() - start}ms\n`);
+          if (reason !== 'connect-refused') break;
+          // Retry only on ECONNREFUSED. Stop if the next sleep would cross deadline.
+          if (attempt >= MAX_ATTEMPTS) break;
+          const remainAfterErr = deadline - Date.now();
+          if (remainAfterErr <= RETRY_DELAY_MS) break;
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        }
       }
+      if (memDirectSettled) return lastResult;
     } else {
       process.stderr.write(`[session-start] cycle1 slot=${slot} route=memory-direct reason=no-port (fallback)\n`);
     }
