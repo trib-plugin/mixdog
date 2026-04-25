@@ -576,7 +576,7 @@ async function runRulesPart() {
 // ---------------------------------------------------------------------------
 async function runCorePart() {
   if (skipMemoryInject) return;
-  const r = await requestCycle1(25000, { graceMs: 5000, slot: 'core' });
+  const r = await requestCycle1(60000, { graceMs: 10000, slot: 'core' });
   if (r.ok !== true) {
     process.stderr.write(`[session-start] core skipped: cycle1 await failed reason=${r.reason}\n`);
     return;
@@ -598,7 +598,7 @@ async function runCorePart() {
 // ---------------------------------------------------------------------------
 async function runRecapPart() {
   if (skipMemoryInject) return;
-  const r = await requestCycle1(25000, { graceMs: 5000, slot: 'recap' });
+  const r = await requestCycle1(60000, { graceMs: 10000, slot: 'recap' });
   if (r.ok !== true) {
     process.stderr.write(`[session-start] recap skipped: cycle1 await failed reason=${r.reason}\n`);
     return;
