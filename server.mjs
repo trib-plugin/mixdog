@@ -161,13 +161,20 @@ const log = msg => appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg
 // Leave a trace on silent hangs. Previously only child workers
 // (channels/memory) installed these; the main MCP entry had none, so
 // unhandled errors died without writing a stack.
+//
+// Soft net policy (0.1.73): we deliberately do NOT call process.exit()
+// from uncaughtException / unhandledRejection. A misbehaving tool path
+// (e.g. explore concatenating results past V8 max-string-length on a
+// very broad cwd) used to take the whole MCP server down; now it logs
+// a stack and the process keeps serving. Real fatal conditions still
+// bubble out via SIGTERM/SIGINT or the explicit shutdown() path.
 const CRASH_FILE = join(PLUGIN_DATA, 'crash.log')
 const logCrash = (kind, err) => {
   const stack = err?.stack || String(err)
   try { appendFileSync(CRASH_FILE, `[${new Date().toISOString()}] ${kind}\n${stack}\n\n`) } catch {}
   try { log(`${kind}: ${err?.message || err}`) } catch {}
 }
-process.on('uncaughtException', (err) => { logCrash('uncaughtException', err); process.exit(1) })
+process.on('uncaughtException', (err) => { logCrash('uncaughtException', err) })
 process.on('unhandledRejection', (reason) => { logCrash('unhandledRejection', reason) })
 
 // ── Bridge orphan cleanup ───────────────────────────────────────────

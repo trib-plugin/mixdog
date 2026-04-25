@@ -32,6 +32,93 @@ const ROLE_BY_TOOL = Object.freeze({
   explore: { role: 'explorer',      build: buildExplorerPrompt, label: 'explorer agent' },
 })
 
+// Cumulative-character cap for explore output. V8's max string length
+// sits around 512 MB; concatenating raw matches + per-query syntheses
+// across a very broad cwd (e.g. the whole `~/.claude` tree) used to blow
+// past that and crash the MCP server with `Invalid string length`.
+// 50 MB chars stays well clear and is still far above any realistic
+// single-answer payload.
+const EXPLORE_OUTPUT_CHAR_CAP = 50_000_000
+const EXPLORE_TRUNCATION_MARKER = '\n\n[explore: output truncated at 50MB cap; narrow cwd or split queries to see more]'
+
+// Build a merged answer with a hard cumulative-size cap. Mirrors the
+// per-mode shape used by the regular merge path (single query returns
+// the raw answer; multi-query prepends `### Query N:` headers and joins
+// with `---`) but stops appending once the running total crosses the
+// cap, then emits a single inline marker.
+function mergeExploreSettled(settled, queries, label) {
+  const isSingle = queries.length === 1
+  if (isSingle) {
+    const r = settled[0]
+    const raw = r.status === 'fulfilled'
+      ? (r.value || '(no response)')
+      : `[${label} error] ${r.reason?.message || String(r.reason)}`
+    if (typeof raw === 'string' && raw.length > EXPLORE_OUTPUT_CHAR_CAP) {
+      return raw.slice(0, EXPLORE_OUTPUT_CHAR_CAP) + EXPLORE_TRUNCATION_MARKER
+    }
+    return raw
+  }
+  const parts = []
+  let total = 0
+  let truncated = false
+  const sep = '\n\n---\n\n'
+  for (let i = 0; i < settled.length; i++) {
+    const r = settled[i]
+    const header = `### Query ${i + 1}: ${queries[i]}`
+    const body = r.status === 'fulfilled'
+      ? (r.value || '(no response)')
+      : `[${label} error] ${r.reason?.message || String(r.reason)}`
+    const piece = `${header}\n${body}`
+    const addLen = (parts.length === 0 ? 0 : sep.length) + piece.length
+    if (total + addLen > EXPLORE_OUTPUT_CHAR_CAP) {
+      const remaining = EXPLORE_OUTPUT_CHAR_CAP - total - (parts.length === 0 ? 0 : sep.length)
+      if (remaining > 0) {
+        parts.push(piece.slice(0, remaining))
+        total += (parts.length === 1 ? 0 : sep.length) + remaining
+      }
+      truncated = true
+      break
+    }
+    parts.push(piece)
+    total += addLen
+  }
+  const merged = parts.join(sep)
+  return truncated ? merged + EXPLORE_TRUNCATION_MARKER : merged
+}
+
+// Detect "very broad" cwds — user home, ~/.claude, or filesystem root.
+// We only warn (prepend a soft note); the call is never blocked.
+function buildBroadCwdWarning(resolvedCwd, rawCwdInput) {
+  const display = (typeof rawCwdInput === 'string' && rawCwdInput.trim())
+    ? rawCwdInput.trim()
+    : (resolvedCwd || '')
+  if (!resolvedCwd) return ''
+  let normalized
+  try {
+    normalized = resolvePath(resolvedCwd).replace(/[\\/]+$/g, '')
+  } catch {
+    normalized = String(resolvedCwd).replace(/[\\/]+$/g, '')
+  }
+  const home = (() => {
+    try { return resolvePath(homedir()).replace(/[\\/]+$/g, '') }
+    catch { return '' }
+  })()
+  // Filesystem root: POSIX `/` (length <= 1 after trim) or Windows drive
+  // root like `C:` / `C:\` / `D:/`.
+  const isFsRoot = normalized === ''
+    || normalized === '/'
+    || /^[A-Za-z]:$/.test(normalized)
+    || /^[A-Za-z]:[\\/]?$/.test(resolvedCwd.trim())
+  const isHome = home && normalized === home
+  const isDotClaude = home && (
+    normalized === join(home, '.claude').replace(/[\\/]+$/g, '')
+  )
+  if (isFsRoot || isHome || isDotClaude) {
+    return `[explore: cwd "${display}" is broad; consider narrowing to a subdir for sharper results]\n\n`
+  }
+  return ''
+}
+
 // Web search provider credentials live in search-config.json. When none of
 // them are populated the downstream sub-agent spawns, burns tokens, and
 // returns a polite "provider not configured" apology that the user can
@@ -652,15 +739,22 @@ export async function dispatchAiWrapped(name, args, ctx) {
         })
       }),
     )
-    const merged = queries.length === 1
-      ? (settled[0].status === 'fulfilled'
-          ? (settled[0].value || '(no response)')
-          : `[${spec.label} error] ${settled[0].reason?.message || String(settled[0].reason)}`)
-      : settled.map((r, i) => {
-          const header = `### Query ${i + 1}: ${queries[i]}`
-          if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
-          return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
-        }).join('\n\n---\n\n')
+    let merged
+    if (name === 'explore') {
+      merged = mergeExploreSettled(settled, queries, spec.label)
+      const warn = buildBroadCwdWarning(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
+      if (warn) merged = warn + merged
+    } else {
+      merged = queries.length === 1
+        ? (settled[0].status === 'fulfilled'
+            ? (settled[0].value || '(no response)')
+            : `[${spec.label} error] ${settled[0].reason?.message || String(settled[0].reason)}`)
+        : settled.map((r, i) => {
+            const header = `### Query ${i + 1}: ${queries[i]}`
+            if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
+            return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
+          }).join('\n\n---\n\n')
+    }
     return ok(appendRetrievalCompleteHint(name, merged, queries.length))
   }
 
@@ -703,15 +797,22 @@ export async function dispatchAiWrapped(name, args, ctx) {
       })
     }),
   ).then((settled) => {
-    const merged = queries.length === 1
-      ? (settled[0].status === 'fulfilled'
-          ? (settled[0].value || '(no response)')
-          : `[${spec.label} error] ${settled[0].reason?.message || String(settled[0].reason)}`)
-      : settled.map((r, i) => {
-          const header = `### Query ${i + 1}: ${queries[i]}`
-          if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
-          return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
-        }).join('\n\n---\n\n')
+    let merged
+    if (name === 'explore') {
+      merged = mergeExploreSettled(settled, queries, spec.label)
+      const warn = buildBroadCwdWarning(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
+      if (warn) merged = warn + merged
+    } else {
+      merged = queries.length === 1
+        ? (settled[0].status === 'fulfilled'
+            ? (settled[0].value || '(no response)')
+            : `[${spec.label} error] ${settled[0].reason?.message || String(settled[0].reason)}`)
+        : settled.map((r, i) => {
+            const header = `### Query ${i + 1}: ${queries[i]}`
+            if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
+            return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
+          }).join('\n\n---\n\n')
+    }
     const entry = _dispatchResults.get(id)
     if (entry) {
       entry.status = 'done'
