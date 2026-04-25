@@ -372,27 +372,36 @@ function requestCycle1(timeoutMs) {
     } catch {}
   }
 
-  // Force one cycle1 pass before reading recap entries so the freshest
-  // raw turns get chunked into roots and surface in the inject. Best-effort
-  // — failure (timeout, mcp down, parse error) silently degrades to whatever
-  // the DB already holds. The 60s cap matches the channels endpoint's own
-  // safety bound and keeps SessionStart hook latency bounded.
-  await requestCycle1(60000);
+  // Skip cycle1 + memory/recap inject on resume and compact: the existing
+  // conversation already carries that context, and re-injecting only bloats
+  // tokens, duplicates info, and risks invalidating the cached prefix. Rules
+  // (additionalContext built above) still flow through so any rule changes
+  // since the last turn take effect.
+  const skipMemoryInject = _event.source === 'resume' || _event.source === 'compact';
 
-  const memoryConfigPath = path.join(DATA_DIR, 'memory-config.json');
-  const memoryConfig = readJson(memoryConfigPath);
-  const chunkCount = Number(memoryConfig?.recap?.chunk_count) > 0
-    ? Number(memoryConfig.recap.chunk_count)
-    : 100;
+  if (!skipMemoryInject) {
+    // Force one cycle1 pass before reading recap entries so the freshest
+    // raw turns get chunked into roots and surface in the inject. Best-effort
+    // — failure (timeout, mcp down, parse error) silently degrades to whatever
+    // the DB already holds. The 60s cap matches the channels endpoint's own
+    // safety bound and keeps SessionStart hook latency bounded.
+    await requestCycle1(60000);
 
-  const memoryBlocks = buildMemoryBlocks(chunkCount);
-  let recapBlock = '';
-  if (memoryBlocks.recapEntries) {
-    recapBlock = '## Session Recap\n\n' + memoryBlocks.recapEntries;
+    const memoryConfigPath = path.join(DATA_DIR, 'memory-config.json');
+    const memoryConfig = readJson(memoryConfigPath);
+    const chunkCount = Number(memoryConfig?.recap?.chunk_count) > 0
+      ? Number(memoryConfig.recap.chunk_count)
+      : 100;
+
+    const memoryBlocks = buildMemoryBlocks(chunkCount);
+    let recapBlock = '';
+    if (memoryBlocks.recapEntries) {
+      recapBlock = '## Session Recap\n\n' + memoryBlocks.recapEntries;
+    }
+
+    const blocks = [additionalContext, memoryBlocks.context, recapBlock].filter(Boolean);
+    additionalContext = blocks.join('\n\n');
   }
-
-  const blocks = [additionalContext, memoryBlocks.context, recapBlock].filter(Boolean);
-  additionalContext = blocks.join('\n\n');
 
   if (additionalContext) {
     process.stdout.write(JSON.stringify({
