@@ -39,13 +39,30 @@ const ROLE_BY_TOOL = Object.freeze({
 // 50 MB chars stays well clear and is still far above any realistic
 // single-answer payload.
 const EXPLORE_OUTPUT_CHAR_CAP = 50_000_000
+// Per-piece pre-clamp. Caps each subagent body before it is folded into
+// the cumulative buffer so a single runaway response can't blow past V8
+// max-string-length (~512MB) at template-literal construction time,
+// before the running-total guard below ever gets to run.
+const EXPLORE_PER_PIECE_CHAR_CAP = 5_000_000
 const EXPLORE_TRUNCATION_MARKER = '\n\n[explore: output truncated at 50MB cap; narrow cwd or split queries to see more]'
+
+// Clamp a raw subagent body (or error string) to the per-piece cap
+// BEFORE it gets wrapped with header / separator. Returns the (possibly
+// truncated) string; truncation reuses the existing marker so callers
+// see a consistent signal.
+function clampPiece(raw) {
+  if (typeof raw !== 'string') return raw
+  if (raw.length <= EXPLORE_PER_PIECE_CHAR_CAP) return raw
+  return raw.slice(0, EXPLORE_PER_PIECE_CHAR_CAP) + EXPLORE_TRUNCATION_MARKER
+}
 
 // Build a merged answer with a hard cumulative-size cap. Mirrors the
 // per-mode shape used by the regular merge path (single query returns
 // the raw answer; multi-query prepends `### Query N:` headers and joins
 // with `---`) but stops appending once the running total crosses the
-// cap, then emits a single inline marker.
+// cap, then emits a single inline marker. Each piece is also pre-clamped
+// to EXPLORE_PER_PIECE_CHAR_CAP so a single oversized response can't
+// blow up before the running-total check fires.
 function mergeExploreSettled(settled, queries, label) {
   const isSingle = queries.length === 1
   if (isSingle) {
@@ -53,23 +70,33 @@ function mergeExploreSettled(settled, queries, label) {
     const raw = r.status === 'fulfilled'
       ? (r.value || '(no response)')
       : `[${label} error] ${r.reason?.message || String(r.reason)}`
-    if (typeof raw === 'string' && raw.length > EXPLORE_OUTPUT_CHAR_CAP) {
-      return raw.slice(0, EXPLORE_OUTPUT_CHAR_CAP) + EXPLORE_TRUNCATION_MARKER
+    // Single-query path: per-piece cap == cumulative cap effectively, but
+    // still pre-clamp to keep the post-clamp slice bounded and cheap.
+    const clamped = clampPiece(raw)
+    if (typeof clamped === 'string' && clamped.length > EXPLORE_OUTPUT_CHAR_CAP) {
+      return clamped.slice(0, EXPLORE_OUTPUT_CHAR_CAP) + EXPLORE_TRUNCATION_MARKER
     }
-    return raw
+    return clamped
   }
   const parts = []
   let total = 0
   let truncated = false
+  let truncatedAtPiece = -1
   const sep = '\n\n---\n\n'
   for (let i = 0; i < settled.length; i++) {
     const r = settled[i]
     const header = `### Query ${i + 1}: ${queries[i]}`
-    const body = r.status === 'fulfilled'
+    const rawBody = r.status === 'fulfilled'
       ? (r.value || '(no response)')
       : `[${label} error] ${r.reason?.message || String(r.reason)}`
+    // Pre-clamp the body BEFORE template construction so a 400MB rogue
+    // response can't allocate a 400MB+ piece string just to be discarded.
+    const body = clampPiece(rawBody)
     const piece = `${header}\n${body}`
     const addLen = (parts.length === 0 ? 0 : sep.length) + piece.length
+    // Running-total guard: stop appending once the next piece would push
+    // us past the cumulative cap. Truncate the trailing piece to the
+    // remaining budget so we still emit something for the boundary query.
     if (total + addLen > EXPLORE_OUTPUT_CHAR_CAP) {
       const remaining = EXPLORE_OUTPUT_CHAR_CAP - total - (parts.length === 0 ? 0 : sep.length)
       if (remaining > 0) {
@@ -77,13 +104,18 @@ function mergeExploreSettled(settled, queries, label) {
         total += (parts.length === 1 ? 0 : sep.length) + remaining
       }
       truncated = true
+      truncatedAtPiece = i + 1
       break
     }
     parts.push(piece)
     total += addLen
   }
   const merged = parts.join(sep)
-  return truncated ? merged + EXPLORE_TRUNCATION_MARKER : merged
+  if (!truncated) return merged
+  const note = truncatedAtPiece > 0
+    ? `\n\n[explore: merge truncated at piece ${truncatedAtPiece}/${settled.length}]`
+    : ''
+  return merged + EXPLORE_TRUNCATION_MARKER + note
 }
 
 // Detect "very broad" cwds — user home, ~/.claude, or filesystem root.

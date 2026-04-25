@@ -174,7 +174,37 @@ const logCrash = (kind, err) => {
   try { appendFileSync(CRASH_FILE, `[${new Date().toISOString()}] ${kind}\n${stack}\n\n`) } catch {}
   try { log(`${kind}: ${err?.message || err}`) } catch {}
 }
-process.on('uncaughtException', (err) => { logCrash('uncaughtException', err) })
+
+// Fatal classification for uncaughtException. Soft-net (log-only) is the
+// 0.1.73 default for recoverable conditions like "Invalid string length"
+// from a runaway explore concat. But genuinely fatal conditions (port
+// already bound, OOM, node assert violations, internal-assertion
+// failures) leave the process in an unrecoverable state — staying alive
+// just delays the inevitable while serving broken responses. For those,
+// log the stack and exit(1) so the supervisor restarts cleanly.
+const FATAL_CODES = new Set([
+  'EADDRINUSE',
+  'EADDRNOTAVAIL',
+  'ENOMEM',
+  'ERR_INTERNAL_ASSERTION',
+])
+const FATAL_NAME_PATTERNS = [
+  /AssertionError/i,   // node assert violations
+]
+function isFatalUncaught(err) {
+  if (!err) return false
+  if (err.code && FATAL_CODES.has(err.code)) return true
+  const name = err.name || (err.constructor && err.constructor.name) || ''
+  if (FATAL_NAME_PATTERNS.some(rx => rx.test(name))) return true
+  return false
+}
+process.on('uncaughtException', (err) => {
+  logCrash('uncaughtException', err)
+  if (isFatalUncaught(err)) {
+    try { log(`uncaughtException classified fatal (code=${err?.code} name=${err?.name}); exiting`) } catch {}
+    process.exit(1)
+  }
+})
 process.on('unhandledRejection', (reason) => { logCrash('unhandledRejection', reason) })
 
 // ── Bridge orphan cleanup ───────────────────────────────────────────

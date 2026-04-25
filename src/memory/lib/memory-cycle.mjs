@@ -118,7 +118,7 @@ function buildEntriesText(entries) {
 // SESSION_CAP: how many sessions to process in a single runCycle1() pass.
 //   Protects scheduler latency; remaining sessions roll to the next tick.
 const CYCLE1_MIN_BATCH = 3
-const CYCLE1_SESSION_CAP = 5
+const CYCLE1_SESSION_CAP = 10
 
 // Authoritative cycle1 in-flight guard.
 //
