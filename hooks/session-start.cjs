@@ -226,8 +226,9 @@ function buildContext(db) {
   }
 }
 
-function buildRecapEntriesText(db) {
+function buildRecapEntriesText(db, chunkCount) {
   try {
+    const limit = Math.max(1, Number(chunkCount) || 100);
     const rows = db.prepare(`
       SELECT id, ts, role, content, chunk_root, is_root,
              element, category, summary
@@ -235,8 +236,8 @@ function buildRecapEntriesText(db) {
       WHERE (is_root = 1 AND (status IS NULL OR status != 'archived'))
          OR chunk_root IS NULL
       ORDER BY ts DESC, id DESC
-      LIMIT 20
-    `).all();
+      LIMIT ?
+    `).all(limit);
     if (rows.length === 0) return '';
     const lines = rows.map(r => {
       const tsStr = formatTs(r.ts);
@@ -273,18 +274,18 @@ function buildRecapEntriesText(db) {
   }
 }
 
-function buildMemoryBlocks() {
+function buildMemoryBlocks(chunkCount) {
   let db = null;
   try {
     db = openMemoryDb();
     if (!db) return { context: '', recapEntries: '' };
-    return { context: buildContext(db), recapEntries: buildRecapEntriesText(db) };
+    return { context: buildContext(db), recapEntries: buildRecapEntriesText(db, chunkCount) };
   } finally {
     if (db) { try { db.close(); } catch {} }
   }
 }
 
-function requestLlmRecap(entriesText, timeoutMs) {
+function requestCycle1(timeoutMs) {
   return new Promise((resolve) => {
     try {
       const activePath = path.join(os.tmpdir(), 'mixdog', 'active-instance.json');
@@ -293,22 +294,11 @@ function requestLlmRecap(entriesText, timeoutMs) {
       const port = active?.httpPort;
       if (!port) return resolve(null);
 
-      const recapInput = [
-        'Below is the recap input extracted from the memory store.',
-        'The format is already correct. Do not ask for another format.',
-        'Each [[entry]] block is one memory entry.',
-        '- type: root_summary -> use category / element / summary',
-        '- type: raw_turn -> use role / content',
-        'Write the final handoff note directly from these entries.',
-        '',
-        entriesText,
-      ].join('\n');
-
-      const payload = JSON.stringify({ prompt: recapInput });
+      const payload = JSON.stringify({ timeout_ms: timeoutMs });
       const req = http.request({
         hostname: '127.0.0.1',
         port,
-        path: '/recap',
+        path: '/cycle1',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -321,15 +311,7 @@ function requestLlmRecap(entriesText, timeoutMs) {
         res.on('end', () => {
           try {
             const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            const summary = typeof body?.summary === 'string' ? body.summary.trim() : '';
-            const invalid =
-              !summary ||
-              /provide the entries|format i can process|structured memory entries|pointer to where they'?re stored|which would you prefer/i.test(summary);
-            if (res.statusCode === 200 && !invalid) {
-              resolve(summary);
-            } else {
-              resolve(null);
-            }
+            resolve(res.statusCode === 200 && body?.ok ? body.result : null);
           } catch {
             resolve(null);
           }
@@ -364,13 +346,23 @@ function requestLlmRecap(entriesText, timeoutMs) {
     } catch {}
   }
 
-  const memoryBlocks = buildMemoryBlocks();
+  // Force one cycle1 pass before reading recap entries so the freshest
+  // raw turns get chunked into roots and surface in the inject. Best-effort
+  // — failure (timeout, mcp down, parse error) silently degrades to whatever
+  // the DB already holds. The 15s cap matches the channels endpoint's own
+  // safety bound and keeps SessionStart hook latency predictable.
+  await requestCycle1(15000);
+
+  const memoryConfigPath = path.join(DATA_DIR, 'memory-config.json');
+  const memoryConfig = readJson(memoryConfigPath);
+  const chunkCount = Number(memoryConfig?.recap?.chunk_count) > 0
+    ? Number(memoryConfig.recap.chunk_count)
+    : 100;
+
+  const memoryBlocks = buildMemoryBlocks(chunkCount);
   let recapBlock = '';
   if (memoryBlocks.recapEntries) {
-    const llmSummary = await requestLlmRecap(memoryBlocks.recapEntries, 25000);
-    recapBlock = llmSummary
-      ? '## Session Recap\n\n' + llmSummary
-      : '## Session Recap\n\n' + memoryBlocks.recapEntries;
+    recapBlock = '## Session Recap\n\n' + memoryBlocks.recapEntries;
   }
 
   const blocks = [additionalContext, memoryBlocks.context, recapBlock].filter(Boolean);

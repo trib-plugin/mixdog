@@ -201,16 +201,18 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     UPDATE entries SET chunk_root = ? WHERE id = ? AND id != ?
   `)
 
-  let totalChunks = 0
-  let totalMembers = 0
-  let totalSkipped = 0
-  let totalRowsConsidered = 0
-
-  for (const session of sessions) {
+  // Per-session worker. Each session is independent (cycle1 D10 rule:
+  // never merge across sessions), so these calls can safely run via
+  // Promise.all — the LLM round-trips dominate latency and parallelize
+  // cleanly. The DB writes funnel through better-sqlite3's single-
+  // threaded handle, where short BEGIN/COMMIT transactions serialize
+  // naturally without needing a JS-side lock.
+  async function processSession(session) {
     const sessionId = session.session_id
     const rows = fetchSessionRows.all(sessionId, batchSize)
-    totalRowsConsidered += rows.length
-    if (rows.length === 0) continue
+    if (rows.length === 0) {
+      return { committedChunks: 0, committedMembers: 0, skippedChunks: 0, rowsConsidered: 0 }
+    }
 
     // Pool C `cycle1-agent` snippet + bridgeRules already carry the chunking
     // spec; only the volatile data — the entries to chunk — rides in `prompt`.
@@ -241,16 +243,14 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
       }, userMessage)
     } catch (err) {
       process.stderr.write(`[cycle1] LLM error (session=${String(sessionId).slice(0, 16)}): ${err.message}\n`)
-      totalSkipped += rows.length
-      continue
+      return { committedChunks: 0, committedMembers: 0, skippedChunks: rows.length, rowsConsidered: rows.length }
     }
 
     const parsed = extractJsonObject(raw)
     const chunkList = Array.isArray(parsed?.chunks) ? parsed.chunks : null
     if (!chunkList) {
       process.stderr.write(`[cycle1] unparseable response (session=${String(sessionId).slice(0, 16)}) (${String(raw).slice(0, 200)})\n`)
-      totalSkipped += rows.length
-      continue
+      return { committedChunks: 0, committedMembers: 0, skippedChunks: rows.length, rowsConsidered: rows.length }
     }
 
     const entryById = new Map(rows.map(r => [Number(r.id), r]))
@@ -296,13 +296,24 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
       }
     }
 
-    totalChunks += committedChunks
-    totalMembers += committedMembers
-    totalSkipped += skippedChunks
-
     process.stderr.write(
       `[cycle1] session=${String(sessionId).slice(0, 16)} entries=${rows.length} chunks=${committedChunks} members=${committedMembers} skipped=${skippedChunks}\n`,
     )
+
+    return { committedChunks, committedMembers, skippedChunks, rowsConsidered: rows.length }
+  }
+
+  const results = await Promise.all(sessions.map(session => processSession(session)))
+
+  let totalChunks = 0
+  let totalMembers = 0
+  let totalSkipped = 0
+  let totalRowsConsidered = 0
+  for (const r of results) {
+    totalChunks += r.committedChunks
+    totalMembers += r.committedMembers
+    totalSkipped += r.skippedChunks
+    totalRowsConsidered += r.rowsConsidered
   }
 
   process.stderr.write(

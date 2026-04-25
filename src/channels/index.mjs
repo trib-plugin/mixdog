@@ -155,6 +155,37 @@ function sendRecapStateToParent() {
     try { process.stderr.write(`mixdog channels: recap status IPC send failed: ${err && err.message || err}\n`); } catch {}
   }
 }
+
+// ── Memory worker bridge (worker → parent → memory) ─────────────────
+// The channels worker does not own the memory worker handle. To trigger
+// memory tool actions (e.g. cycle1) we send `memory_call_request` to the
+// parent, which routes through callWorker('memory', ...) and ships the
+// result back as `memory_call_response`. The response listener is
+// integrated into the main IPC handler below (not a second listener).
+const _memoryCallPending = new Map();
+let _memoryCallSeq = 0;
+
+function callMemoryAction(action, args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    if (!process.send) return reject(new Error('not a worker process'));
+    const callId = `mc_${++_memoryCallSeq}_${Date.now()}`;
+    const timer = setTimeout(() => {
+      _memoryCallPending.delete(callId);
+      reject(new Error(`memory_call ${action} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    _memoryCallPending.set(callId, {
+      resolve: (v) => { clearTimeout(timer); resolve(v); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    try {
+      process.send({ type: 'memory_call_request', callId, action, args: args || {} });
+    } catch (e) {
+      _memoryCallPending.delete(callId);
+      clearTimeout(timer);
+      reject(e);
+    }
+  });
+}
 function resolveChannelLabel(channelsConfig, label) {
   if (!label || !channelsConfig) return label;
   const entry = channelsConfig[label];
@@ -591,6 +622,19 @@ async function startOwnerHttpServer() {
             recapState.running = false;
             recapState.lastCompletedAt = Date.now();
             sendRecapStateToParent();
+          }
+          return;
+        }
+        case "/cycle1": {
+          if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
+          const timeoutMs = Number(body?.timeout_ms) > 0 ? Math.min(60000, Number(body.timeout_ms)) : 15000;
+          try {
+            const result = await callMemoryAction('cycle1', body?.args || {}, timeoutMs);
+            res.writeHead(200);
+            res.end(JSON.stringify({ ok: true, result }));
+          } catch (e) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ ok: false, error: e?.message || String(e) }));
           }
           return;
         }
@@ -2361,6 +2405,17 @@ if (_isWorkerMode && process.send) {
       } catch (err) {
         try { process.stderr.write(`mixdog channels: permission_request handler error: ${err && err.message || err}\n`); } catch {}
       }
+      return;
+    }
+    if (msg && msg.type === 'memory_call_response' && msg.callId) {
+      // Response side of the worker → parent → memory bridge. Routed into
+      // this existing listener (instead of a second process.on('message'))
+      // to keep IPC dispatch in one place.
+      const pending = _memoryCallPending.get(msg.callId);
+      if (!pending) return;
+      _memoryCallPending.delete(msg.callId);
+      if (msg.ok) pending.resolve(msg.result);
+      else pending.reject(new Error(msg.error || 'memory_call failed'));
       return;
     }
     if (msg.type !== 'call' || !msg.callId) return

@@ -362,6 +362,19 @@ function spawnWorker(name) {
       })
       return
     }
+    if (msg.type === 'memory_call_request' && msg.callId) {
+      // Worker → parent → memory worker bridge. Lets non-memory workers
+      // (e.g. channels) trigger memory tool actions like cycle1 without
+      // owning the memory worker handle directly.
+      void callWorker('memory', msg.action, msg.args || {})
+        .then(result => {
+          try { proc.send({ type: 'memory_call_response', callId: msg.callId, ok: true, result }) } catch {}
+        })
+        .catch(err => {
+          try { proc.send({ type: 'memory_call_response', callId: msg.callId, ok: false, error: err?.message || String(err) }) } catch {}
+        })
+      return
+    }
   })
 
   proc.on('exit', (code) => {
