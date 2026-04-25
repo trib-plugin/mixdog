@@ -101,7 +101,10 @@ function selectRootId(members) {
 function buildEntriesText(entries) {
   return entries.map(e => {
     const content = cleanMemoryText(String(e.content ?? '')).slice(0, 400)
-    return `- id:${e.id} ts:${e.ts} role:${e.role} content:${content}`
+    // [sess:XXXXXXXX] = first 8 chars of session_id; the cycle1-agent rule
+    // forbids merging member_ids across different session markers.
+    const sess = e.session_id ? String(e.session_id).slice(0, 8) : 'null----'
+    return `- id:${e.id} ts:${e.ts} role:${e.role} [sess:${sess}] content:${content}`
   }).join('\n')
 }
 
@@ -159,37 +162,52 @@ export async function runCycle1(db, config = {}, options = {}) {
 
 async function _runCycle1Impl(db, config = {}, options = {}) {
   const batchSize = Math.max(1, Number(config.batch_size ?? 50))
-  const minBatch = Math.max(1, Number(config?.cycle1?.min_batch ?? CYCLE1_MIN_BATCH))
-  const sessionCap = Math.max(1, Number(config?.cycle1?.session_cap ?? CYCLE1_SESSION_CAP))
+  // Fallback chain handles BOTH call shapes:
+  //   - periodic tick passes flat config: { interval, min_batch: 20 }
+  //   - callMemoryAction wraps with cycle1: { cycle1: { min_batch } } for override
+  // Without the flat lookup the periodic tick silently fell back to default 3
+  // (verified: 21:06 tick fired 10 dispatches at min_batch=3 instead of 20).
+  const minBatch = Math.max(1, Number(config?.min_batch ?? config?.cycle1?.min_batch ?? CYCLE1_MIN_BATCH))
+  const sessionCap = Math.max(1, Number(config?.session_cap ?? config?.cycle1?.session_cap ?? CYCLE1_SESSION_CAP))
   const preset = options.preset || resolveMaintenancePreset('cycle1')
   const timeout = Number(config?.cycle1?.timeout ?? 600000)
 
-  // Pick sessions with enough pending content to be worth a chunk run.
-  // Rows whose session_id is NULL are skipped here; they are schema-legacy
-  // outliers (pre-v2 ingest) — inline audit at the time of this change
-  // showed zero NULL rows in the live DB. If legacy NULLs ever reappear,
-  // they will accumulate harmlessly until someone backfills session_id.
-  const sessions = db.prepare(`
-    SELECT session_id, count(*) AS n, max(ts) AS last_ts
+  // Time-ordered fetch — no GROUP BY session_id. Pull up to
+  // sessionCap × batchSize rows ordered DESC (most recent first, so we
+  // keep the freshest backlog when the cap clips), then reverse to ASC
+  // for the prompt so the LLM sees chronological order.
+  //
+  // Session boundaries are enforced two ways:
+  //   1. Each row in the prompt is tagged with [sess:XXXXXXXX] so the
+  //      cycle1-agent rule can refuse to merge across them.
+  //   2. Commit-time guard below double-checks every chunk's member_ids
+  //      resolve to one session_id; mixed chunks are skipped + logged.
+  //
+  // Parallelism choice: split the time-ordered fetch into sub-windows of
+  // batchSize rows each and Promise.all over them. This preserves the
+  // concurrency characteristic the per-session fan-out had, while still
+  // letting the LLM partition within each window. Sub-windows are NOT
+  // session-aligned, but the [sess:] markers + commit guard make that safe.
+  const fetchLimit = sessionCap * batchSize
+  const rowsDesc = db.prepare(`
+    SELECT id, ts, role, content, session_id
     FROM entries
     WHERE chunk_root IS NULL AND session_id IS NOT NULL
-    GROUP BY session_id
-    HAVING n >= ?
-    ORDER BY last_ts DESC
+    ORDER BY ts DESC, id DESC
     LIMIT ?
-  `).all(minBatch, sessionCap)
+  `).all(fetchLimit)
 
-  if (sessions.length === 0) {
+  if (rowsDesc.length < minBatch) {
     return { processed: 0, chunks: 0, skipped: 0, sessions: 0 }
   }
 
-  const fetchSessionRows = db.prepare(`
-    SELECT id, ts, role, content
-    FROM entries
-    WHERE chunk_root IS NULL AND session_id = ?
-    ORDER BY ts ASC, id ASC
-    LIMIT ?
-  `)
+  const allRows = rowsDesc.slice().reverse() // chronological ASC
+
+  // Split into sub-windows of batchSize rows for Promise.all parallelism.
+  const windows = []
+  for (let i = 0; i < allRows.length; i += batchSize) {
+    windows.push(allRows.slice(i, i + batchSize))
+  }
 
   const updateRoot = db.prepare(`
     UPDATE entries
@@ -201,26 +219,14 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     UPDATE entries SET chunk_root = ? WHERE id = ? AND id != ?
   `)
 
-  // Per-session worker. Each session is independent (cycle1 D10 rule:
-  // never merge across sessions), so these calls can safely run via
-  // Promise.all — the LLM round-trips dominate latency and parallelize
-  // cleanly. The DB writes funnel through better-sqlite3's single-
-  // threaded handle, where short BEGIN/COMMIT transactions serialize
-  // naturally without needing a JS-side lock.
-  async function processSession(session) {
-    const sessionId = session.session_id
-    const rows = fetchSessionRows.all(sessionId, batchSize)
+  async function processWindow(rows, windowIdx) {
     if (rows.length === 0) {
       return { committedChunks: 0, committedMembers: 0, skippedChunks: 0, rowsConsidered: 0 }
     }
 
-    // Pool C `cycle1-agent` snippet + bridgeRules already carry the chunking
-    // spec; only the volatile data — the entries to chunk — rides in `prompt`.
-    // The explicit same-session note lets the chunker assume coherence without
-    // re-deriving it from message content.
     const userMessage = [
       `Run cycle1: chunk these entries and emit JSON per the cycle1 spec.`,
-      `All entries in this batch are from the same session (session_id=${String(sessionId).slice(0, 64)}); group freely within it.`,
+      `Entries below carry [sess:XXXXXXXX] markers; never merge member_ids across different session markers.`,
       '',
       buildEntriesText(rows),
     ].join('\n')
@@ -242,14 +248,14 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
         cwd: null,
       }, userMessage)
     } catch (err) {
-      process.stderr.write(`[cycle1] LLM error (session=${String(sessionId).slice(0, 16)}): ${err.message}\n`)
+      process.stderr.write(`[cycle1] LLM error (window=${windowIdx}): ${err.message}\n`)
       return { committedChunks: 0, committedMembers: 0, skippedChunks: rows.length, rowsConsidered: rows.length }
     }
 
     const parsed = extractJsonObject(raw)
     const chunkList = Array.isArray(parsed?.chunks) ? parsed.chunks : null
     if (!chunkList) {
-      process.stderr.write(`[cycle1] unparseable response (session=${String(sessionId).slice(0, 16)}) (${String(raw).slice(0, 200)})\n`)
+      process.stderr.write(`[cycle1] unparseable response (window=${windowIdx}) (${String(raw).slice(0, 200)})\n`)
       return { committedChunks: 0, committedMembers: 0, skippedChunks: rows.length, rowsConsidered: rows.length }
     }
 
@@ -268,6 +274,22 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
 
       if (memberIds.length === 0 || !element || !summary || !VALID_CATEGORIES.has(category)) {
         skippedChunks += 1
+        continue
+      }
+
+      // Defensive guard: every member must share one session_id.
+      // The cycle1-agent rule already forbids cross-session chunks via
+      // the [sess:] markers; this catches LLM rule violations before they
+      // corrupt chunk_root linkage. Should never trigger if the prompt
+      // is doing its job.
+      const sessionIdsInChunk = new Set(
+        memberIds.map(id => String(entryById.get(id)?.session_id ?? '')),
+      )
+      if (sessionIdsInChunk.size > 1) {
+        skippedChunks += 1
+        process.stderr.write(
+          `[cycle1] chunk skipped: mixed session_ids in member_ids=${JSON.stringify(memberIds)} sessions=${JSON.stringify([...sessionIdsInChunk])}\n`,
+        )
         continue
       }
 
@@ -297,13 +319,13 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     }
 
     process.stderr.write(
-      `[cycle1] session=${String(sessionId).slice(0, 16)} entries=${rows.length} chunks=${committedChunks} members=${committedMembers} skipped=${skippedChunks}\n`,
+      `[cycle1] window=${windowIdx} entries=${rows.length} chunks=${committedChunks} members=${committedMembers} skipped=${skippedChunks}\n`,
     )
 
     return { committedChunks, committedMembers, skippedChunks, rowsConsidered: rows.length }
   }
 
-  const results = await Promise.all(sessions.map(session => processSession(session)))
+  const results = await Promise.all(windows.map((rows, idx) => processWindow(rows, idx)))
 
   let totalChunks = 0
   let totalMembers = 0
@@ -317,10 +339,10 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   }
 
   process.stderr.write(
-    `[cycle1] sessions=${sessions.length} rows=${totalRowsConsidered} chunks=${totalChunks} members=${totalMembers} skipped=${totalSkipped}\n`,
+    `[cycle1] windows=${windows.length} rows=${totalRowsConsidered} chunks=${totalChunks} members=${totalMembers} skipped=${totalSkipped}\n`,
   )
 
-  return { processed: totalMembers, chunks: totalChunks, skipped: totalSkipped, sessions: sessions.length }
+  return { processed: totalMembers, chunks: totalChunks, skipped: totalSkipped, sessions: windows.length }
 }
 
 function formatEntriesForPromotePrompt(rows) {

@@ -9,31 +9,21 @@ Memory chunker. Input: `entries` rows (`id`, `ts`, `role`, `content`). Output: J
 ## Hard rules
 
 - `member_ids` must be a subset of input ids. Never invent.
-- Cover substantive content. Drop only true small talk (e.g. `ok`, `thanks`, `ㄱㄱ`, `ㅇㅇ`, short confirmations with no information).
-- 4-10 ids per chunk, target around 8. Topic shift breaks the chunk.
-- **Chunking discipline > completeness.** A chunk with fewer than 3 ids is forbidden — never split content small just to ensure coverage. If a fragment cannot form a 4+ id cluster, either merge with an adjacent same-topic chunk, or drop it if it is genuinely small talk.
-- Match the input language (Korean in → Korean out).
-- Preserve technical identifiers verbatim — numbers, file paths, line numbers, API names, model IDs, version strings. No rounding, no paraphrasing.
+- **Coverage is mandatory — every input id MUST appear in exactly one chunk's `member_ids`. Dropping is forbidden.**
+- Short acks (`ㄱㄱ`, `ㅇㅇ`, `ㄴㄴ`, `ok`, `thanks`, `ㅋ`, 1–3자 응답) belong to the adjacent chunk's flow — absorb them as members of the surrounding topic chunk. They never form their own chunk unless an entire stretch is acks-only.
+- **Session boundary: never put member_ids from different `[sess:XXX]` markers into the same chunk.** When session changes mid-batch, start a new chunk.
+- 4–10 ids per chunk preferred, target around 8. Topic shift within same session breaks the chunk.
+- Match input language. Preserve technical identifiers verbatim (numbers, paths, line numbers, version strings).
 
 ## Summary recipe
 
-Each `summary` follows this template:
+Declarative, no subject pronouns, 2 sentences max. Drop trailing "결정은 따로 제시되지 않았다" type filler.
 
-```
-[topic noun] [event verb] [key facts]. [observation/finding with numbers]. [decision if any].
-```
+Banned phrases (drop entirely from output):
 
-Stop at 2 sentences if no decision was made — never pad.
-
-Style requirements (apply per output language):
-
-- **Declarative form, no subject pronouns.** For Korean output: use the `다` / `했다` ending; never include speaker subjects (`사용자가`, `Lead가`, `어시스턴트가`, or any personal name/title). For English output: drop the speaker; describe the event, not who did it.
-- **Drop hedging.** Avoid `할 수 있다`, `예상됨`, `가능할 것으로 보임`, `~할 예정이다`, `~할 것이다` (only emit speculative future-tense if an explicit decision was made). English equivalents to avoid: "could be", "might be", "is expected to", "will likely".
-- **Drop filler when no decision exists.** Never emit phrases like `No final decision was stated`, `추가 확정 필요`, `최종 결정은 나오지 않았다`. Silence is correct — just stop.
-- **Drop meta narration.** Avoid `이 케이스는`, `본 사례에서는`, `이번 대화에서는`, "in this case", "this conversation".
-- **Drop empty verbs alone.** `검토했다`, `논의했다`, "discussed", "considered" are insufficient without an outcome — combine with the actual finding.
-- One claim per sentence, ending with a period.
-- Length follows information density. Don't truncate, don't pad.
+- `No final decision was stated`, `최종 결정은 나오지 않았다`, `추가 확정 필요`
+- `사용자가`, `Lead가`, `어시스턴트가`, `이번 대화에서는`, `본 사례에서는`
+- Empty hedge verbs alone (`검토했다`, `논의했다`, `discussed`, `considered`)
 
 ## Element recipe
 

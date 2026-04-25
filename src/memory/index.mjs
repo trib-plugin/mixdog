@@ -744,10 +744,19 @@ async function handleMemoryAction(args) {
 
   if (action === 'cycle1') {
     const minBatchOverride = Number(args?.min_batch)
+    const sessionCapOverride = Number(args?.session_cap)
     const baseCycle1 = config?.cycle1 || {}
-    const cycle1Config = Number.isFinite(minBatchOverride) && minBatchOverride > 0
-      ? { ...baseCycle1, cycle1: { ...(baseCycle1.cycle1 || {}), min_batch: minBatchOverride } }
-      : baseCycle1
+    let cycle1Config = baseCycle1
+    if (Number.isFinite(minBatchOverride) && minBatchOverride > 0) {
+      cycle1Config = { ...cycle1Config, cycle1: { ...(cycle1Config.cycle1 || {}), min_batch: minBatchOverride } }
+    }
+    if (Number.isFinite(sessionCapOverride) && sessionCapOverride > 0) {
+      cycle1Config = {
+        ...cycle1Config,
+        session_cap: sessionCapOverride,
+        cycle1: { ...(cycle1Config.cycle1 || {}), session_cap: sessionCapOverride },
+      }
+    }
     const result = await _awaitCycle1Run(cycle1Config)
     return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped}` }
   }

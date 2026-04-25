@@ -227,6 +227,17 @@ function formatTs(ts) {
   return String(ts ?? '').slice(0, 16);
 }
 
+// MM-DD HH:MM in KST for compact recap rendering.
+function formatTsShort(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 1e12) return String(ts ?? '').slice(0, 16);
+  // sv-SE locale → 'YYYY-MM-DD HH:mm:ss'. Slice off year + seconds to get MM-DD HH:MM.
+  const full = new Date(n).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' });
+  // full = 'YYYY-MM-DD HH:MM:SS'  → '2024-08-21 14:32:09'
+  // want '08-21 14:32'
+  return full.slice(5, 16);
+}
+
 // Single source of truth: lib/text-utils.cjs (also imported by memory-extraction.mjs).
 const { cleanMemoryText: cleanText } = require(path.join(PLUGIN_ROOT, 'lib', 'text-utils.cjs'));
 
@@ -239,12 +250,10 @@ function buildContext(db) {
       ORDER BY score DESC, last_seen_at DESC
     `).all();
     if (rows.length === 0) return '';
-    const lines = rows.map(r => {
-      const cat = r.category ? `[${r.category}] ` : '';
-      const element = r.element ?? '';
-      const summary = r.summary ?? '';
-      return `- ${cat}${element}${summary ? ' — ' + summary : ''}`;
-    });
+    const lines = rows
+      .map(r => String(r.summary || '').trim())
+      .filter(Boolean);
+    if (lines.length === 0) return '';
     return `## Core Memory\n${lines.join('\n')}`;
   } catch (e) {
     process.stderr.write(`[session-start] context build failed: ${e.message}\n`);
@@ -252,38 +261,55 @@ function buildContext(db) {
   }
 }
 
-function buildRecapEntriesText(db, chunkCount) {
+// Returns { headLines, blocks } where:
+//   headLines: array of "[MM-DD HH:MM] summary" for the first 20 (most-recent)
+//              chunks, in chronological order (oldest → newest), used for the
+//              SessionStart hook output.
+//   blocks: array of additional 20-row blocks (oldest → newest within each
+//           block; blocks are in chronological order too). These are written
+//           to recap-pending.json for the channels worker to inject post-boot.
+// Each rendered line is exactly: `[MM-DD HH:MM] <summary truncated to 1000c>`.
+function buildRecapData(db, chunkCount) {
+  const out = { headLines: [], blocks: [] };
   try {
     const limit = Math.max(1, Number(chunkCount) || 100);
+    // Pull newest-first from the DB, then reverse so each subset stays
+    // chronological when rendered.
     const rows = db.prepare(`
-      SELECT id, ts, role, content, chunk_root, is_root,
-             element, category, summary
+      SELECT id, ts, summary
       FROM entries
       WHERE is_root = 1
       ORDER BY ts DESC, id DESC
       LIMIT ?
     `).all(limit);
-    if (rows.length === 0) return '';
-    const lines = rows.map(r => {
-      const tsStr = formatTs(r.ts);
-      const category = String(r.category || '').trim();
-      const element = String(r.element || '').trim();
+    if (rows.length === 0) return out;
+
+    const rendered = rows.map(r => {
+      const tsStr = formatTsShort(r.ts);
       const summary = String(r.summary || '').trim().slice(0, 1000);
-      return [
-        '[[entry]]',
-        'type: root_summary',
-        `id: ${r.id}`,
-        `ts: ${tsStr}`,
-        `category: ${category || '-'}`,
-        `element: ${element || '-'}`,
-        `summary: ${summary || '-'}`,
-      ].join('\n');
-    });
-    const text = lines.reverse().join('\n\n');
-    return text.length > 20 ? text : '';
+      return summary ? `[${tsStr}] ${summary}` : '';
+    }).filter(Boolean);
+    if (rendered.length === 0) return out;
+
+    // `rendered` is newest-first. Carve off the first 20 (newest) for the
+    // hook output, then chunk the remainder into 20-row blocks. Reverse each
+    // bucket so the rendered order is chronological.
+    const head = rendered.slice(0, 20).reverse();
+    out.headLines = head;
+
+    const tail = rendered.slice(20);
+    for (let i = 0; i < tail.length; i += 20) {
+      const block = tail.slice(i, i + 20).reverse();
+      if (block.length) out.blocks.push(block);
+    }
+    // Blocks are currently ordered newest-first (block[0] is the second-newest
+    // 20). Reverse so that when injected one-by-one the user sees oldest first,
+    // matching the chronological flow of the head block.
+    out.blocks.reverse();
+    return out;
   } catch (e) {
     process.stderr.write(`[session-start] recap build failed: ${e.message}\n`);
-    return '';
+    return out;
   }
 }
 
@@ -291,8 +317,8 @@ function buildMemoryBlocks(chunkCount) {
   let db = null;
   try {
     db = openMemoryDb();
-    if (!db) return { context: '', recapEntries: '' };
-    return { context: buildContext(db), recapEntries: buildRecapEntriesText(db, chunkCount) };
+    if (!db) return { context: '', recapData: { headLines: [], blocks: [] } };
+    return { context: buildContext(db), recapData: buildRecapData(db, chunkCount) };
   } finally {
     if (db) { try { db.close(); } catch {} }
   }
@@ -309,7 +335,7 @@ function requestCycle1(timeoutMs) {
 
       const payload = JSON.stringify({
         timeout_ms: timeoutMs,
-        args: { min_batch: 1 },
+        args: { min_batch: 1, session_cap: 50 },
       });
       const req = http.request({
         hostname: '127.0.0.1',
@@ -384,9 +410,28 @@ function requestCycle1(timeoutMs) {
       : 100;
 
     const memoryBlocks = buildMemoryBlocks(chunkCount);
+    const recapData = memoryBlocks.recapData || { headLines: [], blocks: [] };
     let recapBlock = '';
-    if (memoryBlocks.recapEntries) {
-      recapBlock = '## Session Recap\n\n' + memoryBlocks.recapEntries;
+    if (recapData.headLines && recapData.headLines.length) {
+      recapBlock = '## Recap\n' + recapData.headLines.join('\n');
+    }
+
+    // Stash any remaining recap blocks for the channels worker to inject
+    // post-boot. File is consumed-and-deleted by the worker. Best-effort —
+    // failure (FS error) silently degrades to "no extra inject".
+    try {
+      const pendingPath = path.join(DATA_DIR, 'recap-pending.json');
+      if (recapData.blocks && recapData.blocks.length) {
+        const payload = recapData.blocks.map(block => block.join('\n'));
+        fs.mkdirSync(path.dirname(pendingPath), { recursive: true });
+        fs.writeFileSync(pendingPath, JSON.stringify(payload) + '\n');
+      } else if (fs.existsSync(pendingPath)) {
+        // Stale file from a prior session with more chunks — clear it so the
+        // worker doesn't re-inject yesterday's content.
+        fs.unlinkSync(pendingPath);
+      }
+    } catch (e) {
+      process.stderr.write(`[session-start] recap-pending stash failed: ${e.message}\n`);
     }
 
     const blocks = [additionalContext, memoryBlocks.context, recapBlock].filter(Boolean);
