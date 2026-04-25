@@ -81,11 +81,20 @@ function ensureWorker() {
   return worker
 }
 
-function sendToWorker(action, extra = {}) {
+const EMBED_WORKER_TIMEOUT_MS = 60_000
+
+function sendToWorker(action, extra = {}, timeoutMs = EMBED_WORKER_TIMEOUT_MS) {
   const w = ensureWorker()
   const id = ++_msgId
   return new Promise((resolve, reject) => {
-    _pending.set(id, { resolve, reject })
+    const timer = setTimeout(() => {
+      _pending.delete(id)
+      reject(new Error(`embed worker ${action} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    _pending.set(id, {
+      resolve: (v) => { clearTimeout(timer); resolve(v) },
+      reject: (e) => { clearTimeout(timer); reject(e) },
+    })
     w.postMessage({ id, action, ...extra })
   })
 }

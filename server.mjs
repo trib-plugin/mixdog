@@ -19,7 +19,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import { fork } from 'child_process'
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, watch as fsWatch, existsSync, unlinkSync } from 'fs'
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, watch as fsWatch, existsSync, unlinkSync, openSync, closeSync } from 'fs'
 import { join, resolve as pathResolve } from 'path'
 import { homedir } from 'os'
 import { pathToFileURL } from 'url'
@@ -342,8 +342,15 @@ async function handleAgentIpcRequest(msg) {
 
 function spawnWorker(name) {
   const modulePath = join(PLUGIN_ROOT, 'src', name, 'index.mjs')
+  // Per-worker stderr file so cycle1/cycle2/embed/recap diagnostics are
+  // captured even when the worker hangs before answering an IPC call.
+  // mcp-debug.log only carries parent log() output; without this the worker
+  // is invisible during a hang.
+  const stderrPath = join(PLUGIN_DATA, `${name}-worker.log`)
+  let stderrFd = null
+  try { stderrFd = openSync(stderrPath, 'a') } catch {}
   const proc = fork(modulePath, [], {
-    stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    stdio: ['ignore', 'inherit', stderrFd ?? 'inherit', 'ipc'],
     env: {
       ...process.env,
       CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT,
@@ -352,6 +359,9 @@ function spawnWorker(name) {
     },
     windowsHide: true,
   })
+  if (stderrFd != null) {
+    proc.once('exit', () => { try { closeSync(stderrFd) } catch {} })
+  }
 
   const entry = { proc, ready: false, pending: [] }
   workers.set(name, entry)
@@ -403,7 +413,11 @@ function spawnWorker(name) {
       // Worker → parent → memory worker bridge. Lets non-memory workers
       // (e.g. channels) trigger memory tool actions like cycle1 without
       // owning the memory worker handle directly.
-      void callWorker('memory', msg.action, msg.args || {})
+      // Worker handleToolCall only knows mcp tool names ('memory',
+      // 'search_memories'); the action ('cycle1', 'flush', ...) lives in
+      // args.action. Forwarding msg.action as the tool name made every
+      // /cycle1 hit return "unknown tool: cycle1" instantly.
+      void callWorker('memory', 'memory', { action: msg.action, ...(msg.args || {}) })
         .then(result => {
           try { proc.send({ type: 'memory_call_response', callId: msg.callId, ok: true, result }) } catch {}
         })
