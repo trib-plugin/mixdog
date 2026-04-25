@@ -259,37 +259,24 @@ function buildRecapEntriesText(db, chunkCount) {
       SELECT id, ts, role, content, chunk_root, is_root,
              element, category, summary
       FROM entries
-      WHERE (is_root = 1 AND (status IS NULL OR status != 'archived'))
-         OR chunk_root IS NULL
+      WHERE is_root = 1
       ORDER BY ts DESC, id DESC
       LIMIT ?
     `).all(limit);
     if (rows.length === 0) return '';
     const lines = rows.map(r => {
       const tsStr = formatTs(r.ts);
-      if (r.is_root === 1) {
-        const category = String(r.category || '').trim();
-        const element = String(r.element || '').trim();
-        const summary = String(r.summary || '').trim().slice(0, 1000);
-        return [
-          '[[entry]]',
-          'type: root_summary',
-          `id: ${r.id}`,
-          `ts: ${tsStr}`,
-          `category: ${category || '-'}`,
-          `element: ${element || '-'}`,
-          `summary: ${summary || '-'}`,
-        ].join('\n');
-      }
-      const role = String(r.role || '?').trim() || '?';
-      const content = cleanText(String(r.content || '')).slice(0, 1000);
+      const category = String(r.category || '').trim();
+      const element = String(r.element || '').trim();
+      const summary = String(r.summary || '').trim().slice(0, 1000);
       return [
         '[[entry]]',
-        'type: raw_turn',
+        'type: root_summary',
         `id: ${r.id}`,
         `ts: ${tsStr}`,
-        `role: ${role}`,
-        `content: ${content || '-'}`,
+        `category: ${category || '-'}`,
+        `element: ${element || '-'}`,
+        `summary: ${summary || '-'}`,
       ].join('\n');
     });
     const text = lines.reverse().join('\n\n');
@@ -320,7 +307,10 @@ function requestCycle1(timeoutMs) {
       const port = active?.httpPort;
       if (!port) return resolve(null);
 
-      const payload = JSON.stringify({ timeout_ms: timeoutMs });
+      const payload = JSON.stringify({
+        timeout_ms: timeoutMs,
+        args: { min_batch: 1 },
+      });
       const req = http.request({
         hostname: '127.0.0.1',
         port,

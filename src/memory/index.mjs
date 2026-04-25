@@ -743,7 +743,12 @@ async function handleMemoryAction(args) {
   }
 
   if (action === 'cycle1') {
-    const result = await _awaitCycle1Run(config?.cycle1 || {})
+    const minBatchOverride = Number(args?.min_batch)
+    const baseCycle1 = config?.cycle1 || {}
+    const cycle1Config = Number.isFinite(minBatchOverride) && minBatchOverride > 0
+      ? { ...baseCycle1, cycle1: { ...(baseCycle1.cycle1 || {}), min_batch: minBatchOverride } }
+      : baseCycle1
+    const result = await _awaitCycle1Run(cycle1Config)
     return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped}` }
   }
 
