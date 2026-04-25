@@ -452,7 +452,8 @@ async function startOwnerHttpServer() {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       try {
-        body = JSON.parse(Buffer.concat(chunks).toString());
+        const rawBody = Buffer.concat(chunks).toString();
+        body = rawBody.trim() ? JSON.parse(rawBody) : {};
       } catch {
         res.writeHead(400);
         res.end(JSON.stringify({ error: "invalid JSON body" }));

@@ -163,20 +163,46 @@ function injectStatusLine(pluginRoot) {
 
 injectStatusLine(PLUGIN_ROOT);
 
+// Resolve this session's transcript jsonl path so /rebind can use the
+// 0.1.72 explicit-path escape hatch (bypasses the 30s mtime heuristic).
+// Claude Code's SessionStart hook payload provides transcript_path /
+// session_id / cwd; we accept both snake_case and camelCase defensively
+// and fall back to deriving <projectsDir>/<slug>/<sessionId>.jsonl.
+function cwdToProjectSlug(cwd) {
+  return path.resolve(cwd).replace(/\\/g, '/').replace(/^([A-Za-z]):/, '$1-').replace(/\//g, '-');
+}
+function resolveTranscriptPath() {
+  const direct = _event.transcript_path || _event.transcriptPath;
+  if (typeof direct === 'string' && direct && fs.existsSync(direct)) return direct;
+  const sessionId = _event.session_id || _event.sessionId;
+  const cwd = _event.cwd || process.cwd();
+  if (typeof sessionId === 'string' && sessionId) {
+    const candidate = path.join(os.homedir(), '.claude', 'projects', cwdToProjectSlug(cwd), `${sessionId}.jsonl`);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return '';
+}
+
 try {
   const activePath = path.join(os.tmpdir(), 'mixdog', 'active-instance.json');
   if (fs.existsSync(activePath)) {
     const active = JSON.parse(fs.readFileSync(activePath, 'utf8'));
     if (active.httpPort) {
+      const transcriptPath = resolveTranscriptPath();
+      const payload = transcriptPath ? JSON.stringify({ transcriptPath }) : '';
+      const headers = { 'Content-Type': 'application/json' };
+      if (payload) headers['Content-Length'] = Buffer.byteLength(payload);
       const req2 = http.request({
         hostname: '127.0.0.1',
         port: active.httpPort,
         path: '/rebind',
         method: 'POST',
         timeout: 3000,
+        headers,
       });
       req2.on('error', () => {});
       req2.on('timeout', () => req2.destroy());
+      if (payload) req2.write(payload);
       req2.end();
     }
   }
