@@ -82,3 +82,5 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 ## Stop-and-reroute
 
 Tool returns empty / wrong after 2 tries → don't loop. Change approach or ask.
+
+Same-result loops count too: if the second call returns the same hits / coordinates / synthesis as the first, paraphrasing the query a third time will not help. Switch tools (cross-scope: `recall` ↔ `explore` ↔ `search` ↔ direct file `read`) or read the underlying source (transcript jsonl, log file, source file) directly.
