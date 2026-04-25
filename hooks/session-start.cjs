@@ -349,9 +349,9 @@ function requestCycle1(timeoutMs) {
   // Force one cycle1 pass before reading recap entries so the freshest
   // raw turns get chunked into roots and surface in the inject. Best-effort
   // — failure (timeout, mcp down, parse error) silently degrades to whatever
-  // the DB already holds. The 15s cap matches the channels endpoint's own
-  // safety bound and keeps SessionStart hook latency predictable.
-  await requestCycle1(15000);
+  // the DB already holds. The 60s cap matches the channels endpoint's own
+  // safety bound and keeps SessionStart hook latency bounded.
+  await requestCycle1(60000);
 
   const memoryConfigPath = path.join(DATA_DIR, 'memory-config.json');
   const memoryConfig = readJson(memoryConfigPath);
