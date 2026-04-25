@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# mixdog statusline wrapper — v0.1.42
-# Line 1 (runtime): model + effort, cost, context window bar, 5h / 7d rate limit, block reset.
-# Line 2 (incoming, from mixdog /bridge/status): sessions, last completed, jobs, schedule, discord, ngrok, recall.
+# mixdog statusline wrapper — v0.1.43
+# Line 1 (runtime): model + effort, cost, context window bar, 5h / 7d rate limit, block reset, maint badges (↻ cycle1/cycle2/recap).
+# Line 2 (incoming, from mixdog /bridge/status): sessions only — "● N Running (roles)". Suppressed when no work sessions.
 #
 # Windows/Git Bash perf note: process spawn (fork + exec) on MSYS is ~50-100ms per call.
 # 0.1.32 already collapsed ~20 jq calls into 2, but $(seg_*) command substitutions added
@@ -303,25 +303,25 @@ add_l2() {
   if [ -z "$L2" ]; then L2="$1"; else L2="$L2 $_SEP $1"; fi
 }
 
-# Sessions — split the raw role list into work vs maint buckets, dedupe each,
-# and emit them as separate L2 segments.
+# Sessions — split the raw role list into work vs maint buckets and emit them
+# as separate L2 segments.
 #
 #   work  = worker | reviewer | debugger | tester | researcher
-#           → "● N Running (worker, reviewer)" with N = total work sessions
-#             (NOT the deduped role count) so the counter still reflects fan-out.
+#           → "● N Running (worker, worker, reviewer)" listing every role token
+#             in encounter order. No dedupe: parallel fan-out of the same role
+#             must remain visible (e.g. two workers → "worker, worker").
 #   maint = cycle1-agent | cycle2-agent | recap-agent
 #           → "↻ cycle1 ↻ cycle2 ↻ recap" — one badge per maint type that has
 #             ANY session running. Counts are intentionally hidden: the bridge
 #             commonly spawns ten cycle1 chunks at once and the count adds noise.
 #
-# Pure bash: associative arrays for dedupe, parameter expansion to split the
-# comma-separated B_SESS_ROLES. No awk, no jq.
+# Pure bash: parameter expansion to split the comma-separated B_SESS_ROLES.
+# No awk, no jq.
 _WORK_COUNT=0
-_WORK_ORDER=""        # comma-separated, dedup-preserving insertion order
+_WORK_ORDER=""        # comma-separated, encounter order, no dedupe
 _MAINT_HAS_CYCLE1=0
 _MAINT_HAS_CYCLE2=0
 _MAINT_HAS_RECAP=0
-declare -A _WORK_SEEN=()
 
 if [ -n "$B_SESS_ROLES" ]; then
   # Replace commas with spaces so the for-loop iterates roles cleanly.
@@ -331,11 +331,8 @@ if [ -n "$B_SESS_ROLES" ]; then
     case "$_role" in
       worker|reviewer|debugger|tester|researcher)
         _WORK_COUNT=$(( _WORK_COUNT + 1 ))
-        if [ -z "${_WORK_SEEN[$_role]:-}" ]; then
-          _WORK_SEEN[$_role]=1
-          if [ -z "$_WORK_ORDER" ]; then _WORK_ORDER="$_role"
-          else _WORK_ORDER="$_WORK_ORDER, $_role"
-          fi
+        if [ -z "$_WORK_ORDER" ]; then _WORK_ORDER="$_role"
+        else _WORK_ORDER="$_WORK_ORDER, $_role"
         fi
         ;;
       cycle1-agent) _MAINT_HAS_CYCLE1=1 ;;
@@ -345,11 +342,8 @@ if [ -n "$B_SESS_ROLES" ]; then
         # Unknown role — bucket as work so it stays visible. Better to surface
         # an unrecognised role than silently swallow it.
         _WORK_COUNT=$(( _WORK_COUNT + 1 ))
-        if [ -z "${_WORK_SEEN[$_role]:-}" ]; then
-          _WORK_SEEN[$_role]=1
-          if [ -z "$_WORK_ORDER" ]; then _WORK_ORDER="$_role"
-          else _WORK_ORDER="$_WORK_ORDER, $_role"
-          fi
+        if [ -z "$_WORK_ORDER" ]; then _WORK_ORDER="$_role"
+        else _WORK_ORDER="$_WORK_ORDER, $_role"
         fi
         ;;
     esac
@@ -357,37 +351,37 @@ if [ -n "$B_SESS_ROLES" ]; then
   unset _ROLES_SPACED _role
 fi
 
-# Fall back to the bridge-reported active count when the role list is empty
-# (older payloads or odd states): show a bare "● N Running" without a role tail.
-if [ "$_WORK_COUNT" -eq 0 ] && [ "$B_SESS_ACTIVE" -gt 0 ] 2>/dev/null \
-  && [ "$_MAINT_HAS_CYCLE1" -eq 0 ] && [ "$_MAINT_HAS_CYCLE2" -eq 0 ] && [ "$_MAINT_HAS_RECAP" -eq 0 ]; then
+# Work sessions on L2: prefer the encounter-ordered role list when available,
+# else fall back to the bridge-reported active count for older payloads / odd states.
+# Maint flags are intentionally NOT consulted here — maint badges live on L1.
+if [ "$_WORK_COUNT" -gt 0 ]; then
+  if [ -n "$_WORK_ORDER" ]; then
+    add_l2 "${_ANSI_GREEN}●${_ANSI_RESET} ${_ANSI_BOLD}${_WORK_COUNT} Running${_ANSI_RESET} ${_ANSI_DIM}(${_ANSI_RESET}${_ANSI_CYAN}${_WORK_ORDER}${_ANSI_RESET}${_ANSI_DIM})${_ANSI_RESET}"
+  else
+    add_l2 "${_ANSI_GREEN}●${_ANSI_RESET} ${_ANSI_BOLD}${_WORK_COUNT} Running${_ANSI_RESET}"
+  fi
+elif [ "$B_SESS_ACTIVE" -gt 0 ] 2>/dev/null; then
   add_l2 "${_ANSI_GREEN}●${_ANSI_RESET} ${_ANSI_BOLD}${B_SESS_ACTIVE} Running${_ANSI_RESET}"
-else
-  if [ "$_WORK_COUNT" -gt 0 ]; then
-    if [ -n "$_WORK_ORDER" ]; then
-      add_l2 "${_ANSI_GREEN}●${_ANSI_RESET} ${_ANSI_BOLD}${_WORK_COUNT} Running${_ANSI_RESET} ${_ANSI_DIM}(${_ANSI_RESET}${_ANSI_CYAN}${_WORK_ORDER}${_ANSI_RESET}${_ANSI_DIM})${_ANSI_RESET}"
-    else
-      add_l2 "${_ANSI_GREEN}●${_ANSI_RESET} ${_ANSI_BOLD}${_WORK_COUNT} Running${_ANSI_RESET}"
-    fi
-  fi
-  # Maint: stitch the badges together as a single L2 segment so the dim "│"
-  # separator falls between work and maint, not between the maint badges.
-  _MAINT_SEG=""
-  if [ "$_MAINT_HAS_CYCLE1" -eq 1 ]; then
-    _MAINT_SEG="${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}cycle1${_ANSI_RESET}"
-  fi
-  if [ "$_MAINT_HAS_CYCLE2" -eq 1 ]; then
-    if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
-    _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}cycle2${_ANSI_RESET}"
-  fi
-  if [ "$_MAINT_HAS_RECAP" -eq 1 ]; then
-    if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
-    _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}recap${_ANSI_RESET}"
-  fi
-  [ -n "$_MAINT_SEG" ] && add_l2 "$_MAINT_SEG"
-  unset _MAINT_SEG
 fi
-unset _WORK_COUNT _WORK_ORDER _MAINT_HAS_CYCLE1 _MAINT_HAS_CYCLE2 _MAINT_HAS_RECAP _WORK_SEEN
+
+# Maint badges → built here but appended to L1 (see below). Stitch into a
+# single segment so the dim "│" separator falls between maint and the
+# preceding L1 segment (reset time), not between individual badges.
+_MAINT_SEG=""
+if [ "$_MAINT_HAS_CYCLE1" -eq 1 ]; then
+  _MAINT_SEG="${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}cycle1${_ANSI_RESET}"
+fi
+if [ "$_MAINT_HAS_CYCLE2" -eq 1 ]; then
+  if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
+  _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}cycle2${_ANSI_RESET}"
+fi
+if [ "$_MAINT_HAS_RECAP" -eq 1 ]; then
+  if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
+  _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}recap${_ANSI_RESET}"
+fi
+[ -n "$_MAINT_SEG" ] && add_l1 "$_MAINT_SEG"
+unset _MAINT_SEG
+unset _WORK_COUNT _WORK_ORDER _MAINT_HAS_CYCLE1 _MAINT_HAS_CYCLE2 _MAINT_HAS_RECAP
 
 # Jobs / Schedule / Roster / Discord / Recall segments remain removed.
 
