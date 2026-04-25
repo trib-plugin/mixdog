@@ -748,7 +748,17 @@ async function handleMemoryAction(args) {
     const baseCycle1 = config?.cycle1 || {}
     let cycle1Config = baseCycle1
     if (Number.isFinite(minBatchOverride) && minBatchOverride > 0) {
-      cycle1Config = { ...cycle1Config, cycle1: { ...(cycle1Config.cycle1 || {}), min_batch: minBatchOverride } }
+      // Pin override at BOTH top-level and nested cycle1.* — _runCycle1Impl's
+      // lookup is `config?.min_batch ?? config?.cycle1?.min_batch ?? default`,
+      // so leaving the top-level value from the spread of baseCycle1 in place
+      // (e.g. main config's `cycle1.min_batch:20`) silently shadows the
+      // nested override and the SessionStart "process even <min_batch rows"
+      // exception path returns 0/0/0 with no log line.
+      cycle1Config = {
+        ...cycle1Config,
+        min_batch: minBatchOverride,
+        cycle1: { ...(cycle1Config.cycle1 || {}), min_batch: minBatchOverride },
+      }
     }
     if (Number.isFinite(sessionCapOverride) && sessionCapOverride > 0) {
       cycle1Config = {
