@@ -80,7 +80,13 @@ function openMemoryDb() {
   try {
     const dbPath = path.join(DATA_DIR, 'memory.sqlite');
     if (!fs.existsSync(dbPath)) return null;
-    return new DatabaseSync(dbPath, { readOnly: true });
+    // WAL is already pinned to the file by src/memory/lib/memory.mjs init.
+    // Apply busy_timeout per-connection so concurrent SessionStart hooks
+    // (5 recap slots fire within ~23ms) wait briefly instead of failing
+    // immediately when a writer holds the lock during checkpoint.
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try { db.exec('PRAGMA busy_timeout = 2000'); } catch {}
+    return db;
   } catch (e) {
     process.stderr.write(`[session-start] open memory.sqlite failed: ${e.message}\n`);
     return null;

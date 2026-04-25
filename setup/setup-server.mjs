@@ -624,7 +624,12 @@ function mergeSearchConfig(existing, data) {
 
 function openMemoryDb(readonly = false) {
   if (!DatabaseSync) throw new Error('node:sqlite not available');
-  return new DatabaseSync(MEMORY_DB_PATH, { open: true, readOnly: readonly });
+  const db = new DatabaseSync(MEMORY_DB_PATH, { open: true, readOnly: readonly });
+  // WAL is pinned to the file by src/memory/lib/memory.mjs init. Apply
+  // busy_timeout per-connection so this surface (UI / backfill / writes)
+  // never collides with the memory worker or hook readers.
+  try { db.exec(`PRAGMA busy_timeout = ${readonly ? 2000 : 5000}`); } catch {}
+  return db;
 }
 
 // -- Memory backfill (UI trigger) --

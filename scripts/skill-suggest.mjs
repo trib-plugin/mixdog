@@ -56,7 +56,9 @@ function openTrajectoryDb() {
   const dbPath = join(resolveDataDir(), 'trajectory.sqlite');
   if (!existsSync(dbPath)) return null;
   try {
-    return new DatabaseSync(dbPath, { open: true, readOnly: true });
+    const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
+    try { db.exec('PRAGMA busy_timeout = 2000'); } catch {}
+    return db;
   } catch {
     return null;
   }
@@ -82,6 +84,7 @@ export function detectPatterns({ dbPath, minFreq = 3, days = 30 } = {}) {
   if (!existsSync(resolvedDb)) return [];
 
   const db = new DatabaseSync(resolvedDb, { open: true, readOnly: true });
+  try { db.exec('PRAGMA busy_timeout = 2000'); } catch {}
   const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
 
   try {

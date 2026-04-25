@@ -1369,6 +1369,7 @@ function openMemoryDbReadOnly() {
     const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
     try {
         const db = new DatabaseSync(dbPath, { readOnly: true });
+        try { db.exec('PRAGMA busy_timeout = 2000'); } catch {}
         try {
             db.prepare('SELECT count(*) AS n FROM sqlite_master').get();
             return db;
@@ -1498,6 +1499,7 @@ async function seedRecallMemoryIfNeeded(cases) {
     let db = null;
     try {
         db = new DatabaseSync(dbPath);
+        try { db.exec('PRAGMA busy_timeout = 5000'); } catch {}
         const nowMs = Date.now();
         const sourceRef = `live-smoke:${nowMs}-${process.pid}`;
         db.exec('BEGIN');
@@ -1538,7 +1540,10 @@ async function cleanupRecallSeeds(seeds) {
     ensureLocalPluginEnv();
     const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
     let db = null;
-    try { db = new DatabaseSync(dbPath); } catch { return; }
+    try {
+        db = new DatabaseSync(dbPath);
+        try { db.exec('PRAGMA busy_timeout = 5000'); } catch {}
+    } catch { return; }
     for (const seed of seeds) {
         const id = typeof seed === 'number' ? seed : Number(seed?.id || 0);
         if (!Number.isFinite(id) || id <= 0) continue;
