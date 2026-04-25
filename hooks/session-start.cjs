@@ -293,48 +293,163 @@ function rebindActiveInstance() {
   } catch {}
 }
 
-function requestCycle1(timeoutMs) {
-  return new Promise((resolve) => {
-    try {
-      const activePath = path.join(os.tmpdir(), 'mixdog', 'active-instance.json');
-      if (!fs.existsSync(activePath)) return resolve(null);
-      const active = JSON.parse(fs.readFileSync(activePath, 'utf8'));
-      const port = active?.httpPort;
-      if (!port) return resolve(null);
+function readMemoryWorkerPort() {
+  try {
+    const portPath = path.join(os.tmpdir(), 'mixdog-memory', 'memory-port');
+    if (!fs.existsSync(portPath)) return null;
+    const raw = fs.readFileSync(portPath, 'utf8').trim();
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
 
-      const payload = JSON.stringify({
-        timeout_ms: timeoutMs,
-        args: { min_batch: 1, session_cap: 50 },
+async function pollActiveInstance(graceMs) {
+  const activePath = path.join(os.tmpdir(), 'mixdog', 'active-instance.json');
+  const deadline = Date.now() + Math.max(0, graceMs);
+  // 100ms cadence — active-instance.json appears ~ms after channels owner HTTP ready.
+  while (Date.now() <= deadline) {
+    try {
+      if (fs.existsSync(activePath)) {
+        const active = JSON.parse(fs.readFileSync(activePath, 'utf8'));
+        if (active && active.httpPort) return active;
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return null;
+}
+
+function httpPostJson({ hostname, port, path: urlPath, timeoutMs, body }) {
+  return new Promise((resolve, reject) => {
+    const payload = typeof body === 'string' ? body : JSON.stringify(body);
+    const req = http.request({
+      hostname,
+      port,
+      path: urlPath,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+      timeout: Math.max(1, timeoutMs),
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        resolve({ statusCode: res.statusCode, body: Buffer.concat(chunks).toString('utf8') });
       });
-      const req = http.request({
+    });
+    req.on('error', (e) => reject(e));
+    req.on('timeout', () => { req.destroy(new Error('timeout')); });
+    req.end(payload);
+  });
+}
+
+async function requestCycle1(timeoutMs, opts = {}) {
+  const slot = opts.slot || 'unknown';
+  const graceMs = Number.isFinite(opts.graceMs) ? opts.graceMs : 5000;
+  const start = Date.now();
+  const deadline = start + Math.max(0, timeoutMs);
+  process.stderr.write(`[session-start] cycle1 slot=${slot} start graceMs=${graceMs} timeoutMs=${timeoutMs}\n`);
+
+  const finish = (route, payload) => {
+    const elapsedMs = Date.now() - start;
+    if (payload.ok) {
+      process.stderr.write(`[session-start] cycle1 slot=${slot} route=${route} reason=ok elapsed=${elapsedMs}ms\n`);
+      return { ok: true, result: payload.result, elapsedMs, route };
+    }
+    const sc = payload.statusCode != null ? ` statusCode=${payload.statusCode}` : '';
+    process.stderr.write(`[session-start] cycle1 slot=${slot} route=${route} reason=${payload.reason}${sc} elapsed=${elapsedMs}ms\n`);
+    return { ok: false, reason: payload.reason, statusCode: payload.statusCode, elapsedMs };
+  };
+
+  const classifyError = (e) => {
+    const msg = (e && e.message) || '';
+    if (/timeout/i.test(msg)) return 'timeout';
+    if ((e && e.code === 'ECONNREFUSED') || /ECONNREFUSED/i.test(msg)) return 'connect-refused';
+    return 'http-error';
+  };
+
+  try {
+    // Route 1: memory worker direct — preferred because it skips channels owner relay.
+    const memPort = readMemoryWorkerPort();
+    if (memPort) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        return finish('memory-direct', { ok: false, reason: 'timeout' });
+      }
+      try {
+        const res = await httpPostJson({
+          hostname: '127.0.0.1',
+          port: memPort,
+          path: '/api/tool',
+          timeoutMs: remaining,
+          body: { name: 'memory', arguments: { action: 'cycle1', min_batch: 1, session_cap: 50 } },
+        });
+        if (res.statusCode === 200) {
+          try {
+            const parsed = JSON.parse(res.body);
+            // memory worker returns MCP envelope: { content:[...], isError:bool }.
+            // Success = isError !== true. Also accept legacy { ok:true } shape.
+            if (parsed && (parsed.isError === false || parsed.ok === true)) {
+              return finish('memory-direct', { ok: true, result: parsed.result ?? parsed });
+            }
+            return finish('memory-direct', { ok: false, reason: 'body-not-ok', statusCode: 200 });
+          } catch {
+            return finish('memory-direct', { ok: false, reason: 'parse-error', statusCode: 200 });
+          }
+        }
+        // Non-200 → fall through to channels route.
+        process.stderr.write(`[session-start] cycle1 slot=${slot} route=memory-direct reason=non-200 statusCode=${res.statusCode} elapsed=${Date.now() - start}ms (fallback)\n`);
+      } catch (e) {
+        process.stderr.write(`[session-start] cycle1 slot=${slot} route=memory-direct reason=${classifyError(e)} elapsed=${Date.now() - start}ms (fallback)\n`);
+      }
+    } else {
+      process.stderr.write(`[session-start] cycle1 slot=${slot} route=memory-direct reason=no-port (fallback)\n`);
+    }
+
+    // Route 2: channels owner HTTP — wait for active-instance.json then POST /cycle1.
+    const remainingForGrace = deadline - Date.now();
+    if (remainingForGrace <= 0) return finish('channels', { ok: false, reason: 'timeout' });
+    const active = await pollActiveInstance(Math.min(graceMs, remainingForGrace));
+    if (!active) {
+      const reason = (Date.now() >= deadline) ? 'timeout' : 'no-active-instance';
+      return finish('channels', { ok: false, reason });
+    }
+    const port = active.httpPort;
+    if (!port) return finish('channels', { ok: false, reason: 'no-port' });
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return finish('channels', { ok: false, reason: 'timeout' });
+
+    try {
+      const res = await httpPostJson({
         hostname: '127.0.0.1',
         port,
         path: '/cycle1',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(payload),
-        },
-        timeout: timeoutMs,
-      }, (res) => {
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
-        res.on('end', () => {
-          try {
-            const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            resolve(res.statusCode === 200 && body?.ok ? body.result : null);
-          } catch {
-            resolve(null);
-          }
-        });
+        timeoutMs: remaining,
+        body: { timeout_ms: remaining, args: { min_batch: 1, session_cap: 50 } },
       });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-      req.end(payload);
-    } catch {
-      resolve(null);
+      if (res.statusCode !== 200) {
+        return finish('channels', { ok: false, reason: 'non-200', statusCode: res.statusCode });
+      }
+      try {
+        const parsed = JSON.parse(res.body);
+        if (parsed && parsed.ok) {
+          return finish('channels', { ok: true, result: parsed.result });
+        }
+        return finish('channels', { ok: false, reason: 'body-not-ok', statusCode: 200 });
+      } catch {
+        return finish('channels', { ok: false, reason: 'parse-error', statusCode: 200 });
+      }
+    } catch (e) {
+      return finish('channels', { ok: false, reason: classifyError(e) });
     }
-  });
+  } catch {
+    return finish('exception', { ok: false, reason: 'exception' });
+  }
 }
 
 async function runRulesPart() {
@@ -418,8 +533,10 @@ async function runRulesPart() {
 
   // Always run cycle1 to completion so later slots (core / recap) read the
   // freshest roots. Skip only when memory inject itself is skipped.
+  // rules slot itself always emits regardless of cycle1 outcome — it just
+  // primes the pipeline so the later slots have fresh DB to read.
   if (!skipMemoryInject) {
-    await requestCycle1(60000);
+    await requestCycle1(60000, { graceMs: 10000, slot: 'rules' });
   }
 
   emit(additionalContext);
@@ -433,7 +550,11 @@ async function runRulesPart() {
 // ---------------------------------------------------------------------------
 async function runCorePart() {
   if (skipMemoryInject) return;
-  await requestCycle1(25000);
+  const r = await requestCycle1(25000, { graceMs: 5000, slot: 'core' });
+  if (r.ok !== true) {
+    process.stderr.write(`[session-start] core skipped: cycle1 await failed reason=${r.reason}\n`);
+    return;
+  }
   const db = openMemoryDb();
   if (!db) return;
   try {
@@ -451,7 +572,11 @@ async function runCorePart() {
 // ---------------------------------------------------------------------------
 async function runRecapPart() {
   if (skipMemoryInject) return;
-  await requestCycle1(25000);
+  const r = await requestCycle1(25000, { graceMs: 5000, slot: 'recap' });
+  if (r.ok !== true) {
+    process.stderr.write(`[session-start] recap skipped: cycle1 await failed reason=${r.reason}\n`);
+    return;
+  }
   const db = openMemoryDb();
   if (!db) return;
   try {
