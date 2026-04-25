@@ -79,6 +79,15 @@ try {
   if (fs.existsSync(asp)) fs.unlinkSync(asp);
 } catch {}
 
+// Drop any stale recap-pending.json from older versions that used the
+// channel-worker re-inject path. The split design is gone — recap is now
+// folded into a single SessionStart additionalContext payload — so any
+// leftover file would just get replayed by an old worker. Best-effort.
+try {
+  const stalePending = path.join(DATA_DIR, 'recap-pending.json');
+  if (fs.existsSync(stalePending)) fs.unlinkSync(stalePending);
+} catch {}
+
 function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
 }
@@ -261,20 +270,15 @@ function buildContext(db) {
   }
 }
 
-// Returns { headLines, blocks } where:
-//   headLines: array of "[MM-DD HH:MM] summary" for the first 20 (most-recent)
-//              chunks, in chronological order (oldest → newest), used for the
-//              SessionStart hook output.
-//   blocks: array of additional 20-row blocks (oldest → newest within each
-//           block; blocks are in chronological order too). These are written
-//           to recap-pending.json for the channels worker to inject post-boot.
-// Each rendered line is exactly: `[MM-DD HH:MM] <summary truncated to 1000c>`.
+// Returns { lines } — a single chronological list (oldest → newest) of
+// rendered "[MM-DD HH:MM] <summary>" entries, each summary truncated to
+// 1000c. Total cap is `chunkCount` (default 100). No block boundaries.
 function buildRecapData(db, chunkCount) {
-  const out = { headLines: [], blocks: [] };
+  const out = { lines: [] };
   try {
     const limit = Math.max(1, Number(chunkCount) || 100);
-    // Pull newest-first from the DB, then reverse so each subset stays
-    // chronological when rendered.
+    // Pull newest-first from the DB so LIMIT bounds the most recent N, then
+    // reverse the whole batch into chronological order (oldest → newest).
     const rows = db.prepare(`
       SELECT id, ts, summary
       FROM entries
@@ -291,21 +295,8 @@ function buildRecapData(db, chunkCount) {
     }).filter(Boolean);
     if (rendered.length === 0) return out;
 
-    // `rendered` is newest-first. Carve off the first 20 (newest) for the
-    // hook output, then chunk the remainder into 20-row blocks. Reverse each
-    // bucket so the rendered order is chronological.
-    const head = rendered.slice(0, 20).reverse();
-    out.headLines = head;
-
-    const tail = rendered.slice(20);
-    for (let i = 0; i < tail.length; i += 20) {
-      const block = tail.slice(i, i + 20).reverse();
-      if (block.length) out.blocks.push(block);
-    }
-    // Blocks are currently ordered newest-first (block[0] is the second-newest
-    // 20). Reverse so that when injected one-by-one the user sees oldest first,
-    // matching the chronological flow of the head block.
-    out.blocks.reverse();
+    // Reverse newest-first → oldest-first so the inject reads chronologically.
+    out.lines = rendered.reverse();
     return out;
   } catch (e) {
     process.stderr.write(`[session-start] recap build failed: ${e.message}\n`);
@@ -317,7 +308,7 @@ function buildMemoryBlocks(chunkCount) {
   let db = null;
   try {
     db = openMemoryDb();
-    if (!db) return { context: '', recapData: { headLines: [], blocks: [] } };
+    if (!db) return { context: '', recapData: { lines: [] } };
     return { context: buildContext(db), recapData: buildRecapData(db, chunkCount) };
   } finally {
     if (db) { try { db.close(); } catch {} }
@@ -410,31 +401,13 @@ function requestCycle1(timeoutMs) {
       : 100;
 
     const memoryBlocks = buildMemoryBlocks(chunkCount);
-    const recapData = memoryBlocks.recapData || { headLines: [], blocks: [] };
+    const recapData = memoryBlocks.recapData || { lines: [] };
     let recapBlock = '';
-    if (recapData.headLines && recapData.headLines.length) {
-      recapBlock = '## Recap\n' + recapData.headLines.join('\n');
+    if (recapData.lines && recapData.lines.length) {
+      recapBlock = `## Recap\n${recapData.lines.join('\n')}`;
     }
 
-    // Stash any remaining recap blocks for the channels worker to inject
-    // post-boot. File is consumed-and-deleted by the worker. Best-effort —
-    // failure (FS error) silently degrades to "no extra inject".
-    try {
-      const pendingPath = path.join(DATA_DIR, 'recap-pending.json');
-      if (recapData.blocks && recapData.blocks.length) {
-        const payload = recapData.blocks.map(block => block.join('\n'));
-        fs.mkdirSync(path.dirname(pendingPath), { recursive: true });
-        fs.writeFileSync(pendingPath, JSON.stringify(payload) + '\n');
-      } else if (fs.existsSync(pendingPath)) {
-        // Stale file from a prior session with more chunks — clear it so the
-        // worker doesn't re-inject yesterday's content.
-        fs.unlinkSync(pendingPath);
-      }
-    } catch (e) {
-      process.stderr.write(`[session-start] recap-pending stash failed: ${e.message}\n`);
-    }
-
-    const blocks = [additionalContext, memoryBlocks.context, recapBlock].filter(Boolean);
+    const blocks = [additionalContext, recapBlock, memoryBlocks.context].filter(Boolean);
     additionalContext = blocks.join('\n\n');
   }
 

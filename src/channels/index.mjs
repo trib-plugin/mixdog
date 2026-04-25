@@ -855,71 +855,6 @@ function syncOwnedWebhookAndEventRuntime({ reload = false } = {}) {
     webhookServer = null;
   }
 }
-// Boot-time consumer for recap-pending.json written by the SessionStart hook.
-// The hook only embeds the most-recent 20 recap rows in its `additionalContext`
-// payload to keep the SessionStart turn lightweight; the older rows are split
-// into 20-row blocks and stashed for us to inject post-boot. Each block lands
-// as a separate `system` inject through the normal injectAndRecord path —
-// same mechanism the scheduler/proactive flows use — so the Lead transcript
-// sees them as discrete `[Recap] ...` system pings.
-//
-// Best-effort throughout: missing file, malformed JSON, no resolvable target
-// channel, or backend hiccup all degrade silently. The file is deleted up
-// front so a partial inject (e.g. process restart mid-loop) cannot replay.
-async function scheduleRecapPendingInject() {
-  const pendingPath = path.join(DATA_DIR, 'recap-pending.json');
-  let raw;
-  try {
-    raw = fs.readFileSync(pendingPath, 'utf8');
-  } catch {
-    return; // no file → nothing to do
-  }
-  // Consume-once: drop the file before scheduling so a crash mid-loop doesn't
-  // replay yesterday's recap on the next boot.
-  try { fs.unlinkSync(pendingPath); } catch { /* best-effort */ }
-
-  let blocks;
-  try {
-    blocks = JSON.parse(raw);
-  } catch (e) {
-    process.stderr.write(`mixdog: recap-pending parse failed: ${e.message}\n`);
-    return;
-  }
-  if (!Array.isArray(blocks) || blocks.length === 0) return;
-
-  // Resolve the main lead channel — same fallback chain the permission and
-  // scheduler paths use.
-  const mainLabel = config?.mainChannel || 'main';
-  const target = (statusState?.read?.().channelId)
-    || resolveChannelLabel(config?.channelsConfig, mainLabel)
-    || null;
-  if (!target) {
-    process.stderr.write(`mixdog: recap-pending dropped, no resolvable channel\n`);
-    return;
-  }
-
-  // Stagger the injects a few seconds apart so the Lead session has time to
-  // settle after SessionStart and so the blocks land as visibly-separate
-  // system pings rather than one wall of text.
-  const STAGGER_MS = 4000;
-  const START_DELAY_MS = 6000;
-  blocks.forEach((block, idx) => {
-    const content = typeof block === 'string' ? block : '';
-    if (!content) return;
-    const delay = START_DELAY_MS + idx * STAGGER_MS;
-    setTimeout(() => {
-      try {
-        injectAndRecord(target, 'recap', content, {
-          type: 'recap',
-          silent_to_agent: false,
-        });
-      } catch (e) {
-        process.stderr.write(`mixdog: recap inject ${idx + 1}/${blocks.length} failed: ${e.message}\n`);
-      }
-    }, delay).unref?.();
-  });
-}
-
 async function startOwnedRuntime(options = {}) {
   if (bridgeRuntimeConnected) return;
   if (!channelBridgeActive) return;
@@ -942,12 +877,6 @@ async function startOwnedRuntime(options = {}) {
   scheduler.start();
   startSnapshotWriter(scheduler);
   syncOwnedWebhookAndEventRuntime();
-  // Boot-time recap multi-inject. SessionStart hook (hooks/session-start.cjs)
-  // writes the tail of the recap to recap-pending.json (4 blocks of 20 chunks
-  // each). We dispatch each block as its own system-message inject so the
-  // SessionStart payload itself stays small. File is consume-once: deleted as
-  // soon as the blocks are scheduled, so a crash mid-loop won't replay.
-  try { void scheduleRecapPendingInject(); } catch { /* best-effort */ }
   let httpPort;
   try {
     httpPort = await startOwnerHttpServer();
