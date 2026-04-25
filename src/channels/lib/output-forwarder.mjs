@@ -207,7 +207,15 @@ function candidateAffinity(candidate) {
   if (candidate.cwdMatches) return 1;
   return 0;
 }
+const TRANSCRIPT_MTIME_DECISIVE_MS = 30_000;
 function compareTranscriptCandidates(left, right) {
+  const leftMtime = Number(left.transcriptMtime) || 0;
+  const rightMtime = Number(right.transcriptMtime) || 0;
+  if (leftMtime > 0 && rightMtime > 0) {
+    const mtimeDelta = rightMtime - leftMtime;
+    if (mtimeDelta >= TRANSCRIPT_MTIME_DECISIVE_MS) return 1;
+    if (-mtimeDelta >= TRANSCRIPT_MTIME_DECISIVE_MS) return -1;
+  }
   const affinityDiff = candidateAffinity(right) - candidateAffinity(left);
   if (affinityDiff !== 0) return affinityDiff;
   if (Number(right.exists) !== Number(left.exists)) return Number(right.exists) - Number(left.exists);

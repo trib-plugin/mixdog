@@ -298,6 +298,25 @@ function applyTranscriptBinding(channelId, transcriptPath, options = {}) {
 async function rebindTranscriptContext(channelId, options = {}) {
   const previousPath = options.previousPath ?? "";
   const mode = options.mode ?? "same";
+  const explicitTranscriptPath = typeof options.transcriptPath === "string" ? options.transcriptPath.trim() : "";
+  if (explicitTranscriptPath) {
+    let explicitExists = false;
+    try {
+      explicitExists = fs.statSync(explicitTranscriptPath).isFile();
+    } catch {
+      explicitExists = false;
+    }
+    if (explicitExists) {
+      applyTranscriptBinding(channelId, explicitTranscriptPath, {
+        replayFromStart: Boolean(options.catchUp),
+        persistStatus: options.persistStatus
+      });
+      if (options.catchUp) {
+        await forwarder.forwardNewText();
+      }
+      return explicitTranscriptPath;
+    }
+  }
   let sawPendingTranscript = false;
   let pendingSessionId = "";
   for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -646,10 +665,12 @@ async function startOwnerHttpServer() {
             return;
           }
           const previousPath = getPersistedTranscriptPath();
+          const explicitTranscriptPath = typeof body?.transcriptPath === "string" ? body.transcriptPath.trim() : "";
           const bound = await rebindTranscriptContext(channelId, {
             previousPath,
             persistStatus: true,
-            catchUp: true
+            catchUp: true,
+            ...(explicitTranscriptPath ? { transcriptPath: explicitTranscriptPath } : {})
           });
           const reboundChanged = Boolean(bound) && bound !== previousPath;
           res.writeHead(200);
