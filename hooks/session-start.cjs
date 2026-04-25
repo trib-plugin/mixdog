@@ -426,10 +426,14 @@ async function runRulesPart() {
 }
 
 // ---------------------------------------------------------------------------
-// Part: core (slot 2) — DB read only; no one-shot work, no cycle1.
+// Part: core (slot 2) — DB read. Awaits cycle1 in-flight so freshly
+// classified roots from the rules slot are visible. The server-side
+// `_awaitCycle1Run` guard de-duplicates concurrent calls, so this only
+// piggybacks on the rules-slot run rather than triggering a second pass.
 // ---------------------------------------------------------------------------
-function runCorePart() {
+async function runCorePart() {
   if (skipMemoryInject) return;
+  await requestCycle1(25000);
   const db = openMemoryDb();
   if (!db) return;
   try {
@@ -441,11 +445,13 @@ function runCorePart() {
 }
 
 // ---------------------------------------------------------------------------
-// Part: recap — DB read only; emit a single `## Recap` block sized to fit
-// the SessionStart hook output cap.
+// Part: recap — DB read. Same in-flight piggyback as core: wait for the
+// rules-slot cycle1 to finish so the recap block reflects the freshest
+// roots before the hook output cap is applied.
 // ---------------------------------------------------------------------------
-function runRecapPart() {
+async function runRecapPart() {
   if (skipMemoryInject) return;
+  await requestCycle1(25000);
   const db = openMemoryDb();
   if (!db) return;
   try {
@@ -465,8 +471,8 @@ function runRecapPart() {
   if (PART === 'rules') {
     await runRulesPart();
   } else if (PART === 'core') {
-    runCorePart();
+    await runCorePart();
   } else if (PART === 'recap') {
-    runRecapPart();
+    await runRecapPart();
   }
 })();
