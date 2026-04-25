@@ -654,6 +654,20 @@ async function dispatchTool(name, args, callerCtx = {}) {
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
+  if (def.module === 'host_input') {
+    // Host-terminal input injection. Walks the parent chain from this Node
+    // process, finds the first ancestor matching a supported terminal host
+    // (currently powershell.exe / pwsh.exe), and replays the supplied text
+    // into its console via AttachConsole + WriteConsoleInputW. Reuses the
+    // proven scripts/inject-input.ps1 helper.
+    // See src/agent/orchestrator/tools/host-input.mjs.
+    const { executeHostInputTool } = await import(
+      pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/host-input.mjs')).href,
+    )
+    const text = await executeHostInputTool(name, args ?? {}, process.cwd())
+    return { content: [{ type: 'text', text: String(text) }] }
+  }
+
   const moduleName = TOOL_MODULE[name]
   if (!moduleName) throw new Error(`Unknown tool: ${name}`)
 
