@@ -583,7 +583,7 @@ function parsePeriod(period, hasQuery) {
 function formatTs(tsMs) {
   const n = Number(tsMs)
   if (Number.isFinite(n) && n > 1e12) {
-    return new Date(n).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).slice(0, 16) + ' KST'
+    return new Date(n).toLocaleString('sv-SE').slice(0, 16)
   }
   return String(tsMs ?? '').slice(0, 16)
 }

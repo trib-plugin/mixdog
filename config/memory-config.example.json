@@ -13,9 +13,5 @@
   "cycle2": {
     "__comment": "Curator cycle — promotes high-value chunks to active core memory and prunes stale entries.",
     "interval": "1h"
-  },
-  "recap": {
-    "__comment": "Session recap — entries injected as additionalContext on SessionStart (startup|clear). chunk_count caps how many recent root chunks + recent raw turns are pulled from the memory DB.",
-    "chunk_count": 100
   }
 }

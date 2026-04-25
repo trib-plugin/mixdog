@@ -83,7 +83,7 @@ export function classifyMemorySentence(factType, text) {
   const proposalLike = /\b(should|could|let's|what about|how about)\b/i.test(clean)
     || /어때|하자|넣자|두자|맞아|되게|가게|전환|구현하자|저장해서/.test(clean)
   const isRequestNarration = /\bthe user (asked|requested|wants|wanted|is actively improving|explicitly asked)\b/i.test(clean)
-    || /사용자가 .*요청했|유저가 .*요청했|분석해달라고 요청|계속 진행해달라고 요청/.test(clean)
+    || /사용자가 .*요청했|유저가 .*요청했|분석해달라고 요청|계속 진행해달라고 요청|please .*(analyze|continue|proceed)|asks? .*to (analyze|continue|proceed)/i.test(clean)
 
   const operationRuleTopic = /\b(commit|push|build|deploy|approval|language|tone|timezone|transcript prompt|durable memory|profile source of truth|identity storage)\b/i.test(clean)
     || /커밋|푸시|빌드|배포|승인|언어|말투|어투|시간대|장기기억|transcript prompt|source of truth|정체성 저장/.test(clean)
@@ -151,7 +151,7 @@ export function classifyCandidateConcept(text, role = 'user') {
   const internalMetaLike = /\b(mcp|profile hints?|memory-context|notification|output|verify chain|state file|cycle status|cycle state|catch-up|pipeline|benchmark|provider abstraction|tool-call|latency|throughput)\b/i.test(clean)
     || /프로필 힌트|memory-context|알림|출력|verify 체인|state file|cycle status|cycle state|catch-up|파이프라인|벤치마크|provider abstraction|지연|처리량|주기 실행/.test(clean)
   const requestNarrationLike = /\bthe user (asked|requested|wants|wanted)\b/i.test(clean)
-    || /사용자가 .*요청했|유저가 .*요청했|심층분석해달라고/.test(clean)
+    || /사용자가 .*요청했|유저가 .*요청했|심층분석해달라고|please .*(analyze|investigate)|asks? .*for .*(deep |thorough )?(analysis|review)/i.test(clean)
 
   if (role !== 'user') return { category: 'assistant_evidence', admit: false }
   if (requestNarrationLike) return { category: 'request_narration', admit: false }

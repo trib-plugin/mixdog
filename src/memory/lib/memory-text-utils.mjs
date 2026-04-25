@@ -69,7 +69,7 @@ const MEMORY_TOKEN_STOPWORDS = new Set([
   'your', 'unless', 'with',
   'user', 'assistant', 'requested', 'request', 'asked', 'ask', 'stated', 'state', 'reported', 'report',
   'mentioned', 'mention', 'clarified', 'clarify', 'explicitly', 'currently',
-  '사용자', '유저', '요청', '질문', '답변', '언급', '말씀', '설명', '보고', '무슨', '뭐야', '했지',
+  '사용자', '유저', '요청', '질문', '답변', '언급', '말씀', '설명', '보고', '무슨', '뭐야', '했지', 'user', 'asks', 'asked', 'request', 'requested', 'question', 'answer', 'reply', 'said', 'mentioned', 'explained', 'reported', 'what', 'huh',
 ])
 
 const SUBJECT_STOPWORDS = new Set([

@@ -294,7 +294,7 @@ function cmdResume(args) {
         const active = readActiveSession();
         const lines = sessions.map((s, i) => {
             const mark = s.id === active ? '← active' : '';
-            const updated = new Date(s.updatedAt).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }) + ' KST';
+            const updated = new Date(s.updatedAt).toLocaleString('sv-SE');
             const msgCount = Array.isArray(s.messages) ? s.messages.length : 0;
             return `[${i}] ${s.id}  ${s.provider}/${s.model}  msgs=${msgCount}  ${updated}  ${mark}`;
         });
@@ -385,7 +385,7 @@ function cmdSessions() {
     const active = readActiveSession();
     const lines = sessions.map((s, i) => {
         const mark = s.id === active ? '  ← active' : '';
-        const updated = new Date(s.updatedAt).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }) + ' KST';
+        const updated = new Date(s.updatedAt).toLocaleString('sv-SE');
         const msgCount = Array.isArray(s.messages) ? s.messages.length : 0;
         return `[${i}] ${s.id}  ${s.provider}/${s.model}  msgs=${msgCount}  ${fmtTokens(s.totalInputTokens || 0)} in / ${fmtTokens(s.totalOutputTokens || 0)} out  ${updated}${mark}`;
     });

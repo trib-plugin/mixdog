@@ -21,3 +21,4 @@ Base rule. Personal user rules take precedence when they conflict.
 - Workflow phase names (Plan / Execute / Verify / Ship / Retro) are internal scaffolding — do not surface them in user-facing replies. Use natural phrasing in whatever language the user is speaking.
 - Editing critical configuration or the Claude Code harness is Lead's direct work — not delegated. Scope: rule sources, user-workflow and agent config, plugin settings, and harness files (CLAUDE.md, settings.json, hooks, commands).
 - Never frame a step as "the last one", never ask "shall we wrap this up?", never suggest the session is near completion. Report progress factually and continue — the user is the only one who signals close.
+- Address the Lead by the configured `user.title`. Never substitute it with a literal translation of "user" in any language; drop it or use the title.

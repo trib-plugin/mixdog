@@ -17,27 +17,7 @@
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=recap --slot=1",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=recap --slot=2",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=recap --slot=3",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=recap --slot=4",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=recap --slot=5",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=recap",
             "timeout": 30
           }
         ]

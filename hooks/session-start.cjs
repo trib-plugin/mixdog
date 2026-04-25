@@ -9,11 +9,11 @@ const { DatabaseSync } = require('node:sqlite');
 const { resolvePluginData } = require(path.join(__dirname, '..', 'lib', 'plugin-paths.cjs'));
 
 // ---------------------------------------------------------------------------
-// argv parsing — supports `--part rules`, `--part=rules`, `--slot 2`, `--slot=2`.
-// Invalid/unknown part falls back to `rules`. Slot defaults to 1 (1-based).
+// argv parsing — supports `--part rules`, `--part=rules`.
+// Invalid/unknown part falls back to `rules`.
 // ---------------------------------------------------------------------------
 function parseArgs(argv) {
-  const out = { part: 'rules', slot: 1 };
+  const out = { part: 'rules' };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (!a) continue;
@@ -32,10 +32,6 @@ function parseArgs(argv) {
       }
     }
     if (key === 'part' && typeof val === 'string') out.part = val;
-    else if (key === 'slot' && typeof val === 'string') {
-      const n = Number(val);
-      if (Number.isFinite(n) && n >= 1) out.slot = Math.floor(n);
-    }
   }
   if (!['rules', 'core', 'recap'].includes(out.part)) out.part = 'rules';
   return out;
@@ -43,7 +39,6 @@ function parseArgs(argv) {
 
 const ARGS = parseArgs(process.argv);
 const PART = ARGS.part;
-const SLOT = ARGS.slot;
 
 let _event = {};
 try {
@@ -96,16 +91,16 @@ function openMemoryDb() {
 function formatTs(ts) {
   const n = Number(ts);
   if (Number.isFinite(n) && n > 1e12) {
-    return new Date(n).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).slice(0, 16) + ' KST';
+    return new Date(n).toLocaleString('sv-SE').slice(0, 16);
   }
   return String(ts ?? '').slice(0, 16);
 }
 
-// MM-DD HH:MM in KST for compact recap rendering.
+// MM-DD HH:MM in local time for compact recap rendering.
 function formatTsShort(ts) {
   const n = Number(ts);
   if (!Number.isFinite(n) || n <= 1e12) return String(ts ?? '').slice(0, 16);
-  const full = new Date(n).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' });
+  const full = new Date(n).toLocaleString('sv-SE');
   return full.slice(5, 16);
 }
 
@@ -132,19 +127,20 @@ function buildContext(db) {
   }
 }
 
-// Returns { lines } — single chronological list (oldest → newest) of
-// "[MM-DD HH:MM] <summary>" entries; each summary truncated to 1000c.
-function buildRecapData(db, chunkCount) {
+// Returns { lines } — chronological "[MM-DD HH:MM] <summary>" entries
+// (oldest → newest), trimmed from the front so the rendered block fits the
+// SessionStart hook output cap (10,000 chars total — leaves margin for the
+// JSON wrapper around additionalContext; header "## Recap\n" reserved).
+function buildRecapData(db) {
   const out = { lines: [] };
   try {
-    const limit = Math.max(1, Number(chunkCount) || 100);
     const rows = db.prepare(`
       SELECT id, ts, summary
       FROM entries
       WHERE is_root = 1
       ORDER BY ts DESC, id DESC
-      LIMIT ?
-    `).all(limit);
+      LIMIT 200
+    `).all();
     if (rows.length === 0) return out;
 
     const rendered = rows.map(r => {
@@ -154,31 +150,24 @@ function buildRecapData(db, chunkCount) {
     }).filter(Boolean);
     if (rendered.length === 0) return out;
 
-    out.lines = rendered.reverse();
+    // Newest → oldest; keep accumulating from the newest end until the
+    // running total would exceed the cap, then reverse to chronological.
+    const HEADER_LEN = '## Recap\n'.length;
+    const CAP = 9900;
+    let total = HEADER_LEN;
+    const kept = [];
+    for (const line of rendered) {
+      const add = line.length + 1;
+      if (total + add > CAP) break;
+      kept.push(line);
+      total += add;
+    }
+    out.lines = kept.reverse();
     return out;
   } catch (e) {
     process.stderr.write(`[session-start] recap build failed: ${e.message}\n`);
     return out;
   }
-}
-
-// Deterministic packing: split lines into slots so each slot's char total
-// stays ≤ capChars. Slot 1 reserves headerLen for the "## Recap\n" prefix;
-// later slots have no header (subsequent SessionStart additionalContext
-// payloads concatenate naturally in the system reminder).
-function packRecapLines(lines, headerLen = 10, capChars = 9000) {
-  const slots = [[]];
-  let curLen = headerLen; // slot 1 starts already accounting for header
-  for (const line of lines) {
-    const add = line.length + 1; // newline
-    if (curLen + add > capChars && slots[slots.length - 1].length > 0) {
-      slots.push([]);
-      curLen = 0; // subsequent slots have no header
-    }
-    slots[slots.length - 1].push(line);
-    curLen += add;
-  }
-  return slots;
 }
 
 // ---------------------------------------------------------------------------
@@ -452,35 +441,18 @@ function runCorePart() {
 }
 
 // ---------------------------------------------------------------------------
-// Part: recap (slot 3+) — DB read only; auto-pack lines into slots, emit
-// only the lines belonging to this slot's index (1-based against the recap
-// pack, which corresponds to argv `--slot`).
+// Part: recap — DB read only; emit a single `## Recap` block sized to fit
+// the SessionStart hook output cap.
 // ---------------------------------------------------------------------------
-function runRecapPart(slotIdx) {
+function runRecapPart() {
   if (skipMemoryInject) return;
   const db = openMemoryDb();
   if (!db) return;
   try {
-    const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
-    const chunkCount = Number(memoryConfig?.recap?.chunk_count) > 0
-      ? Number(memoryConfig.recap.chunk_count)
-      : 100;
-
-    const recapData = buildRecapData(db, chunkCount);
+    const recapData = buildRecapData(db);
     const lines = recapData.lines || [];
     if (lines.length === 0) return;
-
-    const HEADER = '## Recap\n';
-    const slots = packRecapLines(lines, HEADER.length, 9000);
-
-    const idx = slotIdx - 1;
-    if (idx < 0 || idx >= slots.length) return;
-    const slotLines = slots[idx];
-    if (!slotLines || slotLines.length === 0) return;
-
-    const body = slotLines.join('\n');
-    const out = idx === 0 ? `${HEADER}${body}` : body;
-    emit(out);
+    emit(`## Recap\n${lines.join('\n')}`);
   } finally {
     try { db.close(); } catch {}
   }
@@ -495,6 +467,6 @@ function runRecapPart(slotIdx) {
   } else if (PART === 'core') {
     runCorePart();
   } else if (PART === 'recap') {
-    runRecapPart(SLOT);
+    runRecapPart();
   }
 })();

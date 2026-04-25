@@ -9,7 +9,7 @@ Structure:
 2. Optional short bullet list (2-4 items) under a `Open / Next:` label for unresolved threads and what the user expects next. Omit the block entirely if nothing is pending.
 
 Rules:
-- Match the input language. If entries are Korean, write Korean. If mixed, use the user's dominant language.
+- Match the input language. If entries are mixed, use the dominant language.
 - Be concrete: keep file paths, version numbers, identifiers verbatim.
 - Anchor with files: when changes touched specific files, name 1-3 key paths in the paragraph (e.g. `hooks/session-start.cjs`) so the next session can jump straight to them without re-searching. Prefer repo-relative paths.
 - Skip meta-commentary ("the conversation was about...", "based on the entries...").
@@ -20,4 +20,4 @@ Rules:
   - Only list items that are genuinely pending after the final entry. If an item was completed later in the same session, drop it.
   - Prefer concrete actionable next steps ("push 0.1.42 to marketplace", "verify recap at next session start") over restatements of policy or standing rules.
   - If nothing actionable remains, omit the block entirely.
-- If entries contain only small talk or no substantive work, respond with a single sentence acknowledging that (e.g. "직전 세션에서 특별한 작업 없음.").
+- If entries contain only small talk or no substantive work, respond with a single sentence acknowledging that (e.g. "No substantive work in the previous session.").
