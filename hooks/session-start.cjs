@@ -294,18 +294,6 @@ function rebindActiveInstance() {
   } catch {}
 }
 
-function readMemoryWorkerPort() {
-  try {
-    const portPath = path.join(os.tmpdir(), 'mixdog-memory', 'memory-port');
-    if (!fs.existsSync(portPath)) return null;
-    const raw = fs.readFileSync(portPath, 'utf8').trim();
-    const n = Number(raw);
-    return Number.isFinite(n) && n > 0 ? n : null;
-  } catch {
-    return null;
-  }
-}
-
 // TCP probe — resolves true if the port accepts a connection within probeMs,
 // false on ECONNREFUSED / EHOSTUNREACH / timeout / any other socket error.
 // Used by pollActiveInstance to skip stale active-instance.json entries left
@@ -397,25 +385,25 @@ function extractProcessedCount(parsed) {
   return m ? parseInt(m[1], 10) : null;
 }
 
-// One full attempt across both routes (memory-direct → channels). Each route
-// polls cold-start failures (`no-port`, ECONNREFUSED) continuously until the
-// shared deadline rather than capping retries at a fixed count, so the MCP
-// boot race is fully covered as long as the caller's deadline is generous.
+// One full cycle1 attempt via the channels owner. Waits for
+// active-instance.json (TCP-probed for a live owner via pollActiveInstance)
+// up to graceMs, then POSTs /cycle1. The active-instance polling is the
+// single readiness signal; no separate memory-direct port file path.
 async function requestCycle1Once(deadline, opts) {
   const slot = opts.slot || 'unknown';
   const graceMs = Number.isFinite(opts.graceMs) ? opts.graceMs : 5000;
   const start = Date.now();
 
-  const finish = (route, payload) => {
+  const finish = (payload) => {
     const elapsedMs = Date.now() - start;
     if (payload.ok) {
       const procStr = payload.processed != null ? payload.processed : '?';
-      process.stderr.write(`[session-start] cycle1 slot=${slot} route=${route} reason=ok processed=${procStr} elapsed=${elapsedMs}ms\n`);
-      return { ok: true, processed: payload.processed, route, elapsedMs };
+      process.stderr.write(`[session-start] cycle1 slot=${slot} route=channels reason=ok processed=${procStr} elapsed=${elapsedMs}ms\n`);
+      return { ok: true, processed: payload.processed, route: 'channels', elapsedMs };
     }
     const sc = payload.statusCode != null ? ` statusCode=${payload.statusCode}` : '';
-    process.stderr.write(`[session-start] cycle1 slot=${slot} route=${route} reason=${payload.reason}${sc} elapsed=${elapsedMs}ms\n`);
-    return { ok: false, reason: payload.reason, statusCode: payload.statusCode, elapsedMs, route };
+    process.stderr.write(`[session-start] cycle1 slot=${slot} route=channels reason=${payload.reason}${sc} elapsed=${elapsedMs}ms\n`);
+    return { ok: false, reason: payload.reason, statusCode: payload.statusCode, elapsedMs, route: 'channels' };
   };
 
   const classifyError = (e) => {
@@ -425,72 +413,16 @@ async function requestCycle1Once(deadline, opts) {
     return 'http-error';
   };
 
-  // Route 1: memory worker direct. Poll the port file + connection until
-  // deadline. `no-port` and ECONNREFUSED are both treated as "still booting"
-  // and retried; any other failure (non-200, parse, http-error, timeout)
-  // falls through to channels immediately.
-  const POLL_MS = 200;
-  let memRouteAttempted = false;
-  while (Date.now() < deadline) {
-    const memPort = readMemoryWorkerPort();
-    if (!memPort) {
-      const remain = deadline - Date.now();
-      if (remain <= POLL_MS) break;
-      await new Promise((r) => setTimeout(r, POLL_MS));
-      continue;
-    }
-    memRouteAttempted = true;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
-    try {
-      const res = await httpPostJson({
-        hostname: '127.0.0.1',
-        port: memPort,
-        path: '/api/tool',
-        timeoutMs: remaining,
-        body: { name: 'memory', arguments: { action: 'cycle1', min_batch: 1, session_cap: 50 } },
-      });
-      if (res.statusCode === 200) {
-        try {
-          const parsed = JSON.parse(res.body);
-          if (parsed && (parsed.isError === false || parsed.ok === true)) {
-            return finish('memory-direct', { ok: true, processed: extractProcessedCount(parsed) });
-          }
-          return finish('memory-direct', { ok: false, reason: 'body-not-ok', statusCode: 200 });
-        } catch {
-          return finish('memory-direct', { ok: false, reason: 'parse-error', statusCode: 200 });
-        }
-      }
-      process.stderr.write(`[session-start] cycle1 slot=${slot} route=memory-direct reason=non-200 statusCode=${res.statusCode} elapsed=${Date.now() - start}ms (fallback)\n`);
-      break;
-    } catch (e) {
-      const reason = classifyError(e);
-      if (reason !== 'connect-refused') {
-        process.stderr.write(`[session-start] cycle1 slot=${slot} route=memory-direct reason=${reason} elapsed=${Date.now() - start}ms (fallback)\n`);
-        break;
-      }
-      const remainAfterErr = deadline - Date.now();
-      if (remainAfterErr <= POLL_MS) break;
-      await new Promise((r) => setTimeout(r, POLL_MS));
-    }
-  }
-  if (!memRouteAttempted) {
-    process.stderr.write(`[session-start] cycle1 slot=${slot} route=memory-direct reason=no-port (fallback)\n`);
-  }
-
-  // Route 2: channels owner HTTP — wait for active-instance.json then POST /cycle1.
   const remainingForGrace = deadline - Date.now();
-  if (remainingForGrace <= 0) return finish('channels', { ok: false, reason: 'timeout' });
+  if (remainingForGrace <= 0) return finish({ ok: false, reason: 'timeout' });
   const active = await pollActiveInstance(Math.min(graceMs, remainingForGrace));
   if (!active) {
     const reason = (Date.now() >= deadline) ? 'timeout' : 'no-active-instance';
-    return finish('channels', { ok: false, reason });
+    return finish({ ok: false, reason });
   }
   const port = active.httpPort;
-  if (!port) return finish('channels', { ok: false, reason: 'no-port' });
-
   const remaining = deadline - Date.now();
-  if (remaining <= 0) return finish('channels', { ok: false, reason: 'timeout' });
+  if (remaining <= 0) return finish({ ok: false, reason: 'timeout' });
 
   try {
     const res = await httpPostJson({
@@ -501,19 +433,19 @@ async function requestCycle1Once(deadline, opts) {
       body: { timeout_ms: remaining, args: { min_batch: 1, session_cap: 50 } },
     });
     if (res.statusCode !== 200) {
-      return finish('channels', { ok: false, reason: 'non-200', statusCode: res.statusCode });
+      return finish({ ok: false, reason: 'non-200', statusCode: res.statusCode });
     }
     try {
       const parsed = JSON.parse(res.body);
       if (parsed && parsed.ok) {
-        return finish('channels', { ok: true, processed: extractProcessedCount(parsed) });
+        return finish({ ok: true, processed: extractProcessedCount(parsed) });
       }
-      return finish('channels', { ok: false, reason: 'body-not-ok', statusCode: 200 });
+      return finish({ ok: false, reason: 'body-not-ok', statusCode: 200 });
     } catch {
-      return finish('channels', { ok: false, reason: 'parse-error', statusCode: 200 });
+      return finish({ ok: false, reason: 'parse-error', statusCode: 200 });
     }
   } catch (e) {
-    return finish('channels', { ok: false, reason: classifyError(e) });
+    return finish({ ok: false, reason: classifyError(e) });
   }
 }
 

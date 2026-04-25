@@ -478,13 +478,12 @@ async function checkCycles() {
     )
     const lastAutoRestart = last.cycle1_autoRestart || 0
     if (now - lastAutoRestart >= CYCLE1_AUTO_RESTART_COOLDOWN_MS) {
-      if (_cycle1InFlight) {
-        process.stderr.write('[cycle1] skipped: already running\n')
-        return
-      }
       setCycleLastRun('cycle1_autoRestart', now)
       try {
-        const result = await _startCycle1Run(mainConfig?.cycle1 || {})
+        // Cooperate with the coalesce gate: _awaitCycle1Run joins an
+        // in-flight run instead of racing it. The cooldown timestamp is
+        // already committed above so a join still spends the budget.
+        const result = await _awaitCycle1Run(mainConfig?.cycle1 || {})
         process.stderr.write(
           `[cycle1] auto-restart completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`
         )
@@ -498,12 +497,8 @@ async function checkCycles() {
   }
 
   if (now - last.cycle1 >= cycle1Ms) {
-    if (_cycle1InFlight) {
-      process.stderr.write('[cycle1] skipped: already running\n')
-      return
-    }
     try {
-      const result = await _startCycle1Run(mainConfig?.cycle1 || {})
+      const result = await _awaitCycle1Run(mainConfig?.cycle1 || {})
       process.stderr.write(`[cycle1] completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`)
     } catch (e) {
       process.stderr.write(`[cycle1] error: ${e.message}\n`)
@@ -747,25 +742,13 @@ async function handleMemoryAction(args) {
     const sessionCapOverride = Number(args?.session_cap)
     const baseCycle1 = config?.cycle1 || {}
     let cycle1Config = baseCycle1
+    // _runCycle1Impl reads `config?.min_batch ?? config?.cycle1?.min_batch ??
+    // default` — top-level wins, so pin the override at top-level only.
     if (Number.isFinite(minBatchOverride) && minBatchOverride > 0) {
-      // Pin override at BOTH top-level and nested cycle1.* — _runCycle1Impl's
-      // lookup is `config?.min_batch ?? config?.cycle1?.min_batch ?? default`,
-      // so leaving the top-level value from the spread of baseCycle1 in place
-      // (e.g. main config's `cycle1.min_batch:20`) silently shadows the
-      // nested override and the SessionStart "process even <min_batch rows"
-      // exception path returns 0/0/0 with no log line.
-      cycle1Config = {
-        ...cycle1Config,
-        min_batch: minBatchOverride,
-        cycle1: { ...(cycle1Config.cycle1 || {}), min_batch: minBatchOverride },
-      }
+      cycle1Config = { ...cycle1Config, min_batch: minBatchOverride }
     }
     if (Number.isFinite(sessionCapOverride) && sessionCapOverride > 0) {
-      cycle1Config = {
-        ...cycle1Config,
-        session_cap: sessionCapOverride,
-        cycle1: { ...(cycle1Config.cycle1 || {}), session_cap: sessionCapOverride },
-      }
+      cycle1Config = { ...cycle1Config, session_cap: sessionCapOverride }
     }
     const result = await _awaitCycle1Run(cycle1Config)
     return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped}` }
