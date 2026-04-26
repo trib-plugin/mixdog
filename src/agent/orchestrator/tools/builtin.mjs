@@ -2823,7 +2823,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 }
             }
             const summaryLine = summaries.length ? `\nSummary: ${summaries.join('; ')}.` : '';
-            const header = `### multi_read complete (${results.length} reads)${summaryLine}\nUse these results; do not repeat an identical multi_read batch.`;
+            const header = `### read complete (${results.length} reads)${summaryLine}\nUse these results; do not repeat an identical read batch.`;
             const body = results.map(r => {
                 const match = /\[TRUNCATED — file is (\d+) lines \/ (\d+) KB\./.exec(r.body || '');
                 const suffix = match ? ` (truncated, ${match[1]} total lines / ${match[2]} KB — pass full:true or offset/limit for more)` : '';

@@ -549,9 +549,25 @@ async function loadModule(name) {
   return entry
 }
 
+// Tilde expansion for caller-supplied `cwd`. Mirrors the `~` branch of
+// normalizeInputPath() in builtin.mjs but kept inline so the dispatcher
+// does not have to pre-load the whole builtin module at boot.
+function _expandCwdTilde(p) {
+  if (typeof p !== 'string') return p
+  if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) return homedir() + p.slice(1)
+  return p
+}
+
 // Shared dispatcher — used by the MCP call handler AND the agent's
 // toolExecutor passed through agentContext(). Single source of tool routing.
 async function dispatchTool(name, args, callerCtx = {}) {
+  // Normalise caller-supplied `cwd` once at the entry so every downstream
+  // module (builtin / lsp / astgrep / code_graph / patch / bash_session /
+  // host_input / agent) receives the expanded path. Previously only the
+  // agent ingresses (create_session / bridge / bridge_spawn) ran tilde
+  // expansion, so explore / list / grep / glob with a `~` cwd silently
+  // fell back to process.cwd().
+  if (args && typeof args.cwd === 'string') args.cwd = _expandCwdTilde(args.cwd)
   const def = TOOL_BY_NAME[name]
   if (!def) {
     // Distinguish "disabled module" from "unknown tool" so callers (and
