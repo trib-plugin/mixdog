@@ -22,11 +22,11 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 
 ## Edit Ordering
 
-Applies when the next move is `edit` or `apply_patch` AND the target line range is not yet known. (`write` for whole-file create/replace is exempt — no line range to lock.)
+Applies when the next move is `edit` or `apply_patch` AND the target line range is not yet known. (`write` for whole-file create/replace is exempt — no line range to lock.) Edit Ordering overrides the Decision Table for edits with unknown target lines.
 
 - Identifier / function / class name known → `find_symbol` first. For specific structural questions, use the direct alias instead: `find_callers`, `find_references`, `find_imports`, `find_dependents`.
 - Cross-file refactor, multi-symbol change, or mixed structural impact → `code_graph`.
-- After two `grep` + `read` rounds (one locate + one confirm) without pinning the target line range, switch immediately to `find_symbol` / `code_graph`. Same threshold as the corresponding Anti-pattern.
+- After two `grep`→`read` pairs (one locate + one confirm) without locking the target line range, do not start a third pair — switch tool family (`find_symbol` / `code_graph`) or commit to the edit. Same threshold as the corresponding Anti-pattern.
 - Once the line range is locked, edit. Do not re-read the same file again.
 - For edits across multiple files, prefer `apply_patch` in one combined turn over looping `read` → `edit`.
 
@@ -92,7 +92,7 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 - Do not serially `read` files one by one when the candidate list is already known.
 - Do not serially `write` several whole files when one call with a `writes` array can do it.
 - Do not `read` a whole large file when `find_symbol`, `code_graph`, or `grep` can narrow the line window first.
-- Do not loop `read` + `grep` past 2 rounds (one locate + one confirm) on the same target. Switch tool family (`find_symbol`, `code_graph`, `explore`) or commit to the edit / answer with the evidence already gathered.
+- Do not loop `grep`→`read` past two pairs (one locate + one confirm) on the same target — a third same-target pair is the violation. Switch tool family (`find_symbol`, `code_graph`, `explore`) or commit to the edit / answer with the evidence already gathered.
 - Do not chain 10+ `grep` + `read` calls in one session without a `find_symbol` / `code_graph` call. Identifier-aware tools should appear within the first 2 rounds when the work involves an `edit`.
 - Do not use `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup — that is a rule violation. `bash` is shell-only work (git, build, test, run).
 
