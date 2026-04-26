@@ -45,25 +45,27 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 
 Use these rules regardless of the current role name. Role-specific prompts may add nuance, but the first tool choice should follow this table unless the user explicitly asks otherwise.
 
-- "I know the identifier name, but not the file" → `find_symbol`
-- "Who imports this file?" → `find_imports`
-- "Who depends on this file?" → `find_dependents`
-- "Who calls this symbol?" → `find_callers`
-- "Where is this symbol referenced?" → `find_references`
-- "Main/public session and the question is exactly imports / dependents / callers / references?" → direct alias FIRST, generic `code_graph` only if the question is broader.
-- Broader structural graph question / impact / mixed graph query → `code_graph`
-- "I know the file already" → `read`
-- "I need 2+ known files" → one `read` call with array `path`
-- "I need to create/replace several whole files" → `write` with `writes` array
-- "I need broad text search / regex / config phrase lookup" → `grep`
-- "I need file path discovery / filename patterns" → `glob`
-- "I need quick directory shape / recent files / mtime clues" → `list`
-- "I need external docs / GitHub / web" → `search`
-- "I need prior project/session memory" → `recall`
-- "I know the exact edit across multiple files" → `apply_patch`
-- "I need a small local replacement in one file" → `edit`
-- "I need shell state across turns" → `bash_session`
-- "I launched a long-running command in background" → `job_wait`; `read` the stdout/stderr path for logs
+| Query shape                                       | First tool                                          |
+|---------------------------------------------------|-----------------------------------------------------|
+| identifier name known, file unknown               | `find_symbol`                                       |
+| imports of a file                                 | `find_imports`                                      |
+| dependents of a file                              | `find_dependents`                                   |
+| callers of a symbol                               | `find_callers`                                      |
+| references of a symbol                            | `find_references`                                   |
+| main/public session, question is exactly imports / dependents / callers / references | direct alias above (NOT generic `code_graph`) |
+| broader structural graph / impact / mixed graph   | `code_graph`                                        |
+| file path known                                   | `read`                                              |
+| 2+ known file paths                               | one `read` with `path` as array                     |
+| 2+ whole files to create/replace                  | `write` with `writes` array                         |
+| broad text / regex / config phrase lookup         | `grep`                                              |
+| filename pattern discovery                        | `glob`                                              |
+| directory shape / recent files / mtime clues      | `list`                                              |
+| external docs / GitHub / web                      | `search`                                            |
+| past project / session memory                     | `recall`                                            |
+| exact edit across multiple files                  | `apply_patch`                                       |
+| small local replacement in one file               | `edit`                                              |
+| shell state needed across turns                   | `bash_session`                                      |
+| long background command launched                  | `job_wait`, then `read` the stdout/stderr path      |
 
 ## Anti-patterns
 

@@ -27,9 +27,9 @@ import { addPending, removePending } from './dispatch-persist.mjs'
 import { notifyActivity } from './activity-bus.mjs'
 
 const ROLE_BY_TOOL = Object.freeze({
-  recall:  { role: 'recall-agent',  build: buildRecallPrompt,   label: 'recall-agent' },
-  search:  { role: 'search-agent',  build: buildSearchPrompt,   label: 'search-agent' },
-  explore: { role: 'explorer',      build: buildExplorerPrompt, label: 'explorer agent' },
+  recall:  { role: 'recall-agent',  build: (q, cwd) => _internals.builders.recall(q, cwd),   label: 'recall-agent' },
+  search:  { role: 'search-agent',  build: (q, cwd) => _internals.builders.search(q, cwd),   label: 'search-agent' },
+  explore: { role: 'explorer',      build: (q, cwd) => _internals.builders.explore(q, cwd),  label: 'explorer agent' },
 })
 
 // Cumulative-character cap for explore output. V8's max string length
@@ -872,30 +872,44 @@ export const _internals = {
   resetQueryCachesForTesting,
   _queryResultCache,
   _queryInflight,
+  builders: {
+    recall: buildRecallPrompt,
+    search: buildSearchPrompt,
+    explore: buildExplorerPrompt,
+  },
 }
 
 
 function buildExplorerPrompt(query, cwd) {
-  const rootLine = cwd
-    ? `Search root: \`${cwd}\`. Scope filesystem tools beneath this root unless the query names a different path.\n\n`
-    : ''
-  return `${rootLine}Query: ${query}
+  const rootLine = cwd ? `<root>${cwd}</root>\n` : ''
+  return `${rootLine}<query>${query}</query>
 
-Find a grounded answer using read-only tools (\`code_graph\`, \`find_symbol\`, \`glob\`, \`grep\`, \`read\`, \`multi_read\`, \`list\`).
+<tools>
+  <prefer>find_symbol, code_graph, glob, grep, read, multi_read, list</prefer>
+  <route>
+    <case when="identifier-known">find_symbol</case>
+    <case when="imports-or-callers">code_graph alias (find_imports/find_dependents/find_callers/find_references)</case>
+    <case when="filename-pattern">glob</case>
+    <case when="text-regex">grep then read</case>
+  </route>
+  <budget rounds="2" stop-on="same-results"/>
+</tools>
 
-Return concise prose with concrete file paths and line numbers. Skip preamble; answer immediately with the synthesis.`
+<output>concise prose, file:line citations, no preamble</output>`
 }
 
 function buildRecallPrompt(query, _cwd) {
-  return `Query: ${query}
+  return `<query>${query}</query>
 
-Use \`memory_search\` to retrieve ranked entries. Synthesize concise prose; cite entry ids inline. If no relevant entries match, say so explicitly. Skip preamble; answer immediately.`
+<tool>memory_search</tool>
+<output>cite entry ids inline; declare no-match explicitly; no preamble</output>`
 }
 
 function buildSearchPrompt(query, _cwd) {
-  return `Query: ${query}
+  return `<query>${query}</query>
 
-Use \`web_search\` to retrieve ranked results. Synthesize concise prose; cite URLs inline. Skip preamble; answer immediately.`
+<tool>web_search</tool>
+<output>cite URLs inline; no preamble</output>`
 }
 
 /**
