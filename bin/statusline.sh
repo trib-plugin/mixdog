@@ -200,7 +200,7 @@ if [ -n "$CC_RL_5H_RESET" ]; then
 fi
 
 # ── ANSI colour helpers ────────────────────────────────────────────────────
-# Red ≥80, yellow ≥50, default otherwise. Uses \033 which printf expands.
+# Red ≥90, yellow ≥70, default otherwise. Uses \033 which printf expands.
 _ANSI_RESET=$'\033[0m'
 _ANSI_BOLD=$'\033[1m'
 _ANSI_DIM=$'\033[2m'
@@ -213,8 +213,8 @@ _ANSI_CYAN=$'\033[36m'
 colour_pct() {
   # $1 = integer pct. Sets COLOURED. Always coloured so the gradient is visible.
   local p="$1"
-  if [ "$p" -ge 70 ] 2>/dev/null; then COLOURED="${_ANSI_RED}${p}%${_ANSI_RESET}"
-  elif [ "$p" -ge 40 ] 2>/dev/null; then COLOURED="${_ANSI_YELLOW}${p}%${_ANSI_RESET}"
+  if [ "$p" -ge 90 ] 2>/dev/null; then COLOURED="${_ANSI_RED}${p}%${_ANSI_RESET}"
+  elif [ "$p" -ge 70 ] 2>/dev/null; then COLOURED="${_ANSI_YELLOW}${p}%${_ANSI_RESET}"
   else COLOURED="${_ANSI_GREEN}${p}%${_ANSI_RESET}"; fi
 }
 
@@ -263,10 +263,10 @@ if [ -n "$MODEL_STR" ]; then
   unset _m
 fi
 
-# Context — coloured bar fill: green<40, yellow<70, red>=70; empty cells dim.
+# Context — coloured bar fill: green<70, yellow<90, red>=90; empty cells dim.
 if [ -n "$CTX_INT" ]; then
-  if   [ "$CTX_INT" -ge 70 ] 2>/dev/null; then _fill="$_ANSI_RED"
-  elif [ "$CTX_INT" -ge 40 ] 2>/dev/null; then _fill="$_ANSI_YELLOW"
+  if   [ "$CTX_INT" -ge 90 ] 2>/dev/null; then _fill="$_ANSI_RED"
+  elif [ "$CTX_INT" -ge 70 ] 2>/dev/null; then _fill="$_ANSI_YELLOW"
   else _fill="$_ANSI_GREEN"
   fi
   if   [ "$COLS" -ge 120 ]; then make_bar "$CTX_INT" 14
