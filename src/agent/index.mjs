@@ -735,13 +735,13 @@ export async function handleToolCall(name, args, opts = {}) {
           presetName,
           preset,
           runtimeSpec,
-          cwd: args.cwd,
+          cwd: args.cwd || callerCwd || process.cwd(),
           sourceType: 'lead',
           sourceName: role,
           parentSessionId: callerSessionId,
         });
 
-        const workerCwd = args.cwd ? effectiveCwd : (process.env.CLAUDE_PLUGIN_ROOT || effectiveCwd);
+        const workerCwd = effectiveCwd;
 
         const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const modelLabel = preset.model || preset.name;

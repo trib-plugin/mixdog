@@ -166,7 +166,7 @@
     },
     {
       "q": "smart-bridge 모듈에서 role resolver 와 preset catalog 사용 방식",
-      "expected_substrings": ["smart-bridge"]
+      "expected_substrings": ["smart-bridge", "SmartBridge"]
     },
     {
       "q": "tools.json 에 등록된 aiWrapped 도구 목록과 핸들러 라우팅",

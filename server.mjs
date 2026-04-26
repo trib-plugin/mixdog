@@ -692,7 +692,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   // Thread it down so long-running tools — specifically the async IIFE the
   // `bridge` tool spawns to run askSession — can close their session and
   // stop hitting the provider after the user bails out.
-  return dispatchTool(name, args, { requestSignal: extra?.signal })
+  //
+  // `callerCwd` defaults to the mixdog server's own working directory so
+  // tools that take a cwd fallback (notably `bridge` / `bridge_spawn`) can
+  // resolve to a valid plugin path when the caller did not explicitly pass
+  // one. Callers can still override with an explicit `cwd` argument.
+  return dispatchTool(name, args, {
+    requestSignal: extra?.signal,
+    callerCwd: process.cwd(),
+  })
 })
 
 // ── Eager init BEFORE transport connect ─────────────────────────────
