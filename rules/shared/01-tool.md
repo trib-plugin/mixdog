@@ -26,8 +26,7 @@ Applies when the next move is `edit` or `apply_patch` AND the target span is not
 
 - Identifier / function / class name known → `find_symbol` immediately. Do not start with a `grep`→`read` pair when an identifier is in hand. For specific structural questions, use the direct alias instead: `find_callers`, `find_references`, `find_imports`, `find_dependents`.
 - Cross-file refactor, multi-symbol change, or mixed structural impact → `code_graph`.
-- After two `grep`→`read` pairs (one locate + one confirm) without locking the target span, a third same-target `grep`→`read` pair is the violation — switch tool family (`find_symbol` / `code_graph`) or commit to the edit only if the span is now effectively locked (uniquely inferable from evidence already gathered, equivalent to the Locked definition above). Same threshold as the corresponding Anti-pattern.
-  - **"same-target" = same intended edit area or requirement**, even if the keywords differ. Reframing the query (`grep "fooHandler"` → `grep "handle_foo"`) on the same goal still counts.
+- After two `grep`→`read` pairs **on the same target** — same intended edit area or requirement, even if the keywords differ (e.g. `grep "fooHandler"` → `grep "handle_foo"` on the same goal still counts) — without locking the target span, a third pair is the violation. Switch tool family (`find_symbol` / `code_graph`) or commit to the edit only if the span is now effectively locked (uniquely inferable from evidence already gathered, equivalent to the Locked definition above). Same threshold as the corresponding Anti-pattern.
   - Tiny example: `grep X → read A`, then `grep X-variant → read A` (or A+B) = two pairs; the next move must be `find_symbol` / `code_graph` / `edit`, not a third `grep`→`read`.
 - Once the span is locked, edit. Do not re-read the same file again.
 - For edits across multiple files, prefer `apply_patch` in one combined turn over looping `read` → `edit`.
@@ -115,16 +114,26 @@ Same-result loops count too: if the second call returns the same hits / coordina
 
 ## Heeding soft-warns
 
-When a tool result begins with one of these markers, treat it as a strong stop signal — not a hint:
+When a tool result begins with a `⚠ … soft-warn` marker, treat it as a self-enforced halt: the runtime won't stop you, you must stop yourself. Aborts only fire at the per-axis ceiling (100), which is far away — that is not a license to grind, it is the reason this rule exists.
+
+### Per-marker response
 
 - `⚠ Tool-loop soft-warn` — same call returned the same result/error 4× in a row.
+  → **Stop the exact retry.** The signature (tool + args + error class) won't change by repeating. Either change one input meaningfully or switch tools.
 - `⚠ Repeated-tool soft-warn` — the same tool has been called many times in this session.
+  → **Batch or switch.** Combine outstanding queries into one array-form call, or hand off to a different tool family.
 - `⚠ Mixed-tool soft-warn` — many consecutive low-level lookups across `read` / `grep` / `glob` / `list` without a productive call.
+  → **Jump up.** `find_symbol` / `code_graph` / `explore` for one decisive pass; or commit to the edit if the target is already locked.
 - `⚠ Tool-budget soft-warn` — total tool calls in this session are getting high.
+  → **Truncate scope.** Synthesize what you have, report partial findings honestly, and stop. Do not start a new investigation thread.
 
-Required response on first warn:
-- **Synthesize from the evidence already gathered.** If you can answer or commit to an edit with what you have, do that next.
-- **Switch tool family.** If you still need information, jump scope (`grep`/`read` → `find_symbol` / `code_graph` / `explore`; same-tool repeats → batched array form or a different tool entirely).
-- **Do not paraphrase the same query and retry.** A near-identical follow-up call after a soft-warn is itself a violation.
+### General rules (apply to every marker)
 
-The session does not hard-stop on these warns (abort is far away at the per-axis ceiling) — that means the responsibility to act is yours. Ignoring soft-warns and grinding to the abort line wastes the session.
+- **Synthesize first if possible.** If the evidence already gathered is enough to answer or commit to the edit, do that next — the cleanest exit.
+- **Do not paraphrase and retry.** A near-identical follow-up call after a soft-warn is itself a violation.
+- **No evidence yet?** If the warn fires before anything actionable was found (rare — usually means session-history pressure, not this turn's probes), report what was attempted and ask the user for direction. Do not guess.
+- **Warning fired on a high-level tool itself?** (`recall` / `search` / `explore` repeats triggering `Repeated-tool` or `Tool-budget`.) Switching down to `read` / `grep` is a valid switch — but only with a known path or literal pattern. Otherwise, surface the partial result and ask.
+
+### Second warn
+
+If the same marker fires a second time in this session — your first response did not work. Do not repeat the same recovery move. Stop the current line of work, report what you have plus what failed, and hand back to the user.

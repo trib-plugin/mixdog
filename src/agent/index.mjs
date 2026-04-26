@@ -10,6 +10,7 @@ import { setInternalToolsProvider } from './orchestrator/internal-tools.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
 import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory.mjs';
 import { prepareBridgeSession } from './orchestrator/smart-bridge/session-builder.mjs';
+import { normalizeInputPath } from './orchestrator/tools/builtin.mjs';
 import { traceBridgePreset } from './orchestrator/bridge-trace.mjs';
 import { ensureDataSeeds } from '../shared/seed.mjs';
 import { startAgentMaintenance, stopAgentMaintenance } from './orchestrator/agent-maintenance.mjs';
@@ -458,7 +459,7 @@ export async function handleToolCall(name, args, opts = {}) {
           role: args.role,
           taskType: args.taskType,
           profileId: args.profileId,
-          cwd: args.cwd || callerCwd || process.cwd(),
+          cwd: normalizeInputPath(args.cwd) || callerCwd || process.cwd(),
           owner: 'bridge',
           lane: 'bridge',
           systemPrompt: args.systemPrompt,
@@ -735,7 +736,7 @@ export async function handleToolCall(name, args, opts = {}) {
           presetName,
           preset,
           runtimeSpec,
-          cwd: args.cwd || callerCwd || process.cwd(),
+          cwd: normalizeInputPath(args.cwd) || callerCwd || process.cwd(),
           sourceType: 'lead',
           sourceName: role,
           parentSessionId: callerSessionId,
