@@ -1158,9 +1158,6 @@ export function createSession(opts) {
         // `bash_session`), the minted bash_session id is stored here so later
         // opted-in `bash` calls can reuse the same shell state.
         implicitBashSessionId: null,
-        // Hermes-style in-flight compressor state
-        compressionCount: 0,
-        previousSummary: null,
         // Smart Bridge metadata — optional. Applied on every ask() to merge
         // profile-driven cache settings into provider sendOpts.
         profileId: profile?.id || null,
@@ -1560,9 +1557,6 @@ export function resumeSession(sessionId, preset) {
     // than silently dropping the tool-refresh side effects.
     if (session.closed === true) return null;
     if (!session.owner) session.owner = 'user';
-    // Backfill compressor state for sessions created before the feature landed.
-    if (typeof session.compressionCount !== 'number') session.compressionCount = 0;
-    if (session.previousSummary === undefined) session.previousSummary = null;
     // Refresh tools (MCP connections may have changed).
     // Re-resolve from profile.tools when the session stored a profileId —
     // otherwise fall back to preset.tools. Same resolution order as

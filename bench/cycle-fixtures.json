@@ -1,0 +1,106 @@
+{
+  "_doc": "cycle1 evaluation fixtures. Each case = ordered entries (timestamps auto-assigned 1000ms apart from base_ts) + expected block. role default: 'user' for caller turns, 'assistant' for replies. session_id default: 'sess1'. See bench/cycle-probe.mjs for metric definitions.",
+  "base_ts": 1714000000000,
+  "cases": [
+    {
+      "name": "same_incident_repeated",
+      "entries": [
+        { "role": "user",      "content": "session-start hook 의 recap 출력이 또 안 떠. 어제 고친 줄 알았는데 그대로네." },
+        { "role": "assistant", "content": "recap 경로는 hooks/session-start.cjs 에서 generateRecap() 호출하는 그 흐름 맞지? 혹시 stdout 으로 안 나가고 stderr 로 새는지 확인해봤어요?" },
+        { "role": "user",      "content": "stdout/stderr 둘 다 봤는데 recap 줄 자체가 안 보여. 결국 generateRecap 자체가 실행 안 된 느낌." },
+        { "role": "assistant", "content": "그럼 hook 진입은 했지만 generateRecap 호출 전에 early return 되는 케이스가 의심돼요. dataDir 가 비어있으면 바로 빠지는 분기 있던 거 기억나요?" },
+        { "role": "user",      "content": "맞다 그 early return. 근데 오늘은 데이터 분명히 있어. 그래서 다시 같은 증상이라는 게 이상하다는 거지." },
+        { "role": "assistant", "content": "데이터 있는 상태에서도 recap 출력이 빠진다는 거니까 어제 패치가 안 박힌 채로 캐시된 코드가 도는 가능성도 있어요. plugin reload 한 번 짚어봐요." }
+      ],
+      "expected": {
+        "topics": [
+          { "name": "incident", "ids": [1, 2, 3, 4, 5, 6] }
+        ],
+        "ack_ids": [],
+        "chunk_count_range": [1, 1]
+      }
+    },
+    {
+      "name": "distinct_topics",
+      "entries": [
+        { "role": "user",      "content": "webhook payload 가 main 세션으로 어떻게 라우팅 되는지 다시 한 번 짚자. channels/index.mjs 가 입구 맞나?" },
+        { "role": "assistant", "content": "네 channels/index.mjs 가 dispatch 진입점이고 거기서 routeToMain() 으로 넘어갑니다. preset 기준으로 worker 분기됨." },
+        { "role": "user",      "content": "그럼 push 이벤트는 projectaa-push 같은 preset 으로 묶여서 한 채널만 타게 되는 거지?" },
+        { "role": "assistant", "content": "맞아요. preset 카탈로그가 push 별 namespace 가져서 main 세션이 한 번 받고 끝납니다. 라우팅 끝." },
+        { "role": "user",      "content": "이제 다른 얘기. ai-wrapped-dispatch 의 cache TTL 을 지금 몇으로 두고 있지? 계속 stale 한 느낌." },
+        { "role": "assistant", "content": "현재 TTL 은 6시간으로 박혀 있어요. buildQueryCacheKey 결과 기준으로 디스크에 떨어지고 만료되면 다시 호출됩니다." },
+        { "role": "user",      "content": "6시간이면 너무 길지. 1시간으로 줄이고 invalidate 트리거도 하나 둬보자." },
+        { "role": "assistant", "content": "TTL 1시간으로 낮추고 source 파일 mtime 기반 invalidate 추가하면 stale 거의 사라질 거예요. 변경 들어갑니다." }
+      ],
+      "expected": {
+        "topics": [
+          { "name": "webhook", "ids": [1, 2, 3, 4] },
+          { "name": "cache",   "ids": [5, 6, 7, 8] }
+        ],
+        "ack_ids": [],
+        "chunk_count_range": [2, 2]
+      }
+    },
+    {
+      "name": "acks_around_topic",
+      "entries": [
+        { "role": "user",      "content": "inject_input 호출하면 입력만 박히고 Enter 가 안 눌리는 게 사용성 떨어지는데, 자동 submit 까지 묶을지 결정하자." },
+        { "role": "assistant", "content": "auto submit 은 양날의 검이에요. 잘못 눌리면 미완성 명령이 그대로 실행됩니다. 안전장치 없이는 위험해요." },
+        { "role": "user",      "content": "ㅇㅇ" },
+        { "role": "assistant", "content": "그럼 옵션화 하는 방향이 합리적이에요. inject_input 에 submit 플래그 추가하고 default 는 false 로 두는 안." },
+        { "role": "user",      "content": "submit=true 일 때만 \\r 같이 박는 식으로 명시적 opt-in 으로 가자. default false 동의." },
+        { "role": "assistant", "content": "ok" },
+        { "role": "user",      "content": "그럼 host-input 쪽 API 시그니처에 submit:boolean 으로 받고 PowerShell 인젝션 단계에서만 분기 시키면 끝." },
+        { "role": "assistant", "content": "맞아요. WriteConsoleInputW 호출 직후 enter key event 추가만 하면 됩니다. 패치 짧게 들어갑니다." }
+      ],
+      "expected": {
+        "topics": [
+          { "name": "inject", "ids": [1, 2, 4, 5, 7, 8] }
+        ],
+        "ack_ids": [3, 6],
+        "chunk_count_range": [1, 1]
+      }
+    },
+    {
+      "name": "incremental_decision",
+      "entries": [
+        { "role": "user",      "content": "delegated agent iter cap 지금 12 인데 자꾸 잘려. 16 으로 올리자." },
+        { "role": "assistant", "content": "16 으로 올리면 평균 task 는 통과할 텐데, explore 같이 fan-out 하는 케이스는 여전히 빠듯할 수 있어요." },
+        { "role": "user",      "content": "방금 본 case 에서 16 도 부족했어. 20 으로 한 번 더 올려보자." },
+        { "role": "assistant", "content": "20 이면 worker / debugger 같은 무거운 role 도 여유는 생겨요. 다만 cost 가 비례해서 늘 어요." },
+        { "role": "user",      "content": "cost 는 일단 감수. 그래도 뭔가 안 충분한 것 같으면 24 까지도 열어두자는 분위기야." },
+        { "role": "assistant", "content": "그럼 default 는 20, 특정 무거운 role 만 24 까지 override 하는 2단계 구성이 깔끔해요. 구성 가능한 max 로 노출해 두면 되고요." },
+        { "role": "user",      "content": "좋다. iter_cap default 20, role override max 24 로 확정. 변경 반영하자." }
+      ],
+      "expected": {
+        "topics": [
+          { "name": "iter_cap", "ids": [1, 2, 3, 4, 5, 6, 7] }
+        ],
+        "ack_ids": [],
+        "chunk_count_range": [1, 1]
+      }
+    },
+    {
+      "name": "session_boundary",
+      "entries": [
+        { "role": "user",      "content": "bench/probe.mjs 에서 sweep concurrency 5 돌렸을 때 wallMs 가 24초 나왔어. 1 일 때 641초였으니까 거의 26배 빨라졌네.", "session_id": "sess1" },
+        { "role": "assistant", "content": "concurrency 5 면 disk cache 히트도 같이 늘어나서 그래요. 두 번째 라운드부터는 dt 가 거의 0 인 row 가 그래서 보입니다.", "session_id": "sess1" },
+        { "role": "user",      "content": "p95 explore 만 24초인데 그건 첫 round 에서 깔린 latency 가 그대로 잡혀서 그런 거지?", "session_id": "sess1" },
+        { "role": "assistant", "content": "맞아요. 첫 번째 호출이 cold 라 explore fan-out 이 길게 잡혔고 캐시된 이후 호출이 0 으로 깔립니다. 평균 의미 없고 cold 만 봐야 해요.", "session_id": "sess1" },
+        { "role": "user",      "content": "이제 모델 얘기. cycle1 / cycle2 에 haiku 4.5 쓰는 게 맞을지 다시 보자. 지금 sonnet 인거지?", "session_id": "sess2" },
+        { "role": "assistant", "content": "현재 cycle1 은 sonnet-4-5, cycle2 도 sonnet 입니다. haiku 로 바꾸면 비용은 떨어지지만 chunking 품질 검증이 따로 필요해요.", "session_id": "sess2" },
+        { "role": "user",      "content": "비용 차이가 큰 건 cycle1 쪽이지. cycle1 만 haiku 로 swap 하고 cycle2 는 sonnet 유지하는 안 어때?", "session_id": "sess2" },
+        { "role": "assistant", "content": "그게 합리적이에요. cycle1 은 분류만 하니까 haiku 로 충분하고 cycle2 의 promotion 판단은 sonnet 이 안전합니다. 그 방향으로 가요.", "session_id": "sess2" }
+      ],
+      "expected": {
+        "topics": [
+          { "name": "probe", "ids": [1, 2, 3, 4] },
+          { "name": "haiku", "ids": [5, 6, 7, 8] }
+        ],
+        "ack_ids": [],
+        "chunk_count_range": [2, 2],
+        "must_split_sessions": true
+      }
+    }
+  ]
+}

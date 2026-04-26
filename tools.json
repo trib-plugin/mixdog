@@ -849,7 +849,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Replace text in file(s). PREFER MULTI-EDIT FORM — pass `edits` array to batch N edits in one call; same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.",
+    "description": "Replace text in file(s). PREFER ARRAY FORM — pass `edits` array to apply N edits in one call; same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -894,7 +894,7 @@
             ]
           },
           "minItems": 1,
-          "description": "Multi-edit form: array of edits. Each item may specify its own path; if omitted, falls back to the top-level `path`."
+          "description": "Array form: list of edits. Each item may specify its own path; if omitted, falls back to the top-level `path`."
         }
       },
       "required": []

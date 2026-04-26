@@ -585,12 +585,8 @@ async function dispatchTool(name, args, callerCtx = {}) {
 
   if (def.module === 'builtin') {
     // Plugin builtin file tools exposed to external MCP clients (e.g. the
-    // Lead / Claude Code harness). Only tools that add capability Claude
-    // Code doesn't already offer are surfaced here — multi_read,
-    // batch_edit — so the native Read/Edit/MultiEdit remain the default
-    // and these are used opportunistically when the caller wants a
-    // cross-file batch or a single-turn multi-file read. Path validation
-    // (isSafePath) and write semantics live inside executeBuiltinTool.
+    // Lead / Claude Code harness). Path validation (isSafePath) and write
+    // semantics live inside executeBuiltinTool.
     const { executeBuiltinTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/builtin.mjs')).href,
     )

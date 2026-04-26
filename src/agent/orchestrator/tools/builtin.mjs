@@ -732,7 +732,7 @@ export const BUILTIN_TOOLS = [
         name: 'edit',
         title: 'Edit',
         annotations: { title: 'Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Replace text in file(s). PREFER MULTI-EDIT FORM — pass `edits` array to batch N edits in one call; same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.',
+        description: 'Replace text in file(s). For multiple edits prefer the `edits` array form — same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -3514,10 +3514,32 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             return out;
         }
         case 'head': {
-            // Thin wrapper around `read` with offset:0+limit:n. Keeps all
-            // caching, safe-path, and size-cap semantics in one place.
             const n = Math.max(1, Math.min(parseInt(args.n ?? 20, 10) || 20, 2000));
-            return executeChildBuiltinTool('read', { path: args.path, offset: 0, limit: n }, workDir);
+            let opened;
+            try { opened = await openForRead(args.path, workDir, readPathOpts); }
+            catch (err) {
+                if (err && err.code === 'ETOOBIG') {
+                    try {
+                        const stream = createReadStream(err.fullPath, { encoding: 'utf-8' });
+                        const rl = createInterface({ input: stream, crlfDelay: Infinity });
+                        const collected = [];
+                        for await (let line of rl) {
+                            if (collected.length === 0 && line.charCodeAt(0) === 0xFEFF) line = line.slice(1);
+                            collected.push(`${collected.length + 1}\t${line}`);
+                            if (collected.length >= n) { rl.close(); stream.destroy(); break; }
+                        }
+                        return capShellOutput(collected.join('\n'));
+                    } catch (err2) {
+                        return `Error: ${normalizeErrorMessage(err2 instanceof Error ? err2.message : String(err2))}`;
+                    }
+                }
+                return `Error: ${err.message}`;
+            }
+            const lines = opened.content.split('\n');
+            if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+            if (lines.length > 0 && lines[0].charCodeAt(0) === 0xFEFF) lines[0] = lines[0].slice(1);
+            const sliced = lines.slice(0, n);
+            return capShellOutput(sliced.map((l, i) => `${i + 1}\t${l}`).join('\n'));
         }
         case 'tail': {
             const n = Math.max(1, Math.min(parseInt(args.n ?? 20, 10) || 20, 2000));

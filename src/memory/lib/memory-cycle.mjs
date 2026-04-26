@@ -123,40 +123,22 @@ function buildEntriesText(entries) {
 const CYCLE1_MIN_BATCH = 3
 const CYCLE1_SESSION_CAP = 10
 
-// Authoritative cycle1 in-flight guard.
-//
-// Historical: an earlier singleton lived in memory/index.mjs
-// (_cycle1InFlight + _awaitCycle1Run, added 2026-04-24), but callers that
-// import runCycle1 directly from this module (memory-ops-policy's
-// runFullBackfill when passed the raw import, setup/setup-server.mjs:1791)
-// bypassed that guard. bridge-trace showed up to 3× concurrent cycle1 runs
-// (max overlap 22.656s) before the fix.
-//
-// Co-locating the guard at the runCycle1() entry makes it impossible to
-// reach the `cycle1-agent` dispatch site below (line ~191) without first
-// consulting this module-level promise — every caller funnels through this
-// function.
-//
-// Semantics: SKIP (not coalesce). Each cycle1 pass is idempotent and cheap
-// to miss — the scheduler re-fires on the next tick and the DB state
-// (`chunk_root IS NULL`) is the same. Coalescing would return stale
-// chunk-count results from the prior run to the second caller; skipping
-// with a zero-stats object is the honest signal that no work happened on
-// this call.
-//
-// Guard is cycle1-only. runCycle2() remains unaffected.
-let _runCycle1InFlight = null
+// Per-db cycle1 in-flight guard. Different db instances run in parallel;
+// concurrent calls against the same db SKIP (not coalesce) — each pass is
+// idempotent and the scheduler re-fires on the next tick.
+const _runCycle1InFlight = new WeakMap()
 
 export async function runCycle1(db, config = {}, options = {}) {
-  if (_runCycle1InFlight) {
-    process.stderr.write('[cycle1] skipped: runCycle1 already in flight\n')
+  if (_runCycle1InFlight.has(db)) {
+    process.stderr.write('[cycle1] skipped: already in flight for this db\n')
     return { processed: 0, chunks: 0, skipped: 0, sessions: 0, skippedInFlight: true }
   }
-  _runCycle1InFlight = (async () => _runCycle1Impl(db, config, options))()
+  const p = (async () => _runCycle1Impl(db, config, options))()
+  _runCycle1InFlight.set(db, p)
   try {
-    return await _runCycle1InFlight
+    return await p
   } finally {
-    _runCycle1InFlight = null
+    _runCycle1InFlight.delete(db)
   }
 }
 

@@ -112,35 +112,6 @@ export function alignBoundaryBackward(messages, idx) {
     return idx;
 }
 /**
- * Forward counterpart to alignBoundaryBackward. Given a candidate head-cut
- * index, slide past any leading tool messages so a compactor never splits the
- * head protection zone away from its parent assistant. Returns `idx`
- * unchanged if no tool group was encountered.
- */
-export function alignBoundaryForward(messages, idx) {
-    if (!Array.isArray(messages) || idx < 0 || idx >= messages.length) return idx;
-    let i = idx;
-    while (i < messages.length && messages[i]?.role === 'tool') i++;
-    return i;
-}
-/**
- * Estimator shared with the compressor path. Very rough: ~4 chars per token.
- * Exported so compressor.mjs can budget without re-implementing the same
- * heuristic.
- */
-export function estimateTokensShared(text) {
-    return Math.ceil(String(text ?? '').length / 4);
-}
-export function estimateMessageTokensShared(message) {
-    return estimateMessageTokens(message);
-}
-export function estimateMessagesTokensShared(messages) {
-    if (!Array.isArray(messages)) return 0;
-    let sum = 0;
-    for (const m of messages) sum += estimateMessageTokensShared(m);
-    return sum;
-}
-/**
  * Post-trim sanitization (Hermes `_sanitize_tool_pairs`):
  *   - Drop `tool` messages whose toolCallId has no surviving assistant tool_call.
  *   - For surviving assistant tool_calls whose results got trimmed, insert a

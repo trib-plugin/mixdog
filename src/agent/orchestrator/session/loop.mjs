@@ -11,12 +11,6 @@ import { trimMessages } from './trim.mjs';
 import { createGuard, checkToolCall, ToolLoopAbortError } from '../tool-loop-guard.mjs';
 import { maybeOffloadToolResult } from './tool-result-offload.mjs';
 import { isHiddenRole } from '../internal-roles.mjs';
-import {
-    shouldCompress,
-    compress,
-    estimateMessagesTokensRough,
-    THRESHOLD_PERCENT,
-} from './compressor.mjs';
 const SAFETY_TRIM_PERCENT = 0.90;
 const SOFT_ITERATION_WARN_THRESHOLDS = Object.freeze([24, 48, 96]);
 const EMERGENCY_ITERATION_FUSE = 1000;
@@ -266,45 +260,10 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             throw new SessionClosedError(sessionId || 'unknown', 'agent loop aborted');
         }
     };
-    // Session ref for in-flight compressor state. Provided by the caller when
-    // available (askSession passes it); the loop mutates messages in place.
     const sessionRef = opts.session || null;
     while (true) {
         throwIfAborted();
-        // --- Hermes-style in-flight compression (before each provider.send) ---
-        // Only runs when we have a session ref (i.e. called from askSession).
-        // Threshold: messages token estimate >= contextWindow * THRESHOLD_PERCENT.
-        // Failure cooldown is handled inside compressor.mjs via its per-process
-        // _summaryFailureCooldownUntil gate — no session-level gate here.
         if (sessionRef && typeof sessionRef.contextWindow === 'number') {
-            try {
-                const currentTokens = estimateMessagesTokensRough(messages);
-                const thresholdTokens = Math.round(sessionRef.contextWindow * THRESHOLD_PERCENT);
-                if (shouldCompress(messages, currentTokens, thresholdTokens)) {
-                    const result = await compress(messages, {
-                        provider,
-                        sendOpts: { ...opts, model },
-                        previousSummary: sessionRef.previousSummary || null,
-                        focusTopic: null,
-                        contextLength: sessionRef.contextWindow,
-                        thresholdTokens,
-                    });
-                    if (result.compressed && Array.isArray(result.messages)) {
-                        // Mutate the shared array in place so callers holding the
-                        // same reference observe the compaction.
-                        messages.length = 0;
-                        messages.push(...result.messages);
-                        sessionRef.previousSummary = result.summary || sessionRef.previousSummary || null;
-                        sessionRef.compressionCount = (sessionRef.compressionCount || 0) + 1;
-                    }
-                }
-            } catch (err) {
-                process.stderr.write(`[loop] compressor error: ${err?.message || err}\n`);
-            }
-            // Safety net: hard-limit byte trim after compaction (or when
-            // compaction declined). Compaction is primary; this only drops
-            // messages when the total still exceeds SAFETY_TRIM_PERCENT of the
-            // context window — prevents sending bodies past provider limits.
             const safetyBudget = Math.floor(sessionRef.contextWindow * SAFETY_TRIM_PERCENT);
             const trimmed = trimMessages(messages, safetyBudget);
             if (messagesArrayChanged(messages, trimmed)) {
