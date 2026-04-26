@@ -590,7 +590,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executeBuiltinTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/builtin.mjs')).href,
     )
-    const text = await executeBuiltinTool(name, args ?? {}, process.cwd())
+    const text = await executeBuiltinTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -601,7 +601,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executeLspTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/lsp.mjs')).href,
     )
-    const text = await executeLspTool(name, args ?? {}, process.cwd())
+    const text = await executeLspTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -612,7 +612,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executeAstGrepTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/astgrep.mjs')).href,
     )
-    const text = await executeAstGrepTool(name, args ?? {}, process.cwd())
+    const text = await executeAstGrepTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -620,7 +620,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executeCodeGraphTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/code-graph.mjs')).href,
     )
-    const text = await executeCodeGraphTool(name, args ?? {}, process.cwd())
+    const text = await executeCodeGraphTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -632,7 +632,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executePatchTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/patch.mjs')).href,
     )
-    const text = await executePatchTool(name, args ?? {}, process.cwd())
+    const text = await executePatchTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -646,7 +646,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executeBashSessionTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/bash-session.mjs')).href,
     )
-    const text = await executeBashSessionTool(name, args ?? {}, process.cwd())
+    const text = await executeBashSessionTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -660,7 +660,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executeHostInputTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/host-input.mjs')).href,
     )
-    const text = await executeHostInputTool(name, args ?? {}, process.cwd())
+    const text = await executeHostInputTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
