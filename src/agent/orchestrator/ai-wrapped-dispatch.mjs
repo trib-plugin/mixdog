@@ -185,9 +185,9 @@ const DISPATCH_RESULT_MAX_ENTRIES = 200
 const DISPATCH_RESULT_TTL_MS = 30 * 60_000 // 30 minutes — enough for the Lead to loop back, short enough to not hoard memory
 const QUERY_RESULT_CACHE_MAX_ENTRIES = 256
 const QUERY_RESULT_CACHE_TTLS_MS = Object.freeze({
-  recall: 60_000,
-  explore: 60_000,
-  search: 30_000,
+  recall: 5 * 60_000,    // 5 min — memory mutates slowly via cycle1
+  explore: 5 * 60_000,   // 5 min — code rarely changes within a session
+  search: 30 * 60_000,   // 30 min — external web facts are stable
 })
 const _queryResultCache = new Map() // key → { ts, content }
 const _queryInflight = new Map() // key → Promise<string>
@@ -762,10 +762,6 @@ export async function dispatchAiWrapped(name, args, ctx) {
       queries.map((q) => {
         const key = buildQueryCacheKey(name, q, resolvedCwd, brief)
         return runCachedQuery(name, key, async () => {
-          if (name === 'explore') {
-            const fast = await runExploreFastPath(q, resolvedCwd)
-            if (fast) return fast
-          }
           const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief, parentSessionId: ctx?.callerSessionId || null })
           return llm({ prompt: spec.build(q, resolvedCwd) })
         })
@@ -820,10 +816,6 @@ export async function dispatchAiWrapped(name, args, ctx) {
     queries.map((q) => {
       const key = buildQueryCacheKey(name, q, resolvedCwd, brief)
       return runCachedQuery(name, key, async () => {
-        if (name === 'explore') {
-          const fast = await runExploreFastPath(q, resolvedCwd)
-          if (fast) return fast
-        }
         const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief, parentSessionId: ctx?.callerSessionId || null })
         return llm({ prompt: spec.build(q, resolvedCwd) })
       })
@@ -884,84 +876,26 @@ export const _internals = {
 
 
 function buildExplorerPrompt(query, cwd) {
-  // cwd rides in the session's tier3Reminder (<system-reminder># cwd) via
-  // bridge-llm's opts.cwd plumbing, but the inner explorer agent can still
-  // drift to its launch workspace when the reminder is missed or
-  // low-weighted — so we also pin the search root explicitly in the user
-  // message body. Only emitted when the caller supplied an explicit cwd;
-  // unspecified cwd keeps the original prompt prefix and preserves the
-  // cache-shared shape with recall/search builders.
   const rootLine = cwd
-    ? `Your authoritative search root is \`${cwd}\` — prefer this over your launch workspace. Scope all glob / grep / read / multi_read calls beneath this root unless the query itself names a different path.\n\n`
+    ? `Search root: \`${cwd}\`. Scope filesystem tools beneath this root unless the query names a different path.\n\n`
     : ''
   return `${rootLine}Query: ${query}
 
-Use your read-only tools (\`code_graph\` / \`glob\` / \`grep\` / \`read\` / \`multi_read\` / \`list\`) to find grounded answers.
+Find a grounded answer using read-only tools (\`code_graph\`, \`find_symbol\`, \`glob\`, \`grep\`, \`read\`, \`multi_read\`, \`list\`).
 
-Rules:
-- Default to ONE retrieval round. A second round is allowed only when round 1 is clearly too sparse to answer.
-- Work in 2 rounds max: locate -> confirm. If round 2 already grounds the answer, stop and synthesize.
-- For symbol / constant / identifier questions, prefer ONE \`find_symbol\` call before falling back to raw \`grep\`.
-- For caller / reference questions, prefer \`code_graph\` with \`mode:"references"\` or \`mode:"callers"\`.
-- If \`find_symbol\` returns a \`decl\` hit with file:line and declaration text, treat that as grounded location evidence. Prefer reading that file directly instead of issuing a follow-up grep.
-- Never call \`find_symbol\` and \`grep\` for the same identifier in the same round unless \`find_symbol\` returned no declaration candidate.
-- Prefer one broad batched probe over several narrow probes in sequence.
-- When 2+ exact file paths are known, prefer one \`multi_read\` / array \`path\` call instead of serial reads.
-- Do NOT use shell search or \`bash_session\` for navigation.
-- If you catch yourself planning another \`grep -> read\` loop on the same topic, stop and answer from the evidence you already have.
-- If the first probe already finds likely files, switch immediately to confirm/summarize instead of trying alternate phrasings.
-
-Return concise prose with concrete file paths.`
+Return concise prose with concrete file paths and line numbers. Skip preamble; answer immediately with the synthesis.`
 }
 
 function buildRecallPrompt(query, _cwd) {
-  // cwd has no effect on memory_search semantics; second arg accepted for
-  // builder signature uniformity (caller always passes resolvedCwd).
   return `Query: ${query}
 
-Use the \`memory_search\` tool to retrieve ranked entries.
-
-Rules:
-- Default to exactly ONE \`memory_search\` call.
-- A second \`memory_search\` call is allowed only if the first returns no useful hits and you are widening time scope or dropping an over-tight filter.
-- Never call \`memory_search\` twice with identical arguments. If you already searched the query, synthesize from that evidence.
-- Never do a third retrieval call.
-- If the first call yields relevant entries, synthesize immediately instead of probing alternate phrasings.
-- Cite entry ids inline.
-
-Return concise prose.`
+Use \`memory_search\` to retrieve ranked entries. Synthesize concise prose; cite entry ids inline. If no relevant entries match, say so explicitly. Skip preamble; answer immediately.`
 }
 
 function buildSearchPrompt(query, _cwd) {
-  // cwd has no effect on web_search semantics; second arg accepted for
-  // builder signature uniformity.
-  const repoTarget = extractGithubRepoReadTarget(query)
-  const repoRule = repoTarget
-    ? `\n- This is a GitHub repository read. Call \`web_search\` exactly once with \`github_type:\"repo\"\`, \`owner:\"${repoTarget.owner}\"\`, and \`repo:\"${repoTarget.repo}\"\`. Omit \`keywords\`, \`site\`, and \`type\`. The second-call exception does not apply to this query: stop after that one call unless the tool returns an explicit error or no GitHub repository URL. Do not run code/repository/free-text follow-up searches.`
-    : ''
   return `Query: ${query}
 
-Use the \`web_search\` tool to retrieve ranked results.
-
-Rules:
-- Default to exactly ONE \`web_search\` call.
-- A second \`web_search\` call is allowed only if the first call is clearly sparse and you widen scope in a meaningful way.
-- Never do a third search call.
-- If the first call already returns enough evidence, synthesize immediately.
-- If the first call returns a single GitHub read result (repo / file / issue / pulls) with concrete metadata, treat it as authoritative and answer immediately.
-- Prefer narrower \`site\` / \`type\` / GitHub-specific arguments over retrying with near-identical free text.
-- For specific documentation queries, choose a result whose title, URL, or snippet directly matches the requested topic. Do not answer with a generic homepage when the query asks for a specific page such as a models/API/reference page.
-- For a query naming a concrete resource, endpoint, package, page title, or API object, broad introduction/home/guide results are sparse unless their title, URL, or snippet directly contains that requested topic. In that case, use your one allowed second call with the missing topic terms made more explicit.
-- Treat documentation/API queries as normal web/domain searches unless the query explicitly asks for GitHub, repositories, source code, issues, or pull requests.
-- Cite only URLs that were returned by \`web_search\`; do not infer URLs from prior knowledge or site structure.
-- Do not treat a "page not found" result as a valid documentation match.
-- For GitHub repo questions, repository metadata (URL, description, stars/language/default branch/license) is enough evidence.
-- Only set \`github_type\` / \`owner\` / \`repo\` for explicit GitHub queries. For official docs or domain-restricted web searches, call \`web_search\` with \`keywords\`, optional \`site\`, optional \`type\`, and leave all GitHub fields omitted.
-- Do not send empty optional fields such as \`owner:""\`, \`repo:""\`, \`path:""\`, \`site:""\`, \`keywords:""\`, or placeholder \`number:0\`; omit unused fields entirely.
-${repoRule}
-- Cite URLs inline.
-
-Return concise prose.`
+Use \`web_search\` to retrieve ranked results. Synthesize concise prose; cite URLs inline. Skip preamble; answer immediately.`
 }
 
 /**

@@ -237,9 +237,15 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     const softIterationWarnThresholds = Array.isArray(opts.iterationWarnThresholds) && opts.iterationWarnThresholds.length
         ? [...opts.iterationWarnThresholds].filter((n) => Number.isFinite(Number(n))).map((n) => Number(n)).sort((a, b) => a - b)
         : [...SOFT_ITERATION_WARN_THRESHOLDS];
+    // Hidden retrieval roles (recall-agent / search-agent / explorer / cycle*
+    // / recap) are intentionally bounded: the loop cap keeps a single retrieval
+    // call from grinding through dozens of probe iterations on an ambiguous
+    // query. Pool B (worker / reviewer / debugger / tester) keeps the global
+    // 1000-iter fuse so user-driven implementation work isn't truncated.
+    const HIDDEN_ROLE_ITERATION_FUSE = 30;
     const emergencyIterationFuse = Number.isFinite(Number(opts.iterationEmergencyFuse))
         ? Number(opts.iterationEmergencyFuse)
-        : EMERGENCY_ITERATION_FUSE;
+        : (opts.session && isHiddenRole(opts.session.role) ? HIDDEN_ROLE_ITERATION_FUSE : EMERGENCY_ITERATION_FUSE);
     const forcedFirstTool = opts.forcedFirstTool || explicitToolChoiceName(messages, tools);
     const forcedFirstToolDef = forcedFirstTool
         ? tools.find(tool => tool?.name === forcedFirstTool)

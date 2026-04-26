@@ -65,6 +65,7 @@ __tests__/
 dev/
 .bench-*.json
 .bp1-*.json
+bench/results/
 
 # Build scratch
 _build/

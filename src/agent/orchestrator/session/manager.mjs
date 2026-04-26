@@ -19,6 +19,7 @@ import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
 import { classifyPromptIntent } from '../intent-classifier.mjs';
 import { resolvePluginData, DEFAULT_PLUGIN, DEFAULT_MARKETPLACE } from '../../../shared/plugin-paths.mjs';
 import { traceBridgeTool } from '../bridge-trace.mjs';
+import { isHiddenRole } from '../internal-roles.mjs';
 
 // Phase B: Pool B Tier 2 content builder (common rules only).
 // Loaded once per process via createRequire so the CJS module reaches us.
@@ -669,6 +670,13 @@ async function _searchGithubRepoText(repoSlug) {
 
 async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     if (session?.owner !== 'bridge') return null;
+    // Hidden roles (recall-agent / search-agent / explorer / cycle1-agent /
+    // cycle2-agent / recap-agent) own their retrieval tools — memory_search,
+    // web_search, glob/grep/read fan-out — and must not be intercepted by the
+    // generic bridge classifier. Without this guard, an identifier in the
+    // recall prompt routes to code_graph(references) and returns the graph's
+    // "file not found" string in place of an actual memory hit.
+    if (isHiddenRole(session?.role)) return null;
     const repoSlug = _extractGithubRepoSlug(prompt);
     // Fix 3: pass null cwd through — `_extractKnownFilePaths` returns [] when
     // there is no project cwd, so filesystem-existence checks never leak the
