@@ -150,7 +150,7 @@
   "explore": [
     {
       "q": "ai-wrapped-dispatch.mjs 캐시 키 생성 로직과 lookup 우선순위",
-      "expected_substrings": ["ai-wrapped-dispatch.mjs"]
+      "expected_substrings": ["ai-wrapped-dispatch", "buildQueryCacheKey", "캐시 키"]
     },
     {
       "q": "where is dispatchAiWrapped defined?",
