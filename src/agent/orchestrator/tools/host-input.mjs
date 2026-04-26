@@ -163,6 +163,9 @@ export async function executeHostInputTool(name, args /*, cwd */) {
     throw new Error(`inject_input: only supported on Windows (got platform=${process.platform})`)
   }
 
+  // Always submit: append a trailing newline if the caller didn't.
+  const payload = text.endsWith('\n') ? text : text + '\n'
+
   const { host, pid, name: imageName, trail } = findHostAncestor(process.pid)
   if (!host) {
     const trailStr = trail.map(t => `${t.pid}:${t.name}`).join(' → ')
@@ -173,7 +176,7 @@ export async function executeHostInputTool(name, args /*, cwd */) {
     throw new Error(`inject_input: host "${host}" not supported yet (resolved image=${imageName} pid=${pid})`)
   }
 
-  const result = handler(text, pid)
+  const result = handler(payload, pid)
   return JSON.stringify({
     ok: !!result.ok,
     host,

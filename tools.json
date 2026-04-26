@@ -1745,13 +1745,13 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Inject text into the host terminal that runs Claude Code (and this MCP server, as its child). Walks the parent process chain to locate a supported console host (currently powershell.exe / pwsh.exe on Windows) and types the text via AttachConsole + WriteConsoleInputW. Does NOT press Enter. Returns { ok, host, pid, exitCode, stderr? }.",
+    "description": "Inject text into the host terminal that runs Claude Code (and this MCP server, as its child). Walks the parent process chain to locate a supported console host (currently powershell.exe / pwsh.exe on Windows) and types the text via AttachConsole + WriteConsoleInputW. Always submits — a trailing newline is appended automatically if the caller did not include one. Returns { ok, host, pid, exitCode, stderr? }.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "text": {
           "type": "string",
-          "description": "Text to type into the host terminal. No automatic Enter; include a literal newline yourself if you want submission."
+          "description": "Text to type into the host terminal. A trailing newline is appended automatically, so the text is always submitted with Enter."
         }
       },
       "required": [
