@@ -20,6 +20,15 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 
 - Work in **2 rounds max per sub-problem** (locate → confirm). Repeated retrieval → ask what NEW information the next call adds; enough evidence → stop probing and move to the edit / answer.
 
+## Preflight
+
+Before any tool call, scan the query for known scope and collapse multiple rounds into one targeted call:
+
+- code lookup → known identifier, file path, or regex pattern → ONE call to `find_symbol` / `read` / `grep`.
+- past memory → known entry id (`#NNNN`), date, or named decision → ONE `recall` anchored on that.
+- external → explicit URL, owner/repo, or domain → ONE `search` scoped to that source.
+- Skip preflight only when the query is a genuinely broad concept search.
+
 ## Routing
 
 **Information-retrieval tools are top priority. Always prefer `recall` / `search` / `explore` (and `read` / `glob` / `list` / `grep` for known-path / pattern work) over `bash` for any lookup. Using `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup is a rule violation — `bash` is shell-only work (git, build, test, run).**

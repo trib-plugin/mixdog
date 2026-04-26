@@ -4,6 +4,13 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.104] - Unreleased
+
+### Changed
+
+- **default `recall` / `search` / `explore` builders switched to a per-tool preflight hybrid.** A 3-run cumulative sweep (`bench/probe.mjs`) showed that input-side scope extraction combined with a tighter per-tool output schema beats the previous structured-routing default. The new layout: `recall` runs a MUST step-by-step preflight that anchors on entry id / date / named decision, `search` caps output at 2 paragraphs with URL / owner-repo / domain extraction, `explore` caps at 3 paragraphs with identifier / file-path / regex extraction. Wall mean dropped ~24% vs the prior default; p50 search 6909 → 5531 ms (-20%), p50 explore 11765 → 11497 ms. `bench/prompt-variants/baseline.mjs` is kept in sync as the sweep mirror.
+- **`rules/shared/01-tool.md` adds a `## Preflight` section** that codifies the same scan-first rule (extract known scope, collapse multiple rounds into one targeted call) so every delegated role inherits it without relying on per-role overrides.
+
 ## [0.1.52] - Unreleased
 
 ### Notes

@@ -1,15 +1,11 @@
-// bench/prompt-variants/baseline.mjs
-// Reference variant — mirrors the in-tree default builders exactly.
-// Use as a template for new variants. Each variant must export the
-// three builders below; the sweep runner monkey-patches them onto
-// `_internals.builders.<tool>` for the duration of one full run.
-//
-// The active default is the per-tool hybrid:
-//   recall   = aggressive (MUST step 1-2-3)
-//   search   = strict     (cap 2 paragraph)
-//   explore  = plain preflight (cap 3 paragraph)
-// chosen from the 3-run cumulative sweep where this combination took
-// the lowest wall and stable p50 across all three tools.
+// bench/prompt-variants/preflight-hybrid.mjs
+// Variant — per-tool tuning. Each tool gets the prompt that won its
+// dimension in the ceiling sweep:
+//   recall   = aggressive (MUST step 1-2-3)   p95 9.6s winner
+//   search   = strict     (cap 3 → 2)         p95 17s winner
+//   explore  = plain preflight                p95 31s winner, no fails
+// Builders are independent, so picking the best per tool should
+// reproduce best-per-tool results without cross-tool interference.
 
 export function buildExplorerPrompt(query, cwd) {
   const rootLine = cwd ? `<root>${cwd}</root>\n` : '';

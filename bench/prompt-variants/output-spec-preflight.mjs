@@ -1,15 +1,11 @@
-// bench/prompt-variants/baseline.mjs
-// Reference variant — mirrors the in-tree default builders exactly.
-// Use as a template for new variants. Each variant must export the
-// three builders below; the sweep runner monkey-patches them onto
-// `_internals.builders.<tool>` for the duration of one full run.
-//
-// The active default is the per-tool hybrid:
-//   recall   = aggressive (MUST step 1-2-3)
-//   search   = strict     (cap 2 paragraph)
-//   explore  = plain preflight (cap 3 paragraph)
-// chosen from the 3-run cumulative sweep where this combination took
-// the lowest wall and stable p50 across all three tools.
+// bench/prompt-variants/output-spec-preflight.mjs
+// Variant C — output-spec + input-side narrowing. Anthropic's
+// effective-context-engineering guide flags 'preflight narrowing' as
+// the highest-leverage move: extract known identifier/path/pattern
+// from the query before any tool call, then collapse 3 rounds into 1
+// targeted call. Hypothesis: relieving the input side reduces the
+// pressure on the output schema, lowering tail timeouts without
+// loosening the cap.
 
 export function buildExplorerPrompt(query, cwd) {
   const rootLine = cwd ? `<root>${cwd}</root>\n` : '';
@@ -40,10 +36,9 @@ export function buildExplorerPrompt(query, cwd) {
 export function buildRecallPrompt(query, _cwd) {
   return `<query>${query}</query>
 
-<preflight required="true">
-  STEP 1 — EXTRACT: parse the query for entry id (#NNNN), date, or named decision.
-  STEP 2 — ROUTE: if anchor was extracted, target memory_search with that anchor first; ONE call only.
-  STEP 3 — EXEMPT: only when no anchor can be extracted may you broaden the search.
+<preflight>
+  Before searching, scan the query for: explicit entry id (#NNNN), date, or named decision.
+  If found, target memory_search with that anchor first.
 </preflight>
 
 <tools>memory_search</tools>
@@ -76,7 +71,7 @@ export function buildSearchPrompt(query, _cwd) {
   <shape>prose</shape>
   <require>
     <citation pattern="url">at least one per claim</citation>
-    <length unit="paragraph" max="2"/>
+    <length unit="paragraph" max="3"/>
   </require>
   <reject>
     <item>preamble</item>

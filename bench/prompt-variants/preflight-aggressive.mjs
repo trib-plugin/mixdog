@@ -1,24 +1,18 @@
-// bench/prompt-variants/baseline.mjs
-// Reference variant — mirrors the in-tree default builders exactly.
-// Use as a template for new variants. Each variant must export the
-// three builders below; the sweep runner monkey-patches them onto
-// `_internals.builders.<tool>` for the duration of one full run.
-//
-// The active default is the per-tool hybrid:
-//   recall   = aggressive (MUST step 1-2-3)
-//   search   = strict     (cap 2 paragraph)
-//   explore  = plain preflight (cap 3 paragraph)
-// chosen from the 3-run cumulative sweep where this combination took
-// the lowest wall and stable p50 across all three tools.
+// bench/prompt-variants/preflight-aggressive.mjs
+// Variant — preflight elevated from suggestion to MUST. The original
+// preflight reads as 'consider before calling'; this version makes
+// extraction mandatory and denies multi-step probing on extracted
+// scope. Hypothesis: stronger framing pushes the model harder onto
+// the one-shot path, recovering more iters on simple-lookup queries.
 
 export function buildExplorerPrompt(query, cwd) {
   const rootLine = cwd ? `<root>${cwd}</root>\n` : '';
   return `${rootLine}<query>${query}</query>
 
-<preflight>
-  Before any tool call, scan the query for: known identifier, file path, or regex pattern.
-  If found, issue ONE targeted call (find_symbol / read / grep with that scope).
-  Skip preflight only when the query is a broad concept search.
+<preflight required="true">
+  STEP 1 — EXTRACT: parse the query for identifier, file path, or regex pattern. Output the extracted scope before any tool call.
+  STEP 2 — ROUTE: if scope was extracted, issue exactly ONE targeted tool call (find_symbol / read / grep). Multi-round probing on extracted scope is DENIED.
+  STEP 3 — EXEMPT: only when no scope can be extracted (true broad concept query) may you fall back to multi-round exploration.
 </preflight>
 
 <tools>find_symbol, find_imports, find_dependents, find_callers, find_references, code_graph, glob, grep, read, multi_read, list</tools>
@@ -65,9 +59,10 @@ export function buildRecallPrompt(query, _cwd) {
 export function buildSearchPrompt(query, _cwd) {
   return `<query>${query}</query>
 
-<preflight>
-  Before searching, scan the query for: explicit URL, owner/repo, or domain.
-  If found, target that source directly first.
+<preflight required="true">
+  STEP 1 — EXTRACT: parse the query for explicit URL, owner/repo, or domain.
+  STEP 2 — ROUTE: if a source was extracted, target that source directly first; ONE call only.
+  STEP 3 — EXEMPT: only when no specific source can be extracted may you broaden the search.
 </preflight>
 
 <tools>web_search</tools>
@@ -76,7 +71,7 @@ export function buildSearchPrompt(query, _cwd) {
   <shape>prose</shape>
   <require>
     <citation pattern="url">at least one per claim</citation>
-    <length unit="paragraph" max="2"/>
+    <length unit="paragraph" max="3"/>
   </require>
   <reject>
     <item>preamble</item>

@@ -1,15 +1,10 @@
-// bench/prompt-variants/baseline.mjs
-// Reference variant — mirrors the in-tree default builders exactly.
-// Use as a template for new variants. Each variant must export the
-// three builders below; the sweep runner monkey-patches them onto
-// `_internals.builders.<tool>` for the duration of one full run.
-//
-// The active default is the per-tool hybrid:
-//   recall   = aggressive (MUST step 1-2-3)
-//   search   = strict     (cap 2 paragraph)
-//   explore  = plain preflight (cap 3 paragraph)
-// chosen from the 3-run cumulative sweep where this combination took
-// the lowest wall and stable p50 across all three tools.
+// bench/prompt-variants/preflight-decision-table.mjs
+// Variant — preflight + 1-line decision table. Combines input-side
+// narrowing with explicit query-shape → first-tool routing. Hypothesis:
+// when the model already extracted scope (preflight), an explicit
+// dispatch table further compresses the routing decision, removing
+// the few cases where preflight extracts scope but picks a sub-optimal
+// tool.
 
 export function buildExplorerPrompt(query, cwd) {
   const rootLine = cwd ? `<root>${cwd}</root>\n` : '';
@@ -17,9 +12,19 @@ export function buildExplorerPrompt(query, cwd) {
 
 <preflight>
   Before any tool call, scan the query for: known identifier, file path, or regex pattern.
-  If found, issue ONE targeted call (find_symbol / read / grep with that scope).
+  If found, issue ONE targeted call using the decision table below.
   Skip preflight only when the query is a broad concept search.
 </preflight>
+
+<decision-table>
+  identifier known, file unknown   → find_symbol
+  who imports / depends / calls    → find_imports / find_dependents / find_callers
+  where referenced                 → find_references
+  filename / glob pattern          → glob
+  text / regex content match       → grep
+  known absolute path              → read
+  directory shape / mtime          → list
+</decision-table>
 
 <tools>find_symbol, find_imports, find_dependents, find_callers, find_references, code_graph, glob, grep, read, multi_read, list</tools>
 
@@ -40,11 +45,17 @@ export function buildExplorerPrompt(query, cwd) {
 export function buildRecallPrompt(query, _cwd) {
   return `<query>${query}</query>
 
-<preflight required="true">
-  STEP 1 — EXTRACT: parse the query for entry id (#NNNN), date, or named decision.
-  STEP 2 — ROUTE: if anchor was extracted, target memory_search with that anchor first; ONE call only.
-  STEP 3 — EXEMPT: only when no anchor can be extracted may you broaden the search.
+<preflight>
+  Before searching, scan the query for: explicit entry id (#NNNN), date, or named decision.
+  If found, target memory_search with that anchor first.
 </preflight>
+
+<decision-table>
+  entry id (#NNNN) cited      → memory_search anchored on that id
+  date / time window mentioned → memory_search filtered by that range
+  named decision / event       → memory_search keyed on that name
+  broad topic                  → memory_search natural language
+</decision-table>
 
 <tools>memory_search</tools>
 
@@ -70,13 +81,20 @@ export function buildSearchPrompt(query, _cwd) {
   If found, target that source directly first.
 </preflight>
 
+<decision-table>
+  explicit URL          → web_search anchored on that URL
+  owner/repo or domain  → web_search scoped to that source
+  named library/tool    → web_search keyed on that name + 'docs'
+  broad concept         → web_search natural language
+</decision-table>
+
 <tools>web_search</tools>
 
 <output>
   <shape>prose</shape>
   <require>
     <citation pattern="url">at least one per claim</citation>
-    <length unit="paragraph" max="2"/>
+    <length unit="paragraph" max="3"/>
   </require>
   <reject>
     <item>preamble</item>

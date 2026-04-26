@@ -1,15 +1,8 @@
-// bench/prompt-variants/baseline.mjs
-// Reference variant — mirrors the in-tree default builders exactly.
-// Use as a template for new variants. Each variant must export the
-// three builders below; the sweep runner monkey-patches them onto
-// `_internals.builders.<tool>` for the duration of one full run.
-//
-// The active default is the per-tool hybrid:
-//   recall   = aggressive (MUST step 1-2-3)
-//   search   = strict     (cap 2 paragraph)
-//   explore  = plain preflight (cap 3 paragraph)
-// chosen from the 3-run cumulative sweep where this combination took
-// the lowest wall and stable p50 across all three tools.
+// bench/prompt-variants/preflight-strict.mjs
+// Variant — preflight + tighter output cap (3 → 2 paragraph). The
+// preflight reduces input-side wandering; the tighter cap keeps the
+// padding floor lower. Hypothesis: combining input narrowing with a
+// stricter output ceiling extracts further savings.
 
 export function buildExplorerPrompt(query, cwd) {
   const rootLine = cwd ? `<root>${cwd}</root>\n` : '';
@@ -27,7 +20,7 @@ export function buildExplorerPrompt(query, cwd) {
   <shape>prose</shape>
   <require>
     <citation pattern="path:line">at least one per claim</citation>
-    <length unit="paragraph" max="3"/>
+    <length unit="paragraph" max="2"/>
   </require>
   <reject>
     <item>preamble or meta-commentary</item>
@@ -40,10 +33,9 @@ export function buildExplorerPrompt(query, cwd) {
 export function buildRecallPrompt(query, _cwd) {
   return `<query>${query}</query>
 
-<preflight required="true">
-  STEP 1 — EXTRACT: parse the query for entry id (#NNNN), date, or named decision.
-  STEP 2 — ROUTE: if anchor was extracted, target memory_search with that anchor first; ONE call only.
-  STEP 3 — EXEMPT: only when no anchor can be extracted may you broaden the search.
+<preflight>
+  Before searching, scan the query for: explicit entry id (#NNNN), date, or named decision.
+  If found, target memory_search with that anchor first.
 </preflight>
 
 <tools>memory_search</tools>
@@ -52,7 +44,7 @@ export function buildRecallPrompt(query, _cwd) {
   <shape>prose</shape>
   <require>
     <citation pattern="#entry-id">at least one per claim</citation>
-    <length unit="paragraph" max="3"/>
+    <length unit="paragraph" max="2"/>
     <no-match-rule>say so explicitly when nothing relevant</no-match-rule>
   </require>
   <reject>

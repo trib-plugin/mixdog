@@ -93,7 +93,7 @@ if (cmd === 'run') {
   usage();
 }
 
-const DEFAULT_CONCURRENCY = clampInt(flags.concurrency ?? process.env.PROBE_CONCURRENCY ?? 5, 1, 32);
+const DEFAULT_CONCURRENCY = clampInt(flags.concurrency ?? process.env.PROBE_CONCURRENCY ?? 15, 1, 32);
 
 // ── disk cache wipe — ONCE at start ─────────────────────────────────
 // Parallel runs would race on this delete, so we do it here (single
@@ -399,6 +399,16 @@ async function executeSweep() {
   const rawAll = [];    // {param, value, results}
 
   for (const value of sweepValues) {
+    // Cold-cache between variants — without this, the first variant fills
+    // the in-memory query cache and every subsequent variant hits cache
+    // (~1ms p95) instead of running the new builder. Disk file is also
+    // re-wiped because per-query writes resurrect it during the first run.
+    if (process.env.PROBE_KEEP_CACHE !== '1') {
+      _internals.resetQueryCachesForTesting?.();
+      if (existsSync(DISK_CACHE)) {
+        try { unlinkSync(DISK_CACHE); } catch {}
+      }
+    }
     const applied = await applySweepValue(sweepParam, value);
     const concurrency = applied.concurrency ?? DEFAULT_CONCURRENCY;
     const label = `sweep ${sweepParam}=${value}`;
@@ -434,9 +444,12 @@ async function executeSweep() {
     console.log(`${tool.padEnd(8)} → ${sweepParam}=${winner.value}  pass_rate=${winner.passRate.toFixed(2)}  p95=${winner.p95}ms`);
   }
 
+  const keepBodies = process.env.PROBE_VERBOSE === '1';
   writeFileSync(outPath, JSON.stringify({ param: sweepParam, values: sweepValues, rows: allRows, raw: rawAll.map(r => ({
     ...r,
-    results: r.results.map(({ body, ...rest }) => rest), // strip bodies to keep file small
+    results: keepBodies
+      ? r.results
+      : r.results.map(({ body, ...rest }) => rest),
   })) }, null, 2));
   console.log(`\n[probe] sweep raw results → ${outPath}`);
 }
