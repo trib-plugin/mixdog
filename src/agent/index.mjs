@@ -441,7 +441,10 @@ export async function handleToolCall(name, args, opts = {}) {
   try {
     switch (name) {
       case 'create_session': {
-        const session = createSession(args);
+        const sessionArgs = args.cwd
+          ? { ...args, cwd: normalizeInputPath(args.cwd) }
+          : args;
+        const session = createSession(sessionArgs);
         return ok({
           sessionId: session.id,
           provider: session.provider,

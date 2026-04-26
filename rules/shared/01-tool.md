@@ -26,7 +26,7 @@ Applies when the next move is `edit` or `apply_patch` AND the target span is not
 
 - Identifier / function / class name known → `find_symbol` immediately. Do not start with a `grep`→`read` pair when an identifier is in hand. For specific structural questions, use the direct alias instead: `find_callers`, `find_references`, `find_imports`, `find_dependents`.
 - Cross-file refactor, multi-symbol change, or mixed structural impact → `code_graph`.
-- After two `grep`→`read` pairs **on the same target** — same intended edit area or requirement, even if the keywords differ (e.g. `grep "fooHandler"` → `grep "handle_foo"` on the same goal still counts) — without locking the target span, a third pair is the violation. Switch tool family (`find_symbol` / `code_graph`) or commit to the edit only if the span is now effectively locked (uniquely inferable from evidence already gathered, equivalent to the Locked definition above). Same threshold as the corresponding Anti-pattern.
+- After two `grep`→`read` pairs **on the same target** — same intended edit area, or the same requirement pointing at that area, even if the keywords differ (e.g. `grep "fooHandler"` → `grep "handle_foo"` on the same goal still counts) — without locking the target span (exact file path + unique line range), a third pair is the violation. Switch tool family (`find_symbol` / `code_graph`) or commit to the edit only if the span is now effectively locked — the exact file path and one unique line range are already inferable from gathered evidence. Same threshold as the corresponding Anti-pattern.
   - Tiny example: `grep X → read A`, then `grep X-variant → read A` (or A+B) = two pairs; the next move must be `find_symbol` / `code_graph` / `edit`, not a third `grep`→`read`.
 - Once the span is locked, edit. Do not re-read the same file again.
 - For edits across multiple files, prefer `apply_patch` in one combined turn over looping `read` → `edit`.
@@ -119,13 +119,13 @@ When a tool result begins with a `⚠ … soft-warn` marker, treat it as a self-
 ### Per-marker response
 
 - `⚠ Tool-loop soft-warn` — same call returned the same result/error 4× in a row.
-  → **Stop the exact retry.** The signature (tool + args + error class) won't change by repeating. Either change one input meaningfully or switch tools.
+  → **Stop the exact retry.** The signature (tool + args + error class) won't change by repeating. Change inputs *semantically* (different scope or different question, not just reworded) or switch tools.
 - `⚠ Repeated-tool soft-warn` — the same tool has been called many times in this session.
-  → **Batch or switch.** Combine outstanding queries into one array-form call, or hand off to a different tool family.
-- `⚠ Mixed-tool soft-warn` — many consecutive low-level lookups across `read` / `grep` / `glob` / `list` without a productive call.
+  → **Batch or switch family.** Combine outstanding queries into one array-form call, or hand off to a *different family*. Three families: low-level file (`read` / `grep` / `glob` / `list`), structural (`find_symbol` / `code_graph` / `find_callers` / `find_references`), synthesized retrieval (`explore` / `recall` / `search`). Switching within one family does not count.
+- `⚠ Mixed-tool soft-warn` — many consecutive low-level lookups across `read` / `grep` / `glob` / `list` without a productive call. ("Productive" = the call narrowed the scope — locked a file+line range, identified a symbol, or eliminated candidates. Mere hits without progress don't count.)
   → **Jump up.** `find_symbol` / `code_graph` / `explore` for one decisive pass; or commit to the edit if the target is already locked.
 - `⚠ Tool-budget soft-warn` — total tool calls in this session are getting high.
-  → **Truncate scope.** Synthesize what you have, report partial findings honestly, and stop. Do not start a new investigation thread.
+  → **Truncate scope.** Synthesize what you have, report partial findings honestly, and stop *new investigation threads*. Wrap up the current edit / answer; do not expand into adjacent questions or open a new probe.
 
 ### General rules (apply to every marker)
 
