@@ -123,6 +123,23 @@ export function isMcpTool(name) {
     return name.startsWith('mcp__');
 }
 /**
+ * Check whether the inputSchema for an MCP tool declares the given top-level
+ * property. Used to decide if the orchestrator should auto-inject context
+ * (e.g. cwd) into the args before dispatch — schemas that don't declare the
+ * field would reject the unknown argument.
+ */
+export function mcpToolHasField(name, field) {
+    const match = name.match(/^mcp__(.+?)__(.+)$/);
+    if (!match) return false;
+    const [, serverName] = match;
+    const server = servers.get(serverName);
+    if (!server) return false;
+    const tool = server.tools.find((t) => t.name === name);
+    if (!tool) return false;
+    const props = tool.inputSchema?.properties;
+    return Boolean(props && Object.prototype.hasOwnProperty.call(props, field));
+}
+/**
  * Disconnect all MCP servers.
  */
 export async function disconnectAll() {

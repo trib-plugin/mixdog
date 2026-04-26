@@ -1,4 +1,4 @@
-import { executeMcpTool, isMcpTool } from '../mcp/client.mjs';
+import { executeMcpTool, isMcpTool, mcpToolHasField } from '../mcp/client.mjs';
 import { executeBuiltinTool, isBuiltinTool } from '../tools/builtin.mjs';
 import { executeBashSessionTool } from '../tools/bash-session.mjs';
 import { executePatchTool } from '../tools/patch.mjs';
@@ -176,7 +176,16 @@ async function executeTool(name, args, cwd, callerSessionId, sessionRef) {
         return executeSkill(cwd, args?.name, args?.args);
     }
     if (isMcpTool(name)) {
-        return executeMcpTool(name, args);
+        // 24h trace data shows ~24% of external MCP calls are cwd-sensitive
+        // (bash / grep / read / list / glob etc.) but the worker session's
+        // cwd was previously dropped here. Inject cwd only when the tool's
+        // inputSchema declares the field — schemas without it would reject
+        // an unknown argument.
+        const needsCwdInjection = cwd
+            && mcpToolHasField(name, 'cwd')
+            && (args == null || args.cwd == null);
+        const finalArgs = needsCwdInjection ? { ...(args || {}), cwd } : args;
+        return executeMcpTool(name, finalArgs);
     }
     if (isCodeGraphTool(name)) {
         return executeCodeGraphTool(name, args, cwd);
@@ -234,18 +243,23 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     // Hidden retrieval roles (recall-agent / search-agent / explorer / cycle*
     // / recap) are bounded at 30: the loop cap keeps a single retrieval call
     // from grinding through dozens of probe iterations on an ambiguous query.
-    // User-defined bridge roles (worker / reviewer / debugger / tester) are
-    // capped at 64 — large enough for normal multi-file refactors while
-    // truncating runaway grep+read alt-loops that historically push p95 to 88.
+    // Worker is bounded tighter (56) than other bridge roles (64) because 24h
+    // trace shows worker p95 hitting 88 on grep+read alt-loops; reviewer /
+    // debugger / tester p95 stays under 12 in practice and benefits from the
+    // larger headroom for genuine multi-file work.
     // The 1000-iter EMERGENCY fuse remains as the absolute backstop and can
     // be overridden via opts.iterationEmergencyFuse for special workloads.
     const HIDDEN_ROLE_ITERATION_FUSE = 30;
+    const WORKER_ROLE_ITERATION_FUSE = 56;
     const BRIDGE_ROLE_ITERATION_FUSE = 64;
+    const sessionRole = opts.session?.role;
     const emergencyIterationFuse = Number.isFinite(Number(opts.iterationEmergencyFuse))
         ? Number(opts.iterationEmergencyFuse)
-        : (opts.session && isHiddenRole(opts.session.role)
+        : (opts.session && isHiddenRole(sessionRole)
             ? HIDDEN_ROLE_ITERATION_FUSE
-            : BRIDGE_ROLE_ITERATION_FUSE);
+            : sessionRole === 'worker'
+                ? WORKER_ROLE_ITERATION_FUSE
+                : BRIDGE_ROLE_ITERATION_FUSE);
     const forcedFirstTool = opts.forcedFirstTool || explicitToolChoiceName(messages, tools);
     const forcedFirstToolDef = forcedFirstTool
         ? tools.find(tool => tool?.name === forcedFirstTool)

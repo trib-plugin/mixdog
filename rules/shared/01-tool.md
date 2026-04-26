@@ -22,12 +22,12 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 
 ## Edit Ordering
 
-Applies when the next move is `edit` or `apply_patch` AND the target line range is not yet known. (`write` for whole-file create/replace is exempt — no line range to lock.) Edit Ordering overrides the Decision Table for edits with unknown target lines.
+Applies when the next move is `edit` or `apply_patch` AND the target span is not yet locked. **Locked = exact file path AND a unique line range you can edit without re-reading.** (`write` for whole-file create/replace is exempt — no line range to lock.) Edit Ordering overrides the Decision Table for edits with unknown target spans.
 
-- Identifier / function / class name known → `find_symbol` first. For specific structural questions, use the direct alias instead: `find_callers`, `find_references`, `find_imports`, `find_dependents`.
+- Identifier / function / class name known → `find_symbol` immediately. Do not start with a `grep`→`read` pair when an identifier is in hand. For specific structural questions, use the direct alias instead: `find_callers`, `find_references`, `find_imports`, `find_dependents`.
 - Cross-file refactor, multi-symbol change, or mixed structural impact → `code_graph`.
-- After two `grep`→`read` pairs (one locate + one confirm) without locking the target line range, do not start a third pair — switch tool family (`find_symbol` / `code_graph`) or commit to the edit. Same threshold as the corresponding Anti-pattern.
-- Once the line range is locked, edit. Do not re-read the same file again.
+- After two `grep`→`read` pairs (one locate + one confirm) without locking the target span, do not start a third pair — switch tool family (`find_symbol` / `code_graph`) or commit to the edit only if the span is already uniquely inferable from evidence gathered. Same threshold as the corresponding Anti-pattern.
+- Once the span is locked, edit. Do not re-read the same file again.
 - For edits across multiple files, prefer `apply_patch` in one combined turn over looping `read` → `edit`.
 
 ## Preflight
@@ -63,6 +63,8 @@ Before any tool call, scan the query for known scope and collapse multiple round
 ## Decision Table
 
 Use these rules regardless of the current role name. Role-specific prompts may add nuance, but the first tool choice should follow this table unless the user explicitly asks otherwise.
+
+> **Edit precedence:** when the next move is `edit` / `apply_patch` and the target span is not yet locked, the **Edit Ordering** section above takes precedence over this table. The table applies once the span is locked or for non-edit lookups.
 
 | Query shape                                       | First tool                                          |
 |---------------------------------------------------|-----------------------------------------------------|
