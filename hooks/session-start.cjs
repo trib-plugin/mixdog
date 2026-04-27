@@ -506,8 +506,23 @@ async function requestCycle1(timeoutMs, opts = {}) {
   const deadline = start + Math.max(0, timeoutMs);
   teeStderr(`[session-start] cycle1 slot=${slot} start graceMs=${graceMs} timeoutMs=${timeoutMs}\n`);
 
+  // Memory worker is brought up by the parent independently of the channels
+  // owner HTTP server. Since v0.1.118 the channels owner publishes
+  // active-instance.json before its backend connect (so peers can discover
+  // it sooner), which means /cycle1 can race ahead of memory worker ready.
+  // Channels surfaces that as 503 (reason: memory-not-ready); treat it as
+  // retryable within the deadline.
+  const READY_POLL_MS = 500;
+  const isMemoryNotReady = (r) => r && r.ok === false && r.statusCode === 503;
+
   try {
-    const r1 = await requestCycle1Once(deadline, opts);
+    let r1 = await requestCycle1Once(deadline, opts);
+    while (isMemoryNotReady(r1)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= READY_POLL_MS + 50) return r1;
+      await new Promise((r) => setTimeout(r, READY_POLL_MS));
+      r1 = await requestCycle1Once(deadline, { ...opts, slot: `${slot}:w` });
+    }
     if (!r1.ok) return r1;
     if (r1.processed != null && r1.processed > 0) return r1;
     // Genuine empty (no pending raw rows AND no in-flight dedup hit) — retry

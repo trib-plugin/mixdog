@@ -668,8 +668,15 @@ async function startOwnerHttpServer() {
             res.writeHead(200);
             res.end(JSON.stringify({ ok: true, result }));
           } catch (e) {
-            res.writeHead(500);
-            res.end(JSON.stringify({ ok: false, error: e?.message || String(e) }));
+            // Memory worker not yet ready (parent IPC reports the worker handle
+            // missing or `entry.ready=false`) is a transient state during boot,
+            // not a server fault. Surface it as 503 so the session-start hook
+            // (and any other caller with a retry budget) can wait and retry
+            // within its grace window instead of treating it as terminal.
+            const msg = e?.message || String(e);
+            const notReady = /worker memory (not available|exited unexpectedly|IPC channel|send failed|call .* timed out)|memory_call \w+ timed out|not a worker process/i.test(msg);
+            res.writeHead(notReady ? 503 : 500);
+            res.end(JSON.stringify({ ok: false, reason: notReady ? 'memory-not-ready' : undefined, error: msg }));
           }
           return;
         }
