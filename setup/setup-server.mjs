@@ -278,6 +278,11 @@ async function validateAgentKey(provider, key) {
           { model: 'grok-3-mini-fast', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 },
           { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' });
         return 'valid';
+      case 'nvidia':
+        await httpPostJson('https://integrate.api.nvidia.com/v1/chat/completions',
+          { model: 'meta/llama-3.3-70b-instruct', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 },
+          { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' });
+        return 'valid';
       default: return 'valid';
     }
   } catch { return 'invalid'; }
@@ -349,7 +354,7 @@ async function detectAuth(config = {}) {
   for (const [name, envKey] of [
     ['openai', 'OPENAI_API_KEY'], ['anthropic', 'ANTHROPIC_API_KEY'],
     ['gemini', 'GEMINI_API_KEY'], ['deepseek', 'DEEPSEEK_API_KEY'],
-    ['xai', 'XAI_API_KEY'],
+    ['xai', 'XAI_API_KEY'], ['nvidia', 'NVIDIA_API_KEY'],
   ]) { result.envKeys[name] = !!process.env[envKey]; }
   const ollamaUrl = config?.providers?.ollama?.baseURL || 'http://localhost:11434/v1';
   const lmstudioUrl = config?.providers?.lmstudio?.baseURL || 'http://localhost:1234/v1';
@@ -390,7 +395,7 @@ const STATIC_MODELS = {
 // STATIC_MODELS fallback with no metadata.
 const _RUNTIME_PROVIDER_NAMES = [
   'anthropic', 'anthropic-oauth', 'openai', 'openai-oauth',
-  'gemini', 'groq', 'openrouter', 'xai',
+  'gemini', 'groq', 'openrouter', 'xai', 'nvidia',
   'ollama', 'lmstudio', 'local', 'copilot',
 ];
 

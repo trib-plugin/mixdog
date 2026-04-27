@@ -16,6 +16,12 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 - `list` → single call; switch `mode:'list'|'tree'|'find'` for the view.
 - Independent calls on DIFFERENT tools with no data dependency — send in ONE message, not sequential turns.
 
+### IO array triggers
+
+- `read` / `glob` / `grep` candidates 2+ → array form, never serial.
+- Never `read` the same file twice in one session — pass any needed range in one call. Never `grep` the same pattern twice — broaden once or switch tool family.
+- `write` whole files 2+ → `writes` array. `edit` 2+ files → `edits` array (per-file groups).
+
 ## General Iter Budget
 
 - Work in **2 rounds max per sub-problem** (locate → confirm). Repeated retrieval → ask what NEW information the next call adds; enough evidence → stop probing and move to the edit / answer.
@@ -42,24 +48,29 @@ Before any tool call, scan the query for known scope and collapse multiple round
 
 ## Routing
 
-**Information-retrieval tools are top priority. Always prefer `recall` / `search` / `explore` (and `read` / `glob` / `list` / `grep` for known-path / pattern work) over `bash` for any lookup. Using `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup is a rule violation — `bash` is shell-only work (git, build, test, run).**
+**Information-retrieval tools are top priority. Prefer `recall` / `search` / `explore` (and `read` / `glob` / `list` / `grep` for known-path / pattern work) over `bash` for any lookup. Using `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup is a rule violation — `bash` is shell-only work (git, build, test, run).**
 
-**Goal: avoid doing lookup work manually in the main session when the delegated retrieval path fits. Prefer `recall` / `search` / `explore` first; use lower-level file tools only when the scope is already known or the retrieval tool does not fit the question.**
+**Choose by scope, not hunch.** Past context → `recall`. External web / URL / GitHub → `search`. Local filesystem → `explore`. The Decision Table below is the full first-tool mapping; this section covers the calling discipline.
 
-- **When unsure, choose by scope first. This is mandatory, not a suggestion.**
-- Past context → `recall`. External web / URL / GitHub → `search`. Local filesystem → `explore`.
-- Do not route a clearly local codebase question through `recall` or `search` before `explore`.
-- Known path → `read` directly. Unknown location → `grep` / `glob` first, then targeted `read`.
-- Code structure (imports, dependents, symbols, references, callers): `code_graph` before raw `grep`.
-- In the main/public tool surface, prefer the direct aliases when available:
-  `find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`.
-- For the main/public session, do not reach for generic `code_graph(mode=...)` if one direct alias exactly matches the question. The alias is the first choice.
-- If you know an identifier / constant / function / class name but not the file, use `find_symbol` before `grep`.
-- Multi-file or already-clear edits: `apply_patch` before repeated `read` → `edit`.
-- Shell work across turns: pass `persistent:true` to `bash` to reuse shell state — don't replay setup in repeated one-shot `bash` calls.
-- For long background commands, use `job_wait` to block until completion; `read` the stdout/stderr path for logs.
+### High-level retrieval (`recall` / `search` / `explore`)
+
+- A single rich NL query — one internal agent fans out and synthesizes. **One call per question is the default; 2 absolute max.** A second call only earns its iter when the first explicitly returned "not found" or covers a genuinely different angle. Paraphrasing the same question is not a different angle.
+- One `explore` call replaces a `grep`→`read`→`grep`→`read` loop — three rounds collapsed into one fan-out. Catch yourself in that loop, switch to `explore`.
+- Result returned → commit to the edit / answer. Do not re-call to "double-check."
+- Array form: only for genuinely unrelated questions. Same question reworded does not count.
+
+### Lower-level / structural
+
+- Known file path → `read` directly. Unknown location → `grep` / `glob` first, then targeted `read`.
+- Identifier / constant / function / class name known but file unknown → `find_symbol` before `grep`.
+- Imports, dependents, callers, references → use the direct alias (`find_imports` / `find_dependents` / `find_callers` / `find_references`). Generic `code_graph(mode=...)` is for mixed structural impact only.
+- Multi-file or already-clear edits: `apply_patch` over looping `read` → `edit`.
+
+### `bash` specifics
+
+- Shell work across turns: pass `persistent:true` to reuse state — don't replay setup in repeated one-shot calls.
+- Long background command launched: `job_wait`, then `read` the stdout/stderr path for logs.
 - Large tool outputs may be saved to a path with a preview; only `read` that path if the preview is insufficient.
-- `recall` / `search` / `explore` — a single rich NL query is the default; internal agent judges multi-angle probes (glob/grep, web, memory) and returns a synthesized answer. Array only when asks are genuinely unrelated.
 
 ## Decision Table
 
@@ -95,7 +106,7 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 - Do not serially `read` files one by one when the candidate list is already known.
 - Do not serially `write` several whole files when one call with a `writes` array can do it.
 - Do not `read` a whole large file when `find_symbol`, `code_graph`, or `grep` can narrow the line window first.
-- Do not loop `grep`→`read` past two pairs (one locate + one confirm) on the same target — a third same-target pair is the violation. Switch tool family (`find_symbol`, `code_graph`, `explore`) or commit to the edit / answer with the evidence already gathered.
+- `grep`→`read` past two pairs on same target — see Edit Ordering above for the formal rule (third same-target pair is the violation; switch tool family or commit).
 - Do not chain 10+ `grep` + `read` calls in one session without a `find_symbol` / `code_graph` call. Identifier-aware tools should appear within the first 2 rounds when the work involves an `edit`.
 - Do not use `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup — that is a rule violation. `bash` is shell-only work (git, build, test, run).
 

@@ -33,9 +33,13 @@ GitHub shortcuts (prefer over burying intent in `keywords`):
 | `issue` | `owner`+`repo`+`number` | one issue/PR in detail |
 | `pulls` | `owner`+`repo` (+`state`) | PR list |
 
-## Cost cap per query
+## Hard limit (web_search calls per query)
 
-**1 call default, 2 absolute max**. First call: carry filters (`site`, `github_type`, `type`) + narrow `maxResults: 5` so one round fills the answer. Second call only when first is truly sparse (0-1 results) — widen `maxResults: 10` and drop over-constraining filters. Never a third.
+**MUST stop after 2 `web_search` calls. The 3rd call is a violation, not a fallback.** The runtime hard-aborts at the 4th regardless — the 3rd is a self-imposed stop you should never reach.
+
+- 1st call: carry filters (`site`, `github_type`, `type`) + narrow `maxResults: 5` so one round fills the answer.
+- 2nd call: only when 1st is truly sparse (0-1 results). Widen `maxResults: 10` and drop over-constraining filters.
+- After 2 calls still insufficient → surface what you have with a `sparse — needs caller refinement` note. **Do not issue a 3rd.** The caller is supposed to narrow the query and re-dispatch; do not paper over an unclear question with more inner fanout.
 
 Default `maxResults: 3`. Raise to 5 only for broad surveys; never leave unset — provider default is larger than needed.
 

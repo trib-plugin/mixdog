@@ -6,7 +6,7 @@ import http from 'node:http'
 import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -1257,7 +1257,7 @@ if (process.env.MIXDOG_WORKER_MODE === '1' && process.send) {
   })
 }
 
-if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}`) {
+if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   ;(async () => {
     const existing = await isExistingServerHealthy()
     if (existing) {

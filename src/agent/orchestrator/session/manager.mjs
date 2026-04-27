@@ -294,7 +294,7 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
                 case 'tools:bash':
                 case 'tools:git':
                 case 'tools:analysis':
-                    addMany(ALL_BUILTIN_SESSION_TOOLS.filter(t => t.name === 'bash' || t.name === 'bash_session'));
+                    addMany(ALL_BUILTIN_SESSION_TOOLS.filter(t => t.name === 'bash'));
                     break;
                 case 'tools:mcp':
                     addMany(mcp);

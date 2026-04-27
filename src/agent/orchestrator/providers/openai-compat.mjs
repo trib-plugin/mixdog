@@ -9,6 +9,10 @@ const PRESETS = {
         baseURL: 'https://api.x.ai/v1',
         defaultModel: 'grok-4-1-fast-reasoning',
     },
+    nvidia: {
+        baseURL: 'https://integrate.api.nvidia.com/v1',
+        defaultModel: 'meta/llama-3.3-70b-instruct',
+    },
     ollama: {
         baseURL: 'http://localhost:11434/v1',
         defaultModel: 'llama3.3:latest',

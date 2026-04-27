@@ -24,7 +24,7 @@ const DEFAULT_SAME_TOOL_THRESHOLDS = Object.freeze({
     glob: 16,
     list: 16,
     bash: 20,
-    bash_session: 20,
+    web_search: 3,
 });
 // Unified abort ceiling: warn freely, only hard-stop at 100 per axis.
 const DEFAULT_SAME_TOOL_ABORT_THRESHOLDS = Object.freeze(

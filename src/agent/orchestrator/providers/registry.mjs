@@ -4,7 +4,7 @@ import { GeminiProvider } from './gemini.mjs';
 import { OpenAIOAuthProvider } from './openai-oauth.mjs';
 import { AnthropicOAuthProvider } from './anthropic-oauth.mjs';
 import { OpenAIDirectProvider } from './openai-ws.mjs';
-const OPENAI_COMPAT_PROVIDERS = ['deepseek', 'xai', 'ollama', 'lmstudio'];
+const OPENAI_COMPAT_PROVIDERS = ['deepseek', 'xai', 'nvidia', 'ollama', 'lmstudio'];
 const providers = new Map();
 export async function initProviders(config) {
     providers.clear();

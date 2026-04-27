@@ -205,9 +205,6 @@ async function executeTool(name, args, cwd, callerSessionId, sessionRef) {
         if (sessionId) sessionRef.implicitBashSessionId = sessionId;
         return result;
     }
-    if (name === 'bash_session') {
-        return executeBashSessionTool(name, args, cwd);
-    }
     if (name === 'apply_patch') {
         return executePatchTool(name, args, cwd, { sessionId: callerSessionId });
     }
