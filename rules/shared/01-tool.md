@@ -28,11 +28,11 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 
 ## Edit Ordering
 
-Applies when the next move is `edit` or `apply_patch` AND the target span is not yet locked. **Locked = exact file path AND a unique line range you can edit without re-reading.** (`write` for whole-file create/replace is exempt — no line range to lock.) Edit Ordering overrides the Decision Table for edits with unknown target spans.
+Applies when the next move is `edit` or `apply_patch` AND the target span is not yet locked. **Locked = exact file path AND one or more uniquely-identified line ranges (multi-hunk edits in one file are fine, as long as each range is individually pinned) you can edit without re-reading.** (`write` for whole-file create/replace is exempt — no line range to lock.) Edit Ordering overrides the Decision Table for edits with unknown target spans.
 
 - Identifier / function / class name known → `find_symbol` immediately. Do not start with a `grep`→`read` pair when an identifier is in hand. For specific structural questions, use the direct alias instead: `find_callers`, `find_references`, `find_imports`, `find_dependents`.
 - Cross-file refactor, multi-symbol change, or mixed structural impact → `code_graph`.
-- After two `grep`→`read` pairs **on the same target** — same intended edit area, or the same requirement pointing at that area, even if the keywords differ (e.g. `grep "fooHandler"` → `grep "handle_foo"` on the same goal still counts) — without the target span being **Locked** (definition above: exact file path AND a unique line range you can edit without re-reading), a third pair is the violation. Switch tool family (`find_symbol` / `code_graph`) or commit to the edit only if the span now meets the **Locked** definition — that exact file path and unique line range are uniquely inferable from evidence already gathered, equivalent to having read it directly. Same threshold as the corresponding Anti-pattern.
+- After two `grep`→`read` pairs **on the same target** — same intended edit area, or the same requirement pointing at that area, even if the keywords differ (e.g. `grep "fooHandler"` → `grep "handle_foo"` on the same goal still counts) — without the target span being **Locked** (definition above: exact file path AND one or more uniquely-identified line ranges you can edit without re-reading), a third pair is the violation. Switch tool family (`find_symbol` / `code_graph`) or commit to the edit only if the span now meets the **Locked** definition — that exact file path and every line range are pinned by explicit file+line evidence already in hand (`grep -n` hits, `find_symbol` line numbers, prior `read` output covering those lines), not inferred from grep matches without line numbers or from naming conventions. Same threshold as the corresponding Anti-pattern.
   - Tiny example: `grep X → read A`, then `grep X-variant → read A` (or A+B) = two pairs; the next move must be `find_symbol` / `code_graph` / `edit`, not a third `grep`→`read`.
 - Once the span is locked, edit. Do not re-read the same file again.
 - For edits across multiple files, prefer `apply_patch` in one combined turn over looping `read` → `edit`.
@@ -90,7 +90,8 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 | file path known                                   | `read`                                              |
 | 2+ known file paths                               | one `read` with `path` as array                     |
 | 2+ whole files to create/replace                  | `write` with `writes` array                         |
-| broad text / regex / config phrase lookup         | `grep`                                              |
+| symbolic token (env var / constant / config key name) | `find_symbol`                                   |
+| free-text phrase or regex lookup (non-symbolic)   | `grep`                                              |
 | filename pattern discovery                        | `glob`                                              |
 | directory shape / recent files / mtime clues      | `list`                                              |
 | external docs / GitHub / web                      | `search`                                            |

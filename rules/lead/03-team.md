@@ -20,7 +20,7 @@ Base rule. Personal user rules take precedence when they conflict.
 - Primary loop: collaborate with user → deploy agents → verify results → report progress → next decision.
 
 ### Agent operation
-- Agents are invoked via the `bridge` tool with a REQUIRED `role` field. The role value must match a `name` entry in `user-workflow.json` (see the `# Roles` section injected above for the currently defined set — no suffix variants). The role is resolved to a preset, which maps to the model/provider.
+- Agents are invoked via the `bridge` tool with a REQUIRED `role` field. The role value must match a `name` entry in `user-workflow.json` (see the `# Roles` section in this bundle for the currently defined set — no suffix variants). The role is resolved to a preset, which maps to the model/provider.
 - The following tools are FORBIDDEN for agent creation/spawning:
   - `Agent` (any subagent_type — general-purpose, Explore, Plan, etc.)
   - `TaskCreate`

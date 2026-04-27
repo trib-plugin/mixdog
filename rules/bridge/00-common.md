@@ -13,7 +13,8 @@ Before free-form planning, map the request to the most decisive first tool:
 - If a concrete directory path is already named (for example `src`, `releases`, `artifacts`), call `list` on that directory directly; do not list the parent first just to rediscover the named path.
 - Once a tool result visibly contains the requested marker/value/field, answer immediately. Do not repeat an identical `read`/`grep`/`list` call just to re-check or parse the same evidence.
 
-Beyond these, follow the Decision Table in `shared/01-tool.md` — it is the single source of truth for query-shape → first-tool mapping, including the direct-alias preference for imports / callers / references / dependents.
+Beyond these, follow the Decision Table in `rules/shared/01-tool.md` — it is the single source of truth for query-shape → first-tool mapping, including the direct-alias preference for imports / callers / references / dependents.
+- Tie-breaker: env-var / constant / config-key name known, file unknown → `find_symbol` (per the Decision Table's "identifier name known, file unknown" row), not `grep`.
 
 Do not spend a turn "thinking about which tool to use" when the query already matches one of the cases above.
 

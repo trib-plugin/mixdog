@@ -18,6 +18,7 @@ const ENV_KEY_MAP = {
     gemini: 'GEMINI_API_KEY',
     deepseek: 'DEEPSEEK_API_KEY',
     xai: 'XAI_API_KEY',
+    nvidia: 'NVIDIA_API_KEY',
 };
 // Canonical maintenance defaults. Single source of truth — imported by
 // llm/index.mjs and setup-server.mjs so UI/runtime cannot drift from config.

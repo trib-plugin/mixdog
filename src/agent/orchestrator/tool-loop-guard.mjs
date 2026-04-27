@@ -276,7 +276,7 @@ export function buildSameToolWarn(info) {
         lines.push(`- A broader or repeated \`glob\` rarely helps after 2 rounds unless the root path changed.`);
     } else if (toolKey === 'bash') {
         lines.push(`- Combine dependent commands with \`&&\` / \`;\` instead of multiple one-line bash turns.`);
-        lines.push(`- If you need shell state across turns (cwd, env, venv), switch to \`bash_session\` instead of replaying setup commands.`);
+        lines.push(`- If you need shell state across turns (cwd, env, venv), pass \`persistent:true\` to \`bash\` instead of replaying setup commands.`);
     } else if (toolKey === 'bash_session') {
         lines.push(`- Reuse one \`session_id\` and run the next meaningful command, not another setup/probe variant of the same step.`);
         lines.push(`- If the shell already told you enough, synthesize the result before issuing another command.`);
@@ -333,7 +333,7 @@ export function buildToolBudgetWarn(info) {
         `⚠ Tool-budget soft-warn: this session has already made ${count} tool calls.`,
         `Tools remain available, but before calling another low-level tool, pause and consider:`,
         `- Do you already have enough evidence to synthesize an answer or patch?`,
-        `- If not, can you switch up a level: \`code_graph\` for structure, \`apply_patch\` for clear edits, \`bash_session\` for stateful shell work?`,
+        `- If not, can you switch up a level: \`code_graph\` for structure, \`apply_patch\` for clear edits, \`bash\` with \`persistent:true\` for stateful shell work?`,
         `- If you still need another call, make it meaningfully narrower than the previous one.`,
         ...(abortThreshold ? [`- Hard stop: at ${abortThreshold} total tool calls this session will abort.`] : []),
         `(Advisory only — the call is not blocked.)`,

@@ -35,7 +35,7 @@ GitHub shortcuts (prefer over burying intent in `keywords`):
 
 ## Hard limit (web_search calls per query)
 
-**MUST stop after 2 `web_search` calls. The 3rd call is a violation, not a fallback.** The runtime hard-aborts at the 4th regardless — the 3rd is a self-imposed stop you should never reach.
+**MUST stop after 2 `web_search` calls. The 3rd call is a violation, not a fallback.** The runtime soft-warns at the 3rd `web_search` call and hard-aborts at the 6th regardless — the 3rd is a self-imposed stop you should never reach.
 
 - 1st call: carry filters (`site`, `github_type`, `type`) + narrow `maxResults: 5` so one round fills the answer.
 - 2nd call: only when 1st is truly sparse (0-1 results). Widen `maxResults: 10` and drop over-constraining filters.
