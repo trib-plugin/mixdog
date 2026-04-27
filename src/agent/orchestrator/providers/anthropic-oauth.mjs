@@ -411,6 +411,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
     let model = '';
     let toolCalls = [];
     let usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, raw: null };
+    let stopReason = null;
     let buffer = '';
     let idleTimedOut = false;
     let idleTimer = null;
@@ -444,7 +445,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
 
     try {
         resetIdleTimer();
-        while (true) {
+        streamLoop: while (true) {
             let chunk;
             try { chunk = await reader.read(); } catch (err) {
                 if (idleTimedOut) {
@@ -546,6 +547,9 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
                     }
 
                     if (event.type === 'message_delta') {
+                        if (event.delta?.stop_reason) {
+                            stopReason = event.delta.stop_reason;
+                        }
                         if (event.usage) {
                             usage.outputTokens = event.usage.output_tokens || 0;
                             usage.raw = { ...(usage.raw || {}), ...event.usage };
@@ -553,6 +557,11 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
                     }
                     if (event.type === 'message_stop') {
                         if (state) state.sawCompleted = true;
+                        // Anthropic streams can keep emitting `:ping` keepalive
+                        // frames after `message_stop`; if we wait for EOF the
+                        // outer reader.read() loop hangs indefinitely. Break
+                        // out of streamLoop the moment the message ends.
+                        break streamLoop;
                     }
                     // Unified prompt volume — what the model actually ingested.
                     // Anthropic splits input into three billable slots (uncached
@@ -571,6 +580,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
             model,
             toolCalls: toolCalls.length ? toolCalls : undefined,
             usage,
+            stopReason,
         };
     } finally {
         if (idleTimer) clearTimeout(idleTimer);

@@ -56,7 +56,7 @@ Before any tool call, scan the query for known scope and collapse multiple round
 - For the main/public session, do not reach for generic `code_graph(mode=...)` if one direct alias exactly matches the question. The alias is the first choice.
 - If you know an identifier / constant / function / class name but not the file, use `find_symbol` before `grep`.
 - Multi-file or already-clear edits: `apply_patch` before repeated `read` → `edit`.
-- Shell work across turns: `bash_session` reuses shell state — don't replay setup in repeated `bash` calls.
+- Shell work across turns: pass `persistent:true` to `bash` to reuse shell state — don't replay setup in repeated one-shot `bash` calls.
 - For long background commands, use `job_wait` to block until completion; `read` the stdout/stderr path for logs.
 - Large tool outputs may be saved to a path with a preview; only `read` that path if the preview is insufficient.
 - `recall` / `search` / `explore` — a single rich NL query is the default; internal agent judges multi-angle probes (glob/grep, web, memory) and returns a synthesized answer. Array only when asks are genuinely unrelated.
@@ -86,7 +86,7 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 | past project / session memory                     | `recall`                                            |
 | exact edit across multiple files                  | `apply_patch`                                       |
 | small local replacement in one file               | `edit`                                              |
-| shell state needed across turns                   | `bash_session`                                      |
+| shell state needed across turns                   | `bash` with `persistent:true`                       |
 | long background command launched                  | `job_wait`, then `read` the stdout/stderr path      |
 
 ## Anti-patterns

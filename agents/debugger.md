@@ -21,4 +21,4 @@ These retrieval tools return in the SAME turn for delegated role sessions — us
 - `grep`: batch alternate signatures/patterns in one call
 - `edit`: if you patch while debugging, prefer `edits` array / `apply_patch`
 
-Avoid `bash_session` for search / navigation. Use single-shot `bash` only for running the repro command or inspecting runtime logs.
+Avoid `bash persistent:true` for search / navigation. Use one-shot `bash` only for running the repro command or inspecting runtime logs.

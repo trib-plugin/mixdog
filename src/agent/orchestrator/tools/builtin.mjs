@@ -732,22 +732,6 @@ export const BUILTIN_TOOLS = [
         },
     },
     {
-        name: 'edit_lines',
-        title: 'Edit Lines (line-number based)',
-        annotations: { title: 'Edit Lines', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Replace lines [start_line, end_line] inclusive (1-based) with new_content. Use this when unique-string match in `edit` is awkward — large files, repeated substrings, or pure line-replace. Pair with `read` (note line numbers) -> `edit_lines`. mtime drift is enforced like `edit`: must `read` first; concurrent external writes return errorCode 7.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                path: { type: 'string', description: 'File path. Supports `~` expansion.' },
-                start_line: { type: 'number', description: 'First line to replace (1-based, inclusive).' },
-                end_line: { type: 'number', description: 'Last line to replace (1-based, inclusive). Must be >= start_line.' },
-                new_content: { type: 'string', description: 'Replacement content. Newlines inside are preserved. Set empty string to delete the range.' },
-            },
-            required: ['path', 'start_line', 'end_line', 'new_content'],
-        },
-    },
-    {
         name: 'write',
         title: 'Write',
         annotations: { title: 'Write', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -778,7 +762,7 @@ export const BUILTIN_TOOLS = [
         name: 'bash',
         title: 'Bash',
         annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-        description: 'Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Only opt into persistent shell state when you truly need cwd/env/venv continuity: pass `persistent:true` (bridge sessions) or call `bash_session` directly. Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.',
+        description: 'Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Pass `persistent:true` to keep cwd/env/venv across calls in the same session (the bridge reuses one shell). Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -786,8 +770,8 @@ export const BUILTIN_TOOLS = [
                 timeout: { type: 'number', description: 'ms, default 30000, max 600000.' },
                 merge_stderr: { type: 'boolean', description: 'Merge stderr into stdout (legacy 2>&1 behaviour). Default false: stderr is surfaced as a separate `[stderr]` block.' },
                 run_in_background: { type: 'boolean', description: 'Run command in the background and return a job id immediately. Use for long builds/tests/servers.' },
-                persistent: { type: 'boolean', description: 'Bridge sessions only: opt into persistent shell state. When true, the bridge routes this `bash` call through `bash_session` and reuses the shell on later `persistent:true` calls.' },
-                session_id: { type: 'string', description: 'Bridge sessions only: explicit persistent shell session id to reuse. Prefer `persistent:true` unless you need to target a specific shell.' },
+                persistent: { type: 'boolean', description: 'Keep shell state (cwd, env, venv, functions) across calls. The bridge reuses one shell per session for all `persistent:true` calls.' },
+                session_id: { type: 'string', description: 'Explicit persistent shell session id to reuse. Prefer `persistent:true` unless you need to target a specific shell.' },
             },
             required: ['command'],
         },
@@ -871,24 +855,6 @@ export const BUILTIN_TOOLS = [
                 modified_before: { type: 'string', description: 'find mode: ISO 8601 date or relative `Nh`/`Nd`.' },
             },
             required: [],
-        },
-    },
-
-    {
-        name: 'diff',
-        title: 'Unified Diff',
-        annotations: { title: 'Unified Diff', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Unified diff between two files (or two raw strings). Useful for explaining a change before applying it via `edit`. Output is standard `--- from\n+++ to\n@@ ... @@` format. Pass `from_text:true` and/or `to_text:true` to treat the value as inline text instead of a path.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                from: { type: 'string', description: 'Path of the "before" file, or raw text when `from_text:true`.' },
-                to: { type: 'string', description: 'Path of the "after" file, or raw text when `to_text:true`.' },
-                from_text: { type: 'boolean', description: 'Treat `from` as inline text. Default false.' },
-                to_text: { type: 'boolean', description: 'Treat `to` as inline text. Default false.' },
-                context: { type: 'number', description: 'Context lines around hunks. Default 3, clamp [0, 10].' },
-            },
-            required: ['from', 'to'],
         },
     },
 ];
@@ -2986,84 +2952,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
         }
-        case 'edit_lines': {
-            // v0.6.223: line-number based replacement. Complement to `edit`
-            // for cases where unique-substring match is awkward (large files,
-            // repeated lines, or pure line-replace). Shares the same
-            // Read-before-Edit + mtime-drift contract as `edit`.
-            args.path = normalizeInputPath(args.path);
-            const filePath = args.path;
-            const startLine = parseInt(args.start_line, 10);
-            const endLine = parseInt(args.end_line, 10);
-            const newContent = String(args.new_content ?? '');
-            if (!filePath) return 'Error: path is required';
-            if (!Number.isFinite(startLine) || startLine < 1) return 'Error: start_line must be >= 1';
-            if (!Number.isFinite(endLine) || endLine < startLine) return 'Error: end_line must be >= start_line';
-            if (!isSafePath(filePath, workDir, pathOpts))
-                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
-            const fullPath = resolveAgainstCwd(filePath, workDir);
-            let elStat;
-            try { elStat = statSync(fullPath); }
-            catch (err) {
-                if (err && err.code === 'ENOENT') {
-                    const similar = findSimilarFile(fullPath);
-                    const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
-                    return `Error [code 4]: file not found: ${filePath}${hint}`;
-                }
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
-            }
-            const elSnapshot = _getReadSnapshot(fullPath, readStateScope);
-            if (!elSnapshot) {
-                return _primeReadSnapshotForEdit({
-                    fullPath,
-                    filePath,
-                    st: elStat,
-                    scope: readStateScope,
-                    lineRange: { startLine, endLine },
-                }) || `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
-            }
-            let elPreloadedContent = null;
-            if (_isSnapshotStale(elStat, elSnapshot)) {
-                elPreloadedContent = _readContentIfSnapshotHashMatches(fullPath, elSnapshot);
-                if (elPreloadedContent === null) {
-                    return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
-                }
-            }
-            try {
-                const content = elPreloadedContent === null
-                    ? readFileSync(fullPath, 'utf-8')
-                    : elPreloadedContent;
-                const lines = content.split('\n');
-                const totalLines = lines.length;
-                if (startLine > totalLines) return `Error: start_line ${startLine} exceeds file's ${totalLines} lines`;
-                if (endLine > totalLines) return `Error: end_line ${endLine} exceeds file's ${totalLines} lines`;
-                // Pure split/join — no String.prototype.replace second-arg
-                // substitution pattern risk (B35). new_content is spliced
-                // verbatim.
-                const newLines = newContent === '' ? [] : newContent.split('\n');
-                const updated = [
-                    ...lines.slice(0, startLine - 1),
-                    ...newLines,
-                    ...lines.slice(endLine),
-                ];
-                const newFileContent = updated.join('\n');
-                // v0.6.248: atomic write — tempfile + fsync + rename.
-                await atomicWrite(fullPath, newFileContent, { sessionId: options?.sessionId });
-                invalidateBuiltinResultCache([fullPath]);
-                markCodeGraphDirtyPaths(workDir, [fullPath]);
-                _recordReadSnapshot(fullPath, undefined, readStateScope, {
-                    source: 'edit_lines',
-                    isPartialView: false,
-                    contentHash: _hashText(newFileContent),
-                });
-                const replacedCount = endLine - startLine + 1;
-                const insertedCount = newLines.length;
-                return `Edited: ${normalizeOutputPath(filePath)} (lines ${startLine}-${endLine} replaced, ${replacedCount} -> ${insertedCount} lines)`;
-            }
-            catch (err) {
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
-            }
-        }
         case 'grep': {
             args.path = normalizeInputPath(args.path);
             const rawPattern = args.pattern;
@@ -3595,58 +3483,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 : content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
             const words = (content.match(/\S+/g) || []).length;
             return `lines\t${lines}\twords\t${words}\tbytes\t${st.size}`;
-        }
-        case 'diff': {
-            let fromContent, toContent;
-            let fromLabel = args.from_text ? '(text)' : String(args.from ?? '');
-            let toLabel = args.to_text ? '(text)' : String(args.to ?? '');
-            // F12: route file-mode reads through openForRead so diff
-            // inherits the same size-cap (ETOOBIG), safe-path, and
-            // similar-file hint behaviour as read/tail/wc. Previously the
-            // raw readFile call sidestepped all three and would happily
-            // slurp a multi-MB file into memory with no hint on typos.
-            try {
-                if (args.from_text) {
-                    fromContent = String(args.from ?? '');
-                    const bytes = Buffer.byteLength(fromContent, 'utf-8');
-                    if (bytes > READ_MAX_SIZE_BYTES) {
-                        return `Error: from inline text ${bytes} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap`;
-                    }
-                } else {
-                    if (args.from == null || args.from === '') return 'Error: from is required';
-                    const opened = await openForRead(args.from, workDir, readPathOpts);
-                    fromContent = opened.content;
-                    fromLabel = opened.displayPath;
-                }
-                if (args.to_text) {
-                    toContent = String(args.to ?? '');
-                    const bytes = Buffer.byteLength(toContent, 'utf-8');
-                    if (bytes > READ_MAX_SIZE_BYTES) {
-                        return `Error: to inline text ${bytes} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap`;
-                    }
-                } else {
-                    if (args.to == null || args.to === '') return 'Error: to is required';
-                    const opened = await openForRead(args.to, workDir, readPathOpts);
-                    toContent = opened.content;
-                    toLabel = opened.displayPath;
-                }
-            } catch (err) {
-                // err.message is already normalized/hinted by openForRead —
-                // no String.replace with substitution-capable strings (B35).
-                return `Error: ${err.message}`;
-            }
-            const rawCtx = parseInt(args.context ?? 3, 10);
-            const context = Math.max(0, Math.min(Number.isFinite(rawCtx) ? rawCtx : 3, 10));
-            // Drop the trailing empty entry split produces for newline-terminated files.
-            const splitLines = (s) => {
-                const parts = s.split('\n');
-                if (parts.length > 0 && parts[parts.length - 1] === '' && s.endsWith('\n')) parts.pop();
-                return parts;
-            };
-            const fromLines = splitLines(fromContent);
-            const toLines = splitLines(toContent);
-            const out = computeUnifiedDiff(fromLines, toLines, context, fromLabel, toLabel);
-            return capShellOutput(out || '(no differences)');
         }
         default:
             return `Error: unknown builtin tool "${name}"`;

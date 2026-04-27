@@ -160,7 +160,6 @@ async function dispatchInProcessTool(def, args) {
   switch (def.module) {
     case 'builtin':      return text('src/agent/orchestrator/tools/builtin.mjs',     'executeBuiltinTool');
     case 'code_graph':   return text('src/agent/orchestrator/tools/code-graph.mjs',  'executeCodeGraphTool');
-    case 'astgrep':      return text('src/agent/orchestrator/tools/astgrep.mjs',     'executeAstGrepTool');
     case 'patch':        return text('src/agent/orchestrator/tools/patch.mjs',       'executePatchTool');
     case 'bash_session': return text('src/agent/orchestrator/tools/bash-session.mjs','executeBashSessionTool');
     case 'host_input':   return text('src/agent/orchestrator/tools/host-input.mjs',  'executeHostInputTool');

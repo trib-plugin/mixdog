@@ -20,9 +20,8 @@ const EMERGENCY_ITERATION_FUSE = 100;
 const READ_BLOCKED_TOOLS = new Set([
     'bash', 'bash_session',
     'write',
-    'edit', 'edit_lines',
+    'edit',
     'apply_patch',
-    'sg_rewrite',
 ]);
 const MCP_ONLY_ALLOWED_KINDS = new Set(['mcp', 'internal', 'skill']);
 const DIRECT_HIDDEN_TOOLS = new Set(['memory_search', 'web_search']);

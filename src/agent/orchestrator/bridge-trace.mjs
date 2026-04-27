@@ -129,7 +129,6 @@ const TOOL_ARG_KEYS = {
     find_references: ['symbol', 'file', 'language'],
     find_callers: ['symbol', 'file', 'language'],
     code_graph: ['mode', 'file', 'symbol', 'language', 'limit'],
-    sg_search: ['pattern', 'path', 'lang', 'globs', 'context', 'head_limit'],
     bash: ['command', 'timeout', 'run_in_background', 'persistent', 'session_id'],
     job_wait: ['job_id', 'timeout_ms', 'poll_ms'],
     edit: ['path', 'replace_all', 'edits'],

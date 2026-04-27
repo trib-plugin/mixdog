@@ -220,6 +220,8 @@ export const BRIDGE_DENY_TOOLS = Object.freeze([
     'create_session', 'close_session', 'list_sessions', 'list_models',
     // Schedule / config admin (Lead-only)
     'schedule_status', 'trigger_schedule', 'schedule_control', 'reload_config',
+    // Inject input is Lead-only — used to push messages into other roles.
+    'inject_input',
     // Bridge dispatch — Pool B/C agents do the work; Lead does the dispatch.
     // Recall/search/explore stay (info retrieval, not role delegation).
     'bridge', 'bridge_send', 'bridge_spawn',
@@ -228,12 +230,6 @@ export const BRIDGE_DENY_TOOLS = Object.freeze([
     // tools; stripping them from Pool B/C keeps the shared BP_1 shard lean and
     // avoids exposing chain-spawn adjacent control planes.
     'get_workflow', 'get_workflows', 'set_prompt', 'skill_suggest',
-    // Memory admin — cycle1/cycle2/flush/rebuild/prune/remember are
-    // maintenance ops Lead drives. Bridge agents read memory via `recall`.
-    'memory',
-    // AST / specialised editors kept off the bridge schema for now —
-    // apply_patch stays because it cuts edit/read round-trips on multi-file work.
-    'sg_search', 'sg_rewrite', 'edit_lines', 'diff',
     // Main-session convenience aliases. Bridge roles already know to use
     // `code_graph` / `find_symbol` directly, so carrying alias-only tools
     // here just bloats the shared BP_1 shard without adding capability.

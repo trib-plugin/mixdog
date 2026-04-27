@@ -19,7 +19,7 @@
  */
 
 import http from 'http';
-import { writeFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
+import { writeFileSync, unlinkSync, mkdirSync, renameSync, existsSync } from 'fs';
 import { dirname } from 'path';
 import { pathToFileURL } from 'url';
 import { buildBridgeStatus, renderBridgeStatusText } from './aggregator.mjs';
@@ -101,9 +101,26 @@ export async function startStatusServer({ dataDir, advertisePath, log = () => {}
 
   log(`[status-server] listening on 127.0.0.1:${port} (advertise=${advertisePath})`);
 
+  // Self-heal: external cleanup (antivirus, indexer, user tools) can unlink
+  // the advert file while the child stays alive. Statusline then logs
+  // NOBRIDGE despite a healthy server. Re-write the advert every 30s if
+  // missing so any external removal recovers within one tick.
+  const advertHeal = setInterval(() => {
+    if (!existsSync(advertisePath)) {
+      try {
+        writeAdvertisement(advertisePath, record);
+        log(`[status-server] advert restored at ${advertisePath}`);
+      } catch (e) {
+        log(`[status-server] advert restore failed: ${e.message}`);
+      }
+    }
+  }, 30000);
+  advertHeal.unref?.();
+
   return {
     port,
     close: () => new Promise((resolve) => {
+      clearInterval(advertHeal);
       try { unlinkSync(advertisePath); } catch {}
       server.close(() => resolve());
     }),

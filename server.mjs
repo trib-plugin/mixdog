@@ -571,7 +571,7 @@ function _expandCwdTilde(p) {
 // toolExecutor passed through agentContext(). Single source of tool routing.
 async function dispatchTool(name, args, callerCtx = {}) {
   // Normalise caller-supplied `cwd` once at the entry so every downstream
-  // module (builtin / lsp / astgrep / code_graph / patch / bash_session /
+  // module (builtin / lsp / code_graph / patch / bash_session /
   // host_input / agent) receives the expanded path. Previously only the
   // agent ingresses (create_session / bridge / bridge_spawn) ran tilde
   // expansion, so explore / list / grep / glob with a `~` cwd silently
@@ -630,17 +630,6 @@ async function dispatchTool(name, args, callerCtx = {}) {
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
-  if (def.module === 'astgrep') {
-    // Structural search / rewrite via the `sg` CLI. Stateless wrapper —
-    // each call spawns `sg run ...` with the bundled sgconfig.yml so
-    // `.mjs` / `.cjs` are recognised as JavaScript regardless of cwd.
-    const { executeAstGrepTool } = await import(
-      pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/astgrep.mjs')).href,
-    )
-    const text = await executeAstGrepTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
-    return { content: [{ type: 'text', text: String(text) }] }
-  }
-
   if (def.module === 'code_graph') {
     const { executeCodeGraphTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/code-graph.mjs')).href,
@@ -650,7 +639,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
   }
 
   if (def.module === 'patch') {
-    // Unified-diff apply tool — inverse of `diff`. One-turn multi-file
+    // Unified-diff apply tool. One-turn multi-file
     // edits without Read-before-Edit (the patch's context lines are the
     // read-proof). Scope-checked per file via isSafePath, mtime-guarded
     // against concurrent writes. See src/agent/orchestrator/tools/patch.mjs.

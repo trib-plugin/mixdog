@@ -40,7 +40,7 @@ const DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS = Object.freeze({
 // search_fanout family counters so probe→edit→probe cycles don't
 // accumulate toward abort.
 const PRODUCTIVE_TOOLS = Object.freeze(new Set([
-    'edit', 'edit_lines',
+    'edit',
     'apply_patch', 'write',
     'bash', 'bash_session',
 ]));
@@ -63,7 +63,7 @@ const DEFAULT_CONFIG = Object.freeze({
             threshold: 5,
             repeatEvery: 4,
             minDistinctTools: 2,
-            tools: Object.freeze(['edit', 'edit_lines']),
+            tools: Object.freeze(['edit']),
         }),
         Object.freeze({
             key: 'search_fanout',

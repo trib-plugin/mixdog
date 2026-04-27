@@ -18,4 +18,4 @@ Secondary:
 - `find_symbol` — when a codebase question names a specific identifier and you want the owning file fast.
 - `read` — a specific local document is named.
 
-Avoid `bash_session` entirely.
+Avoid `bash persistent:true` entirely.

@@ -8,8 +8,7 @@ Report format: pass/fail counts, specific failure details with file:line citatio
 
 **Explore-first** when locating test files, fixtures, or uncovered code. Avoid `grep` → `read` loops for navigation.
 
-- `bash` — single-shot test commands (`npm test`, `node scripts/test-X.mjs`).
-- `bash_session` — only when the test setup needs persistent shell state (cd / venv activation) across calls.
+- `bash` — one-shot test commands (`npm test`, `node scripts/test-X.mjs`). Pass `persistent:true` only when the test setup needs shell state (cd / venv activation) across calls.
 - `explore` — locate test files, fixtures, or uncovered code paths.
 - `find_symbol` — when a test references a known identifier and you need the owning file fast
 - `recall` — prior flaky-test history or known environmental quirks.

@@ -1,17 +1,16 @@
 // apply_patch — one-turn multi-file edits from a unified diff.
 //
-// Inverse of the `diff` tool. Typical Lead workflow without this tool is
-// `read` → `edit` (or `edit_lines`) per file, which costs
-// N+1 turns for an N-file refactor. A unified diff already encodes every
-// hunk's surrounding context, so we can apply the whole patch server-side
-// and skip the read round-trips entirely.
+// Typical Lead workflow without this tool is `read` → `edit` per file, which
+// costs N+1 turns for an N-file refactor. A unified diff already encodes
+// every hunk's surrounding context, so we can apply the whole patch
+// server-side and skip the read round-trips entirely.
 //
 // Backend: the `diff` npm package (v9+). `parsePatch(str)` splits a multi-
 // file diff into one object per file with `{oldFileName, newFileName,
 // hunks}`. `applyPatch(source, patch)` returns the new content or `false`
 // when any hunk can't be located (context mismatch).
 //
-// Safety model (diverges from edit/edit_lines):
+// Safety model (diverges from edit):
 //   - No Read-before-Edit requirement. The patch's context lines are
 //     themselves the "proof of read" — if they don't match, applyPatch
 //     rejects the hunk and nothing is written.
@@ -455,7 +454,7 @@ export const PATCH_TOOL_DEFS = [
     name: 'apply_patch',
     title: 'Apply Unified Diff',
     annotations: { title: 'Apply Unified Diff', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    description: 'Apply a unified-diff patch in ONE turn — inverse of `diff`. Prefer this over repeated `read` → `edit` loops when 2+ files change or the exact edit is already clear. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Patch context lines self-verify, so it skips the normal read-before-edit round-trip. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.',
+    description: 'Apply a unified-diff patch in ONE turn. Prefer this over repeated `read` → `edit` loops when 2+ files change or the exact edit is already clear. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Patch context lines self-verify, so it skips the normal read-before-edit round-trip. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.',
     inputSchema: {
       type: 'object',
       properties: {

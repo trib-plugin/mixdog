@@ -26,4 +26,4 @@ These retrieval tools return in the SAME turn for delegated role sessions — do
 - `grep`: batch alternate literals/patterns in one call
 - `edit`: when suggesting concrete fixes, prefer `edits` array / `apply_patch` over serial replacements
 
-Avoid `bash_session` for search / navigation. Use `grep` array patterns when a literal string match is enough.
+Avoid `bash persistent:true` for search / navigation. Use `grep` array patterns when a literal string match is enough.

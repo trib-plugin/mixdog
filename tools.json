@@ -320,77 +320,6 @@
     "module": "channels"
   },
   {
-    "name": "memory",
-    "title": "Memory Cycle",
-    "annotations": {
-      "title": "Memory Cycle",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    },
-    "description": "Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild (requires confirm: \"REBUILD MEMORY\"), prune (requires confirm: \"PRUNE OLD ENTRIES\"), cycle1, backfill, status, remember (store fact), forget (archive a root), delete (requires confirm: \"DELETE ALL MEMORY\" — wipes all entries).",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "action": {
-          "type": "string",
-          "enum": [
-            "sleep",
-            "cycle2",
-            "flush",
-            "rebuild",
-            "rebuild_classifications",
-            "prune",
-            "cycle1",
-            "backfill",
-            "status",
-            "remember",
-            "forget",
-            "delete"
-          ],
-          "description": "Operation to run"
-        },
-        "topic": {
-          "type": "string",
-          "description": "Topic for remember"
-        },
-        "element": {
-          "type": "string",
-          "description": "Content for remember; also accepted as a substring match target for forget"
-        },
-        "importance": {
-          "type": "string",
-          "description": "Importance for remember (default: fact)"
-        },
-        "maxDays": {
-          "type": "number",
-          "description": "Age threshold in days for the `prune` action. Unclassified entries older than this are deleted. Default 30, minimum 1. Ignored by other actions."
-        },
-        "window": {
-          "type": "string",
-          "description": "Time window: 1d, 3d, 7d, 30d, all"
-        },
-        "limit": {
-          "type": "number",
-          "description": "Max episodes to backfill (default 100)"
-        },
-        "id": {
-          "type": "number",
-          "description": "Entry id for forget action."
-        },
-        "confirm": {
-          "type": "string",
-          "description": "Required for destructive actions: \"DELETE ALL MEMORY\" for delete, \"PRUNE OLD ENTRIES\" for prune, \"REBUILD MEMORY\" for rebuild. Must match exactly."
-        }
-      },
-      "required": [
-        "action"
-      ]
-    },
-    "module": "memory"
-  },
-  {
     "name": "recall",
     "title": "Recall",
     "aiWrapped": true,
@@ -838,46 +767,6 @@
     "module": "builtin"
   },
   {
-    "name": "edit_lines",
-    "title": "Edit Lines (line-number based)",
-    "annotations": {
-      "title": "Edit Lines",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    },
-    "description": "Replace lines [start_line, end_line] inclusive (1-based) with new_content. Use this when unique-string match in `edit` is awkward — large files, repeated substrings, or pure line-replace. Pair with `read` (note line numbers) -> `edit_lines`. mtime drift is enforced like `edit`: must `read` first; concurrent external writes return errorCode 7.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "File path. Supports `~` expansion."
-        },
-        "start_line": {
-          "type": "number",
-          "description": "First line to replace (1-based, inclusive)."
-        },
-        "end_line": {
-          "type": "number",
-          "description": "Last line to replace (1-based, inclusive). Must be >= start_line."
-        },
-        "new_content": {
-          "type": "string",
-          "description": "Replacement content. Newlines inside are preserved. Set empty string to delete the range."
-        }
-      },
-      "required": [
-        "path",
-        "start_line",
-        "end_line",
-        "new_content"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
     "name": "write",
     "title": "Write",
     "annotations": {
@@ -936,7 +825,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Only opt into persistent shell state when you truly need cwd/env/venv continuity: pass `persistent:true` (bridge sessions) or call `bash_session` directly. Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.",
+    "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Pass `persistent:true` to keep cwd/env/venv across calls in the same session (the bridge reuses one shell). Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -958,7 +847,7 @@
         },
         "persistent": {
           "type": "boolean",
-          "description": "Bridge sessions only: opt into persistent shell state. When true, the bridge routes this `bash` call through `bash_session` and reuses the shell on later `persistent:true` calls."
+          "description": "Keep shell state (cwd, env, venv, functions) across calls. The bridge reuses one shell per session for all `persistent:true` calls."
         },
         "session_id": {
           "type": "string",
@@ -1238,48 +1127,6 @@
     "module": "builtin"
   },
   {
-    "name": "diff",
-    "title": "Unified Diff",
-    "annotations": {
-      "title": "Unified Diff",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Unified diff between two files (or two raw strings). Useful for explaining a change before applying it via `edit`. Output is standard `--- from\n+++ to\n@@ ... @@` format. Pass `from_text:true` and/or `to_text:true` to treat the value as inline text instead of a path.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "from": {
-          "type": "string",
-          "description": "Path of the \"before\" file, or raw text when `from_text:true`."
-        },
-        "to": {
-          "type": "string",
-          "description": "Path of the \"after\" file, or raw text when `to_text:true`."
-        },
-        "from_text": {
-          "type": "boolean",
-          "description": "Treat `from` as inline text. Default false."
-        },
-        "to_text": {
-          "type": "boolean",
-          "description": "Treat `to` as inline text. Default false."
-        },
-        "context": {
-          "type": "number",
-          "description": "Context lines around hunks. Default 3, clamp [0, 10]."
-        }
-      },
-      "required": [
-        "from",
-        "to"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
     "name": "code_graph",
     "title": "Code Graph",
     "annotations": {
@@ -1481,123 +1328,6 @@
     "module": "code_graph"
   },
   {
-    "name": "sg_search",
-    "title": "AST-Grep Search",
-    "annotations": {
-      "title": "AST-Grep Search",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Structural (AST-level) code search via ast-grep. Matches syntax shapes, not text — e.g. `function $NAME($$$)` finds every function declaration regardless of whitespace / comments / arg count. Prefer over `grep` for code constructs (class declarations, try-catch blocks, `foo(...).then(...)` chains) rather than literal strings. Args: `pattern`, `path`, optional `lang` (auto-detect from extension; .mjs/.cjs mapped to JavaScript via bundled sgconfig.yml).",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "pattern": {
-          "type": "string",
-          "description": "ast-grep pattern. Use `$NAME` for single captures, `$$$` for sequences, `$$_` for single anonymous. Example: `function $NAME($$$) { $$$ }`."
-        },
-        "path": {
-          "type": "string",
-          "description": "File or directory to search. Absolute or cwd-relative."
-        },
-        "lang": {
-          "type": "string",
-          "description": "Language override (typescript|javascript|python|rust|go|c|cpp|java|ruby|php|html|css|json|yaml|...). Omit to let ast-grep auto-detect from the file extension."
-        },
-        "globs": {
-          "description": "gitignore-style include / exclude glob(s). Prefix with `!` to exclude. Later globs take precedence over earlier ones.",
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            }
-          ]
-        },
-        "context": {
-          "type": "number",
-          "description": "Lines of context around each match (equivalent to ripgrep -C). Default 0."
-        },
-        "head_limit": {
-          "type": "number",
-          "description": "Max output lines. Default 100, 0 = unlimited."
-        }
-      },
-      "required": [
-        "pattern",
-        "path"
-      ]
-    },
-    "module": "astgrep"
-  },
-  {
-    "name": "sg_rewrite",
-    "title": "AST-Grep Rewrite",
-    "annotations": {
-      "title": "AST-Grep Rewrite",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    },
-    "description": "Structural rewrite via ast-grep. Match a syntax pattern + substitute rewrite template — safer than text search-and-replace because matches respect the language AST (no string literals / comments / unrelated-scope rebinding). **Dry-run by default**; pass `apply:true` to write. Example: `pattern: \"$OBJ.foo($$$)\"` + `rewrite: \"$OBJ?.foo($$$)\"` converts every `x.foo(...)` call site to optional chaining.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "pattern": {
-          "type": "string",
-          "description": "ast-grep pattern to match (same syntax as sg_search)."
-        },
-        "rewrite": {
-          "type": "string",
-          "description": "Rewrite template. Metavariables from the pattern (`$NAME`, `$$$`) are substituted. Empty string deletes the match."
-        },
-        "path": {
-          "type": "string",
-          "description": "File or directory to rewrite. Absolute or cwd-relative."
-        },
-        "lang": {
-          "type": "string",
-          "description": "Language override. See sg_search."
-        },
-        "globs": {
-          "description": "Include / exclude glob(s). See sg_search.",
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            }
-          ]
-        },
-        "apply": {
-          "type": "boolean",
-          "description": "Apply the rewrite and write to disk. Default false (dry-run preview only). When true, `confirm: \"APPLY REWRITE\"` is also required."
-        },
-        "confirm": {
-          "type": "string",
-          "description": "Required when apply:true — must equal exactly \"APPLY REWRITE\". Gates against accidental non-atomic file rewrites."
-        }
-      },
-      "required": [
-        "pattern",
-        "rewrite",
-        "path"
-      ]
-    },
-    "module": "astgrep"
-  },
-  {
     "name": "apply_patch",
     "title": "Apply Unified Diff",
     "annotations": {
@@ -1607,7 +1337,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Apply a unified-diff patch in ONE turn — inverse of `diff`. Prefer this over repeated `read` → `edit` loops when 2+ files change or the exact edit is already clear. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Patch context lines self-verify, so it skips the normal read-before-edit round-trip. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.",
+    "description": "Apply a unified-diff patch in ONE turn. Prefer this over repeated `read` → `edit` loops when 2+ files change or the exact edit is already clear. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Patch context lines self-verify, so it skips the normal read-before-edit round-trip. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1633,43 +1363,6 @@
       ]
     },
     "module": "patch"
-  },
-  {
-    "name": "bash_session",
-    "title": "Persistent Bash Session",
-    "annotations": {
-      "title": "Persistent Bash Session",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": true
-    },
-    "description": "Execute a shell command in a long-lived bash session that preserves state (cwd, env, functions, aliases, sourced virtualenvs) across calls until closed or idle-reaped (5 min). Omit `session_id` on first call — response header `[session: <id>]` gives the id to reuse. Pass `close:true` to terminate. Max 10 concurrent sessions; oldest idle evicted when pool fills. Same safety as `bash` (`rm -rf /` / `git push --force` blocked). Use INSTEAD of `bash` for multi-command state-sharing (e.g. `cd project` then `source .venv/bin/activate` then `pytest`) — one call per command, reusing `session_id`.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "command": {
-          "type": "string",
-          "description": "Shell command to execute in the session."
-        },
-        "session_id": {
-          "type": "string",
-          "description": "Existing session to reuse. Omit to create a new one; the id is returned in the response header as `[session: <id>]`. Unknown ids are minted (stable resume)."
-        },
-        "timeout": {
-          "type": "number",
-          "description": "Command timeout in milliseconds. Default 30000, max 600000. On timeout the session is killed (caller should mint a new one). Note: dual-unit behaviour (values ≤ 600 treated as seconds) is deprecated — pass milliseconds only."
-        },
-        "close": {
-          "type": "boolean",
-          "description": "Close the session after this command returns. Default false."
-        }
-      },
-      "required": [
-        "command"
-      ]
-    },
-    "module": "bash_session"
   },
   {
     "name": "inject_input",
