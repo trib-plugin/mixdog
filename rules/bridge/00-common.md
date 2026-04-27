@@ -12,16 +12,8 @@ Before free-form planning, map the request to the most decisive first tool:
 - directory metadata constraints (size, mtime, newest/oldest, larger/smaller than, modified after/before) → use `list` with `mode:"find"` or metadata sort first; do not jump to a guessed filename before the listing evidence identifies it.
 - If a concrete directory path is already named (for example `src`, `releases`, `artifacts`), call `list` on that directory directly; do not list the parent first just to rediscover the named path.
 - Once a tool result visibly contains the requested marker/value/field, answer immediately. Do not repeat an identical `read`/`grep`/`list` call just to re-check or parse the same evidence.
-- exact file names already given → one `read` call with array `path`
-- identifier / constant / env var name known, file unknown → `find_symbol`
-- imports / callers / references / dependents / impact → `code_graph`
-- broad text or config phrase lookup → `grep`
-- pure filename/path discovery → `glob`
-- quick directory shape / recent file clue → `list`
-- external docs / GitHub / web → `search`
-- prior session/project memory → `recall`
-- clear multi-file edit already known → `apply_patch`
-- long-running background command already started → `job_wait`
+
+Beyond these, follow the Decision Table in `shared/01-tool.md` — it is the single source of truth for query-shape → first-tool mapping, including the direct-alias preference for imports / callers / references / dependents.
 
 Do not spend a turn "thinking about which tool to use" when the query already matches one of the cases above.
 

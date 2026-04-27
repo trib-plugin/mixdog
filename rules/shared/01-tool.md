@@ -1,4 +1,4 @@
-# Tool Use
+# Tool Routing
 
 First move — NARROW THE SCOPE before calling. A tool aimed at "the module responsible for X" finds it; a tool aimed at "X" returns noise.
 
