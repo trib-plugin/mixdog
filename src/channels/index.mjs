@@ -470,7 +470,8 @@ async function startOwnerHttpServer() {
         "/fetch",
         "/download",
         "/typing/start",
-        "/typing/stop"
+        "/typing/stop",
+        "/mcp"
       ]);
       if (BACKEND_DEPENDENT_PATHS.has(url.pathname) && !bridgeRuntimeConnected) {
         res.writeHead(503);
@@ -668,15 +669,36 @@ async function startOwnerHttpServer() {
             res.writeHead(200);
             res.end(JSON.stringify({ ok: true, result }));
           } catch (e) {
-            // Memory worker not yet ready (parent IPC reports the worker handle
-            // missing or `entry.ready=false`) is a transient state during boot,
-            // not a server fault. Surface it as 503 so the session-start hook
-            // (and any other caller with a retry budget) can wait and retry
-            // within its grace window instead of treating it as terminal.
+            // Classify transient/unavailable failures so the session-start hook
+            // (and other 503-retry callers) can distinguish boot-time races from
+            // IPC-layer faults and timeouts. All four reasons stay on 503 to
+            // preserve the hook retry contract (hooks/session-start.cjs:516
+            // gates only on statusCode===503); only the `reason` label changes.
+            //
+            // Source → reason mapping (upstream messages from server.mjs
+            // callWorker at 457-490 and local callMemoryAction at 169-187):
+            //   server.mjs:470 "not ready (still booting)"       → memory-not-ready
+            //   server.mjs:464/467 "not available (...)"         → worker-unavailable
+            //   server.mjs:435 "exited unexpectedly"             → worker-unavailable
+            //   local "not a worker process" guard               → worker-unavailable
+            //   server.mjs:483 "IPC channel full or closed"      → ipc-error
+            //   server.mjs:488 "send failed: ..."                → ipc-error
+            //   server.mjs:475 "worker ... call ... timed out"   → memory-timeout
+            //   local "memory_call <action> timed out after Nms" → memory-timeout
             const msg = e?.message || String(e);
-            const notReady = /worker memory (not available|exited unexpectedly|IPC channel|send failed|call .* timed out)|memory_call \w+ timed out|not a worker process/i.test(msg);
-            res.writeHead(notReady ? 503 : 500);
-            res.end(JSON.stringify({ ok: false, reason: notReady ? 'memory-not-ready' : undefined, error: msg }));
+            let reason;
+            if (/worker memory not ready/i.test(msg)) {
+              reason = 'memory-not-ready';
+            } else if (/worker memory (IPC channel|send failed)/i.test(msg)) {
+              reason = 'ipc-error';
+            } else if (/timed out/i.test(msg)) {
+              reason = 'memory-timeout';
+            } else if (/worker memory (not available|exited unexpectedly)|not a worker process/i.test(msg)) {
+              reason = 'worker-unavailable';
+            }
+            const transient = Boolean(reason);
+            res.writeHead(transient ? 503 : 500);
+            res.end(JSON.stringify({ ok: false, reason, error: msg }));
           }
           return;
         }

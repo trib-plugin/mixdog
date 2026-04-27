@@ -448,8 +448,15 @@ export function composeSystemPrompt(opts) {
     // they vary per-call even within a session (different dispatch shapes),
     // so keeping them in BP3 would churn the 1h shard. Project context is
     // the only truly session-stable Tier 3 content.
+    //
+    // The leading `<!-- bp3-sentinel -->` HTML comment is the explicit
+    // tag the Anthropic provider's findTier3Index() matches on to decide
+    // whether to spend a 1h BP3 slot on this user message. Without it,
+    // the volatileTail (also wrapped in <system-reminder>) would be
+    // misclassified as Tier 3 when projectContext is empty and pinned to
+    // the 1h shard, causing per-call churn to evict the cache.
     const sessionMarker = opts.projectContext
-        ? '# project-context\n' + opts.projectContext
+        ? '<!-- bp3-sentinel -->\n# project-context\n' + opts.projectContext
         : '';
 
     // ── BP4-adjacent: volatileTail (second user <system-reminder>, 5m) ──

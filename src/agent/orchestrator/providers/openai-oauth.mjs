@@ -16,6 +16,7 @@ import { getPluginData } from '../config.mjs';
 import { enrichModels } from './model-catalog.mjs';
 
 import { sendViaWebSocket } from './openai-oauth-ws.mjs';
+import { warnBridgeOnce } from '../bridge-trace.mjs';
 // --- Constants ---
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize';
@@ -253,6 +254,11 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     const cacheKey = opts.promptCacheKey || opts.sessionId;
     if (cacheKey) {
         body.prompt_cache_key = String(cacheKey);
+    } else {
+        // No stable cache key → Codex server prefix-cache cannot match,
+        // every call is uncached. Bridge dispatch always supplies one;
+        // log a one-shot warn for raw callers so the silent miss is visible.
+        warnBridgeOnce('codex-no-cache-key', '[bridge-cache] openai-oauth: no promptCacheKey/sessionId — request will be uncached');
     }
     // NOTE: prompt_cache_retention is a public OpenAI Responses API parameter —
     // the Codex endpoint (chatgpt.com/backend-api/codex/responses) returns

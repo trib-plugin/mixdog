@@ -457,8 +457,17 @@ const WORKER_CALL_TIMEOUT = 600000 // 10m per tool call
 function callWorker(name, toolName, args) {
   return new Promise((resolve, reject) => {
     const entry = workers.get(name)
-    if (!entry || !entry.proc.connected || !entry.ready) {
-      return reject(new Error(`worker ${name} not available`))
+    // Split the three transient/unavailable states so downstream callers
+    // (channels /cycle1) can classify worker-unavailable vs memory-not-ready
+    // (still booting) instead of collapsing both into a single bucket.
+    if (!entry) {
+      return reject(new Error(`worker ${name} not available (no entry)`))
+    }
+    if (!entry.proc.connected) {
+      return reject(new Error(`worker ${name} not available (ipc disconnected)`))
+    }
+    if (!entry.ready) {
+      return reject(new Error(`worker ${name} not ready (still booting)`))
     }
     const callId = String(++_callIdSeq)
     const timer = setTimeout(() => {
@@ -923,7 +932,22 @@ setImmediate(() => {
 // ~/.claude/mixdog-status.json; bin/statusline.sh reads that file.
 const STATUS_ADVERTISE_PATH = join(homedir(), '.claude', 'mixdog-status.json')
 let statusServerChild = null
+let statusServerRestartTimer = null
 let recapStatusState = { running: false, startedAt: null, lastCompletedAt: null }
+
+// Single-flight guard for spawnStatusServer. The child can fire both
+// `error` and `exit` for one death; without this guard each handler would
+// queue its own 1s restart timer, producing duplicate/zombie children.
+// A live child or a pending restart timer blocks any second spawn.
+function scheduleStatusServerRestart() {
+  if (statusServerChild) return
+  if (statusServerRestartTimer) return
+  statusServerRestartTimer = setTimeout(() => {
+    statusServerRestartTimer = null
+    spawnStatusServer()
+  }, 1000)
+  statusServerRestartTimer.unref?.()
+}
 
 function normalizeRecapTimestamp(value) {
   if (value === null || value === undefined || value === '') return null
@@ -949,6 +973,14 @@ function forwardRecapStatusToStatusServer() {
 }
 
 function spawnStatusServer() {
+  // In-flight guard: if a child is already alive (cold caller racing the
+  // restart scheduler) or a restart timer is pending, do nothing. The
+  // existing child / pending timer will own the slot.
+  if (statusServerChild) return
+  if (statusServerRestartTimer) {
+    clearTimeout(statusServerRestartTimer)
+    statusServerRestartTimer = null
+  }
   try {
     // Stale advert from a prior crashed child can keep the new child from
     // claiming the slot; best-effort unlink before fork.
@@ -972,18 +1004,18 @@ function spawnStatusServer() {
       log(`[status-server] child error: ${(e && (e.stack || e.message)) || e}`)
       statusServerChild = null
       try { unlinkSync(STATUS_ADVERTISE_PATH) } catch {}
-      setTimeout(spawnStatusServer, 1000).unref?.()
+      scheduleStatusServerRestart()
     })
     statusServerChild.on('exit', (code, signal) => {
       log(`[status-server] child exited code=${code} signal=${signal}`)
       statusServerChild = null
       try { unlinkSync(STATUS_ADVERTISE_PATH) } catch {}
-      setTimeout(spawnStatusServer, 1000).unref?.()
+      scheduleStatusServerRestart()
     })
     forwardRecapStatusToStatusServer()
   } catch (e) {
     log(`[status-server] failed to fork: ${(e && (e.stack || e.message)) || e}`)
-    setTimeout(spawnStatusServer, 1000).unref?.()
+    scheduleStatusServerRestart()
   }
 }
 setImmediate(spawnStatusServer)

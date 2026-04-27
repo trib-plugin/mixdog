@@ -227,6 +227,14 @@ export class OpenAICompatProvider {
         const cacheKey = opts.promptCacheKey || opts.sessionId;
         if (cacheKey && this.name === 'openai') {
             body.prompt_cache_key = String(cacheKey);
+            // Public OpenAI honors prompt_cache_retention. cache-strategy
+            // returns '24h' for both stateful and stateless bridge calls so
+            // the workspace-wide prefix stays warm across every Pool B
+            // dispatch. Codex (openai-oauth) endpoint rejects this field —
+            // see openai-oauth.mjs which omits it deliberately.
+            if (opts.cacheRetention) {
+                body.prompt_cache_retention = String(opts.cacheRetention);
+            }
         }
         else if (cacheKey && this.name !== 'openai') {
             warnBridgeOnce(`prompt-cache-skip:${this.name}`, `[bridge-cache] ${this.name} responses endpoint: prompt_cache_key unsupported, skipping`);

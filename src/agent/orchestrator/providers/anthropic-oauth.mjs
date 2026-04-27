@@ -656,14 +656,20 @@ function resolveCacheTtls(opts) {
     };
 }
 
-// Tier 3 is injected by session/manager as a user message whose content
-// starts with `<system-reminder>`. Location is typically chatMsgs[0], but
-// we pattern-match to stay robust against future prepended messages.
+// Tier 3 is injected by session/manager as a user message wrapped in
+// `<system-reminder>` whose body starts with the explicit sentinel
+// `<!-- bp3-sentinel -->` (emitted by collect.mjs:composeSystemPrompt only
+// when a stable projectContext is present). The sentinel is mandatory:
+// volatileTail (role/permission/taskBrief/memoryRecap) is also wrapped in
+// `<system-reminder>` but varies per-call, so a plain prefix match would
+// pin per-call data to the 1h BP3 slot and explode the cache.
+const BP3_SENTINEL = '<!-- bp3-sentinel -->';
 function findTier3Index(chatMsgs) {
     for (let i = 0; i < chatMsgs.length; i++) {
         const m = chatMsgs[i];
         if (m?.role === 'user' && typeof m.content === 'string'
-            && m.content.startsWith('<system-reminder>')) {
+            && m.content.startsWith('<system-reminder>')
+            && m.content.includes(BP3_SENTINEL)) {
             return i;
         }
     }

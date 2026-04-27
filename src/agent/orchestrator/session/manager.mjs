@@ -984,7 +984,10 @@ export function createSession(opts) {
 
     // Bridge shared prefix (bit-identical across roles). Hidden roles reuse the
     // same shared bridge rules so the cache shard stays stable across bridge
-    // callers.
+    // callers. User-defined data (DATA_DIR roles/schedules/webhooks) is baked
+    // into BP1 as a single fixed-value monolithic block so every role shares
+    // one cache shard. A user edit invalidates BP1 once and the new prefix
+    // re-warms across all roles together.
     const bridgeRules = opts.skipBridgeRules ? '' : _buildBridgeRules();
     // Project MD (cwd-based, Tier 3 slot).
     const projectContext = collectProjectMd(opts.cwd);
@@ -1093,6 +1096,12 @@ export function createSession(opts) {
         if (tools.length !== before) {
             process.stderr.write(`[session] disallowedTools=${mergedDeny.join(',')} stripped ${before - tools.length} tools\n`);
         }
+    }
+
+    // Bridge tool canonicalization: alphabetize by name so MCP/internal
+    // registration order does not fragment the BP1 tools shard.
+    if (opts.owner === 'bridge') {
+        tools = [...tools].sort((a, b) => String(a?.name || '').localeCompare(String(b?.name || '')));
     }
 
     // Unified-shard policy — no role-specific schema filter.

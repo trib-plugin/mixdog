@@ -34,11 +34,18 @@ function collectRecentCacheableMessageIndexes(messages, availableSlots = 1) {
     return marked;
 }
 
+// Mirrors anthropic-oauth.mjs gate: only the explicitly-tagged sessionMarker
+// claims a 1h BP3 slot. composeSystemPrompt prefixes sessionMarker with
+// `<!-- bp3-sentinel -->`; volatileTail (also a `<system-reminder>` user
+// message) deliberately omits the sentinel so it stays on the 5m tail.
+const BP3_SENTINEL = '<!-- bp3-sentinel -->';
+
 function findTier3Index(chatMsgs) {
     for (let i = 0; i < chatMsgs.length; i++) {
         const m = chatMsgs[i];
         if (m?.role === 'user' && typeof m.content === 'string'
-            && m.content.startsWith('<system-reminder>')) {
+            && m.content.startsWith('<system-reminder>')
+            && m.content.includes(BP3_SENTINEL)) {
             return i;
         }
     }
