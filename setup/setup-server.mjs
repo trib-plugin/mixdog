@@ -348,8 +348,8 @@ async function detectAuth(config = {}) {
   result.envKeys = {};
   for (const [name, envKey] of [
     ['openai', 'OPENAI_API_KEY'], ['anthropic', 'ANTHROPIC_API_KEY'],
-    ['gemini', 'GEMINI_API_KEY'], ['groq', 'GROQ_API_KEY'],
-    ['openrouter', 'OPENROUTER_API_KEY'], ['xai', 'XAI_API_KEY'],
+    ['gemini', 'GEMINI_API_KEY'], ['deepseek', 'DEEPSEEK_API_KEY'],
+    ['xai', 'XAI_API_KEY'],
   ]) { result.envKeys[name] = !!process.env[envKey]; }
   const ollamaUrl = config?.providers?.ollama?.baseURL || 'http://localhost:11434/v1';
   const lmstudioUrl = config?.providers?.lmstudio?.baseURL || 'http://localhost:1234/v1';
@@ -445,9 +445,8 @@ async function listProviderModels(providerId, cfg) {
   // 2. Direct HTTP model list for key-based providers.
   const KNOWN_ENDPOINTS = {
     openai: { url: 'https://api.openai.com/v1/models', auth: k => ({ 'Authorization': `Bearer ${k}` }) },
-    groq: { url: 'https://api.groq.com/openai/v1/models', auth: k => ({ 'Authorization': `Bearer ${k}` }) },
-    openrouter: { url: 'https://openrouter.ai/api/v1/models', auth: k => ({ 'Authorization': `Bearer ${k}` }) },
     xai: { url: 'https://api.x.ai/v1/models', auth: k => ({ 'Authorization': `Bearer ${k}` }) },
+    deepseek: { url: 'https://api.deepseek.com/v1/models', auth: k => ({ 'Authorization': `Bearer ${k}` }) },
   };
   const ep = KNOWN_ENDPOINTS[providerId];
   if (ep && pcfg.apiKey) {

@@ -45,18 +45,37 @@ function writeJsonFile(path, data) {
 
 function readAll() {
   const existing = readJsonFile(CONFIG_PATH)
-  if (existing) return existing
-
-  // First run: migrate from legacy files
-  const merged = {}
+  if (!existing) {
+    // First run: migrate every legacy file at once.
+    const merged = {}
+    for (const [section, filename] of Object.entries(LEGACY_FILES)) {
+      const legacy = readJsonFile(join(DATA_DIR, filename))
+      if (legacy) merged[section] = stripGeneratedMarker(legacy)
+    }
+    if (Object.keys(merged).length > 0) {
+      writeJsonFile(CONFIG_PATH, merged)
+    }
+    return merged
+  }
+  // Backfill: mixdog-config.json exists but one or more sections are missing
+  // or empty (early-fork configs migrated only `channels`, leaving `agent` etc.
+  // stranded in their legacy files). Pull each empty section from its legacy
+  // counterpart so single-source readers don't see a hollow config.
+  let touched = false
   for (const [section, filename] of Object.entries(LEGACY_FILES)) {
+    const cur = existing[section]
+    const empty = cur == null
+      || (isPlainObject(cur) && Object.keys(cur).length === 0)
+    if (!empty) continue
     const legacy = readJsonFile(join(DATA_DIR, filename))
-    if (legacy) merged[section] = stripGeneratedMarker(legacy)
+    if (!legacy) continue
+    const stripped = stripGeneratedMarker(legacy)
+    if (isPlainObject(stripped) && Object.keys(stripped).length === 0) continue
+    existing[section] = stripped
+    touched = true
   }
-  if (Object.keys(merged).length > 0) {
-    writeJsonFile(CONFIG_PATH, merged)
-  }
-  return merged
+  if (touched) writeJsonFile(CONFIG_PATH, existing)
+  return existing
 }
 
 function writeAll(data) {

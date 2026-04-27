@@ -8,7 +8,6 @@ import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
 import { getInternalTools, executeInternalTool } from '../internal-tools.mjs';
 import { BUILTIN_TOOLS, executeBuiltinTool } from '../tools/builtin.mjs';
-import { BASH_SESSION_TOOL_DEFS } from '../tools/bash-session.mjs';
 import { PATCH_TOOL_DEFS } from '../tools/patch.mjs';
 import { CODE_GRAPH_TOOL_DEFS } from '../tools/code-graph.mjs';
 import { closeBashSession } from '../tools/bash-session.mjs';
@@ -41,6 +40,9 @@ const _rulesBuilder = (() => {
 // Pool B/C bridge turn, that's a lot of redundant readFileSync + concat.
 // 60s TTL is short enough that a user rule edit propagates quickly while
 // the hot path reuses the cached string.
+// BP1 cache — single shared entry. buildBridgeInjectionContent is
+// role-agnostic (true cross-role common), so every bridge role reuses the
+// same prefix bytes.
 let _bridgeRulesCache = null;
 let _bridgeRulesCacheTime = 0;
 const BRIDGE_RULES_CACHE_TTL = 60_000;
@@ -60,6 +62,31 @@ function _buildBridgeRules() {
         return built;
     } catch (e) {
         process.stderr.write(`[session] bridge rules build failed: ${e.message}\n`);
+        return '';
+    }
+}
+
+// BP3 role-specific cache — keyed by role. webhook / schedule / hidden
+// retrieval roles each have their own scoped instruction set; other roles
+// return ''.
+const _roleSpecificCache = new Map();
+function _buildRoleSpecific(currentRole) {
+    if (!_rulesBuilder || typeof _rulesBuilder.buildBridgeRoleSpecificContent !== 'function') return '';
+    if (!currentRole) return '';
+    const now = Date.now();
+    const entry = _roleSpecificCache.get(currentRole);
+    if (entry && now - entry.ts < BRIDGE_RULES_CACHE_TTL) {
+        return entry.value;
+    }
+    const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT
+        || join(homedir(), '.claude', 'plugins', 'marketplaces', DEFAULT_MARKETPLACE, 'external_plugins', DEFAULT_PLUGIN);
+    const DATA_DIR = resolvePluginData();
+    try {
+        const built = _rulesBuilder.buildBridgeRoleSpecificContent({ PLUGIN_ROOT, DATA_DIR, currentRole });
+        _roleSpecificCache.set(currentRole, { ts: now, value: built });
+        return built;
+    } catch (e) {
+        process.stderr.write(`[session] role-specific rules build failed: ${e.message}\n`);
         return '';
     }
 }
@@ -161,7 +188,6 @@ function _getMcpToolsCached() {
 
 const ALL_BUILTIN_SESSION_TOOLS = _dedupByName([
     ...BUILTIN_TOOLS,
-    ...BASH_SESSION_TOOL_DEFS,
     ...PATCH_TOOL_DEFS,
     ...CODE_GRAPH_TOOL_DEFS,
 ]);
@@ -206,7 +232,7 @@ function _dedupByName(tools) {
 // maintaining a parallel copy that silently drifts.
 //
 // KEEP (bridge agents can call):
-//   - core file / shell: read, edit, write, bash, bash_session, grep, glob
+//   - core file / shell: read, edit, write, bash (persistent:true), grep, glob
 //   - IO helpers: read (mode:head|tail|count), list (mode:tree|find)
 //   - Code graph / refactors: code_graph
 //   - memory read: recall (hidden recall-agent gets memory_search directly)
@@ -234,6 +260,12 @@ export const BRIDGE_DENY_TOOLS = Object.freeze([
     // `code_graph` / `find_symbol` directly, so carrying alias-only tools
     // here just bloats the shared BP_1 shard without adding capability.
     'find_imports', 'find_dependents', 'find_references', 'find_callers',
+    // External `mixdog-memory` MCP server duplicates internal memory_search /
+    // recall / explore surfaces (those are the canonical paths). Keeping the
+    // mcp__-prefixed twins live just lets the model wander between two
+    // schemas for the same call. Strip them from bridge to keep the shard
+    // clean; Lead can still reach them through the mcp surface if needed.
+    'mcp__mixdog-memory__memory', 'mcp__mixdog-memory__recall', 'mcp__mixdog-memory__explore',
 ]);
 
 function _computeBaseTools(toolSpec, mcp, skillTools) {
@@ -341,8 +373,14 @@ function guessContextWindow(model) {
 const PROVIDER_ALIAS = {
     'openai-oauth': 'codex',      // ChatGPT subscription (Codex backend)
     'anthropic-oauth': 'claude',  // Claude Max subscription
+    'openai': 'openai',
+    'anthropic': 'anthropic',
+    'gemini': 'gemini',
+    'deepseek': 'deepseek',
+    'xai': 'xai',
 };
-function providerCacheKey(provider) {
+function providerCacheKey(provider, override) {
+    if (override) return String(override);
     if (!provider) return 'mixdog-default';
     return `mixdog-${PROVIDER_ALIAS[provider] || provider}`;
 }
@@ -984,7 +1022,9 @@ export function createSession(opts) {
     // into BP1 as a single fixed-value monolithic block so every role shares
     // one cache shard. A user edit invalidates BP1 once and the new prefix
     // re-warms across all roles together.
+    const bridgeRulesRole = opts.role || profile?.taskType || null;
     const bridgeRules = opts.skipBridgeRules ? '' : _buildBridgeRules();
+    const roleSpecific = opts.skipBridgeRules ? '' : _buildRoleSpecific(bridgeRulesRole);
     // Project MD (cwd-based, Tier 3 slot).
     const projectContext = collectProjectMd(opts.cwd);
 
@@ -1023,6 +1063,7 @@ export function createSession(opts) {
     const { baseRules, roleCatalog, sessionMarker, volatileTail } = composeSystemPrompt({
         userPrompt: opts.systemPrompt,
         bridgeRules: bridgeRules || undefined,
+        roleSpecific: roleSpecific || undefined,
         agentTemplate: agentTemplate || undefined,
         roleTemplate: roleTemplate || undefined,
         hasSkills: skills.length > 0,
@@ -1153,7 +1194,7 @@ export function createSession(opts) {
         // shared across all roles / sources (bridge/maintenance/mcp/
         // scheduler/webhook). Role or source-specific context must be
         // injected into the message tail, not the shared prefix.
-        promptCacheKey: providerCacheKey(presetObj?.provider || opts.provider),
+        promptCacheKey: providerCacheKey(presetObj?.provider || opts.provider, opts.cacheKeyOverride),
         // Bridge shell continuity: when a bridge session explicitly opts into
         // persistent shell state (`bash` with `persistent:true`, or direct
         // `bash_session`), the minted bash_session id is stored here so later
@@ -1163,10 +1204,6 @@ export function createSession(opts) {
         // profile-driven cache settings into provider sendOpts.
         profileId: profile?.id || null,
         providerCacheOpts: providerCacheOpts || null,
-        // Profile lifecycle behavior, copied at spawn. Kept for bridge-trace
-        // joinability — scheduler/webhook callers filter by behavior even
-        // though the orchestrator no longer branches on the value.
-        behavior: profile?.behavior || null,
     };
     saveSession(session);
     return session;

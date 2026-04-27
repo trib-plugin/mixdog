@@ -228,7 +228,7 @@ function convertMessagesToResponsesInput(messages) {
     }
     return out;
 }
-function buildRequestBody(messages, model, tools, sendOpts) {
+export function buildRequestBody(messages, model, tools, sendOpts) {
     // Extract system/instructions
     const systemMsgs = messages.filter(m => m.role === 'system');
     const instructions = systemMsgs.map(m => m.content).join('\n\n') || 'You are a helpful assistant.';

@@ -486,31 +486,11 @@ async function bash_session(args, cwd = process.cwd()) {
     return `${header}\n\n${body}${stderrBlock}`;
 }
 
-export const BASH_SESSION_TOOL_DEFS = [
-    {
-        name: 'bash_session',
-        title: 'Persistent Bash Session',
-        annotations: {
-            title: 'Persistent Bash Session',
-            readOnlyHint: false,
-            destructiveHint: true,
-            idempotentHint: false,
-            openWorldHint: true,
-        },
-        description: 'Execute a shell command in a long-lived bash session that preserves state (cwd, env, functions, aliases, sourced virtualenvs) across calls until closed or idle-reaped (5 min). Omit `session_id` on first call — response header `[session: <id>]` gives the id to reuse. Pass `close:true` to terminate. Max 10 concurrent sessions; oldest idle evicted when pool fills. Same safety as `bash` (`rm -rf /` / `git push --force` blocked). Use INSTEAD of `bash` for multi-command state-sharing (e.g. `cd project` then `source .venv/bin/activate` then `pytest`) — one call per command, reusing `session_id`.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                command: { type: 'string', description: 'Shell command to execute in the session.' },
-                session_id: { type: 'string', description: 'Existing session to reuse. Omit to create a new one; the id is returned in the response header as `[session: <id>]`. Unknown ids are minted (stable resume).' },
-                timeout: { type: 'number', description: 'Command timeout in milliseconds. Default 30000, max 600000. On timeout the session is killed (caller should mint a new one). Note: dual-unit behaviour (values ≤ 600 treated as seconds) is deprecated — pass milliseconds only.' },
-                close: { type: 'boolean', description: 'Close the session after this command returns. Default false.' },
-            },
-            required: ['command'],
-        },
-    },
-];
-
+// BASH_SESSION_TOOL_DEFS removed in 0.1.126: the `bash` tool's
+// `persistent:true` option absorbed every use case; the dedicated
+// `bash_session` schema only added prompt bytes and triggered LLM
+// hallucinations of the legacy name. Implementation (executeBashSessionTool,
+// closeBashSession) stays — `bash` with persistent:true routes here.
 export async function executeBashSessionTool(name, args, _cwd) {
     switch (name) {
         case 'bash_session':

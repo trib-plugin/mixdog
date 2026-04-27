@@ -25,45 +25,23 @@ import { join } from 'path';
 
 /**
  * @typedef {Object} RoleConfig
- * @property {string}      name               - unique role identifier
- * @property {string}      preset             - preset name from agent-config presets
+ * @property {string}      name        - unique role identifier
+ * @property {string}      preset      - preset name from agent-config presets
  * @property {'read'|'read-write'|'mcp'|'full'} permission - tool permission category
- * @property {string|null} desc_path          - relative to CLAUDE_PLUGIN_ROOT
- * @property {'stateful'|'stateless'} behavior - pool-reuse semantics; drives cache strategy
+ * @property {string|null} desc_path   - relative to CLAUDE_PLUGIN_ROOT
  */
 
 const VALID_PERMISSIONS = new Set(['read', 'read-write', 'mcp', 'full']);
-const VALID_BEHAVIORS = new Set(['stateful', 'stateless']);
-
-// Default behavior per-role when user-workflow.json omits the field.
-// The 5 stateful roles run multi-turn; the 4 maintenance-ish roles are
-// one-shot dispatches that must not leak transcript across calls.
-const DEFAULT_BEHAVIOR = {
-  worker: 'stateful',
-  debugger: 'stateful',
-  reviewer: 'stateful',
-  researcher: 'stateful',
-  tester: 'stateful',
-  maintenance: 'stateless',
-  'webhook-handler': 'stateless',
-  'scheduler-task': 'stateless',
-  'proactive-decision': 'stateless',
-};
 
 function applyRoleDefaults(raw) {
   const permission = VALID_PERMISSIONS.has(raw.permission) ? raw.permission : 'full';
   const desc_path = typeof raw.desc_path === 'string' ? raw.desc_path : null;
-  const rawBehavior = typeof raw.behavior === 'string' ? raw.behavior : null;
-  const behavior = VALID_BEHAVIORS.has(rawBehavior)
-    ? rawBehavior
-    : (DEFAULT_BEHAVIOR[raw.name] || 'stateful');
 
   return {
     name: raw.name,
     preset: raw.preset,
     permission,
     desc_path,
-    behavior,
   };
 }
 
@@ -74,8 +52,6 @@ function validateRoleConfig(role) {
     throw new Error(`[user-workflow] role "${role.name}" missing "preset"`);
   if (!VALID_PERMISSIONS.has(role.permission))
     throw new Error(`[user-workflow] role "${role.name}": invalid permission "${role.permission}" (expected: ${[...VALID_PERMISSIONS].join(", ")})`);
-  if (!VALID_BEHAVIORS.has(role.behavior))
-    throw new Error(`[user-workflow] role "${role.name}": invalid behavior "${role.behavior}" (expected: ${[...VALID_BEHAVIORS].join(", ")})`);
 }
 
 /** @type {Map<string, RoleConfig>} */
@@ -314,7 +290,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        role: { type: 'string', description: 'Role: worker, reviewer, researcher, tester, debugger (mapped to profile via user-workflow.json).' },
+        role: { type: 'string', description: 'Role name (mapped to profile via user-workflow.json).' },
         taskType: { type: 'string', description: 'Explicit task type override (maintenance, one-shot, etc).' },
         profileId: { type: 'string', description: 'Explicit profile id (overrides role/taskType).' },
         prompt: { type: 'string', description: 'Initial prompt for the agent. Required when wait=true.' },
@@ -343,12 +319,12 @@ const TOOLS = [
     name: 'bridge',
     title: 'Bridge to External Model',
     annotations: { title: 'Bridge to External Model', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (default bindings: worker→SONNET HIGH, reviewer→OPUS XHIGH, debugger→OPUS XHIGH, tester→SONNET HIGH). Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.',
+    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'The task instruction for the agent.' },
-        role: { type: 'string', description: 'Agent role as defined in user-workflow.json. Default roles: worker, researcher, reviewer, debugger, tester. Users may customize — check user-workflow.json for the actual set.' },
+        role: { type: 'string', description: 'Agent role as defined in user-workflow.json. Check your workflow file for the active set.' },
         preset: { type: 'string', description: 'Advanced: explicit preset name (bypass role mapping).' },
         context: { type: 'string', description: 'Extra context appended to the prompt.' },
         ref: { type: 'string', description: 'Prompt store key (populated by prompt_store).' },
@@ -743,6 +719,7 @@ export async function handleToolCall(name, args, opts = {}) {
           sourceType: 'lead',
           sourceName: role,
           parentSessionId: callerSessionId,
+          cacheKeyOverride: args.cacheKey || undefined,
         });
 
         const workerCwd = effectiveCwd;

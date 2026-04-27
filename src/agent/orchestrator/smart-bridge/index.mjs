@@ -1,25 +1,22 @@
 /**
  * Smart Bridge — public API
  *
- * Resolution flow (v0.6.72, BUILTIN_PROFILES + router removed):
+ * Resolution flow:
  *   request.role   →  getRoleConfig(role)         (user-workflow.json)
  *   request.preset →  presets[preset]             (agent-config.json presets)
- *   behavior       →  roleConfig.behavior         (stateful|stateless)
- *   cacheType      →  behavior                    (1:1 mapping)
  *
- * No profile DB, no rule layer, no BUILTIN_PROFILES. Missing role → preset
- * comes from `request.preset` → userRoles[request.role] → default preset.
+ * Missing role → preset comes from `request.preset` →
+ * userRoles[request.role] → default preset.
  */
 
 import { buildVirtualProfile } from './profiles.mjs';
 import { CacheRegistry } from './registry.mjs';
-import { buildProviderCacheOpts, computePrefixContent, ttlSecondsForCacheType } from './cache-strategy.mjs';
+import { buildProviderCacheOpts, computePrefixContent, ttlSecondsForCache } from './cache-strategy.mjs';
 import { getHiddenRole } from '../internal-roles.mjs';
 
 let _sharedInstance = null;
 
-// Plugin-managed Pool C roles (explorer / recall-agent / search-agent /
-// cycle1-agent / cycle2-agent) live in internal-roles.mjs, not
+// Plugin-managed hidden roles live in internal-roles.mjs, not
 // user-workflow.json. The resolver normalises them into the same RoleConfig
 // shape user-defined roles produce so every caller lands in the cache
 // registry with a stable profileId — no per-call branching, no fallback
@@ -29,7 +26,6 @@ function _hiddenRoleConfig(role) {
     if (!hidden) return null;
     return {
         name: role,
-        behavior: 'stateless',
         preset: null,
         desc_path: hidden.description || null,
     };
@@ -118,9 +114,7 @@ export class SmartBridge {
         const effort = preset?.effort || null;
         const fast = preset?.fast === true;
 
-        // cacheType derived from role behaviour — single source of truth.
-        const cacheType = roleConfig?.behavior === 'stateless' ? 'stateless' : 'stateful';
-        const cacheOpts = buildProviderCacheOpts(cacheType, provider, request.sessionId);
+        const cacheOpts = buildProviderCacheOpts(provider, request.sessionId);
 
         return {
             profile,
@@ -149,7 +143,7 @@ export class SmartBridge {
     recordCall(profile, provider, { systemPrompt, tools, usage }) {
         if (!profile) return;
         const prefixContent = computePrefixContent(systemPrompt, tools);
-        const ttlSeconds = ttlSecondsForCacheType(profile?.cacheType);
+        const ttlSeconds = ttlSecondsForCache();
         if (ttlSeconds > 0) {
             this.registry.markWarm(profile.id, provider, prefixContent, ttlSeconds);
         }

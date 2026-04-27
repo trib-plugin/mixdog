@@ -37,14 +37,9 @@ export function normalizeUsage(provider, rawUsage) {
         case 'gemini':
             return _normalizeGemini(provider, rawUsage);
 
-        case 'groq':
-            return _normalizeGroq(provider, rawUsage);
+        case 'deepseek':
+            return _normalizeOpenai(provider, rawUsage);
 
-        case 'openrouter':
-            return _normalizeOpenrouter(provider, rawUsage);
-
-        case 'xai':
-        case 'copilot':
         case 'ollama':
         case 'lmstudio':
             return _empty(provider, false);
@@ -115,35 +110,6 @@ function _normalizeGemini(provider, u) {
         cache_hit_ratio: ratio,
         cache_observable: observable,
     };
-}
-
-function _normalizeGroq(provider, u) {
-    // Groq: usage.prompt_tokens_cached (best-effort, verify at runtime)
-    const hit = _num(u.prompt_tokens_cached);
-    const observable = 'prompt_tokens_cached' in (u || {});
-    const input = _num(u.prompt_tokens) || 0;
-    const ratio = input > 0 && hit > 0 ? hit / input : null;
-
-    return {
-        provider,
-        cache_hit_tokens: hit,
-        cache_write_tokens: 0,
-        cache_ttl_tier: null,
-        cache_hit_ratio: ratio,
-        cache_observable: observable,
-    };
-}
-
-function _normalizeOpenrouter(provider, u) {
-    // OpenRouter: try anthropic fields first, fallback to openai fields
-    if ('cache_read_input_tokens' in (u || {})) {
-        return _normalizeAnthropic(provider, u);
-    }
-    if ('prompt_tokens_details' in (u || {}) || 'input_tokens_details' in (u || {})) {
-        return _normalizeOpenai(provider, u);
-    }
-    // Neither succeeded — report as non-observable
-    return _empty(provider, false);
 }
 
 // --- Helpers ---

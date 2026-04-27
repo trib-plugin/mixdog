@@ -1,23 +1,13 @@
 import OpenAI from 'openai';
 import { loadConfig } from '../config.mjs';
-import { warnBridgeOnce } from '../bridge-trace.mjs';
 const PRESETS = {
-    openai: {
-        baseURL: 'https://api.openai.com/v1',
-        defaultModel: 'gpt-5.5',
-    },
-    groq: {
-        baseURL: 'https://api.groq.com/openai/v1',
-        defaultModel: 'llama-3.3-70b-versatile',
-    },
-    openrouter: {
-        baseURL: 'https://openrouter.ai/api/v1',
-        defaultModel: 'anthropic/claude-sonnet-4.6',
-        extraHeaders: { 'HTTP-Referer': 'mixdog-agent', 'X-Title': 'mixdog-agent' },
+    deepseek: {
+        baseURL: 'https://api.deepseek.com',
+        defaultModel: 'deepseek-v4-pro',
     },
     xai: {
         baseURL: 'https://api.x.ai/v1',
-        defaultModel: 'grok-3-beta',
+        defaultModel: 'grok-4-1-fast-reasoning',
     },
     ollama: {
         baseURL: 'http://localhost:11434/v1',
@@ -25,10 +15,6 @@ const PRESETS = {
     },
     lmstudio: {
         baseURL: 'http://localhost:1234/v1',
-        defaultModel: 'default',
-    },
-    local: {
-        baseURL: 'http://localhost:8080/v1',
         defaultModel: 'default',
     },
 };
@@ -131,10 +117,6 @@ export class OpenAICompatProvider {
             const reason = signal.reason;
             throw reason instanceof Error ? reason : new Error('OpenAI-compat request aborted by session close');
         }
-        const isReasoningModel = opts.effort || /^(gpt-5|o[13])/i.test(useModel);
-        if (this.name === 'openai' && isReasoningModel && tools?.length) {
-            return await this._sendViaResponsesAPI(messages, useModel, tools, opts);
-        }
         const params = {
             model: useModel,
             messages: toOpenAIMessages(messages),
@@ -142,17 +124,10 @@ export class OpenAICompatProvider {
         if (tools?.length) {
             params.tools = toOpenAITools(tools);
         }
-        // Apply effort/fast only on the official OpenAI endpoint — other compat
-        // providers (groq, ollama, lmstudio, openrouter, xai) ignore these.
-        if (this.name === 'openai') {
-            if (opts.effort) {
-                // OpenAI Chat Completions takes a flat string field.
-                params.reasoning_effort = opts.effort;
-            }
-            if (opts.fast === true) {
-                params.service_tier = 'priority';
-            }
-        }
+        // DeepSeek docs do not recognize prompt_cache_key — caching is fully
+        // automatic on the server (KV cache hit measured 30~100% via
+        // prompt_cache_hit_tokens depending on prefix unit overlap). No
+        // steering field; we leave the request body untouched.
         const requestOpts = signal ? { signal } : undefined;
         const response = await this.client.chat.completions.create(params, requestOpts);
         const choice = response.choices[0];
@@ -163,7 +138,17 @@ export class OpenAICompatProvider {
             toolCalls,
             usage: response.usage ? (() => {
                 const input = response.usage.prompt_tokens || 0;
-                const cached = response.usage.prompt_tokens_details?.cached_tokens || 0;
+                const cached = response.usage.prompt_tokens_details?.cached_tokens
+                    || response.usage.prompt_cache_hit_tokens
+                    || 0;
+                // xAI Grok returns the actual billed amount in `cost_in_usd_ticks`
+                // (1 tick = $1e-10, per docs.x.ai). Surface it as costUsd so the
+                // session manager skips the catalog-rate fallback and records the
+                // provider-billed value verbatim.
+                const ticks = response.usage.cost_in_usd_ticks;
+                const costUsd = typeof ticks === 'number' && ticks >= 0
+                    ? Number((ticks * 1e-10).toFixed(8))
+                    : undefined;
                 return {
                     inputTokens: input,
                     outputTokens: response.usage.completion_tokens || 0,
@@ -171,113 +156,7 @@ export class OpenAICompatProvider {
                     // Chat Completions prompt_tokens is already the total prompt
                     // the model ingested (cached is a subset) — alias directly.
                     promptTokens: input,
-                };
-            })() : undefined,
-        };
-    }
-    async _sendViaResponsesAPI(messages, model, tools, opts) {
-        const systemMsgs = messages.filter((m) => m.role === 'system');
-        const instructions = systemMsgs.map((m) => m.content).join('\n\n') || 'You are a helpful assistant.';
-        const input = [];
-        for (const m of messages) {
-            if (m.role === 'system')
-                continue;
-            if (m.role === 'tool') {
-                input.push({
-                    type: 'function_call_output',
-                    call_id: m.toolCallId || '',
-                    output: m.content,
-                });
-                continue;
-            }
-            if (m.role === 'assistant' && m.toolCalls?.length) {
-                if (m.content) {
-                    input.push({ role: 'assistant', content: m.content });
-                }
-                for (const tc of m.toolCalls) {
-                    input.push({
-                        type: 'function_call',
-                        call_id: tc.id,
-                        name: tc.name,
-                        arguments: JSON.stringify(tc.arguments),
-                    });
-                }
-                continue;
-            }
-            input.push({
-                role: m.role === 'assistant' ? 'assistant' : 'user',
-                content: m.content,
-            });
-        }
-        const toolsFlat = tools?.map((t) => ({
-            type: 'function',
-            name: t.name,
-            description: t.description,
-            parameters: t.inputSchema,
-        }));
-        const body = {
-            model,
-            instructions,
-            input,
-            reasoning: { effort: opts.effort || 'medium' },
-        };
-        // Stable scope key (role × workspace from session) wins over the
-        // volatile sessionId so the same cache shard is reused across
-        // dispatches within a role.
-        const cacheKey = opts.promptCacheKey || opts.sessionId;
-        if (cacheKey && this.name === 'openai') {
-            body.prompt_cache_key = String(cacheKey);
-            // Public OpenAI honors prompt_cache_retention. cache-strategy
-            // returns '24h' for both stateful and stateless bridge calls so
-            // the workspace-wide prefix stays warm across every Pool B
-            // dispatch. Codex (openai-oauth) endpoint rejects this field —
-            // see openai-oauth.mjs which omits it deliberately.
-            if (opts.cacheRetention) {
-                body.prompt_cache_retention = String(opts.cacheRetention);
-            }
-        }
-        else if (cacheKey && this.name !== 'openai') {
-            warnBridgeOnce(`prompt-cache-skip:${this.name}`, `[bridge-cache] ${this.name} responses endpoint: prompt_cache_key unsupported, skipping`);
-        }
-        if (toolsFlat?.length)
-            body.tools = toolsFlat;
-        if (opts.fast === true)
-            body.service_tier = 'priority';
-        const signal = opts.signal || null;
-        const requestOpts = signal ? { signal } : undefined;
-        const response = await this.client.responses.create(body, requestOpts);
-        let content = '';
-        const toolCalls = [];
-        for (const item of response.output || []) {
-            if (item.type === 'message') {
-                for (const c of item.content || []) {
-                    if (c.type === 'output_text')
-                        content += c.text || '';
-                }
-            }
-            else if (item.type === 'function_call') {
-                toolCalls.push({
-                    id: item.call_id,
-                    name: item.name,
-                    arguments: JSON.parse(item.arguments || '{}'),
-                });
-            }
-        }
-        return {
-            content,
-            model: response.model,
-            toolCalls: toolCalls.length ? toolCalls : undefined,
-            usage: response.usage ? (() => {
-                const input = response.usage.input_tokens || 0;
-                const cached = response.usage.input_tokens_details?.cached_tokens
-                    || response.usage.prompt_tokens_details?.cached_tokens
-                    || 0;
-                return {
-                    inputTokens: input,
-                    outputTokens: response.usage.output_tokens || 0,
-                    cachedTokens: cached,
-                    // Responses API input_tokens is total (cached is subset).
-                    promptTokens: input,
+                    ...(costUsd != null ? { costUsd } : {}),
                 };
             })() : undefined,
         };

@@ -33,6 +33,7 @@ import {
 } from '../bridge-trace.mjs';
 
 const CODEX_WS_URL = 'wss://chatgpt.com/backend-api/codex/responses';
+const OPENAI_WS_URL = 'wss://api.openai.com/v1/responses';
 const WS_IDLE_MS = 5 * 60_000;
 const WS_HANDSHAKE_TIMEOUT_MS = 30_000;
 
@@ -113,12 +114,17 @@ function _isOpen(entry) {
 }
 
 function _buildHandshakeHeaders({ auth, cacheKey, turnState }) {
-    const headers = {
-        'Authorization': `Bearer ${auth.access_token}`,
-        'chatgpt-account-id': auth.account_id || '',
-        'originator': 'mixdog',
-        'OpenAI-Beta': 'responses_websockets=2026-02-06',
-    };
+    const headers = auth.type === 'openai-direct'
+        ? {
+            'Authorization': `Bearer ${auth.apiKey}`,
+            'OpenAI-Beta': 'responses_websockets=2026-02-06',
+        }
+        : {
+            'Authorization': `Bearer ${auth.access_token}`,
+            'chatgpt-account-id': auth.account_id || '',
+            'originator': 'mixdog',
+            'OpenAI-Beta': 'responses_websockets=2026-02-06',
+        };
     if (cacheKey) {
         const sid = String(cacheKey);
         headers['session_id'] = sid;
@@ -130,7 +136,8 @@ function _buildHandshakeHeaders({ auth, cacheKey, turnState }) {
 
 function _openSocket({ auth, cacheKey, turnState }) {
     const headers = _buildHandshakeHeaders({ auth, cacheKey, turnState });
-    const url = CODEX_WS_URL + (cacheKey ? `?session_id=${encodeURIComponent(String(cacheKey))}` : '');
+    const baseUrl = auth.type === 'openai-direct' ? OPENAI_WS_URL : CODEX_WS_URL;
+    const url = baseUrl + (cacheKey ? `?session_id=${encodeURIComponent(String(cacheKey))}` : '');
     return new Promise((resolve, reject) => {
         let settled = false;
         const socket = new WebSocket(url, { headers, handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS });

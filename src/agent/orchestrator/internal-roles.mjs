@@ -1,7 +1,7 @@
 /**
  * Internal hidden roles — plugin-managed, user-untouchable.
  *
- * Unlike user-workflow.json roles (worker/reviewer/debugger/researcher/tester),
+ * Unlike user-workflow.json roles (which the user defines and edits freely),
  * these roles are NEVER exposed to callers of the `bridge` MCP tool. They are
  * invoked only by internal MCP handlers (explore / recall / search) and carry
  * their own system prompt + tool-set policy.
@@ -16,11 +16,17 @@
  * change, so users cannot accidentally break the internal dispatch path by
  * editing their workflow JSON.
  *
- * The preset names (`HAIKU`) refer to entries seeded in agent-config.json via
- * DEFAULT_PRESETS (see config.mjs). If the user deletes the HAIKU preset from
- * their config the hidden roles degrade gracefully — `resolvePresetName`
+ * The preset names refer to entries seeded in agent-config.json via
+ * DEFAULT_PRESETS (see config.mjs). If the user deletes the referenced preset
+ * from their config the hidden roles degrade gracefully — `resolvePresetName`
  * returns a name, but session creation will fail with a clear "preset not
  * found" error rather than silently mis-dispatching.
+ *
+ * Kind classification:
+ *   - 'retrieval'  : short-lived MCP-invoked retrieval agents (explore/recall/search).
+ *                    Receive `retrieval-role-principles` shared rules in BP2.
+ *   - 'standalone' : long-running internal agents (memory cycle, recap).
+ *                    Receive only their own self section in BP2.
  */
 
 // The `slot` field is the maintenance-config key used to look up the preset
@@ -34,36 +40,70 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     systemFile: 'rules/bridge/10-explorer.md',
     description: 'Filesystem navigation agent invoked by the `explore` MCP tool',
     invokedBy: 'explore',
+    kind: 'retrieval',
   }),
   'recall-agent': Object.freeze({
     slot: 'recall',
     systemFile: 'rules/bridge/20-recall-agent.md',
     description: 'Memory retrieval agent invoked by the `recall` MCP tool',
     invokedBy: 'recall',
+    kind: 'retrieval',
   }),
   'search-agent': Object.freeze({
     slot: 'search',
     systemFile: 'rules/bridge/30-search-agent.md',
     description: 'External info agent invoked by the `search` MCP tool',
     invokedBy: 'search',
+    kind: 'retrieval',
   }),
   'cycle1-agent': Object.freeze({
     slot: 'cycle1',
     systemFile: 'rules/bridge/40-cycle1-agent.md',
     description: 'Chunker/classifier invoked by memory-cycle runCycle1',
     invokedBy: 'cycle1',
+    kind: 'standalone',
   }),
   'cycle2-agent': Object.freeze({
     slot: 'cycle2',
     systemFile: 'rules/bridge/41-cycle2-agent.md',
     description: 'Root re-scorer invoked by memory-cycle runCycle2',
     invokedBy: 'cycle2',
+    kind: 'standalone',
   }),
   'recap-agent': Object.freeze({
     slot: 'recap',
     systemFile: 'rules/bridge/50-recap-agent.md',
     description: 'Session-start handoff summarizer invoked by session-start hook',
     invokedBy: 'recap',
+    kind: 'standalone',
+  }),
+  'proactive-decision': Object.freeze({
+    slot: 'proactive',
+    systemFile: 'rules/bridge/50-proactive-decision.md',
+    description: 'Decision agent invoked by scheduler proactive evaluator',
+    invokedBy: 'scheduler',
+    kind: 'standalone',
+  }),
+  'scheduler-task': Object.freeze({
+    slot: 'scheduler',
+    systemFile: 'agents/scheduler-task.md',
+    description: 'Scheduled-task executor invoked by scheduler tick',
+    invokedBy: 'scheduler',
+    kind: 'standalone',
+  }),
+  'webhook-handler': Object.freeze({
+    slot: 'webhook',
+    systemFile: 'agents/webhook-handler.md',
+    description: 'Webhook payload handler invoked by inbound webhook events',
+    invokedBy: 'webhook',
+    kind: 'standalone',
+  }),
+  'memory-classification': Object.freeze({
+    slot: 'classification',
+    systemFile: 'agents/memory-classification.md',
+    description: 'Memory entry classifier invoked by memory-cycle classification step',
+    invokedBy: 'memory-cycle',
+    kind: 'standalone',
   }),
 })
 
@@ -89,4 +129,17 @@ export function isHiddenRole(name) {
  */
 export function listHiddenRoleNames() {
   return Object.keys(BUILTIN_HIDDEN_ROLES)
+}
+
+/**
+ * List hidden role names matching a given kind ('retrieval' | 'standalone').
+ * Consumed by collect.mjs to drive BP2 cache shard classification dynamically
+ * instead of hard-coding role-name sets.
+ */
+export function listHiddenRolesByKind(kind) {
+  const out = []
+  for (const [name, def] of Object.entries(BUILTIN_HIDDEN_ROLES)) {
+    if (def.kind === kind) out.push(name)
+  }
+  return out
 }

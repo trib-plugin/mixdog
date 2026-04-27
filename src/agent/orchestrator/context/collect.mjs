@@ -267,15 +267,15 @@ export function loadRoleTemplate(role, dataDir) {
 
 // --- Role-scoped agent catalog loader ---
 // Emits a BP2 block scoped to the calling role:
-//   - Public roles (worker/reviewer/tester/debugger/maintenance/researcher/
-//     scheduler-task/webhook-handler): Agent Role Catalog only; Hidden Role
+//   - Public roles (any role with a matching agents/<name>.md file that is
+//     not a built-in hidden role): Agent Role Catalog only; Hidden Role
 //     Catalog is dropped entirely — public roles never dispatch into hidden
 //     retrieval/standalone backends.
-//   - Retrieval hidden (explorer/recall-agent/search-agent): Agent Role
-//     Catalog + Hidden block containing `retrieval-role-principles` (shared
-//     common rules) and the self section only.
-//   - Standalone hidden (cycle1-agent/cycle2-agent/proactive-decision/
-//     recap-agent): Agent Role Catalog + Hidden block with self section only.
+//   - Retrieval hidden roles: Agent Role Catalog + Hidden block containing
+//     `retrieval-role-principles` (shared common rules) and the self
+//     section only.
+//   - Standalone hidden roles: Agent Role Catalog + Hidden block with the
+//     self section only.
 //   - Unknown/null role: falls back to the legacy all-in-one block so
 //     callers that don't supply role stay backward-compatible.
 //
@@ -284,17 +284,44 @@ export function loadRoleTemplate(role, dataDir) {
 // trading a small number of additional shards for ~68% fewer prefix bytes
 // on the public-role hot path. Role identity still rides the sessionMarker
 // user message separately (see composeSystemPrompt).
-const PUBLIC_ROLES = new Set([
-    'worker', 'reviewer', 'tester', 'debugger',
-    'maintenance', 'researcher', 'scheduler-task', 'webhook-handler',
-]);
-const RETRIEVAL_HIDDEN_ROLES = new Set([
-    'explorer', 'recall-agent', 'search-agent',
-]);
-const STANDALONE_HIDDEN_ROLES = new Set([
-    'cycle1-agent', 'cycle2-agent', 'proactive-decision', 'recap-agent',
-]);
+//
+// Classification is dynamic — the public set is derived from agents/*.md
+// minus hidden-role names, and retrieval/standalone sets come from the
+// `kind` field in internal-roles.mjs. No role names are hard-coded here.
+import { listHiddenRoleNames, listHiddenRolesByKind } from '../internal-roles.mjs';
+
 const RETRIEVAL_PRINCIPLES_NAME = 'retrieval-role-principles';
+
+let _roleClassificationCache = null;
+let _roleClassificationCacheTime = 0;
+const ROLE_CLASSIFICATION_TTL = 60_000;
+
+function loadRoleClassification(pluginRoot) {
+    const now = Date.now();
+    if (_roleClassificationCache && now - _roleClassificationCacheTime < ROLE_CLASSIFICATION_TTL) {
+        return _roleClassificationCache;
+    }
+    const hidden = new Set(listHiddenRoleNames());
+    const publicSet = new Set();
+    try {
+        const agentsDir = join(pluginRoot, 'agents');
+        if (existsSync(agentsDir)) {
+            for (const f of readdirSync(agentsDir)) {
+                if (!f.endsWith('.md')) continue;
+                const name = f.replace(/\.md$/, '');
+                if (!hidden.has(name)) publicSet.add(name);
+            }
+        }
+    } catch { /* ignore */ }
+    const value = {
+        public: publicSet,
+        retrieval: new Set(listHiddenRolesByKind('retrieval')),
+        standalone: new Set(listHiddenRolesByKind('standalone')),
+    };
+    _roleClassificationCache = value;
+    _roleClassificationCacheTime = now;
+    return value;
+}
 
 const _scopedRoleCatalogCache = new Map();
 const SCOPED_ROLE_CATALOG_TTL = 60_000;
@@ -350,30 +377,49 @@ export function loadScopedRoleCatalog(role) {
         if (!pluginRoot) return '';
         const agentSections = loadAgentSections(pluginRoot);
         const hiddenPairs = loadHiddenRoleSnippets(pluginRoot);
+        const classification = loadRoleClassification(pluginRoot);
 
-        // Pick which hidden sections to emit based on role classification.
+        // Pick which hidden sections + agents/<role>.md sections to emit
+        // based on role classification. Self-only emit keeps BP2 minimal:
+        // a public worker only sees its own agents/worker.md, not the full
+        // catalog.
         let hiddenSectionsToEmit = null; // null → drop the Hidden block entirely
-        if (role && RETRIEVAL_HIDDEN_ROLES.has(role)) {
+        let agentSectionsToEmit = agentSections; // default: full (unknown-role fallback)
+        if (role && classification.retrieval.has(role)) {
             const principles = hiddenPairs.find(p => p.name === RETRIEVAL_PRINCIPLES_NAME);
             const self = hiddenPairs.find(p => p.name === role);
             hiddenSectionsToEmit = [];
             if (principles) hiddenSectionsToEmit.push(`## ${principles.name}\n\n${principles.body}`);
             if (self) hiddenSectionsToEmit.push(`## ${self.name}\n\n${self.body}`);
-        } else if (role && STANDALONE_HIDDEN_ROLES.has(role)) {
+            // Hidden retrieval roles — drop the public agents catalog entirely.
+            agentSectionsToEmit = [];
+        } else if (role && classification.standalone.has(role)) {
             const self = hiddenPairs.find(p => p.name === role);
             hiddenSectionsToEmit = [];
-            if (self) hiddenSectionsToEmit.push(`## ${self.name}\n\n${self.body}`);
-        } else if (role && PUBLIC_ROLES.has(role)) {
+            if (self) {
+                hiddenSectionsToEmit.push(`## ${self.name}\n\n${self.body}`);
+            } else {
+                // Fallback: standalone role without rules/bridge/*.md entry —
+                // pull self body from agents/<role>.md instead so newly-added
+                // hidden roles work without needing a duplicate bridge file.
+                const fromAgent = agentSections.find(s => s.startsWith(`## ${role}\n`));
+                if (fromAgent) hiddenSectionsToEmit.push(fromAgent);
+            }
+            agentSectionsToEmit = [];
+        } else if (role && classification.public.has(role)) {
             hiddenSectionsToEmit = null;
+            // Public role — self-only agents/<role>.md, not the full bundle.
+            agentSectionsToEmit = agentSections.filter(s => s.startsWith(`## ${role}\n`));
         } else {
             // Unknown / null role — legacy all-in-one fallback for
             // backward-compat (e.g. callers that don't yet thread role).
             hiddenSectionsToEmit = hiddenPairs.map(p => `## ${p.name}\n\n${p.body}`);
+            // agentSectionsToEmit already set to full agentSections above.
         }
 
         const blocks = [];
-        if (agentSections.length) {
-            blocks.push(`# Agent Role Catalog\n\n${agentSections.join('\n\n---\n\n')}`);
+        if (agentSectionsToEmit.length) {
+            blocks.push(`# Agent Role Catalog\n\n${agentSectionsToEmit.join('\n\n---\n\n')}`);
         }
         if (hiddenSectionsToEmit && hiddenSectionsToEmit.length) {
             blocks.push(`# Hidden Role Catalog\n\n${hiddenSectionsToEmit.join('\n\n---\n\n')}`);
@@ -415,7 +461,7 @@ export function loadAllAgentBodies() {
 //   - opts.userPrompt     : explicit systemPrompt override from callsite
 //
 // Tier 3 (messages, no cache_control): role / session / project variance.
-//   - opts.role           : worker / reviewer / tester / debugger / researcher / ...
+//   - opts.role           : role name from user-workflow.json or hidden-role registry
 //   - opts.agentTemplate  : agents/<role>.md body when authored
 //   - opts.taskBrief      : Lead-issued task description (Sub only)
 //   - opts.hasSkills      : true → skills_list hint
@@ -438,34 +484,16 @@ export function composeSystemPrompt(opts) {
     const baseRules = baseParts.join('\n\n---\n\n');
 
     // ── BP2: roleCatalog (system block #2, 1h cache) ────────────────────
-    // Every agents/*.md body + rules/bridge/*.md snippet (including static
-    // tool-routing guidance) concatenated. Bit-identical cross-role so the
-    // provider-side cache shard is one shared entry workspace-wide.
-    const roleCatalog = loadAllAgentBodies();
-
-    // ── BP3: sessionMarker (first <system-reminder> user msg, 1h cache) ─
-    // Project context only. role/permission moved to volatileTail because
-    // they vary per-call even within a session (different dispatch shapes),
-    // so keeping them in BP3 would churn the 1h shard. Project context is
-    // the only truly session-stable Tier 3 content.
-    //
-    // The leading `<!-- bp3-sentinel -->` HTML comment is the explicit
-    // tag the Anthropic provider's findTier3Index() matches on to decide
-    // whether to spend a 1h BP3 slot on this user message. Without it,
-    // the volatileTail (also wrapped in <system-reminder>) would be
-    // misclassified as Tier 3 when projectContext is empty and pinned to
-    // the 1h shard, causing per-call churn to evict the cache.
-    const sessionMarker = opts.projectContext
-        ? '<!-- bp3-sentinel -->\n# project-context\n' + opts.projectContext
-        : '';
-
-    // ── BP4-adjacent: volatileTail (second user <system-reminder>, 5m) ──
-    // Per-call variance: role identity, permission envelope, task brief,
-    // memory recap. Lives at the messages-tail boundary so the BP4 5m
-    // breakpoint picks it up without fragmenting the 1h shared prefix.
-    const volatileParts = [];
+    // Role + project envelope: scoped agents/<role>.md catalog + role marker
+    // + permission + project context. Stable per (role, project) pair, so
+    // repeat calls of the same role on the same workspace stick the full
+    // BP1+BP2 prefix; only BP3 (task-specific instructions) and BP4
+    // (per-turn task brief) churn.
+    const roleCatalogScoped = loadScopedRoleCatalog(opts.role || null);
+    const catalogParts = [];
+    if (roleCatalogScoped) catalogParts.push(roleCatalogScoped);
     if (opts.role && !opts.skipRoleReminder) {
-        volatileParts.push('# role\n' + opts.role);
+        catalogParts.push('# role\n' + opts.role);
     }
     const permission = opts.permission || opts.roleTemplate?.permission || null;
     if (permission) {
@@ -479,12 +507,28 @@ export function composeSystemPrompt(opts) {
                     : permission === 'full'
                         ? 'full — all tools'
                         : 'unknown — treat as read-only';
-        volatileParts.push(`# permission\n${permission} — ${allow}.`);
+        catalogParts.push(`# permission\n${permission} — ${allow}.`);
     }
+    if (opts.projectContext) {
+        catalogParts.push('# project-context\n' + opts.projectContext);
+    }
+    const roleCatalog = catalogParts.join('\n\n');
+
+    // ── BP3: sessionMarker (first <system-reminder> user msg, 1h cache) ─
+    // Role-specific task instructions only — webhook event body, schedule
+    // task body, hidden retrieval tool detail. The <!-- bp3-sentinel --> tag
+    // is what Anthropic's findTier3Index() matches on to claim a 1h BP3
+    // slot; without role-specific content, sessionMarker stays empty so the
+    // sentinel doesn't pin an empty user message into the 1h shard.
+    const sessionMarker = opts.roleSpecific
+        ? '<!-- bp3-sentinel -->\n' + opts.roleSpecific
+        : '';
+
+    // ── BP4-adjacent: volatileTail (second user <system-reminder>, 5m) ──
+    // Per-call variance only: task brief. memoryContext is Lead-only
+    // (injected by hooks/session-start.cjs); bridge sessions never carry it.
+    const volatileParts = [];
     if (opts.taskBrief) volatileParts.push('# task-brief\n' + opts.taskBrief);
-    if (opts.memoryContext && !skip.memory) {
-        volatileParts.push('# memory-context\n' + opts.memoryContext);
-    }
     const volatileTail = volatileParts.length > 0
         ? volatileParts.join('\n\n')
         : '';

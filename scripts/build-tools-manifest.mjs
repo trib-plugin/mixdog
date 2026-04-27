@@ -45,14 +45,14 @@ if (!process.env.CLAUDE_PLUGIN_DATA) {
 // standardised on TOOL_DEFS; the two orchestrator-internal files predate
 // that convention and keep their domain-specific names.
 const MODULES = [
-  { name: 'channels', path: 'src/channels/index.mjs',                    key: 'TOOL_DEFS' },
-  { name: 'memory',   path: 'src/memory/index.mjs',                      key: 'TOOL_DEFS' },
-  { name: 'search',   path: 'src/search/index.mjs',                      key: 'TOOL_DEFS' },
-  { name: 'agent',    path: 'src/agent/index.mjs',                       key: 'TOOL_DEFS' },
-  { name: 'builtin',  path: 'src/agent/orchestrator/tools/builtin.mjs',  key: 'BUILTIN_TOOLS' },
-  { name: 'code_graph', path: 'src/agent/orchestrator/tools/code-graph.mjs', key: 'CODE_GRAPH_TOOL_DEFS' },
-  { name: 'patch',    path: 'src/agent/orchestrator/tools/patch.mjs',    key: 'PATCH_TOOL_DEFS' },
-  { name: 'bash_session', path: 'src/agent/orchestrator/tools/bash-session.mjs', key: 'BASH_SESSION_TOOL_DEFS' },
+  { name: 'channels',   path: 'src/channels/index.mjs',                       key: 'TOOL_DEFS' },
+  { name: 'memory',     path: 'src/memory/index.mjs',                         key: 'TOOL_DEFS' },
+  { name: 'search',     path: 'src/search/index.mjs',                         key: 'TOOL_DEFS' },
+  { name: 'agent',      path: 'src/agent/index.mjs',                          key: 'TOOL_DEFS' },
+  { name: 'builtin',    path: 'src/agent/orchestrator/tools/builtin.mjs',     key: 'BUILTIN_TOOLS' },
+  { name: 'code_graph', path: 'src/agent/orchestrator/tools/code-graph.mjs',  key: 'CODE_GRAPH_TOOL_DEFS' },
+  { name: 'patch',      path: 'src/agent/orchestrator/tools/patch.mjs',       key: 'PATCH_TOOL_DEFS' },
+  { name: 'host_input', path: 'src/agent/orchestrator/tools/host-input.mjs',  key: 'HOST_INPUT_TOOL_DEFS' },
 ]
 
 const t0 = Date.now()

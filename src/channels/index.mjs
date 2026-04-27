@@ -77,7 +77,41 @@ function readPluginVersion() {
 const PLUGIN_VERSION = readPluginVersion();
 let crashLogging = false;
 let _channelsDegraded = false;
+let _stderrBroken = false;
 function isChannelsDegraded() { return _channelsDegraded; }
+
+// stderr can break when the parent stdio pipe closes. Node then emits an
+// async 'error' on process.stderr, which sync try/catch around write() does
+// not catch — without a listener, that error becomes uncaughtException and
+// re-enters logCrash, looping until the disk fills. Register a suppressor
+// once at load time and stop writing to stderr after the first EPIPE so the
+// loop cannot start.
+try {
+  process.stderr.on('error', (e) => {
+    if (e && (e.code === 'EPIPE' || /EPIPE/.test(String(e.message || '')))) {
+      _stderrBroken = true;
+      _channelsDegraded = true;
+    }
+  });
+} catch {}
+
+// Crash log guards: dedup repeated identical errors (a single broken handler
+// can fire thousands of times per minute) and rotate at a 10 MB cap so the
+// file cannot grow unbounded. One .old generation is kept; older rolls drop.
+const CRASH_LOG_MAX_BYTES = 10 * 1024 * 1024;
+let _lastCrashSig = "";
+let _crashRepeatCount = 0;
+
+function _writeCrashLine(crashLog, line) {
+  try {
+    let size = 0;
+    try { size = fs.statSync(crashLog).size; } catch {}
+    if (size + line.length > CRASH_LOG_MAX_BYTES) {
+      try { fs.renameSync(crashLog, crashLog + ".old"); } catch {}
+    }
+    fs.appendFileSync(crashLog, line);
+  } catch {}
+}
 
 function logCrash(label, err) {
   if (crashLogging) return;
@@ -85,18 +119,30 @@ function logCrash(label, err) {
   const msg = `[${localTimestamp()}] mixdog: ${label}: ${err}
 ${err instanceof Error ? err.stack : ""}
 `;
-  try { process.stderr.write(msg); } catch {}
-  try {
-    const crashLog = path.join(DATA_DIR, "crash.log");
-    fs.appendFileSync(crashLog, msg);
-  } catch {}
+  if (!_stderrBroken) {
+    try { process.stderr.write(msg); } catch (e) {
+      if (e && (e.code === 'EPIPE' || /EPIPE/.test(String(e.message || '')))) {
+        _stderrBroken = true;
+      }
+    }
+  }
+  const sig = `${label}|${err && err.message ? err.message : String(err)}`;
+  const crashLog = path.join(DATA_DIR, "crash.log");
+  if (sig === _lastCrashSig) {
+    // Same error repeating — count it but skip the disk write. The next
+    // distinct error (or EPIPE branch below) flushes the suppressed total.
+    _crashRepeatCount += 1;
+  } else {
+    if (_crashRepeatCount > 0) {
+      _writeCrashLine(crashLog, `[${localTimestamp()}] mixdog: previous error repeated ${_crashRepeatCount} more time(s)\n`);
+      _crashRepeatCount = 0;
+    }
+    _lastCrashSig = sig;
+    _writeCrashLine(crashLog, msg);
+  }
   if (err instanceof Error && err.message.includes("EPIPE")) {
     _channelsDegraded = true;
-    try {
-      const crashLog = path.join(DATA_DIR, "crash.log");
-      fs.appendFileSync(crashLog, `[${localTimestamp()}] mixdog: EPIPE detected, channels degraded (not exiting)
-`);
-    } catch {}
+    _stderrBroken = true;
   }
   crashLogging = false;
 }

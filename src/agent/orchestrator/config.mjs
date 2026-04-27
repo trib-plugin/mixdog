@@ -1,7 +1,6 @@
 import { readFileSync, existsSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
-import { loadGitHubToken } from './providers/copilot-auth.mjs';
 import { resolvePluginData } from '../../shared/plugin-paths.mjs';
 import { readSection, updateSection, stripGeneratedMarker } from '../../shared/config.mjs';
 
@@ -17,8 +16,7 @@ const ENV_KEY_MAP = {
     openai: 'OPENAI_API_KEY',
     anthropic: 'ANTHROPIC_API_KEY',
     gemini: 'GEMINI_API_KEY',
-    groq: 'GROQ_API_KEY',
-    openrouter: 'OPENROUTER_API_KEY',
+    deepseek: 'DEEPSEEK_API_KEY',
     xai: 'XAI_API_KEY',
 };
 // Canonical maintenance defaults. Single source of truth — imported by
@@ -77,11 +75,6 @@ function buildDefaultConfig() {
             apiKey: apiKey || undefined,
         };
     }
-    // Copilot — enabled if GITHUB_TOKEN env var or hosts.json/apps.json exists
-    providers.copilot = {
-        enabled: !!loadGitHubToken(),
-        baseURL: 'https://api.githubcopilot.com',
-    };
     // OpenAI OAuth (ChatGPT subscription) — enabled if ~/.codex/auth.json or own tokens exist
     const hasCodexAuth = existsSync(join(homedir(), '.codex', 'auth.json'));
     const hasOwnAuth = existsSync(join(getPluginData(), 'openai-oauth.json'));

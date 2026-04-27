@@ -153,6 +153,21 @@ const HOST_HANDLERS = {
 
 // ── Public entry ──────────────────────────────────────────────────────
 
+export const HOST_INPUT_TOOL_DEFS = [
+  {
+    name: 'inject_input',
+    description: 'Inject text into host terminal (parent console; powershell.exe/pwsh.exe on Windows). Always submits — appends a newline if absent.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', minLength: 1, description: 'Text to type into the host terminal.' },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+  },
+]
+
 export async function executeHostInputTool(name, args /*, cwd */) {
   if (name !== 'inject_input') throw new Error(`Unknown host-input tool: ${name}`)
   const text = args?.text

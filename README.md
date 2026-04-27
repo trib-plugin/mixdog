@@ -72,12 +72,11 @@ run `npm install`, and register the MCP server declared in
 ### Autonomous agents
 
 The agent module exposes a session orchestrator that can dispatch work
-to any registered provider. Each role (worker / reviewer / researcher /
-debugger / tester / …) is a plain markdown prompt under `agents/`
-plus a binding in `user-workflow.json`. Sessions run as long-lived
-loops with trim / compress, a stream watchdog, and background job
-tracking, so Claude Code can fan out real work rather than one-shot
-completions.
+to any registered provider. Each role is a plain markdown prompt under
+`agents/` plus a binding in `user-workflow.json`. Sessions run as
+long-lived loops with trim / compress, a stream watchdog, and
+background job tracking, so Claude Code can fan out real work rather
+than one-shot completions.
 
 ### Persistent memory
 
@@ -162,7 +161,7 @@ Slash commands live under `commands/` and are invoked as
 | `/mixdog:bridge`        | Route a prompt through the external-agent bridge.    |
 | `/mixdog:review`        | Delegate a code review to the reviewer role.         |
 | `/mixdog:security`      | Run the security-audit prompt on the current diff.   |
-| `/mixdog:memory-delete` | Remove a memory entry by id.                         |
+| `/mixdog:memory-delete` | Wipe all memory entries (requires `DELETE ALL MEMORY` confirmation). |
 
 ## Safety
 

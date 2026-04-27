@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
-# mixdog statusline wrapper — v0.1.43
-# Line 1 (runtime): model + effort, cost, context window bar, 5h / 7d rate limit, block reset, maint badges (↻ cycle1/cycle2/recap).
-# Line 2 (incoming, from mixdog /bridge/status): sessions only — "● N Running (roles)". Suppressed when no work sessions.
+# mixdog statusline wrapper — v0.1.45
+# Line 1 (runtime): model + effort, cost, context window bar, 5h / 7d rate limit, block reset,
+#                   maint badges (↻ cycle1/cycle2/recap) + system badges
+#                   (↻ scheduler/proactive/webhook/classification) + retrieval badges
+#                   (↻ explorer/recall/search).
+# Line 2 (incoming, from mixdog /bridge/status): user-facing work sessions only —
+#                   "● N Running (roles)". Suppressed when no work sessions are active.
+#                   ALL internal hidden roles (cycle*/recap-agent/scheduler-task/
+#                   proactive-decision/webhook-handler/memory-classification/explorer/
+#                   recall-agent/search-agent) are surfaced as L1 ↻ badges only and never
+#                   contribute to the L2 count. The legacy B_SESS_ACTIVE fallback is gone:
+#                   if the role list has no work entries, L2 is empty regardless of count.
 #
 # Windows/Git Bash perf note: process spawn (fork + exec) on MSYS is ~50-100ms per call.
 # 0.1.32 already collapsed ~20 jq calls into 2, but $(seg_*) command substitutions added
@@ -303,17 +312,28 @@ add_l2() {
   if [ -z "$L2" ]; then L2="$1"; else L2="$L2 $_SEP $1"; fi
 }
 
-# Sessions — split the raw role list into work vs maint buckets and emit them
-# as separate L2 segments.
+# Sessions — split the raw role list into work vs maint vs system buckets and
+# emit them as separate segments.
 #
-#   work  = worker | reviewer | debugger | tester | researcher
-#           → "● N Running (worker, worker, reviewer)" listing every role token
-#             in encounter order. No dedupe: parallel fan-out of the same role
-#             must remain visible (e.g. two workers → "worker, worker").
-#   maint = cycle1-agent | cycle2-agent | recap-agent
-#           → "↻ cycle1 ↻ cycle2 ↻ recap" — one badge per maint type that has
-#             ANY session running. Counts are intentionally hidden: the bridge
-#             commonly spawns ten cycle1 chunks at once and the count adds noise.
+#   work    = any role token not matched below
+#             → L2 "● N Running (worker, worker, reviewer)" listing every role
+#               token in encounter order. No dedupe: parallel fan-out of the
+#               same role must remain visible (e.g. two workers → "worker,
+#               worker").
+#   maint   = cycle1-agent | cycle2-agent | recap-agent
+#             → L1 "↻ cycle1 ↻ cycle2 ↻ recap" — one badge per maint type that
+#               has ANY session running. Counts are intentionally hidden: the
+#               bridge commonly spawns ten cycle1 chunks at once and the count
+#               adds noise.
+#   system  = scheduler-task | proactive-decision | webhook-handler |
+#             memory-classification
+#             → L1 "↻ scheduler ↻ proactive ↻ webhook ↻ classification" —
+#               internal hidden roles spawned by scheduler / webhook / memory
+#               cycle. Same one-badge-per-type rule as maint.
+#   retrieval = explorer | recall-agent | search-agent
+#             → L1 "↻ explorer ↻ recall ↻ search" — short-lived hidden
+#               retrieval agents. One badge per type while any session of that
+#               kind is running. Never appear on L2.
 #
 # Pure bash: parameter expansion to split the comma-separated B_SESS_ROLES.
 # No awk, no jq.
@@ -322,6 +342,13 @@ _WORK_ORDER=""        # comma-separated, encounter order, no dedupe
 _MAINT_HAS_CYCLE1=0
 _MAINT_HAS_CYCLE2=0
 _MAINT_HAS_RECAP=0
+_SYS_HAS_SCHED=0
+_SYS_HAS_PROACTIVE=0
+_SYS_HAS_WEBHOOK=0
+_SYS_HAS_CLASSIFY=0
+_RET_HAS_EXPLORER=0
+_RET_HAS_RECALL=0
+_RET_HAS_SEARCH=0
 
 if [ -n "$B_SESS_ROLES" ]; then
   # Replace commas with spaces so the for-loop iterates roles cleanly.
@@ -329,18 +356,18 @@ if [ -n "$B_SESS_ROLES" ]; then
   for _role in $_ROLES_SPACED; do
     [ -z "$_role" ] && continue
     case "$_role" in
-      worker|reviewer|debugger|tester|researcher)
-        _WORK_COUNT=$(( _WORK_COUNT + 1 ))
-        if [ -z "$_WORK_ORDER" ]; then _WORK_ORDER="$_role"
-        else _WORK_ORDER="$_WORK_ORDER, $_role"
-        fi
-        ;;
-      cycle1-agent) _MAINT_HAS_CYCLE1=1 ;;
-      cycle2-agent) _MAINT_HAS_CYCLE2=1 ;;
-      recap-agent)  _MAINT_HAS_RECAP=1 ;;
+      cycle1-agent)         _MAINT_HAS_CYCLE1=1 ;;
+      cycle2-agent)         _MAINT_HAS_CYCLE2=1 ;;
+      recap-agent)          _MAINT_HAS_RECAP=1 ;;
+      scheduler-task)       _SYS_HAS_SCHED=1 ;;
+      proactive-decision)   _SYS_HAS_PROACTIVE=1 ;;
+      webhook-handler)      _SYS_HAS_WEBHOOK=1 ;;
+      memory-classification) _SYS_HAS_CLASSIFY=1 ;;
+      explorer)             _RET_HAS_EXPLORER=1 ;;
+      recall-agent)         _RET_HAS_RECALL=1 ;;
+      search-agent)         _RET_HAS_SEARCH=1 ;;
       *)
-        # Unknown role — bucket as work so it stays visible. Better to surface
-        # an unrecognised role than silently swallow it.
+        # Everything else — user-workflow role or unknown — surfaces on L2.
         _WORK_COUNT=$(( _WORK_COUNT + 1 ))
         if [ -z "$_WORK_ORDER" ]; then _WORK_ORDER="$_role"
         else _WORK_ORDER="$_WORK_ORDER, $_role"
@@ -351,22 +378,17 @@ if [ -n "$B_SESS_ROLES" ]; then
   unset _ROLES_SPACED _role
 fi
 
-# Work sessions on L2: prefer the encounter-ordered role list when available,
-# else fall back to the bridge-reported active count for older payloads / odd states.
-# Maint flags are intentionally NOT consulted here — maint badges live on L1.
-if [ "$_WORK_COUNT" -gt 0 ]; then
-  if [ -n "$_WORK_ORDER" ]; then
-    add_l2 "${_ANSI_GREEN}●${_ANSI_RESET} ${_ANSI_BOLD}${_WORK_COUNT} Running${_ANSI_RESET} ${_ANSI_DIM}(${_ANSI_RESET}${_ANSI_CYAN}${_WORK_ORDER}${_ANSI_RESET}${_ANSI_DIM})${_ANSI_RESET}"
-  else
-    add_l2 "${_ANSI_GREEN}●${_ANSI_RESET} ${_ANSI_BOLD}${_WORK_COUNT} Running${_ANSI_RESET}"
-  fi
-elif [ "$B_SESS_ACTIVE" -gt 0 ] 2>/dev/null; then
-  add_l2 "${_ANSI_GREEN}●${_ANSI_RESET} ${_ANSI_BOLD}${B_SESS_ACTIVE} Running${_ANSI_RESET}"
+# Work sessions on L2 — only when the role list contains user-facing entries.
+# B_SESS_ACTIVE may include hidden roles (retrieval / maint / system); those
+# are surfaced as L1 ↻ badges, so the L2 line stays empty when only hidden
+# sessions are running. No fallback to the raw active count.
+if [ "$_WORK_COUNT" -gt 0 ] && [ -n "$_WORK_ORDER" ]; then
+  add_l2 "${_ANSI_GREEN}●${_ANSI_RESET} ${_ANSI_BOLD}${_WORK_COUNT} Running${_ANSI_RESET} ${_ANSI_DIM}(${_ANSI_RESET}${_ANSI_CYAN}${_WORK_ORDER}${_ANSI_RESET}${_ANSI_DIM})${_ANSI_RESET}"
 fi
 
-# Maint badges → built here but appended to L1 (see below). Stitch into a
-# single segment so the dim "│" separator falls between maint and the
-# preceding L1 segment (reset time), not between individual badges.
+# Maint + system badges → built here but appended to L1. Stitched into a
+# single segment so the dim "│" separator falls between the badge group and
+# the preceding L1 segment (reset time), not between individual badges.
 _MAINT_SEG=""
 if [ "$_MAINT_HAS_CYCLE1" -eq 1 ]; then
   _MAINT_SEG="${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}cycle1${_ANSI_RESET}"
@@ -379,9 +401,39 @@ if [ "$_MAINT_HAS_RECAP" -eq 1 ]; then
   if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
   _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}recap${_ANSI_RESET}"
 fi
+if [ "$_SYS_HAS_SCHED" -eq 1 ]; then
+  if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
+  _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}scheduler${_ANSI_RESET}"
+fi
+if [ "$_SYS_HAS_PROACTIVE" -eq 1 ]; then
+  if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
+  _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}proactive${_ANSI_RESET}"
+fi
+if [ "$_SYS_HAS_WEBHOOK" -eq 1 ]; then
+  if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
+  _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}webhook${_ANSI_RESET}"
+fi
+if [ "$_SYS_HAS_CLASSIFY" -eq 1 ]; then
+  if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
+  _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}classification${_ANSI_RESET}"
+fi
+if [ "$_RET_HAS_EXPLORER" -eq 1 ]; then
+  if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
+  _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}explorer${_ANSI_RESET}"
+fi
+if [ "$_RET_HAS_RECALL" -eq 1 ]; then
+  if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
+  _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}recall${_ANSI_RESET}"
+fi
+if [ "$_RET_HAS_SEARCH" -eq 1 ]; then
+  if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
+  _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}search${_ANSI_RESET}"
+fi
 [ -n "$_MAINT_SEG" ] && add_l1 "$_MAINT_SEG"
 unset _MAINT_SEG
 unset _WORK_COUNT _WORK_ORDER _MAINT_HAS_CYCLE1 _MAINT_HAS_CYCLE2 _MAINT_HAS_RECAP
+unset _SYS_HAS_SCHED _SYS_HAS_PROACTIVE _SYS_HAS_WEBHOOK _SYS_HAS_CLASSIFY
+unset _RET_HAS_EXPLORER _RET_HAS_RECALL _RET_HAS_SEARCH
 
 # Jobs / Schedule / Roster / Discord / Recall segments remain removed.
 

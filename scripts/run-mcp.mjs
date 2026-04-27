@@ -30,6 +30,22 @@ const pluginPkg   = join(pluginRoot, 'package.json');
 const pluginLock  = join(pluginRoot, 'package-lock.json');
 const pluginNm    = join(pluginRoot, 'node_modules');
 
+// ── Version sync warn ─────────────────────────────────────────────────────────
+// plugin.json and package.json must bump together (scripts/bump-version.mjs
+// does both). A standalone edit leaves the manifests skewed and confuses
+// install/release tooling. Surface the mismatch immediately at boot so it can
+// be fixed before it ships; warn-only — never block the launcher.
+try {
+  const pluginVer  = JSON.parse(fs.readFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), 'utf8')).version;
+  const packageVer = JSON.parse(fs.readFileSync(pluginPkg, 'utf8')).version;
+  if (pluginVer && packageVer && pluginVer !== packageVer) {
+    process.stderr.write(
+      `[run-mcp] WARN: version mismatch — plugin.json=${pluginVer} package.json=${packageVer}\n`
+      + `         Run \`node scripts/bump-version.mjs ${pluginVer}\` to sync (also updates package-lock.json).\n`,
+    );
+  }
+} catch { /* missing manifest — not run-mcp's concern */ }
+
 // ── Required-dep probe paths (relative to any node_modules dir) ──────────────
 const requiredDepNames = [
   ['@modelcontextprotocol', 'sdk', 'package.json'],

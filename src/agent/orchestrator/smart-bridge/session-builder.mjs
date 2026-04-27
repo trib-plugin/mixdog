@@ -8,14 +8,11 @@
  *     (memory-cycle, scheduler, webhook, proactive) dispatching via
  *     `makeBridgeLlm`.
  *   - `src/agent/index.mjs` `case 'bridge'` — Lead-originated MCP
- *     bridge dispatches (worker / reviewer / debugger / tester /
- *     researcher).
+ *     bridge dispatches into user-workflow roles.
  *
  * Before this helper, the two paths carried separate `createSession` +
  * `traceBridgePreset` blocks. Lead-direct dispatches silently skipped
- * the trace so bench-burst / bench-maintenance-agents could not join
- * `sessionId → role` for user-workflow roles — cache-hit analysis
- * missed every worker / reviewer / debugger / tester call.
+ * the trace so cache-hit analysis missed every user-workflow role call.
  *
  * Preset resolution stays with each caller since they read from
  * different sources (MCP: user-workflow.json only; Smart Bridge:
@@ -55,6 +52,7 @@ export function prepareBridgeSession({
     taskType,
     parentSessionId,
     skipRoleReminder = false,
+    cacheKeyOverride,
 }) {
     // Pass cwd through verbatim — null is the fixed bridge sentinel meaning
     // "no caller workspace context" (cycle1-agent shards, etc). Upgrading
@@ -74,6 +72,7 @@ export function prepareBridgeSession({
     };
     if (permission) sessionOpts.permission = permission;
     if (skipRoleReminder) sessionOpts.skipRoleReminder = true;
+    if (cacheKeyOverride) sessionOpts.cacheKeyOverride = cacheKeyOverride;
     const session = createSession(sessionOpts);
     try {
         traceBridgePreset({

@@ -4,10 +4,11 @@
  * Resolution order:
  *   1. process.env.CLAUDE_PLUGIN_DATA  — set by Claude Code when spawning
  *                                        the MCP server or a hook.
- *   2. Derive from CLAUDE_PLUGIN_ROOT  — works both for cache layout
- *                                        (.../cache/{marketplace}/{plugin}/{version}/)
- *                                        and marketplace layout
- *                                        (.../marketplaces/{marketplace}/external_plugins/{plugin}/).
+ *   2. Derive from CLAUDE_PLUGIN_ROOT  — supports two real layouts:
+ *        cache:        .../cache/{marketplace}/{plugin}/{version}/
+ *        marketplace:  .../marketplaces/{marketplace}/   (root *is* the
+ *                      marketplace dir; plugin name comes from
+ *                      .claude-plugin/plugin.json or DEFAULT_PLUGIN)
  *
  * Throws if neither env var is present — the plugin always runs under
  * Claude Code, which sets one of them. Callers must not silently fall
@@ -22,9 +23,18 @@
 
 import { homedir } from 'os';
 import { join, basename } from 'path';
+import { readFileSync } from 'fs';
 
 export const DEFAULT_PLUGIN = 'mixdog';
 export const DEFAULT_MARKETPLACE = 'trib-plugin';
+
+function readPluginManifestName(root) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, '.claude-plugin', 'plugin.json'), 'utf8'));
+    if (manifest && typeof manifest.name === 'string' && manifest.name.trim()) return manifest.name.trim();
+  } catch { /* fall through to default */ }
+  return DEFAULT_PLUGIN;
+}
 
 export function resolvePluginData() {
   if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA;
@@ -37,9 +47,12 @@ export function resolvePluginData() {
       const marketplace = basename(join(root, '..', '..'));
       return join(homedir(), '.claude', 'plugins', 'data', `${pluginName}-${marketplace}`);
     }
-    // Marketplace layout: .../marketplaces/{marketplace}/external_plugins/{plugin}/
-    const marketplace = basename(join(root, '..', '..'));
-    return join(homedir(), '.claude', 'plugins', 'data', `${dirName}-${marketplace}`);
+    // Marketplace layout: .../marketplaces/{marketplace}/
+    // The root dir itself is the marketplace. Plugin name lives in the
+    // manifest; fall back to DEFAULT_PLUGIN when it's unreadable.
+    const marketplace = dirName;
+    const pluginName = readPluginManifestName(root);
+    return join(homedir(), '.claude', 'plugins', 'data', `${pluginName}-${marketplace}`);
   }
   throw new Error('[plugin-paths] CLAUDE_PLUGIN_DATA and CLAUDE_PLUGIN_ROOT are both unset — cannot resolve plugin data dir outside of Claude Code.');
 }

@@ -22,6 +22,25 @@ const CATALOG_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/mode
 const CATALOG_CACHE_FILE = 'litellm-catalog.json';
 const CATALOG_TTL_MS = 24 * 60 * 60_000;
 
+// Polyfill for models the LiteLLM catalog does not list yet. Values mirror
+// the catalog row shape so _normalize works unchanged. Source: each provider's
+// official pricing page; do not extrapolate. Promotional discounts are
+// intentionally NOT encoded — list rates only.
+const PRICING_OVERRIDES = {
+    // https://api-docs.deepseek.com/quick_start/pricing — list rates ($/token).
+    'deepseek-v4-pro': {
+        litellm_provider: 'deepseek',
+        input_cost_per_token: 1.74e-6,
+        output_cost_per_token: 3.48e-6,
+        cache_read_input_token_cost: 1.45e-8,
+        max_input_tokens: 128000,
+        max_output_tokens: 8192,
+        mode: 'chat',
+        supports_function_calling: true,
+        supports_prompt_caching: true,
+    },
+};
+
 let _memCache = null;
 let _memCacheAt = 0;
 
@@ -83,11 +102,12 @@ function warmFromDiskSync() {
  */
 export function getModelMetadataSync(id) {
     if (!id) return null;
+    if (PRICING_OVERRIDES[id]) return _normalize(PRICING_OVERRIDES[id]);
     if (!_memCache) warmFromDiskSync();
     if (!_memCache) return null;
     const catalog = _memCache;
     if (catalog[id]) return _normalize(catalog[id]);
-    for (const prefix of ['anthropic/', 'openai/', 'gemini/', 'google/', 'openrouter/anthropic/', 'openrouter/openai/']) {
+    for (const prefix of ['anthropic/', 'openai/', 'gemini/', 'google/', 'xai/', 'azure_ai/', 'openrouter/anthropic/', 'openrouter/openai/']) {
         if (catalog[prefix + id]) return _normalize(catalog[prefix + id]);
     }
     for (const prefix of ['anthropic.', 'bedrock/anthropic.']) {
@@ -104,11 +124,12 @@ export function getModelMetadataSync(id) {
  */
 export async function getModelMetadata(id) {
     if (!id) return null;
+    if (PRICING_OVERRIDES[id]) return _normalize(PRICING_OVERRIDES[id]);
     const catalog = await loadCatalog();
     // Exact match
     if (catalog[id]) return _normalize(catalog[id]);
     // Provider-prefixed variants
-    for (const prefix of ['anthropic/', 'openai/', 'gemini/', 'google/', 'openrouter/anthropic/', 'openrouter/openai/']) {
+    for (const prefix of ['anthropic/', 'openai/', 'gemini/', 'google/', 'xai/', 'azure_ai/', 'openrouter/anthropic/', 'openrouter/openai/']) {
         if (catalog[prefix + id]) return _normalize(catalog[prefix + id]);
     }
     // AWS Bedrock variants (anthropic.claude-...-v1:0)
@@ -149,7 +170,7 @@ export async function enrichModels(models) {
         // Same lookup logic as getModelMetadata but inlined for speed.
         let entry = catalog[id];
         if (!entry) {
-            for (const prefix of ['anthropic/', 'openai/', 'gemini/', 'google/']) {
+            for (const prefix of ['anthropic/', 'openai/', 'gemini/', 'google/', 'xai/']) {
                 if (catalog[prefix + id]) { entry = catalog[prefix + id]; break; }
             }
         }

@@ -320,6 +320,77 @@
     "module": "channels"
   },
   {
+    "name": "memory",
+    "title": "Memory Cycle",
+    "annotations": {
+      "title": "Memory Cycle",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild (requires confirm: \"REBUILD MEMORY\"), prune (requires confirm: \"PRUNE OLD ENTRIES\"), cycle1, backfill, status, remember (store fact), forget (archive a root), delete (requires confirm: \"DELETE ALL MEMORY\" — wipes all entries).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "sleep",
+            "cycle2",
+            "flush",
+            "rebuild",
+            "rebuild_classifications",
+            "prune",
+            "cycle1",
+            "backfill",
+            "status",
+            "remember",
+            "forget",
+            "delete"
+          ],
+          "description": "Operation to run"
+        },
+        "topic": {
+          "type": "string",
+          "description": "Topic for remember"
+        },
+        "element": {
+          "type": "string",
+          "description": "Content for remember; also accepted as a substring match target for forget"
+        },
+        "importance": {
+          "type": "string",
+          "description": "Importance for remember (default: fact)"
+        },
+        "maxDays": {
+          "type": "number",
+          "description": "Age threshold in days for the `prune` action. Unclassified entries older than this are deleted. Default 30, minimum 1. Ignored by other actions."
+        },
+        "window": {
+          "type": "string",
+          "description": "Time window: 1d, 3d, 7d, 30d, all"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max episodes to backfill (default 100)"
+        },
+        "id": {
+          "type": "number",
+          "description": "Entry id for forget action."
+        },
+        "confirm": {
+          "type": "string",
+          "description": "Required for destructive actions: \"DELETE ALL MEMORY\" for delete, \"PRUNE OLD ENTRIES\" for prune, \"REBUILD MEMORY\" for rebuild. Must match exactly."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    },
+    "module": "memory"
+  },
+  {
     "name": "recall",
     "title": "Recall",
     "aiWrapped": true,
@@ -602,7 +673,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (default bindings: worker→SONNET HIGH, reviewer→OPUS XHIGH, debugger→OPUS XHIGH, tester→SONNET HIGH). Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.",
+    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -612,7 +683,7 @@
         },
         "role": {
           "type": "string",
-          "description": "Agent role as defined in user-workflow.json. Default roles: worker, researcher, reviewer, debugger, tester. Users may customize — check user-workflow.json for the actual set."
+          "description": "Agent role as defined in user-workflow.json. Check your workflow file for the active set."
         },
         "preset": {
           "type": "string",
@@ -714,7 +785,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Replace text in file(s). PREFER ARRAY FORM — pass `edits` array to apply N edits in one call; same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.",
+    "description": "Replace text in file(s). For multiple edits prefer the `edits` array form — same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -759,7 +830,7 @@
             ]
           },
           "minItems": 1,
-          "description": "Array form: list of edits. Each item may specify its own path; if omitted, falls back to the top-level `path`."
+          "description": "Multi-edit form: array of edits. Each item may specify its own path; if omitted, falls back to the top-level `path`."
         }
       },
       "required": []
@@ -851,7 +922,7 @@
         },
         "session_id": {
           "type": "string",
-          "description": "Bridge sessions only: explicit persistent shell session id to reuse. Prefer `persistent:true` unless you need to target a specific shell."
+          "description": "Explicit persistent shell session id to reuse. Prefer `persistent:true` unless you need to target a specific shell."
         }
       },
       "required": [
@@ -1366,26 +1437,20 @@
   },
   {
     "name": "inject_input",
-    "title": "Inject Input",
-    "annotations": {
-      "title": "Inject Input",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": true
-    },
-    "description": "Inject text into the host terminal that runs Claude Code (and this MCP server, as its child). Walks the parent process chain to locate a supported console host (currently powershell.exe / pwsh.exe on Windows) and types the text via AttachConsole + WriteConsoleInputW. Always submits — a trailing newline is appended automatically if the caller did not include one. Returns { ok, host, pid, exitCode, stderr? }.",
+    "description": "Inject text into host terminal (parent console; powershell.exe/pwsh.exe on Windows). Always submits — appends a newline if absent.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "text": {
           "type": "string",
-          "description": "Text to type into the host terminal. A trailing newline is appended automatically, so the text is always submitted with Enter."
+          "minLength": 1,
+          "description": "Text to type into the host terminal."
         }
       },
       "required": [
         "text"
-      ]
+      ],
+      "additionalProperties": false
     },
     "module": "host_input"
   }

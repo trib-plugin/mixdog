@@ -27,10 +27,27 @@ function toSchemaType(t) {
 
 /**
  * Recursively convert a JSON Schema object to Gemini's FunctionDeclarationSchema.
- * Gemini requires `type` to be a SchemaType enum, not a plain string.
+ * Gemini requires `type` to be a SchemaType enum, not a plain string, and
+ * rejects several JSON Schema fields the API does not understand
+ * (additionalProperties, $schema, $ref, const, examples, definitions,
+ * patternProperties). We strip those at every level.
  */
+const GEMINI_SCHEMA_STRIP = new Set([
+    'additionalProperties',
+    '$schema',
+    '$ref',
+    'const',
+    'examples',
+    'definitions',
+    'patternProperties',
+]);
 function convertSchema(schema) {
-    const result = { ...schema };
+    if (!schema || typeof schema !== 'object') return schema;
+    const result = {};
+    for (const [k, v] of Object.entries(schema)) {
+        if (GEMINI_SCHEMA_STRIP.has(k)) continue;
+        result[k] = v;
+    }
     if (typeof result.type === 'string') {
         result.type = toSchemaType(result.type);
     }
@@ -186,23 +203,30 @@ export class GeminiProvider {
         }
     }
 
-    async _getCachedGeminiModel(sessionId, useModel, systemInstruction, geminiTools, prefixContents, signal) {
-        if (!sessionId || prefixContents.length === 0) return null;
-        const prefixTokenEstimate = estimateGeminiTokens(prefixContents);
-        if (prefixTokenEstimate < GEMINI_CACHE_MIN_TOKENS) return null;
-
+    async _getCachedGeminiModel(cacheKey, useModel, systemInstruction, geminiTools, prefixContents, signal) {
+        if (!cacheKey) return null;
         const now = Date.now();
         const shapeFingerprint = buildGeminiCacheShapeFingerprint({
             model: useModel,
             systemInstruction,
             tools: geminiTools,
         });
+        // Index by (cacheKey + model + shape) so single-shot calls sharing the
+        // same provider-scoped cacheKey collapse onto one cached resource.
+        // Previously keyed by sessionId — every new bridge invocation got a
+        // fresh session and therefore a fresh cache, which defeated BP1 reuse
+        // for the typical reviewer/debugger fan-out shape.
+        const cacheIndex = `${cacheKey}::${useModel}::${shapeFingerprint}`;
         const prefixSnapshot = buildGeminiPrefixSnapshot(prefixContents);
-        const existing = this._geminiSessionCaches.get(sessionId);
-        // Reuse when (a) shape unchanged, (b) cache still within TTL, and
-        // (c) the new prefix equals or extends the cached prefix. Extension
-        // is the common append-only bridge case — previously every new turn
-        // invalidated; now only real divergence does.
+
+        // Token-budget check applies to the actual cache payload (BP1 = system +
+        // tools + any prefix messages). Single-shot calls have empty prefix but
+        // a system prompt that easily clears the 1024-token floor.
+        const cachePayloadTokens = estimateGeminiTokens(prefixContents)
+            + (systemInstruction ? Math.ceil(systemInstruction.length / 4) : 0);
+        if (cachePayloadTokens < GEMINI_CACHE_MIN_TOKENS) return null;
+
+        const existing = this._geminiSessionCaches.get(cacheIndex);
         if (
             existing
             && existing.shapeFingerprint === shapeFingerprint
@@ -212,23 +236,29 @@ export class GeminiProvider {
             return this.genAI.getGenerativeModelFromCachedContent(existing.cachedContent);
         }
 
-        // Single-path policy: cache create failure is not silently swallowed.
-        // Enable flag is gated by the caller (_doSend) — if we reach here,
-        // the operator asked for cache, so propagate the error instead of
-        // silently degrading to an uncached request.
+        // Gemini cacheManager.create requires non-empty contents. For
+        // single-shot calls (prefixContents = []) we synthesize a single
+        // user-role placeholder so systemInstruction + tools become the actual
+        // BP1 payload. The placeholder text never leaks into the model's view
+        // of the live conversation because subsequent generateContent calls
+        // pass the real user message after the cached prefix.
+        const createContents = prefixContents.length > 0
+            ? prefixContents
+            : [{ role: 'user', parts: [{ text: '.' }] }];
+
         const cachedContent = await this.cacheManager.create({
             model: useModel,
-            contents: prefixContents,
+            contents: createContents,
             ttlSeconds: 3600,
             ...(geminiTools ? { tools: geminiTools } : {}),
             ...(systemInstruction ? { systemInstruction } : {}),
-            displayName: `mixdog-bridge-${sessionId}`,
+            displayName: `mixdog-bridge-${cacheIndex.slice(0, 60)}`,
         });
         if (signal?.aborted) {
             const reason = signal.reason;
             throw reason instanceof Error ? reason : new Error('Gemini cache creation aborted by session close');
         }
-        this._geminiSessionCaches.set(sessionId, {
+        this._geminiSessionCaches.set(cacheIndex, {
             cachedContent,
             shapeFingerprint,
             prefixSnapshot,
@@ -265,14 +295,18 @@ export class GeminiProvider {
         });
         let requestContents = contents;
 
-        const sessionId = opts.sessionId || null;
-        // v0.6.10: single-path, always-on cache. `_getCachedGeminiModel`
-        // throws on cache-create failure — the error propagates through
-        // send() to the caller with no silent fallback.
-        if (sessionId && contents.length > 1) {
+        // Cache key prefers the provider-scoped promptCacheKey so single-shot
+        // calls across roles collapse onto one cached BP1 resource. Falls back
+        // to sessionId for legacy callers that don't supply promptCacheKey.
+        const cacheKey = opts.promptCacheKey || opts.sessionId || null;
+        // Always-on cache. `_getCachedGeminiModel` throws on cache-create
+        // failure — the error propagates through send() to the caller with
+        // no silent fallback. Empty-prefix single-shot calls are now allowed:
+        // the cache payload is systemInstruction + tools (BP1).
+        if (cacheKey) {
             const prefixContents = contents.slice(0, -1);
             const cachedModel = await this._getCachedGeminiModel(
-                sessionId,
+                cacheKey,
                 useModel,
                 systemInstruction,
                 geminiTools,
@@ -281,13 +315,13 @@ export class GeminiProvider {
             );
             if (cachedModel) {
                 genModel = cachedModel;
-                // Send everything past the cached prefix as the delta. For
-                // exact-match cached prefix (cachedLen === contents.length-1)
-                // this is just the last message; for prefix-extension reuse
-                // (cachedLen < contents.length-1) it includes the messages
-                // added since the cache was created — without this slice the
-                // model would never see those intermediate turns.
-                const cached = this._geminiSessionCaches.get(sessionId);
+                const shapeFingerprint = buildGeminiCacheShapeFingerprint({
+                    model: useModel,
+                    systemInstruction,
+                    tools: geminiTools,
+                });
+                const cacheIndex = `${cacheKey}::${useModel}::${shapeFingerprint}`;
+                const cached = this._geminiSessionCaches.get(cacheIndex);
                 const cachedLen = cached?.prefixSnapshot?.length ?? prefixContents.length;
                 requestContents = contents.slice(cachedLen);
             }

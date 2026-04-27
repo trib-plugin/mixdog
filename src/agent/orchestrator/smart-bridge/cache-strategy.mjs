@@ -32,24 +32,22 @@
  *   '5m'   → ephemeral 5m TTL  (1.25x write premium, 0.1x read)
  *   'none' → no cache_control  (1x flat, no premium, no cache)
  *
- * cacheType is accepted for backward compatibility; both stateful and
- * stateless get the same policy since bridge/agent calls never experience
- * interactive idle that would threaten the 5m tail TTL.
+ * Bridge/agent calls never experience interactive idle that would threaten
+ * the 5m tail TTL, so a single policy applies to every role.
  */
-export function resolveCacheStrategy(_cacheType) {
+export function resolveCacheStrategy() {
     return { tools: '1h', system: '1h', tier3: '1h', messages: '5m' };
 }
 
 /**
- * Build provider-specific sendOpts from a cacheType + provider.
+ * Build provider-specific sendOpts.
  *
- * @param {string} cacheType   — 'stateful' | 'stateless'
  * @param {string} provider
  * @param {string} [sessionId]
  * @returns {object} partial sendOpts — spread into provider.send call
  */
-export function buildProviderCacheOpts(cacheType, provider, sessionId) {
-    const ttls = resolveCacheStrategy(cacheType);
+export function buildProviderCacheOpts(provider, sessionId) {
+    const ttls = resolveCacheStrategy();
 
     switch (provider) {
         case 'anthropic-oauth':
@@ -81,20 +79,8 @@ export function buildProviderCacheOpts(cacheType, provider, sessionId) {
                 },
             };
 
-        case 'groq':
-            // Auto prompt cache since 2025-12 (gpt-oss-120b, 50% saving). No code-level control.
-            return {};
-
-        case 'openrouter':
-            // Passes anthropic beta cache_control for supported backends
-            return { cacheStrategy: ttls };
-
-        case 'xai':
-            // No public prompt cache API (as of 2026-04)
-            return {};
-
-        case 'copilot':
-            // Consumer API, no prompt cache controls
+        case 'deepseek':
+            // Automatic context cache, hit token reported via prompt_cache_hit_tokens
             return {};
 
         case 'ollama':
@@ -143,8 +129,8 @@ export function computePrefixContent(systemPrompt, tools) {
 /**
  * Longest-lived layer TTL (seconds) for registry expiry tracking.
  */
-export function ttlSecondsForCacheType(cacheType) {
-    const ttls = resolveCacheStrategy(cacheType);
+export function ttlSecondsForCache() {
+    const ttls = resolveCacheStrategy();
     return Math.max(
         ttlToSeconds(ttls.tools),
         ttlToSeconds(ttls.system),

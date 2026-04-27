@@ -10,6 +10,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const server = join(__dirname, 'setup-server.mjs');
 const PORT = 3458;
 
+// Slash-command shells expand ${CLAUDE_PLUGIN_ROOT} into argv but do not
+// export it, so the spawned setup-server inherits a stripped env. Re-derive
+// both ROOT and DATA from this script's location so plugin-paths and the
+// stricter channels-lib guard (which checks CLAUDE_PLUGIN_DATA directly)
+// both succeed inside the detached child.
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || dirname(__dirname);
+process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
+const { resolvePluginData } = await import('../src/shared/plugin-paths.mjs');
+const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA || resolvePluginData();
+process.env.CLAUDE_PLUGIN_DATA = PLUGIN_DATA;
+
 function ping(timeoutMs = 1500) {
   return new Promise(resolve => {
     const req = http.get(`http://localhost:${PORT}/`, res => {
@@ -133,9 +144,11 @@ if (!alive) {
       // detached child independent after unref() while preserving first-start
       // stdout/stderr for diagnostics.
       stdio: ['ignore', launchLog.fd, launchLog.fd],
-      cwd: dirname(__dirname),
+      cwd: PLUGIN_ROOT,
       env: {
         ...process.env,
+        CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT,
+        CLAUDE_PLUGIN_DATA: PLUGIN_DATA,
         MIXDOG_SETUP_OPEN_ON_START: '1',
         MIXDOG_SETUP_PARENT_PID: String(findAncestorPid() || ''),
       },
