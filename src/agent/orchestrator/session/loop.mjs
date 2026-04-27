@@ -13,7 +13,7 @@ import { maybeOffloadToolResult } from './tool-result-offload.mjs';
 import { isHiddenRole } from '../internal-roles.mjs';
 const SAFETY_TRIM_PERCENT = 0.90;
 const SOFT_ITERATION_WARN_THRESHOLDS = Object.freeze([24, 48, 96]);
-const EMERGENCY_ITERATION_FUSE = 1000;
+const EMERGENCY_ITERATION_FUSE = 100;
 // Write-class tools that a permission=read session must not execute. The
 // schema still advertises them to keep one unified shard; this runtime set
 // is the fail-safe reject at call time.
@@ -237,29 +237,29 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     const sessionId = opts.sessionId || null;
     const signal = opts.signal || null;
     const loopGuard = createGuard();
+    // Role-shaped soft ceilings — surfaced as the last warn threshold rather
+    // than a hard break. Hidden retrieval roles (recall-agent / search-agent /
+    // explorer / cycle* / recap) get the tightest ceiling; worker sits a bit
+    // tighter than other bridge roles because 24h trace shows worker p95
+    // hitting 88 on grep+read alt-loops while reviewer / debugger / tester
+    // p95 stays under 12. The absolute backstop is EMERGENCY_ITERATION_FUSE —
+    // a real broken-loop guard — and can be overridden via
+    // opts.iterationEmergencyFuse for special workloads.
+    const HIDDEN_ROLE_SOFT_CEILING = 30;
+    const WORKER_ROLE_SOFT_CEILING = 56;
+    const BRIDGE_ROLE_SOFT_CEILING = 64;
+    const sessionRole = opts.session?.role;
+    const roleSoftCeiling = opts.session && isHiddenRole(sessionRole)
+        ? HIDDEN_ROLE_SOFT_CEILING
+        : sessionRole === 'worker'
+            ? WORKER_ROLE_SOFT_CEILING
+            : BRIDGE_ROLE_SOFT_CEILING;
     const softIterationWarnThresholds = Array.isArray(opts.iterationWarnThresholds) && opts.iterationWarnThresholds.length
         ? [...opts.iterationWarnThresholds].filter((n) => Number.isFinite(Number(n))).map((n) => Number(n)).sort((a, b) => a - b)
-        : [...SOFT_ITERATION_WARN_THRESHOLDS];
-    // Hidden retrieval roles (recall-agent / search-agent / explorer / cycle*
-    // / recap) are bounded at 30: the loop cap keeps a single retrieval call
-    // from grinding through dozens of probe iterations on an ambiguous query.
-    // Worker is bounded tighter (56) than other bridge roles (64) because 24h
-    // trace shows worker p95 hitting 88 on grep+read alt-loops; reviewer /
-    // debugger / tester p95 stays under 12 in practice and benefits from the
-    // larger headroom for genuine multi-file work.
-    // The 1000-iter EMERGENCY fuse remains as the absolute backstop and can
-    // be overridden via opts.iterationEmergencyFuse for special workloads.
-    const HIDDEN_ROLE_ITERATION_FUSE = 30;
-    const WORKER_ROLE_ITERATION_FUSE = 56;
-    const BRIDGE_ROLE_ITERATION_FUSE = 64;
-    const sessionRole = opts.session?.role;
+        : Array.from(new Set([...SOFT_ITERATION_WARN_THRESHOLDS, roleSoftCeiling])).sort((a, b) => a - b);
     const emergencyIterationFuse = Number.isFinite(Number(opts.iterationEmergencyFuse))
         ? Number(opts.iterationEmergencyFuse)
-        : (opts.session && isHiddenRole(sessionRole)
-            ? HIDDEN_ROLE_ITERATION_FUSE
-            : sessionRole === 'worker'
-                ? WORKER_ROLE_ITERATION_FUSE
-                : BRIDGE_ROLE_ITERATION_FUSE);
+        : EMERGENCY_ITERATION_FUSE;
     const forcedFirstTool = opts.forcedFirstTool || explicitToolChoiceName(messages, tools);
     const forcedFirstToolDef = forcedFirstTool
         ? tools.find(tool => tool?.name === forcedFirstTool)
