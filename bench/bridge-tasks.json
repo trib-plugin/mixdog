@@ -46,6 +46,16 @@
       "role": "debugger",
       "prompt": "Worker role's iter p95 in 24h trace is 88. Investigate one likely cause from the codebase (loop control, retry policy, no early-stop condition) and report: (1) which file controls worker iter loop, (2) what conditions allow iter to grow past 50, (3) one concrete fix candidate. 6-10 lines.",
       "expected_substrings": ["iter", "loop"]
+    },
+    {
+      "id": "worker-reporting-style-ab",
+      "role": "worker",
+      "prompt": "Find SmartBridge.resolveSync() definition (file + line range) and report what it returns when role lookup misses. Read-only — do not edit. After the investigation, follow your normal final-reply rules.",
+      "expected_substrings": ["smart-bridge", "resolveSync"],
+      "ab_variants": {
+        "A_verbose_override": "OVERRIDE for this run only — the 'Reporting style — final reply to Lead' section in rules/bridge/00-common.md is SUSPENDED. Use the legacy verbose style instead: (1) Open with a short '## Changes' header. (2) Use a separate '### Verification' subsection. (3) Include a markdown table summarizing files inspected (path | role). (4) Quote a 3-6 line code snippet of the function body inside a ``` fence. (5) Restate the spec at the top in a one-sentence paragraph before any findings. (6) Close with a 'Notes' section listing what was NOT done. Do not abbreviate.",
+        "B_current_rules": ""
+      }
     }
   ]
 }
