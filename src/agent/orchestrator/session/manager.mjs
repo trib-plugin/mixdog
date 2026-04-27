@@ -1472,17 +1472,22 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 const outputTokens = result.usage.outputTokens || 0;
                 const cacheReadTokens = result.usage.cachedTokens || 0;
                 const cacheWriteTokens = result.usage.cacheWriteTokens || 0;
-                // Unified total-prompt field. Providers set it explicitly;
-                // fallback sums the billable slots when missing (Anthropic-shape).
+                // Unified total-prompt field. Anthropic = input+cache_read+cache_write
+                // (additive); OpenAI/Codex/Gemini = input_tokens already includes the
+                // cached portion (inclusive), so the fallback must not double-count.
+                const { isInclusiveProvider, computeCostUsd } = await import('../../../shared/llm/cost.mjs');
+                const inclusive = isInclusiveProvider(session.provider);
                 const promptTokens = typeof result.usage.promptTokens === 'number'
                     ? result.usage.promptTokens
-                    : (inputTokens + cacheReadTokens + cacheWriteTokens);
+                    : (inclusive
+                        ? Math.max(inputTokens, cacheReadTokens + cacheWriteTokens)
+                        : inputTokens + cacheReadTokens + cacheWriteTokens);
                 let costUsd = result.usage.costUsd || 0;
                 if (!costUsd) {
                     try {
-                        const { computeCostUsd } = await import('../../../shared/llm/cost.mjs');
                         costUsd = computeCostUsd({
                             model: session.model,
+                            provider: session.provider,
                             inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
                         });
                     } catch { /* best-effort */ }

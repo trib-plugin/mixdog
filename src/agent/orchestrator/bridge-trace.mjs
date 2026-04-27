@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, statSync, renameSync, existsSync, readdirSyn
 import { join } from 'path';
 import { getPluginData } from './config.mjs';
 import { normalizeUsage } from './smart-bridge/cache-obs.mjs';
+import { isInclusiveProvider } from '../../shared/llm/cost.mjs';
 
 const HISTORY_DIR = join(getPluginData(), 'history');
 const TRACE_PATH = join(HISTORY_DIR, 'bridge-trace.jsonl');
@@ -304,6 +305,11 @@ function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cac
             `[bridge-trace] rawUsage present but no provider field — skipping normalizeUsage. Provider should pass {provider: '...'} to traceBridgeUsage.`,
         );
     }
+    const inclusive = isInclusiveProvider(provider);
+    const inTok = inputTokens || 0;
+    const cacheRead = cachedTokens || 0;
+    const cacheWrite = cacheWriteTokens || 0;
+    const uncachedInputTokens = inclusive ? Math.max(inTok - cacheRead - cacheWrite, 0) : inTok;
     appendBridgeTrace({
         sessionId,
         iteration,
@@ -311,12 +317,15 @@ function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cac
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         cached_tokens: cachedTokens,
-        cache_write_tokens: cacheWriteTokens || 0,
+        cache_write_tokens: cacheWrite,
+        uncached_input_tokens: uncachedInputTokens,
         // Unified total-prompt field. Anthropic = input+cache_read+cache_write,
         // OpenAI/Gemini = input_tokens (cached is already a subset).
         prompt_tokens: typeof promptTokens === 'number'
             ? promptTokens
-            : ((inputTokens || 0) + (cachedTokens || 0) + (cacheWriteTokens || 0)),
+            : (inclusive
+                ? Math.max(inTok, cacheRead + cacheWrite)
+                : inTok + cacheRead + cacheWrite),
         model: model || null,
         model_display: modelDisplay || null,
         response_id: responseId || null,
