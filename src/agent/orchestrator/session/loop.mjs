@@ -29,8 +29,8 @@ const DIRECT_HIDDEN_TOOLS = new Set(['memory_search', 'web_search']);
 // Eager-dispatch allowlist: read-only builtins can safely start executing
 // during SSE parsing so tool work overlaps with the rest of the stream.
 // Writes, bash, MCP and skills stay serial after send() returns.
-const EAGER_TOOLS = new Set(['read', 'multi_read', 'grep', 'glob', 'list']);
-const COMPLETION_HINT_TOOLS = new Set(['read', 'multi_read', 'grep', 'glob', 'list']);
+const EAGER_TOOLS = new Set(['read', 'grep', 'glob', 'list']);
+const COMPLETION_HINT_TOOLS = new Set(['read', 'grep', 'glob', 'list']);
 const EXPLICIT_TOOL_VERBS = String.raw`(?:use|call|run|invoke|prefer)`
 const EXPLICIT_TOOL_NEGATION = String.raw`(?:do\s+not|don't|never)\s+${EXPLICIT_TOOL_VERBS}`
 function isEagerDispatchable(name) { return EAGER_TOOLS.has(name); }
@@ -446,7 +446,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                         result = `Error: tool "${call.name}" is not available on this session (permission=mcp). Use MCP/internal retrieval tools only.`;
                         toolEndedAt = Date.now();
                     } else if (permissionBlocked && effectivePermission === 'read') {
-                        result = `Error: tool "${call.name}" is not available on this session (permission=read). Use read/multi_read/grep/glob/recall/search/explore or the read-only MCP tools instead.`;
+                        result = `Error: tool "${call.name}" is not available on this session (permission=read). Use read/grep/glob/recall/search/explore or the read-only MCP tools instead.`;
                         toolEndedAt = Date.now();
                     } else {
                         result = await executeTool(call.name, call.arguments, cwd, sessionId, sessionRef);

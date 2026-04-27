@@ -207,7 +207,7 @@ function _dedupByName(tools) {
 //
 // KEEP (bridge agents can call):
 //   - core file / shell: read, edit, write, bash, bash_session, grep, glob
-//   - IO helpers: head, tail, wc, list, tree, find_files, multi_read
+//   - IO helpers: read (mode:head|tail|count), list (mode:tree|find)
 //   - Code graph / refactors: code_graph
 //   - memory read: recall (hidden recall-agent gets memory_search directly)
 //   - information retrieval: search, explore
@@ -828,7 +828,7 @@ async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCa
     if (session?.owner !== 'bridge') return null;
     const repoSlug = _extractGithubRepoSlug(prompt);
     // Fix 3: pass null cwd through — `_extractKnownFilePaths` returns [] for
-    // cwd-less callers, so the multi_read prefetch further down naturally
+    // cwd-less callers, so the read-array prefetch further down naturally
     // becomes a no-op instead of resolving against the launcher's cwd.
     const prefetchCwd = effectiveCwd || session.cwd || null;
     const knownFiles = _extractKnownFilePaths(prompt, prefetchCwd);
@@ -910,14 +910,10 @@ async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCa
     }
 
     if (knownFiles.length < 2) return null;
-    const reads = knownFiles.map((filePath) => ({
-        path: filePath,
-        mode: 'head',
-        n: 120,
-    }));
-    const readOut = await executeInternalTool('multi_read', { reads }).catch(() => null);
+    const readArgs = { path: knownFiles, mode: 'head', n: 120 };
+    const readOut = await executeInternalTool('read', readArgs).catch(() => null);
     if (!readOut || String(readOut).startsWith('Error:')) return null;
-    onToolCall?.(1, [{ name: 'multi_read', arguments: { reads } }]);
+    onToolCall?.(1, [{ name: 'read', arguments: readArgs }]);
     return `Prefetched files for this request. Answer directly from these excerpts unless they are clearly insufficient. Do NOT re-read the same files unless the excerpts are missing the specific detail you need.\n\n${readOut}`;
 }
 // --- create_session ---

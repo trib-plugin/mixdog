@@ -49,7 +49,7 @@ const HANDSHAKE_BACKOFF_CAP_MS = 5000;
 // Codex can stall for 50+s between chunks on long reasoning requests
 // (observed: iter 5 of a multi-file review produced sse_parse_ms=58265).
 // Iter-boundary reasoning pauses after large tool_output batches (e.g.
-// 8× multi_read) have been observed past 120s, so raising the ceiling
+// 8-file array-form read) have been observed past 120s, so raising the ceiling
 // to 300s. armPreStreamWatchdog releases on first chunk, so healthy
 // requests are unaffected by the larger cap.
 const WS_STREAM_IDLE_MS = 300_000;

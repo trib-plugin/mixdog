@@ -147,10 +147,10 @@ const cases = [
     },
   },
   {
-    name: 'multi_read_array',
+    name: 'read_array',
     call: { tool: 'read', args: { path: [SHORT, BOM] } },
     check: (out) => {
-      if (!/multi_read complete/.test(out)) return 'missing multi_read header'
+      if (!/read complete/.test(out)) return 'missing read header'
       if (!/short\.txt/.test(out)) return 'short.txt missing from result'
       if (!/bom\.txt/.test(out)) return 'bom.txt missing from result'
       return null

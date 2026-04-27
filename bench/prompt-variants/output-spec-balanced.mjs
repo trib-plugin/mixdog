@@ -10,7 +10,7 @@ export function buildExplorerPrompt(query, cwd) {
   const rootLine = cwd ? `<root>${cwd}</root>\n` : '';
   return `${rootLine}<query>${query}</query>
 
-<tools>find_symbol, find_imports, find_dependents, find_callers, find_references, code_graph, glob, grep, read, multi_read, list</tools>
+<tools>find_symbol, find_imports, find_dependents, find_callers, find_references, code_graph, glob, grep, read, list</tools>
 
 <output>
   <shape>prose</shape>

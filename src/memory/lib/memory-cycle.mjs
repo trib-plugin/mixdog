@@ -128,10 +128,28 @@ const CYCLE1_SESSION_CAP = 10
 // idempotent and the scheduler re-fires on the next tick.
 const _runCycle1InFlight = new WeakMap()
 
+function countPendingRows(db) {
+  try {
+    const r = db.prepare(
+      `SELECT COUNT(*) AS c FROM entries WHERE chunk_root IS NULL AND session_id IS NOT NULL`,
+    ).get()
+    return Number(r?.c ?? 0)
+  } catch {
+    return null
+  }
+}
+
 export async function runCycle1(db, config = {}, options = {}) {
   if (_runCycle1InFlight.has(db)) {
     process.stderr.write('[cycle1] skipped: already in flight for this db\n')
-    return { processed: 0, chunks: 0, skipped: 0, sessions: 0, skippedInFlight: true }
+    return {
+      processed: 0,
+      chunks: 0,
+      skipped: 0,
+      sessions: 0,
+      skippedInFlight: true,
+      pendingRows: countPendingRows(db),
+    }
   }
   const p = (async () => _runCycle1Impl(db, config, options))()
   _runCycle1InFlight.set(db, p)
@@ -143,6 +161,7 @@ export async function runCycle1(db, config = {}, options = {}) {
 }
 
 async function _runCycle1Impl(db, config = {}, options = {}) {
+  const pendingRowsAtStart = countPendingRows(db)
   const batchSize = Math.max(1, Number(config.batch_size ?? 50))
   // Fallback chain handles BOTH call shapes:
   //   - periodic tick passes flat config: { interval, min_batch: 20 }
@@ -180,7 +199,14 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   `).all(fetchLimit)
 
   if (rowsDesc.length < minBatch) {
-    return { processed: 0, chunks: 0, skipped: 0, sessions: 0 }
+    return {
+      processed: 0,
+      chunks: 0,
+      skipped: 0,
+      sessions: 0,
+      skippedInFlight: false,
+      pendingRows: pendingRowsAtStart,
+    }
   }
 
   const allRows = rowsDesc.slice().reverse() // chronological ASC
@@ -324,7 +350,14 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     `[cycle1] windows=${windows.length} rows=${totalRowsConsidered} chunks=${totalChunks} members=${totalMembers} skipped=${totalSkipped}\n`,
   )
 
-  return { processed: totalMembers, chunks: totalChunks, skipped: totalSkipped, sessions: windows.length }
+  return {
+    processed: totalMembers,
+    chunks: totalChunks,
+    skipped: totalSkipped,
+    sessions: windows.length,
+    skippedInFlight: false,
+    pendingRows: pendingRowsAtStart,
+  }
 }
 
 function formatEntriesForPromotePrompt(rows) {

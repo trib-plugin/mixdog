@@ -73,7 +73,8 @@ function buildActiveInstanceState(instanceId, meta) {
     statusFile: getStatusPath(instanceId),
     ...meta?.channelId ? { channelId: meta.channelId } : {},
     ...meta?.transcriptPath ? { transcriptPath: meta.transcriptPath } : {},
-    ...meta?.httpPort ? { httpPort: meta.httpPort } : {}
+    ...meta?.httpPort ? { httpPort: meta.httpPort } : {},
+    ...typeof meta?.backendReady === "boolean" ? { backendReady: meta.backendReady } : {}
   };
 }
 function refreshActiveInstance(instanceId, meta) {
@@ -83,7 +84,8 @@ function refreshActiveInstance(instanceId, meta) {
     updatedAt: Date.now(),
     ...meta?.channelId ? { channelId: meta.channelId } : {},
     ...meta?.transcriptPath ? { transcriptPath: meta.transcriptPath } : {},
-    ...meta?.httpPort ? { httpPort: meta.httpPort } : {}
+    ...meta?.httpPort ? { httpPort: meta.httpPort } : {},
+    ...typeof meta?.backendReady === "boolean" ? { backendReady: meta.backendReady } : {}
   };
   writeActiveInstance(next);
   return next;

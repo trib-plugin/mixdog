@@ -121,7 +121,7 @@ function printHelp() {
         'Options:',
         '  --role <name>              Bridge role to spawn. Default worker.',
         '  --preset <id|name>         Optional explicit preset passed to bridge.',
-        '  --case <all|name[,name...]>  pagination,discovery,multi_read,glob_multi,list_recent,symbol_lookup,count_tail,tree_shape,grep_multi,grep_context,grep_count,list_find_size,list_find_mtime,code_graph_callers,read_bookends,read_offset_window,explore_fast_symbol,explore_literal_context,explore_fanout,explore_callers,recall_single,recall_recent_webhook,recall_array_fanout,search_live_official,search_official_site_platform,search_github_repo,search_github_slug,real_explore_literal,real_search_models,real_recall_webhook,search_config_guard,explore.',
+        '  --case <all|name[,name...]>  pagination,discovery,read_array,glob_multi,list_recent,symbol_lookup,count_tail,tree_shape,grep_multi,grep_context,grep_count,list_find_size,list_find_mtime,code_graph_callers,read_bookends,read_offset_window,explore_fast_symbol,explore_literal_context,explore_fanout,explore_callers,recall_single,recall_recent_webhook,recall_array_fanout,search_live_official,search_official_site_platform,search_github_repo,search_github_slug,real_explore_literal,real_search_models,real_recall_webhook,search_config_guard,explore.',
         '  --runs <n>                 Repeat each case. Default 1.',
         '  --parallel                 Run selected cases concurrently within each run.',
         '  --workspace <path>         Reuse/create a fixture workspace at path.',
@@ -177,13 +177,13 @@ function createFixture(workspace) {
         service: 'checkout-a',
         timeoutMs: 2400,
         retries: 2,
-        featureFlag: 'IO_MULTI_READ_A',
+        featureFlag: 'IO_READ_ARRAY_A',
     }, null, 2), 'utf8');
     writeFileSync(join(dirs.configs, 'service-b.json'), JSON.stringify({
         service: 'checkout-b',
         timeoutMs: 4100,
         retries: 4,
-        featureFlag: 'IO_MULTI_READ_B',
+        featureFlag: 'IO_READ_ARRAY_B',
     }, null, 2), 'utf8');
 
     writeFileSync(join(dirs.checkout, 'retry.mjs'), [
@@ -286,8 +286,8 @@ const CASES = {
             'Task: Find the file under `src` that contains `IO_SMOKE_NEEDLE`, identify the exported function name, and answer compact JSON.',
         ].join('\n'),
     },
-    multi_read: {
-        expectAll: [/1700|timeout_delta|service-a|service-b|IO_MULTI_READ/i],
+    read_array: {
+        expectAll: [/1700|timeout_delta|service-a|service-b|IO_READ_ARRAY/i],
         preferTools: ['read'],
         maxTotalIterations: 2,
         maxToolCalls: 1,
@@ -463,7 +463,7 @@ const CASES = {
         prompt: [
             'You are a bridge worker running a live IO smoke benchmark in the current working directory.',
             'Do not modify files. Do not use bash.',
-            'Task: For the already-known file `docs/bookends.txt`, report the first marker and last marker. Use exactly one `multi_read` call with head and tail entries; do not send two separate `read` calls. Answer compact JSON.',
+            'Task: For the already-known file `docs/bookends.txt`, report the first marker and last marker. Use exactly one `read` call with `path` as an array of entries (head + tail mode); do not send two separate `read` calls. Answer compact JSON.',
         ].join('\n'),
     },
     read_offset_window: {
@@ -1226,7 +1226,6 @@ function evaluateToolFit(spec, totals) {
     const used = new Set(toolNames);
     const hasTool = (name) => {
         if (used.has(name)) return true;
-        if (name === 'read') return used.has('multi_read');
         return false;
     };
     const missingPreferred = (spec.preferTools || []).filter((name) => !hasTool(name));

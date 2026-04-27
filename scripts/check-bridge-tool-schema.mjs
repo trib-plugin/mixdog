@@ -60,7 +60,7 @@ async function main() {
     }
 
     const required = [
-      'read', 'multi_read', 'edit', 'write',
+      'read', 'edit', 'write',
       'bash', 'bash_session', 'job_wait',
       'grep', 'glob', 'list', 'apply_patch', 'code_graph', 'find_symbol',
       'explore', 'memory_search', 'recall', 'search', 'web_search',

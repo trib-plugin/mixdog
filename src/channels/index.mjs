@@ -22,6 +22,7 @@ import { Scheduler } from "./lib/scheduler.mjs";
 import { startSnapshotWriter, updateSnapshotScheduler, stopSnapshotWriter, recordFetchedMessages } from "./lib/status-snapshot.mjs";
 import { hasPending as dispatchHasPending } from "../agent/orchestrator/dispatch-persist.mjs";
 import { setListener as setActivityBusListener } from "../agent/orchestrator/activity-bus.mjs";
+import { stripLeadingSoftWarns } from "../agent/orchestrator/tool-loop-guard.mjs";
 import { WebhookServer } from "./lib/webhook.mjs";
 import { EventPipeline } from "./lib/event-pipeline.mjs";
 import { startCliWorker, stopCliWorker } from "./lib/cli-worker-host.mjs";
@@ -462,6 +463,20 @@ async function startOwnerHttpServer() {
     }
     try {
       const url = new URL(req.url ?? "/", `http://127.0.0.1`);
+      const BACKEND_DEPENDENT_PATHS = new Set([
+        "/send",
+        "/react",
+        "/edit",
+        "/fetch",
+        "/download",
+        "/typing/start",
+        "/typing/stop"
+      ]);
+      if (BACKEND_DEPENDENT_PATHS.has(url.pathname) && !bridgeRuntimeConnected) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ ok: false, reason: "backend-not-ready" }));
+        return;
+      }
       switch (url.pathname) {
         case "/ping": {
           res.writeHead(200);
@@ -858,14 +873,27 @@ function syncOwnedWebhookAndEventRuntime({ reload = false } = {}) {
 async function startOwnedRuntime(options = {}) {
   if (bridgeRuntimeConnected) return;
   if (!channelBridgeActive) return;
+  // Advertise active-instance.json BEFORE backend connect so peers can
+  // discover this owner (httpPort) immediately. backendReady=false marks
+  // the partial state until backend.connect() succeeds.
+  let httpPort;
+  try {
+    httpPort = await startOwnerHttpServer();
+  } catch (e) {
+    process.stderr.write(`mixdog: HTTP server start failed (non-fatal): ${e instanceof Error ? e.message : String(e)}
+`);
+  }
+  refreshActiveInstance(INSTANCE_ID, { ...httpPort ? { httpPort } : {}, backendReady: false });
   try {
     await backend.connect();
   } catch (e) {
     process.stderr.write(`mixdog: backend connect failed (non-fatal): ${e instanceof Error ? e.message : String(e)}
 `);
+    refreshActiveInstance(INSTANCE_ID, { ...httpPort ? { httpPort } : {}, backendReady: false });
     return;
   }
   bridgeRuntimeConnected = true;
+  refreshActiveInstance(INSTANCE_ID, { ...httpPort ? { httpPort } : {}, backendReady: true });
   proxyMode = false;
   try {
     const agentCfg = loadAgentConfig();
@@ -877,14 +905,6 @@ async function startOwnedRuntime(options = {}) {
   scheduler.start();
   startSnapshotWriter(scheduler);
   syncOwnedWebhookAndEventRuntime();
-  let httpPort;
-  try {
-    httpPort = await startOwnerHttpServer();
-  } catch (e) {
-    process.stderr.write(`mixdog: HTTP server start failed (non-fatal): ${e instanceof Error ? e.message : String(e)}
-`);
-  }
-  refreshActiveInstance(INSTANCE_ID, httpPort ? { httpPort } : void 0);
   if (options.restoreBinding !== false) void bindPersistedTranscriptIfAny();
   process.stderr.write(`mixdog: running with ${backend.name} backend
 `);
@@ -995,6 +1015,14 @@ function reloadRuntimeConfig() {
   }
 }
 function injectAndRecord(channelId, name, content, options) {
+  // v0.1.117 — Strip soft-warn markers (Tool-loop / Repeated-tool /
+  // Mixed-tool / Tool-budget) from the LEADING lines of the outbound
+  // body. Markers are intentionally prepended onto tool RESULTS upstream
+  // (tool-loop-guard.mjs buildSoftWarn / buildRunUpSoftWarn /
+  // buildMixedSoftWarn / buildBudgetSoftWarn) so the model self-corrects,
+  // but sub-agents commonly echo them as the first line of their reply
+  // and we don't want them surfacing in Discord / Lead channel push.
+  if (typeof content === 'string') content = stripLeadingSoftWarns(content);
   const ts = new Date().toISOString();
   const now = new Date();
   const timeLabel = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} `;
@@ -1724,7 +1752,14 @@ function createHttpMcpServer() {
         }
         case "schedule_status": {
           const statuses = scheduler.getStatus();
-          return { content: [{ type: "text", text: statuses.length ? statuses.map((st) => `${st.name} ${st.time} ${st.days} (${st.type})${st.running ? " [RUNNING]" : ""}`).join("\n") : "no schedules configured" }] };
+          return { content: [{ type: "text", text: statuses.length ? statuses.map((st) => {
+            let line = `${st.name} ${st.time} ${st.days} (${st.type})`;
+            if (st.lastFired) {
+              try { line += ` last=${new Date(st.lastFired).toLocaleTimeString()}`; } catch {}
+            }
+            if (st.running) line += " [RUNNING]";
+            return line;
+          }).join("\n") : "no schedules configured" }] };
         }
         case "trigger_schedule": {
           const triggerResult = await scheduler.triggerManual(args.name);

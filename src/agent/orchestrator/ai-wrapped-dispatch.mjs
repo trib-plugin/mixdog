@@ -25,6 +25,7 @@ import { executeBuiltinTool } from './tools/builtin.mjs'
 import { executeCodeGraphTool } from './tools/code-graph.mjs'
 import { addPending, removePending } from './dispatch-persist.mjs'
 import { notifyActivity } from './activity-bus.mjs'
+import { stripLeadingSoftWarns } from './tool-loop-guard.mjs'
 
 const ROLE_BY_TOOL = Object.freeze({
   recall:  { role: 'recall-agent',  build: (q, cwd) => _internals.builders.recall(q, cwd),   label: 'recall-agent' },
@@ -724,7 +725,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
       if (caller && isHiddenRole(caller.role)) {
         return fail(
           `"${name}" is blocked inside the "${caller.role}" hidden role (recursion break). `
-          + `Use the direct executor (memory_search / web_search / read / grep / glob / multi_read) for your query.`,
+          + `Use the direct executor (memory_search / web_search / read / grep / glob) for your query.`,
         )
       }
     } catch {
@@ -890,7 +891,7 @@ function buildExplorerPrompt(query, cwd) {
   Skip preflight only when the query is a broad concept search.
 </preflight>
 
-<tools>find_symbol, find_imports, find_dependents, find_callers, find_references, code_graph, glob, grep, read, multi_read, list</tools>
+<tools>find_symbol, find_imports, find_dependents, find_callers, find_references, code_graph, glob, grep, read, list</tools>
 
 <output>
   <shape>prose</shape>
@@ -1060,12 +1061,19 @@ export function pushDispatchResult(ctx, id, tool, queries, body, flags = {}) {
     : `${tool} — ${queryCount}`
   // v0.6.249 smart truncation — large recall/search/explore merged bodies
   // (multi-query fan-out) can blow past the 30 KB smart-read cap and waste
-  // Lead context. Apply the same head/tail summariser used by `read` /
-  // `multi_read` so Lead still sees the interesting frames (first queries
+  // Lead context. Apply the same head/tail summariser used by `read`
+  // (single + array form) so Lead still sees the interesting frames (first queries
   // and final queries) without paying for the middle mass. Truncation acts
   // on the body only — the `Done.` header is prepended AFTER, so it never
   // gets cut.
-  const bodyStr = typeof body === 'string' ? body : String(body ?? '')
+  let bodyStr = typeof body === 'string' ? body : String(body ?? '')
+  // v0.1.117 — Sub-agents tend to echo the soft-warn marker line as the
+  // first line of their reply. The marker is intentionally prepended onto
+  // tool RESULTS so the model self-corrects (see tool-loop-guard.mjs
+  // buildSoftWarn / buildRunUpSoftWarn / buildMixedSoftWarn /
+  // buildBudgetSoftWarn — those PREPEND sites must stay), but it should
+  // not surface in the outbound report to Lead. Strip leading markers only.
+  bodyStr = stripLeadingSoftWarns(bodyStr)
   const bodyBytes = Buffer.byteLength(bodyStr, 'utf8')
   const bodyLines = bodyStr.length === 0 ? 0 : bodyStr.split('\n').length
   const { text: cappedBody } = smartReadTruncate(bodyStr, bodyLines, bodyBytes)

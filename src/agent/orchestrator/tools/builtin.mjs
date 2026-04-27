@@ -325,7 +325,7 @@ function cwdRelativePath(fullPath, workDir) {
 
 // Node's native fs errors embed the failing path wrapped in single quotes
 // using OS-native separators ('C:\\Users\\foo\\bar.mjs' on Windows). Without
-// this pass, read / multi_read error bodies surface backslash paths that
+// this pass, read error bodies surface backslash paths that
 // break the forward-slash convention the rest of the tool output keeps.
 // Only quoted drive-letter paths are rewritten so unrelated backslash
 // sequences in the message text are untouched.
@@ -409,10 +409,11 @@ function smartMiddleTruncate(content) {
     return `${head}\n\n... [TRUNCATED — ${middle} lines middle elided; total ${lines.length} lines / ${totalKb} KB. Rerun with tighter filters for more] ...\n\n${tail}`;
 }
 
-// Shared smart-truncate for file bodies (read / multi_read). Returns the
+// Shared smart-truncate for file bodies (read). Returns the
 // original rendered text unchanged when the file is small. When the file is
 // big AND the caller didn't pin a range, returns a head/tail framed summary
-// plus a truncation flag so multi_read can annotate its per-file header.
+// plus a truncation flag so the array-form aggregator can annotate each
+// per-file header.
 function smartReadTruncate(renderedWithLineNos, totalLines, fileBytes) {
     const overByBytes = fileBytes > SMART_READ_MAX_BYTES;
     const overByLines = totalLines > SMART_READ_MAX_LINES;
@@ -673,7 +674,7 @@ function walkDir(root, { hidden = false, maxDepth = Infinity, visit, sort } = {}
 // --- Tool definitions for external models ---
 //
 // Ordered to match the previous hand-maintained tools.json entries
-// (read / edit / write / bash / grep / glob / multi_read) so
+// (read / edit / write / bash / grep / glob) so
 // build-tools-manifest reproduces the legacy ordering.
 // Shape mirrors tools.json: title + annotations + compact descriptions.
 // The previous long-form descriptions have been trimmed to the tools.json
@@ -697,35 +698,6 @@ export const BUILTIN_TOOLS = [
                 full: { type: 'boolean', description: 'Opt out of the big-file head/tail cap. Default false.' },
             },
             required: ['path'],
-        },
-    },
-    {
-        name: 'multi_read',
-        title: 'Multi Read',
-        annotations: { title: 'Multi Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read multiple files in ONE call. Use this when 2+ file paths are already known, or when one file needs multiple modes at once (for example `count` + `tail`). Each entry supports the same options as `read` (`mode`, `n`, `offset`, `limit`, `full`) and runs in parallel. Treat the returned batch as authoritative; do not repeat an identical `multi_read` batch in the next turn.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                reads: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            path: { type: 'string', description: 'File path.' },
-                            mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'], description: 'full (default) | head | tail | count.' },
-                            n: { type: 'number', description: 'Lines for head / tail mode. Default 20.' },
-                            offset: { type: 'number', description: 'Start line for full mode (0-based).' },
-                            limit: { type: 'number', description: 'Max lines for full mode (default 2000).' },
-                            full: { type: 'boolean', description: 'Opt out of the big-file head/tail cap. Default false.' },
-                        },
-                        required: ['path'],
-                    },
-                    minItems: 1,
-                    description: 'List of file reads to execute in parallel.',
-                },
-            },
-            required: ['reads'],
         },
     },
     {
@@ -2666,18 +2638,19 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
         }
         case 'read': {
             // Unified-read dispatch (v0.6.283+):
-            //   path: string[]              → multi_read (parallel per-file)
+            //   path: string[]              → parallel per-file batch
             //   mode: 'head'|'tail'|'count' → head / tail / wc handlers
             //   else                        → single-file read below.
             // Single turn can touch many files or swap modes without
             // the agent iterating across multiple tool names.
             if (Array.isArray(args.path)) {
-                // Propagate per-call options (mode / n / offset / limit / full)
-                // to each per-file entry so schema-advertised options don't get
-                // silently dropped when path is an array.
-                const reads = args.path.map((p) => {
-                    if (p && typeof p === 'object') return p;
-                    const entry = { path: p };
+                // Schema is `path: string | string[]` — array entries are
+                // strings only. Top-level mode / n / offset / limit / full
+                // apply uniformly to every entry in the batch (the only
+                // caller is the manager prefetch helper, which already
+                // shapes its calls that way).
+                const entries = args.path.map((p) => {
+                    const entry = { path: normalizeInputPath(p) };
                     if (args.mode !== undefined) entry.mode = args.mode;
                     if (args.n !== undefined) entry.n = args.n;
                     if (args.offset !== undefined) entry.offset = args.offset;
@@ -2685,7 +2658,36 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     if (args.full !== undefined) entry.full = args.full;
                     return entry;
                 });
-                return executeChildBuiltinTool('multi_read', { reads }, workDir);
+                if (entries.length === 0) return 'Error: path array must not be empty';
+                // Parallel dispatch of the individual reads via the same case
+                // above — reuses size cap, isSafePath, line-number formatting.
+                // Per-file errors come back as their own string and are pasted
+                // into the aggregate rather than aborting the whole batch.
+                const results = await Promise.all(entries.map(async (entry) => {
+                    if (!entry || !entry.path) return { path: '(missing-path)', mode: 'full', body: 'Error: path is required' };
+                    const body = await executeChildBuiltinTool('read', entry, workDir);
+                    return { path: entry.path, mode: entry.mode || 'full', n: entry.n, body };
+                }));
+                // Header path → forward slash; error bodies already normalised
+                // inside the read case's catch blocks. When `read` emitted a
+                // smart-cap marker, surface the truncation state in the header
+                // so downstream skimming spots it without parsing the body.
+                const summaries = [];
+                for (const r of results) {
+                    if (r.mode === 'count') {
+                        const m = String(r.body || '').match(/lines\t(\d+)/);
+                        if (m) summaries.push(`${normalizeOutputPath(r.path)} has ${m[1]} lines`);
+                    }
+                }
+                const summaryLine = summaries.length ? `\nSummary: ${summaries.join('; ')}.` : '';
+                const header = `### read complete (${results.length} reads)${summaryLine}\nUse these results; do not repeat an identical read batch.`;
+                const body = results.map(r => {
+                    const match = /\[TRUNCATED — file is (\d+) lines \/ (\d+) KB\./.exec(r.body || '');
+                    const suffix = match ? ` (truncated, ${match[1]} total lines / ${match[2]} KB — pass full:true or offset/limit for more)` : '';
+                    const mode = r.n !== undefined ? `${r.mode} n=${r.n}` : r.mode;
+                    return `### ${normalizeOutputPath(r.path)} [mode=${mode}]${suffix}\n${r.body}`;
+                }).join('\n\n');
+                return `${header}\n\n${body}`;
             }
             if (args.mode === 'head') return executeChildBuiltinTool('head', { path: args.path, n: args.n }, workDir);
             if (args.mode === 'tail') return executeChildBuiltinTool('tail', { path: args.path, n: args.n }, workDir);
@@ -2797,40 +2799,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             catch (err) {
                 return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
-        }
-        case 'multi_read': {
-            const reads = Array.isArray(args.reads) ? args.reads : [];
-            for (const r of reads) { if (r && typeof r === 'object') r.path = normalizeInputPath(r.path); }
-            if (reads.length === 0) return 'Error: reads array is required';
-            // Parallel dispatch of the individual reads via the same case
-            // above — reuses size cap, isSafePath, line-number formatting.
-            // Per-file errors come back as their own string and are pasted
-            // into the aggregate rather than aborting the whole batch.
-            const results = await Promise.all(reads.map(async (entry) => {
-                if (!entry || !entry.path) return { path: '(missing-path)', mode: 'full', body: 'Error: path is required' };
-                const body = await executeChildBuiltinTool('read', entry, workDir);
-                return { path: entry.path, mode: entry.mode || 'full', n: entry.n, body };
-            }));
-            // Header path → forward slash; error bodies already normalised
-            // inside the read case's catch blocks. When `read` emitted a
-            // smart-cap marker, surface the truncation state in the header
-            // so downstream skimming spots it without parsing the body.
-            const summaries = [];
-            for (const r of results) {
-                if (r.mode === 'count') {
-                    const m = String(r.body || '').match(/lines\t(\d+)/);
-                    if (m) summaries.push(`${normalizeOutputPath(r.path)} has ${m[1]} lines`);
-                }
-            }
-            const summaryLine = summaries.length ? `\nSummary: ${summaries.join('; ')}.` : '';
-            const header = `### read complete (${results.length} reads)${summaryLine}\nUse these results; do not repeat an identical read batch.`;
-            const body = results.map(r => {
-                const match = /\[TRUNCATED — file is (\d+) lines \/ (\d+) KB\./.exec(r.body || '');
-                const suffix = match ? ` (truncated, ${match[1]} total lines / ${match[2]} KB — pass full:true or offset/limit for more)` : '';
-                const mode = r.n !== undefined ? `${r.mode} n=${r.n}` : r.mode;
-                return `### ${normalizeOutputPath(r.path)} [mode=${mode}]${suffix}\n${r.body}`;
-            }).join('\n\n');
-            return `${header}\n\n${body}`;
         }
         case 'write': {
             if (Array.isArray(args.writes) && args.writes.length > 0) {
@@ -3424,6 +3392,9 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             _cacheSet(cacheKey, out, { scopes: [fullPath] });
             return out;
         }
+        // INTERNAL ONLY — not exposed in tools.json. Reached via list mode='find'
+        // child dispatch (see case 'list' above). Do not call directly from
+        // external callers; use list({ mode: 'find', ... }) instead.
         case 'find_files': {
             args.path = normalizeInputPath(args.path);
             const inputPath = args.path || '.';
@@ -3513,6 +3484,10 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             _cacheSet(cacheKey, out, { scopes: [fullPath] });
             return out;
         }
+        // INTERNAL ONLY — not exposed in tools.json. Reached via read mode='head'
+        // child dispatch (see case 'read' above). The string "head" in
+        // tools.json appears only as a read.mode enum value, not as a tool name.
+        // Do not call directly from external callers; use read({ mode: 'head', ... }).
         case 'head': {
             const n = Math.max(1, Math.min(parseInt(args.n ?? 20, 10) || 20, 2000));
             let opened;
@@ -3541,6 +3516,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const sliced = lines.slice(0, n);
             return capShellOutput(sliced.map((l, i) => `${i + 1}\t${l}`).join('\n'));
         }
+        // INTERNAL ONLY — not exposed in tools.json. Reached via read mode='tail'
+        // child dispatch (see case 'read' above). Use read({ mode: 'tail', ... }).
         case 'tail': {
             const n = Math.max(1, Math.min(parseInt(args.n ?? 20, 10) || 20, 2000));
             // F9: share normalize/isSafePath/stat/similar-hint with wc/diff
@@ -3588,6 +3565,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // don't dump 200 KB into the model context.
             return capShellOutput(sliced.map((l, i) => `${startIdx + i + 1}\t${l}`).join('\n'));
         }
+        // INTERNAL ONLY — not exposed in tools.json. Reached via read mode='count'
+        // child dispatch (see case 'read' above). Use read({ mode: 'count', ... }).
         case 'wc': {
             // F9: share normalize/isSafePath/stat/similar-hint with tail/diff
             // via openForRead. ETOOBIG escapes to the streaming fallback so

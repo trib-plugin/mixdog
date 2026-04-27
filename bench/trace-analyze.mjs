@@ -47,7 +47,7 @@ const STRUCTURE_TOOLS = new Set(['find_symbol', 'find_imports', 'find_dependents
 // Real builtin/MCP tool names. Anything outside this set surfaced through
 // `kind:tool` rows is a hallucinated dispatch (the LLM made it up).
 const KNOWN_TOOLS = new Set([
-  'read', 'multi_read', 'edit', 'edit_lines', 'write', 'apply_patch',
+  'read', 'edit', 'edit_lines', 'write', 'apply_patch',
   'bash', 'bash_session', 'job_wait',
   'grep', 'glob', 'list', 'diff',
   'find_symbol', 'find_imports', 'find_dependents', 'find_callers', 'find_references', 'code_graph',

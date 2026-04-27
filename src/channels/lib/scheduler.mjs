@@ -9,6 +9,22 @@ import { makeBridgeLlm } from '../../agent/orchestrator/smart-bridge/bridge-llm.
 const schedulerLlm = makeBridgeLlm({ taskType: 'scheduler-task', role: 'scheduler-task', sourceType: 'scheduler' });
 const proactiveLlm = makeBridgeLlm({ taskType: 'proactive-decision', role: 'proactive-decision', sourceType: 'scheduler' });
 const SCHEDULE_LOG = join(DATA_DIR, "schedule.log");
+const SCHEDULE_STATE_FILE = join(DATA_DIR, "schedule-state.json");
+function readScheduleState() {
+  try {
+    const raw = readFileSync(SCHEDULE_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === "object") ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function writeScheduleState(state) {
+  try {
+    writeFileSync(SCHEDULE_STATE_FILE, JSON.stringify(state ?? {}, null, 2));
+  } catch {
+  }
+}
 function logSchedule(msg) {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
 `;
@@ -144,6 +160,16 @@ class Scheduler {
     this.channelsConfig = channelsConfig ?? null;
     this.promptsDir = join(DATA_DIR, "prompts");
     this._applyQuietConfig(topConfig);
+    // Restore proactive baseline across restarts: a cold start would
+    // otherwise reset proactiveLastFireAt to 0 and let the next tick
+    // fire immediately if proactiveStartAt + period has already elapsed.
+    try {
+      const persisted = readScheduleState();
+      const prev = Number(persisted?.proactive?.lastFireAt);
+      if (Number.isFinite(prev) && prev > 0 && prev <= Date.now()) {
+        this.proactiveLastFireAt = prev;
+      }
+    } catch {}
   }
   /** Resolve quiet/schedules/proactive flags from the top-level config
    *  (0.1.62 shape: `topConfig.quiet`, `topConfig.schedules`,
@@ -262,6 +288,16 @@ ${prompt}`;
   static INSTANCE_UUID = randomUUID();
   start() {
     if (this.tickTimer) return;
+    // Re-hydrate proactive baseline before the first tick fires. start()
+    // can be called after reloadConfig() or restart(), and the persisted
+    // value is the canonical source after a process restart.
+    try {
+      const persisted = readScheduleState();
+      const prev = Number(persisted?.proactive?.lastFireAt);
+      if (Number.isFinite(prev) && prev > 0 && prev <= Date.now() && prev > (this.proactiveLastFireAt || 0)) {
+        this.proactiveLastFireAt = prev;
+      }
+    } catch {}
     const total = this.nonInteractive.length + this.interactive.length + (this.proactive ? 1 : 0);
     if (total === 0) {
       process.stderr.write("mixdog scheduler: no schedules configured\n");
@@ -819,6 +855,13 @@ ${preferredTopicText}`;
     // moves on "we attempted a fire" (not on "talk succeeded"), so skip /
     // error / parse-fail branches no longer re-enter every tick.
     this.proactiveLastFireAt = Date.now();
+    // Persist baseline so a restart between fire-intent and next tick
+    // doesn't insta-fire again. State write failure is non-fatal.
+    try {
+      const state = readScheduleState();
+      state.proactive = { ...(state.proactive || {}), lastFireAt: this.proactiveLastFireAt };
+      writeScheduleState(state);
+    } catch {}
     this.proactiveInFlight = true;
     logSchedule("proactive: firing LLM\n");
     const presetId = this.proactive?.model || 'sonnet-mid';

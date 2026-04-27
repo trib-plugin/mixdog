@@ -121,7 +121,6 @@ function traceBridgeLoop({ sessionId, iteration, sendMs, messageCount, bodyBytes
 
 const TOOL_ARG_KEYS = {
     read: ['path', 'mode', 'n', 'offset', 'limit', 'full'],
-    multi_read: ['reads'],
     grep: ['pattern', 'path', 'glob', 'output_mode', 'head_limit', 'offset', 'type', '-i', '-n', '-A', '-B', '-C', 'context', 'multiline'],
     glob: ['pattern', 'path', 'head_limit', 'offset'],
     list: ['path', 'mode', 'depth', 'hidden', 'sort', 'type', 'head_limit', 'offset', 'name', 'min_size', 'max_size', 'modified_after', 'modified_before'],
@@ -171,8 +170,11 @@ function summarizeToolArgs(toolName, args) {
     for (const key of keys) {
         if (Object.prototype.hasOwnProperty.call(args, key)) out[key] = compactTraceArgValue(args[key], key);
     }
-    for (const countKey of ['reads', 'edits', 'writes']) {
+    for (const countKey of ['edits', 'writes']) {
         if (Array.isArray(args[countKey])) out[`${countKey}_count`] = args[countKey].length;
+    }
+    if (toolName === 'read' && Array.isArray(args.path)) {
+        out.path_count = args.path.length;
     }
     return Object.keys(out).length ? out : null;
 }

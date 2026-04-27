@@ -37,7 +37,7 @@ if (flags.file) {
 if (!sessionIds.length) die(`usage: bridge-analyze.mjs <sessionId>... | --file=ids.txt`)
 
 const STRUCTURE_TOOLS = /^(find_symbol|find_imports|find_dependents|find_callers|find_references|code_graph)$/
-const FILE_LOOKUP_TOOLS = /^(read|grep|glob|list|multi_read)$/
+const FILE_LOOKUP_TOOLS = /^(read|grep|glob|list)$/
 const BASH_LOOKUP_PATTERNS = /\b(ls|cat|find|head|tail|grep|wc|file|du)\b/
 
 const wanted = new Set(sessionIds)

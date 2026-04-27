@@ -26,7 +26,7 @@ export function buildExplorerPrompt(query, cwd) {
   directory shape / mtime          → list
 </decision-table>
 
-<tools>find_symbol, find_imports, find_dependents, find_callers, find_references, code_graph, glob, grep, read, multi_read, list</tools>
+<tools>find_symbol, find_imports, find_dependents, find_callers, find_references, code_graph, glob, grep, read, list</tools>
 
 <output>
   <shape>prose</shape>

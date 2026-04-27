@@ -20,7 +20,6 @@ const DEFAULT_SAME_TOOL_THRESHOLDS = Object.freeze({
     web_search: 24,
     memory_search: 24,
     read: 16,
-    multi_read: 16,
     grep: 16,
     glob: 16,
     list: 16,
@@ -57,7 +56,7 @@ const DEFAULT_CONFIG = Object.freeze({
             threshold: 10,
             repeatEvery: 8,
             minDistinctTools: 2,
-            tools: Object.freeze(['read', 'multi_read', 'grep', 'glob', 'list']),
+            tools: Object.freeze(['read', 'grep', 'glob', 'list']),
         }),
         Object.freeze({
             key: 'edit_roundtrip',
@@ -266,7 +265,7 @@ export function buildSameToolWarn(info) {
         `⚠ Repeated-tool soft-warn: \`${toolName}\` has been called ${info.count} times in this session.`,
         `Before calling \`${toolName}\` again, consider:`,
     ];
-    if (toolKey === 'read' || toolKey === 'multi_read') {
+    if (toolKey === 'read') {
         lines.push(`- Batch file paths into one read call (array \`path\`) instead of serial reads.`);
         lines.push(`- If you are still locating the code, use \`grep\` / \`glob\` first; if you already know the hit, use \`offset\` / \`limit\` instead of re-reading whole files.`);
     } else if (toolKey === 'grep') {
@@ -647,6 +646,35 @@ export function checkToolCall(guard, event) {
         };
     }
     return { action: 'continue' };
+}
+
+/**
+ * Strip leading soft-warn marker lines from a body that is about to leave
+ * the agent boundary (channel push / external report). Soft-warn markers
+ * are intentionally prepended to TOOL RESULTS so the model sees them and
+ * self-corrects (see buildSoftWarn / buildRunUpSoftWarn / etc above), but
+ * sub-agents tend to echo the marker line as the first line of their own
+ * reply. That is fine for self-correction but ugly for the user, so the
+ * outbound side strips them right before send.
+ *
+ * Removes any number of leading lines that match the four canonical
+ * marker prefixes, plus a single trailing blank line per stripped marker.
+ * Anywhere else in the body is left alone — only the leading run.
+ *
+ * NEVER call this on the tool-result body that is fed back to the model;
+ * that would defeat the self-correction signal.
+ */
+const SOFT_WARN_LEADING_RE = /^\s*⚠\s+(Tool-loop|Repeated-tool|Mixed-tool|Tool-budget)\s+soft-warn[^\n]*\n+/;
+export function stripLeadingSoftWarns(text) {
+    if (typeof text !== 'string' || text.length === 0) return text;
+    let out = text;
+    // Repeat: multiple markers may stack (one tool call can trigger more
+    // than one warn family at once, and a sub-agent may echo all of them
+    // back-to-back). Strip until no leading marker remains.
+    while (SOFT_WARN_LEADING_RE.test(out)) {
+        out = out.replace(SOFT_WARN_LEADING_RE, '');
+    }
+    return out;
 }
 
 // Exposed for tests — internal helpers.

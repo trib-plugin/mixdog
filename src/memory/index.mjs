@@ -751,7 +751,9 @@ async function handleMemoryAction(args) {
       cycle1Config = { ...cycle1Config, session_cap: sessionCapOverride }
     }
     const result = await _awaitCycle1Run(cycle1Config)
-    return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped}` }
+    const pendingStr = result?.pendingRows != null ? result.pendingRows : 0
+    const inFlightStr = result?.skippedInFlight === true ? 'true' : 'false'
+    return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped} pending=${pendingStr} inFlight=${inFlightStr}` }
   }
 
   if (action === 'cycle2' || action === 'sleep') {

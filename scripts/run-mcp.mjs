@@ -172,12 +172,16 @@ function legacyInstall() {
 
 // ── Main bootstrap ────────────────────────────────────────────────────────────
 let bootstrapDone = false;
+// Hoisted: spawn() below needs `dataDir` for env propagation, so the
+// binding has to outlive the try block. Falls back to pluginRoot when the
+// shared-install path failed and legacyInstall() ran.
+let dataDir = pluginRoot;
 
 try {
   // Step 1 — Resolve plugin data directory via plugin-paths.cjs.
   const require = createRequire(import.meta.url);
   const { resolvePluginData } = require('../lib/plugin-paths.cjs');
-  const dataDir = resolvePluginData();
+  dataDir = resolvePluginData();
 
   // Step 3 — Ensure dataDir exists.
   fs.mkdirSync(dataDir, { recursive: true });
@@ -251,8 +255,14 @@ try {
 // ── Spawn server ──────────────────────────────────────────────────────────────
 const isWin = process.platform === 'win32';
 const proc = spawn('node', [serverPath], {
+  cwd: pluginRoot,
   stdio: 'inherit',
-  env: { ...process.env, UV_THREADPOOL_SIZE: '2' },
+  env: {
+    ...process.env,
+    UV_THREADPOOL_SIZE: '2',
+    CLAUDE_PLUGIN_ROOT: pluginRoot,
+    CLAUDE_PLUGIN_DATA: dataDir,
+  },
   ...(isWin ? { windowsHide: true } : {}),
 });
 

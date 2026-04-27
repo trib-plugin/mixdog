@@ -8,7 +8,7 @@ export function buildExplorerPrompt(query, cwd) {
   return `${rootLine}<query>${query}</query>
 
 <tools>
-  <prefer>find_symbol, code_graph, glob, grep, read, multi_read, list</prefer>
+  <prefer>find_symbol, code_graph, glob, grep, read, list</prefer>
   <route>
     <case when="identifier-known">find_symbol</case>
     <case when="imports-or-callers">code_graph alias (find_imports/find_dependents/find_callers/find_references)</case>

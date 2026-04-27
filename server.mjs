@@ -948,8 +948,11 @@ function forwardRecapStatusToStatusServer() {
   }
 }
 
-setImmediate(() => {
+function spawnStatusServer() {
   try {
+    // Stale advert from a prior crashed child can keep the new child from
+    // claiming the slot; best-effort unlink before fork.
+    try { unlinkSync(STATUS_ADVERTISE_PATH) } catch {}
     statusServerChild = fork(
       join(PLUGIN_ROOT, 'src/status/server.mjs'),
       [],
@@ -965,15 +968,25 @@ setImmediate(() => {
     )
     statusServerChild.stdout?.on('data', (d) => log(String(d).trimEnd()))
     statusServerChild.stderr?.on('data', (d) => log(`[status-server] stderr: ${String(d).trimEnd()}`))
-    forwardRecapStatusToStatusServer()
+    statusServerChild.on('error', (e) => {
+      log(`[status-server] child error: ${(e && (e.stack || e.message)) || e}`)
+      statusServerChild = null
+      try { unlinkSync(STATUS_ADVERTISE_PATH) } catch {}
+      setTimeout(spawnStatusServer, 1000).unref?.()
+    })
     statusServerChild.on('exit', (code, signal) => {
       log(`[status-server] child exited code=${code} signal=${signal}`)
       statusServerChild = null
+      try { unlinkSync(STATUS_ADVERTISE_PATH) } catch {}
+      setTimeout(spawnStatusServer, 1000).unref?.()
     })
+    forwardRecapStatusToStatusServer()
   } catch (e) {
-    log(`[status-server] failed to fork: ${e && (e.stack || e.message) || e}`)
+    log(`[status-server] failed to fork: ${(e && (e.stack || e.message)) || e}`)
+    setTimeout(spawnStatusServer, 1000).unref?.()
   }
-})
+}
+setImmediate(spawnStatusServer)
 
 // ── Spawn workers: memory + channels ──────────────────────────────
 // Workers own all heavy work. Session recap, buffer flush, cycle
@@ -1001,11 +1014,15 @@ setImmediate(() => {
 
   // channels + CLAUDE.md depend on memory — wait for memory ready when enabled
   const memEntry = memoryOn ? workers.get('memory') : null
+  const channelsWaitStart = Date.now()
   if (memEntry) {
     const onReady = (msg) => {
       if (msg.type === 'ready') {
         reconcileClaudeMd()
-        if (!workers.has('channels')) spawnWorker('channels')
+        if (!workers.has('channels')) {
+          log(`[server] channels spawn reason=memory-ready wait=${Date.now()-channelsWaitStart}ms`)
+          spawnWorker('channels')
+        }
         memEntry.proc.removeListener('message', onReady)
       }
     }
@@ -1014,6 +1031,7 @@ setImmediate(() => {
     setTimeout(() => {
       if (!workers.has('channels')) {
         reconcileClaudeMd()
+        log(`[server] channels spawn reason=memory-ready-timeout wait=${Date.now()-channelsWaitStart}ms`)
         spawnWorker('channels')
       }
     }, 10000)

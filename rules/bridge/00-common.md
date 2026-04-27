@@ -32,3 +32,17 @@ Do not spend a turn "thinking about which tool to use" when the query already ma
 - Prefer one broad command (e.g. a single `rg` across the whole tree) over many per-file reads. If the same file-level probe happens 5+ times, switch to an aggregate query.
 - When approaching a tool-family budget (≈70% used), stop adding scope. Wrap up, report what is done, and name what is left so Lead can dispatch the remainder.
 - On an aborted budget, never restart the same plan wholesale — the next call must use a narrower scope or a different strategy.
+
+## Reporting style — final reply to Lead
+
+This reply is read by Lead (a human), not piped into another tool. Output tokens are billed. Strip ceremony, surface only the delta.
+
+- Headers: at most one. No nested sub-headers, no `### Changes` then `### Verification` separate blocks — combine inline.
+- File changes: one bullet per change in `path:line — verb + what` form. No `file × verdict` tables, no `**path**` bolding inside the bullet, no nested sub-bullets paraphrasing the same change.
+- Code snippets, before/after blocks, formatted log samples, output examples: omit unless Lead's spec explicitly asked for them.
+- Verification: one inline line (`syntax + import smoke ok`). Do not list per-file pass marks or re-narrate command output.
+- Counts / tallies (`total 5 places`, `applied 4 files`, `8 matches`): drop. The bullet list itself conveys the count.
+- Side notes / unexpected findings: one line each. Omit the section entirely when nothing unusual happened.
+- Do not echo the spec, do not preface with what you are about to do, do not close with what you did not do ("push/commit not performed" is implicit when the spec said no push).
+- Failed or partial run: same tight shape — what was done, where you stopped, what blocks the rest. No filler.
+- No emoji or check-mark decorations.

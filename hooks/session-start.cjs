@@ -9,6 +9,27 @@ const { spawn } = require('child_process');
 const { DatabaseSync } = require('node:sqlite');
 const { resolvePluginData } = require(path.join(__dirname, '..', 'lib', 'plugin-paths.cjs'));
 
+// Mirror selected stderr lines to a plugin-data log file so cycle1 traces
+// remain inspectable after the host shell scrolls past. Best-effort: any
+// fs error is swallowed so logging never breaks the hook.
+let _SESSION_START_LOG_PATH = null;
+function sessionStartLogPath() {
+  if (_SESSION_START_LOG_PATH) return _SESSION_START_LOG_PATH;
+  const base = (typeof DATA_DIR === 'string' && DATA_DIR)
+    ? DATA_DIR
+    : path.join(os.homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
+  _SESSION_START_LOG_PATH = path.join(base, 'session-start.log');
+  return _SESSION_START_LOG_PATH;
+}
+function teeStderr(line) {
+  process.stderr.write(line);
+  try {
+    const p = sessionStartLogPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.appendFileSync(p, line);
+  } catch {}
+}
+
 // ---------------------------------------------------------------------------
 // argv parsing — supports `--part rules`, `--part=rules`.
 // Invalid/unknown part falls back to `rules`.
@@ -365,13 +386,14 @@ function httpPostJson({ hostname, port, path: urlPath, timeoutMs, body }) {
   });
 }
 
-// Pull the integer processed count from a cycle1 response. Memory worker
-// returns an MCP envelope { content:[{type:'text', text:'cycle1: chunks=N
-// processed=M skipped=K'}], isError }; channels owner returns { ok, result }
-// where result may carry the same text shape. Returns null when the field
-// could not be parsed (treated downstream as "unknown / cannot verify").
-function extractProcessedCount(parsed) {
-  if (!parsed) return null;
+// Pull cycle1 signals from a cycle1 response. Memory worker returns an MCP
+// envelope { content:[{type:'text', text:'cycle1: chunks=N processed=M
+// skipped=K pending=P inFlight=B'}], isError }; channels owner returns
+// { ok, result } where result may carry the same text shape. Each field is
+// null when not parseable (treated downstream as "unknown / cannot verify").
+function extractCycleSignals(parsed) {
+  const empty = { processed: null, pendingRows: null, skippedInFlight: null };
+  if (!parsed) return empty;
   let text = '';
   if (Array.isArray(parsed.content) && parsed.content[0] && typeof parsed.content[0].text === 'string') {
     text = parsed.content[0].text;
@@ -380,9 +402,15 @@ function extractProcessedCount(parsed) {
   } else if (typeof parsed.result === 'string') {
     text = parsed.result;
   }
-  if (typeof text !== 'string') return null;
-  const m = text.match(/processed=(\d+)/);
-  return m ? parseInt(m[1], 10) : null;
+  if (typeof text !== 'string') return empty;
+  const proc = text.match(/processed=(\d+)/);
+  const pend = text.match(/pending=(\d+)/);
+  const inflight = text.match(/inFlight=(true|false)/);
+  return {
+    processed: proc ? parseInt(proc[1], 10) : null,
+    pendingRows: pend ? parseInt(pend[1], 10) : null,
+    skippedInFlight: inflight ? inflight[1] === 'true' : null,
+  };
 }
 
 // One full cycle1 attempt via the channels owner. Waits for
@@ -398,11 +426,21 @@ async function requestCycle1Once(deadline, opts) {
     const elapsedMs = Date.now() - start;
     if (payload.ok) {
       const procStr = payload.processed != null ? payload.processed : '?';
-      process.stderr.write(`[session-start] cycle1 slot=${slot} route=channels reason=ok processed=${procStr} elapsed=${elapsedMs}ms\n`);
-      return { ok: true, processed: payload.processed, route: 'channels', elapsedMs };
+      const pendStr = payload.pendingRows != null ? payload.pendingRows : '?';
+      const inFlightStr = payload.skippedInFlight === true ? 'true'
+        : payload.skippedInFlight === false ? 'false' : '?';
+      teeStderr(`[session-start] cycle1 slot=${slot} route=channels reason=ok processed=${procStr} pending=${pendStr} inFlight=${inFlightStr} elapsed=${elapsedMs}ms\n`);
+      return {
+        ok: true,
+        processed: payload.processed,
+        pendingRows: payload.pendingRows,
+        skippedInFlight: payload.skippedInFlight,
+        route: 'channels',
+        elapsedMs,
+      };
     }
     const sc = payload.statusCode != null ? ` statusCode=${payload.statusCode}` : '';
-    process.stderr.write(`[session-start] cycle1 slot=${slot} route=channels reason=${payload.reason}${sc} elapsed=${elapsedMs}ms\n`);
+    teeStderr(`[session-start] cycle1 slot=${slot} route=channels reason=${payload.reason}${sc} elapsed=${elapsedMs}ms\n`);
     return { ok: false, reason: payload.reason, statusCode: payload.statusCode, elapsedMs, route: 'channels' };
   };
 
@@ -438,7 +476,13 @@ async function requestCycle1Once(deadline, opts) {
     try {
       const parsed = JSON.parse(res.body);
       if (parsed && parsed.ok) {
-        return finish({ ok: true, processed: extractProcessedCount(parsed) });
+        const sig = extractCycleSignals(parsed);
+        return finish({
+          ok: true,
+          processed: sig.processed,
+          pendingRows: sig.pendingRows,
+          skippedInFlight: sig.skippedInFlight,
+        });
       }
       return finish({ ok: false, reason: 'body-not-ok', statusCode: 200 });
     } catch {
@@ -460,20 +504,23 @@ async function requestCycle1(timeoutMs, opts = {}) {
   const graceMs = Number.isFinite(opts.graceMs) ? opts.graceMs : 5000;
   const start = Date.now();
   const deadline = start + Math.max(0, timeoutMs);
-  process.stderr.write(`[session-start] cycle1 slot=${slot} start graceMs=${graceMs} timeoutMs=${timeoutMs}\n`);
+  teeStderr(`[session-start] cycle1 slot=${slot} start graceMs=${graceMs} timeoutMs=${timeoutMs}\n`);
 
   try {
     const r1 = await requestCycle1Once(deadline, opts);
     if (!r1.ok) return r1;
     if (r1.processed != null && r1.processed > 0) return r1;
-    const RETRY_DELAY_MS = 1500;
+    // Genuine empty (no pending raw rows AND no in-flight dedup hit) — retry
+    // would do nothing useful, skip the second pass.
+    if (r1.pendingRows === 0 && r1.skippedInFlight === false) return r1;
+    const RETRY_DELAY_MS = 800;
     const remaining = deadline - Date.now();
     if (remaining <= RETRY_DELAY_MS + 200) return r1;
     await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
     const r2 = await requestCycle1Once(deadline, { ...opts, slot: `${slot}:r` });
     return r2.ok ? r2 : r1;
   } catch (e) {
-    process.stderr.write(`[session-start] cycle1 slot=${slot} exception=${(e && e.message) || e}\n`);
+    teeStderr(`[session-start] cycle1 slot=${slot} exception=${(e && e.message) || e}\n`);
     return { ok: false, reason: 'exception', elapsedMs: Date.now() - start };
   }
 }
@@ -578,7 +625,7 @@ async function runCorePart() {
   if (skipMemoryInject) return;
   const r = await requestCycle1(60000, { graceMs: 10000, slot: 'core' });
   if (r.ok !== true) {
-    process.stderr.write(`[session-start] core skipped: cycle1 await failed reason=${r.reason}\n`);
+    teeStderr(`[session-start] core skipped: cycle1 await failed reason=${r.reason}\n`);
     return;
   }
   const db = openMemoryDb();
@@ -600,7 +647,7 @@ async function runRecapPart() {
   if (skipMemoryInject) return;
   const r = await requestCycle1(60000, { graceMs: 10000, slot: 'recap' });
   if (r.ok !== true) {
-    process.stderr.write(`[session-start] recap skipped: cycle1 await failed reason=${r.reason}\n`);
+    teeStderr(`[session-start] recap skipped: cycle1 await failed reason=${r.reason}\n`);
     return;
   }
   const db = openMemoryDb();

@@ -17,7 +17,6 @@ export const TOOL_RESULT_OFFLOAD_PREFIX = '[tool output offloaded:';
 // loops just because a useful result crossed the old 8k global threshold.
 const INLINE_THRESHOLD_BY_TOOL = new Map([
     ['read', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
-    ['multi_read', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
     ['head', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
     ['tail', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
     ['diff', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],

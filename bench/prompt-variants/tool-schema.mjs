@@ -16,8 +16,7 @@ export function buildExplorerPrompt(query, cwd) {
   <tool name="code_graph"      accepts="mode + symbol-or-path"     returns="structural graph slice"/>
   <tool name="glob"            accepts="filename-pattern"          returns="matching paths"/>
   <tool name="grep"            accepts="regex + optional-glob"     returns="matching lines"/>
-  <tool name="read"            accepts="path | path[]"             returns="file contents"/>
-  <tool name="multi_read"      accepts="path[]"                    returns="batched contents"/>
+  <tool name="read"            accepts="path | path[]"             returns="file contents (single or batched)"/>
   <tool name="list"            accepts="path + mode(list|tree|find)" returns="directory shape"/>
 </tools>
 

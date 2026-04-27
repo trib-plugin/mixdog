@@ -20,7 +20,7 @@ export function buildExplorerPrompt(query, cwd) {
   <case when="identifier-bound"           use="find_symbol"/>
   <case when="graph-shaped"               use="find_imports | find_dependents | find_callers | find_references | code_graph"/>
   <case when="filename-pattern"           use="glob"/>
-  <case when="known-path AND multi-file"  use="multi_read"/>
+  <case when="known-path AND multi-file"  use="read" args="path[]"/>
   <case when="known-path"                 use="read"/>
   <case otherwise="true"                  use="grep then read"/>
 </routing>
