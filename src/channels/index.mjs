@@ -716,6 +716,26 @@ async function startOwnerHttpServer() {
           }
           return;
         }
+        case "/recap/reset": {
+          if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
+          // Called by hooks/session-start.cjs on `/clear` (matcher startup|clear).
+          // The session-start hook runs in a separate cjs process with no IPC
+          // handle to this forked channels child, so it can't drop recap
+          // status directly. Reset to an `empty` baseline so the statusline
+          // doesn't carry the prior session's `injected`/`error` recap badge
+          // into the cleared session.
+          const now = Date.now();
+          recapState.state = 'empty';
+          recapState.running = false;
+          recapState.startedAt = null;
+          recapState.lastCompletedAt = now;
+          recapState.updatedAt = now;
+          recapState.errorMessage = null;
+          sendRecapStateToParent();
+          res.writeHead(200);
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
         case "/cycle1": {
           if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
           const timeoutMs = Number(body?.timeout_ms) > 0 ? Math.min(60000, Number(body.timeout_ms)) : 15000;

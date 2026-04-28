@@ -114,6 +114,18 @@ function messagesArrayChanged(before, after) {
 const SKILL_TOOL_NAMES = new Set(['skills_list', 'skill_view', 'skill_execute']);
 const SPECIAL_TOOL_NAMES = new Set(['bash_session', 'apply_patch', 'code_graph']);
 const BASH_SESSION_HEADER_RE = /\[session: ([^\]\r\n]+)\]/;
+// Soft-warn sidecar: store advisory text on the tool message in a separate
+// field instead of mutating `content`. Provider wrappers emit the sidecar
+// as its own block AFTER the tool_result block so cache_control on the
+// tool_result keeps hashing the same payload across turns. Mutating
+// `toolMsg.content` directly invalidated the Anthropic prompt cache on
+// every turn that any guard fired.
+function appendToolWarnSidecar(toolMsg, warnText) {
+    if (!toolMsg || toolMsg.role !== 'tool' || !warnText) return;
+    toolMsg.warnSidecar = toolMsg.warnSidecar
+        ? `${toolMsg.warnSidecar}\n\n${warnText}`
+        : warnText;
+}
 function buildIterationWarnText({ iteration, threshold, toolCallsTotal, role }) {
     const scope = role ? ` for role \`${role}\`` : '';
     return [
@@ -506,46 +518,27 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             });
             if (guardResult.action === 'detected') {
                 traceToolLoopDetected({ sessionId, iteration: iterations, info: guardResult.info });
-                // Soft-warn: prepend a synthetic sidecar onto the tool
-                // result the model is about to read so it gets a
-                // self-correction nudge BEFORE the hard abort at count 3.
-                if (guardResult.warnText) {
-                    const toolMsg = messages[messages.length - 1];
-                    if (toolMsg && toolMsg.role === 'tool') {
-                        toolMsg.content = `${guardResult.warnText}\n\n${toolMsg.content}`;
-                    }
-                }
+                // Soft-warn: attach a sidecar onto the tool message so the
+                // provider wrapper emits it as a separate block AFTER the
+                // tool_result. Keeps tool_result content stable so the
+                // cache_control breakpoint still hits.
+                appendToolWarnSidecar(messages[messages.length - 1], guardResult.warnText);
             } else if (guardResult.action === 'same_tool_warn') {
                 // Same-tool repetition advisory. Never aborts — just
-                // prepends a sidecar asking the model to stop and
+                // attaches a sidecar asking the model to stop and
                 // synthesize. Fires once per whitelisted tool per session.
                 traceToolLoopWarn({ sessionId, iteration: iterations, warnType: 'same_tool', info: guardResult.info });
-                if (guardResult.warnText) {
-                    const toolMsg = messages[messages.length - 1];
-                    if (toolMsg && toolMsg.role === 'tool') {
-                        toolMsg.content = `${guardResult.warnText}\n\n${toolMsg.content}`;
-                    }
-                }
+                appendToolWarnSidecar(messages[messages.length - 1], guardResult.warnText);
             } else if (guardResult.action === 'family_warn') {
                 // Cross-tool advisory for mixed low-level loops like
                 // read+grep+glob+list or repeated edit-roundtrips.
                 traceToolLoopWarn({ sessionId, iteration: iterations, warnType: 'family', info: guardResult.info });
-                if (guardResult.warnText) {
-                    const toolMsg = messages[messages.length - 1];
-                    if (toolMsg && toolMsg.role === 'tool') {
-                        toolMsg.content = `${guardResult.warnText}\n\n${toolMsg.content}`;
-                    }
-                }
+                appendToolWarnSidecar(messages[messages.length - 1], guardResult.warnText);
             } else if (guardResult.action === 'budget_warn') {
                 // Overall tool-budget advisory. Fires sparingly to nudge
                 // synthesis once the session has already spent many tool turns.
                 traceToolLoopWarn({ sessionId, iteration: iterations, warnType: 'budget', info: guardResult.info });
-                if (guardResult.warnText) {
-                    const toolMsg = messages[messages.length - 1];
-                    if (toolMsg && toolMsg.role === 'tool') {
-                        toolMsg.content = `${guardResult.warnText}\n\n${toolMsg.content}`;
-                    }
-                }
+                appendToolWarnSidecar(messages[messages.length - 1], guardResult.warnText);
             } else if (guardResult.action === 'abort') {
                 traceToolLoopAborted({ sessionId, iteration: iterations, info: guardResult.info });
                 throw new ToolLoopAbortError(guardResult.info);
@@ -558,7 +551,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             for (let i = messages.length - 1; i >= 0; i -= 1) {
                 const msg = messages[i];
                 if (msg && msg.role === 'tool') {
-                    msg.content = `${iterationWarnText}\n\n${msg.content}`;
+                    appendToolWarnSidecar(msg, iterationWarnText);
                     break;
                 }
             }

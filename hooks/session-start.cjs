@@ -540,6 +540,33 @@ async function requestCycle1(timeoutMs, opts = {}) {
   }
 }
 
+// Best-effort POST /recap/reset to the channels owner. Used on `/clear` so
+// the forked status server's recapState (which lives in a child process the
+// hook can't reach via IPC) drops the prior session's badge. Bounded by
+// graceMs and silent on failure — recap reset is cosmetic, never block
+// SessionStart on it.
+async function requestRecapReset(graceMs) {
+  try {
+    const active = await pollActiveInstance(Math.max(0, graceMs));
+    if (!active || !active.httpPort) {
+      teeStderr('[session-start] recap-reset skipped: no active instance\n');
+      return;
+    }
+    const res = await httpPostJson({
+      hostname: '127.0.0.1',
+      port: active.httpPort,
+      path: '/recap/reset',
+      timeoutMs: 2000,
+      body: {},
+    });
+    if (res.statusCode !== 200) {
+      teeStderr(`[session-start] recap-reset non-200 status=${res.statusCode}\n`);
+    }
+  } catch (e) {
+    teeStderr(`[session-start] recap-reset failed: ${(e && e.message) || e}\n`);
+  }
+}
+
 async function runRulesPart() {
   // First-boot one-shot work — only slot 1 (rules) runs this. Other slots
   // skip it entirely so they stay read-only and side-effect free.
@@ -617,6 +644,14 @@ async function runRulesPart() {
       const { buildInjectionContent } = require(path.join(PLUGIN_ROOT, 'lib', 'rules-builder.cjs'));
       additionalContext = buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) || '';
     } catch {}
+  }
+
+  // On `/clear`, drop the prior session's recap badge from the forked status
+  // server. Hook runs in a separate cjs process with no IPC handle to that
+  // child, so we POST /recap/reset to the channels owner instead. Best
+  // effort, short grace — channels owner is usually already up on /clear.
+  if (_event.source === 'clear') {
+    await requestRecapReset(3000);
   }
 
   // Always run cycle1 to completion so later slots (core / recap) read the

@@ -1095,6 +1095,37 @@ function _readContentIfSnapshotHashMatches(fullPath, snapshot) {
     }
 }
 
+// Reject edits whose target text sits outside the line window the
+// snapshot actually covered. Without this, a partial `read` (head/tail
+// or offset+limit) was treated as proof the model had seen the whole
+// file — letting it author edits against unread regions from cached
+// assumptions. Returns null when fully covered, or an error string the
+// caller should return verbatim. Full-file snapshots (isPartialView
+// false) bypass this check; line range info absent → cannot validate,
+// reject conservatively.
+function _validatePartialSnapshotCoverage(content, oldStr, snapshot, filePath) {
+    if (!snapshot || snapshot.isPartialView !== true) return null;
+    if (typeof oldStr !== 'string' || oldStr.length === 0) return null;
+    const offset = Number(snapshot.offset);
+    const limit = Number(snapshot.limit);
+    if (!Number.isFinite(offset) || !Number.isFinite(limit) || limit <= 0) {
+        return `Error [code 6]: edit target lies outside the read window for ${filePath} — re-read the file (or read with a wider range covering the edit) before editing`;
+    }
+    // 1-based inclusive window of lines the snapshot saw.
+    const winStart = offset + 1;
+    const winEnd = offset + limit;
+    let idx = 0;
+    while ((idx = content.indexOf(oldStr, idx)) !== -1) {
+        const startLine = _lineForIndex(content, idx);
+        const endLine = startLine + oldStr.split('\n').length - 1;
+        if (startLine < winStart || endLine > winEnd) {
+            return `Error [code 6]: edit target at lines ${startLine}-${endLine} lies outside the read window ${winStart}-${winEnd} for ${filePath} — re-read the file (or read with a wider range covering the edit) before editing`;
+        }
+        idx += oldStr.length;
+    }
+    return null;
+}
+
 function _countOccurrences(haystack, needle) {
     if (typeof needle !== 'string' || needle.length === 0) return 0;
     let count = 0;
@@ -2386,6 +2417,14 @@ async function _runMultiEdit(args, workDir, readStateScope, pathOpts, options = 
                 return `Error: edit ${i} must have old_string and new_string`;
             }
             const { old_string, new_string, replace_all } = entry;
+            // Validate against the snapshot's window before each step so a
+            // partial read can't be used as cover for editing unread regions.
+            // Validation is on the pre-edit content for step i — `content`
+            // here already incorporates earlier edits, but the line window
+            // anchors to the current text, which is the buffer the model
+            // is targeting in this hop.
+            const partialCoverageErr = _validatePartialSnapshotCoverage(content, old_string, mEditSnapshot, filePath);
+            if (partialCoverageErr) return partialCoverageErr.replace('Error [code 6]:', `Error [code 6]: edit ${i} —`);
             if (replace_all === true) {
                 if (!content.includes(old_string)) {
                     return `Error [code 8]: edit ${i} — old_string not found in ${filePath}`;
@@ -2952,6 +2991,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 const content = editPreloadedContent === null
                     ? readFileSync(fullPath, 'utf-8')
                     : editPreloadedContent;
+                const partialCoverageErr = _validatePartialSnapshotCoverage(content, oldStr, editSnapshot, filePath);
+                if (partialCoverageErr) return partialCoverageErr;
                 const count = content.split(oldStr).length - 1;
                 if (count === 0)
                     return `Error [code 8]: old_string not found in ${filePath}`;
@@ -3115,6 +3156,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
             const allFiles = [];
+            const rgErrors = [];
             for (const [root, rels] of groups) {
                 const rgArgs = ['--files'];
                 for (const ex of DEFAULT_IGNORE_GLOBS) rgArgs.push('--glob', ex);
@@ -3126,9 +3168,19 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         const trimmed = line.trim();
                         if (trimmed) allFiles.push(trimmed);
                     }
-                } catch {
-                    // rg exits 1 on no matches; best-effort ignore
+                } catch (err) {
+                    // _spawnRg already maps code 1 (no matches) → resolve('')
+                    // so this catch only fires on real errors (invalid glob,
+                    // permission denied, missing rg binary, timeout). Surface
+                    // them instead of silently returning "no files found",
+                    // which masked typos and OS-level access failures as
+                    // empty results.
+                    const stderr = String(err?.stderr || err?.message || err).trim().split('\n').slice(0, 3).join('; ');
+                    rgErrors.push(`rg failed for ${normalizeOutputPath(root)}: ${stderr || 'unknown error'}`);
                 }
+            }
+            if (rgErrors.length > 0 && allFiles.length === 0) {
+                return `Error: ${rgErrors.join(' | ')}`;
             }
             const unique = Array.from(new Set(allFiles));
             // Sort by mtime descending (Anthropic GlobTool parity): recent
@@ -3152,7 +3204,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 return normalizeOutputPath(abs);
             });
             const remaining = windowed.length - capped.length;
-            const out = capShellOutput((capped.join('\n') + (remaining > 0 ? `\n... [${remaining} more entries]` : '')) || '(no files found)');
+            const errSuffix = rgErrors.length > 0 ? `\n... [warning] ${rgErrors.join(' | ')}` : '';
+            const out = capShellOutput((capped.join('\n') + (remaining > 0 ? `\n... [${remaining} more entries]` : '') + errSuffix) || '(no files found)');
             _cacheSet(cacheKey, out, { scopes: [...groups.keys()].map((root) => resolveAgainstCwd(root, workDir)) });
             return out;
         }
@@ -3378,8 +3431,14 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             if (!rootStat.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
 
             const matches = [];
-            // F5: walkDir handles dotfile skip + recursion. Returning false
-            // stops the walk as soon as headLimit is satisfied (F1 fix).
+            // Hard absolute cap to bound memory/time on huge trees. The
+            // sort key (mtime, newest first) does not align with walk
+            // order, so an early stop at `offset+headLimit` would yield
+            // a partial sort and give the wrong "newest N" answer
+            // whenever newer files live deeper in the walk. Walk fully
+            // (up to the absolute cap), then sort, then page.
+            const FIND_ABSOLUTE_CAP = 50_000;
+            let truncatedByCap = false;
             walkDir(fullPath, {
                 hidden: false,
                 visit: (ent, entPath) => {
@@ -3397,8 +3456,10 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     if (after !== null && stat.mtimeMs < after) return;
                     if (before !== null && stat.mtimeMs > before) return;
                     matches.push({ path: entPath, size: stat.size, mtimeMs: stat.mtimeMs });
-                    const gatherLimit = headLimit > 0 ? offset + headLimit : 0;
-                    if (gatherLimit > 0 && matches.length >= gatherLimit) return false;
+                    if (matches.length >= FIND_ABSOLUTE_CAP) {
+                        truncatedByCap = true;
+                        return false;
+                    }
                 },
             });
 
@@ -3408,6 +3469,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const lines = sliced.map(m =>
                 `${normalizeOutputPath(m.path)}\t${m.size}\t${formatMtime(m.mtimeMs)}`);
             if (windowed.length > sliced.length) lines.push(`... ${windowed.length - sliced.length} more entries`);
+            if (truncatedByCap) lines.push(`... walk truncated at ${FIND_ABSOLUTE_CAP} matches; narrow the scope (path/name/modified_after) for accurate global sort`);
             const out = lines.join('\n') || '(no matches)';
             _cacheSet(cacheKey, out, { scopes: [fullPath] });
             return out;

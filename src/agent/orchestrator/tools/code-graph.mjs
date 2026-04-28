@@ -1002,7 +1002,14 @@ function _findSymbolHits(graph, symbol, { language = null } = {}) {
 
   const escaped = cleanSymbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`\\b${escaped}\\b`, 'g');
-  const declRe = new RegExp(`\\b(?:const|let|var|function|class|interface|type|enum|def|export)\\b[^\\n]*\\b${escaped}\\b`);
+  // Declaration regex must anchor the symbol immediately after a
+  // declaration keyword. The previous pattern (`\bkeyword\b[^\n]*\bX\b`)
+  // matched ordinary callsites like `const result = doFoo(X)` as a
+  // declaration of X, producing a wrong "best declaration candidate".
+  // Allow optional `export [default]` / `async` modifiers and `function*`.
+  const declRe = new RegExp(
+    `(?:^|[\\s;{(,])(?:export\\s+(?:default\\s+)?)?(?:async\\s+)?(?:const|let|var|function\\*?|class|interface|type|enum|def)\\s+${escaped}\\b`
+  );
   const hits = [];
 
   for (const node of candidateNodes) {
@@ -1476,6 +1483,12 @@ async function codeGraph(args, cwd) {
 
   if (mode === 'dependents') {
     if (!rel) throw new Error('code_graph dependents: "file" is required');
+    // Validate the path is actually indexed before answering. Without
+    // this check, a typo or unsupported extension silently returns
+    // "(no dependents)" — indistinguishable from a real zero-dependent
+    // file and a frequent source of "graph says nothing depends on X"
+    // false negatives.
+    if (!node) return `code_graph dependents: file not found in graph: ${normFile || '(missing file)'}`;
     const deps = [...(graph.reverse.get(rel) || [])].sort();
     return deps.length ? deps.join('\n') : '(no dependents)';
   }

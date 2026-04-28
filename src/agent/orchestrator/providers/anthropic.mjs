@@ -138,15 +138,23 @@ function toAnthropicMessages(
                 tool_use_id: m.toolCallId || '',
                 content: m.content,
             };
+            // warnSidecar is loop.mjs's soft-warn channel. Emitted as a
+            // separate text block AFTER cache_control so the tool_result
+            // hash stays stable across turns.
+            const sidecarBlock = m.warnSidecar
+                ? { type: 'text', text: m.warnSidecar }
+                : null;
             if (last?.role === 'user' && Array.isArray(last.content)) {
                 last.content.push(block);
                 if (anyCache(idx)) {
                     last.content = appendCacheControl(last.content, pickTtl(idx));
                 }
+                if (sidecarBlock) last.content.push(sidecarBlock);
             }
             else {
                 let content = [block];
                 if (anyCache(idx)) content = appendCacheControl(content, pickTtl(idx));
+                if (sidecarBlock) content = [...content, sidecarBlock];
                 result.push({ role: 'user', content });
             }
             continue;

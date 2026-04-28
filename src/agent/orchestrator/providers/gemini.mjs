@@ -85,9 +85,14 @@ function toGeminiContent(message) {
         return { role: 'model', parts };
     }
     if (message.role === 'tool') {
+        // warnSidecar is loop.mjs's soft-warn channel. Append to the
+        // emitted result only — do NOT mutate message.content.
+        const result = message.warnSidecar
+            ? `${message.content}\n\n${message.warnSidecar}`
+            : message.content;
         return {
             role: 'function',
-            parts: [{ functionResponse: { name: message.toolCallId || '', response: { result: message.content } } }],
+            parts: [{ functionResponse: { name: message.toolCallId || '', response: { result } } }],
         };
     }
     return {

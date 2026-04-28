@@ -25,10 +25,16 @@ const PRESETS = {
 function toOpenAIMessages(messages) {
     return messages.map((m) => {
         if (m.role === 'tool') {
+            // warnSidecar is loop.mjs's soft-warn channel. Append to the
+            // emitted string only — do NOT mutate m.content so the source
+            // tool_result payload stays stable across provider re-emits.
+            const content = m.warnSidecar
+                ? `${m.content}\n\n${m.warnSidecar}`
+                : m.content;
             return {
                 role: 'tool',
                 tool_call_id: m.toolCallId || '',
-                content: m.content,
+                content,
             };
         }
         if (m.role === 'assistant' && m.toolCalls?.length) {

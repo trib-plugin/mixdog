@@ -643,18 +643,42 @@ async function runPromotePhase(db, phaseName, rows, activeRows, config, options,
   const timeout = Number(config?.cycle2?.timeout ?? 600000)
   const mode = `cycle2-${phaseName}`
 
+  // Stability fix: cycle2 was accumulating unparseable/timeout entries in
+  // memory-worker.log because (1) the user prompt lacked an explicit JSON
+  // directive — the role rules said "no preamble" but HAIKU still emitted
+  // prose ~5% of the time, and (2) any single LLM hiccup wrote off the whole
+  // phase batch. The prompt template now ends with an explicit format block;
+  // here we add a single retry on unparseable (cache-busted with a tag) but
+  // NOT on timeout — a 600s timeout already wasted enough wall clock, and
+  // retrying would compound the burst latency that pushed cycle2 to 138s.
+  const previewRaw = (raw) => String(raw ?? '').replace(/\s+/g, ' ').slice(0, 200)
+  const callOnce = async (extraTag) => {
+    const p = extraTag ? `${prompt}\n\n[retry:${extraTag}]` : prompt
+    return await invokeLlm(p, options, mode, preset, timeout)
+  }
+  let raw
   try {
-    const raw = await invokeLlm(prompt, options, mode, preset, timeout)
-    const actions = parsePromoteActions(raw)
-    if (!actions) {
-      process.stderr.write(`[cycle2] ${phaseName} unparseable response (${String(raw).slice(0, 200)})\n`)
-      return { actions: [] }
-    }
-    return { actions }
+    raw = await callOnce(null)
   } catch (err) {
     process.stderr.write(`[cycle2] ${phaseName} LLM error: ${err.message}\n`)
     return { actions: [] }
   }
+  let actions = parsePromoteActions(raw)
+  if (!actions) {
+    process.stderr.write(`[cycle2] ${phaseName} unparseable response, retrying once (${previewRaw(raw)})\n`)
+    try {
+      const raw2 = await callOnce('json-only')
+      actions = parsePromoteActions(raw2)
+      if (!actions) {
+        process.stderr.write(`[cycle2] ${phaseName} unparseable after retry — skipping batch (${previewRaw(raw2)})\n`)
+        return { actions: [] }
+      }
+    } catch (err) {
+      process.stderr.write(`[cycle2] ${phaseName} retry LLM error: ${err.message}\n`)
+      return { actions: [] }
+    }
+  }
+  return { actions }
 }
 
 export async function runCycle2(db, config = {}, options = {}) {

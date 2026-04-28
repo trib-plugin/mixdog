@@ -202,10 +202,15 @@ function convertMessagesToResponsesInput(messages) {
     for (const m of messages) {
         if (!m || m.role === 'system') continue;
         if (m.role === 'tool') {
+            // warnSidecar is loop.mjs's soft-warn channel. Append to the
+            // emitted output only — do NOT mutate m.content.
+            const output = m.warnSidecar
+                ? `${m.content}\n\n${m.warnSidecar}`
+                : m.content;
             out.push({
                 type: 'function_call_output',
                 call_id: m.toolCallId || '',
-                output: m.content,
+                output,
             });
             continue;
         }
