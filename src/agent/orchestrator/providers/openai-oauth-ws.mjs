@@ -306,6 +306,22 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
     let responseId = '';
     const toolCalls = [];
     const pendingCalls = new Map();
+    // Reasoning items collected from response.output_item.done (or salvaged
+    // from response.completed.response.output). When include:['reasoning.
+    // encrypted_content'] is set on the request, each reasoning item carries
+    // an `encrypted_content` blob the model must see again on the NEXT
+    // input to keep the server prompt cache prefix warm. Replay path lives
+    // in convertMessagesToResponsesInput in openai-oauth.mjs.
+    const reasoningItems = [];
+    const pushReasoningItem = (item) => {
+        if (!item || item.type !== 'reasoning') return;
+        if (!item.encrypted_content) return;
+        reasoningItems.push({
+            id: item.id || '',
+            encrypted_content: item.encrypted_content,
+            summary: Array.isArray(item.summary) ? item.summary : [],
+        });
+    };
     let usage;
     let done = false;
     let terminalError = null;
@@ -362,6 +378,7 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
             resolve({
                 content,
                 model,
+                reasoningItems: reasoningItems.length ? reasoningItems : undefined,
                 toolCalls: toolCalls.length ? toolCalls : undefined,
                 usage,
                 responseId: responseId || undefined,
@@ -416,8 +433,12 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
                     break;
                 }
                 case 'response.output_item.done':
-                    // already captured via function_call_arguments.done /
-                    // output_text.delta; nothing extra needed.
+                    // function_call / output_text already captured via their
+                    // dedicated streaming events. The one shape we still need
+                    // here is `reasoning` — carries encrypted_content that
+                    // must be replayed on the next input to keep the Codex
+                    // server-side prompt cache prefix warm.
+                    if (event.item?.type === 'reasoning') pushReasoningItem(event.item);
                     break;
                 case 'response.completed': {
                     if (event.response?.usage) {
@@ -437,12 +458,19 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
                     }
                     if (!model && event.response?.model) model = event.response.model;
                     if (!responseId && event.response?.id) responseId = event.response.id;
-                    if (!content && event.response?.output) {
+                    if (event.response?.output) {
                         for (const item of event.response.output) {
-                            if (item.type === 'message') {
+                            if (!content && item.type === 'message') {
                                 for (const c of item.content || []) {
                                     if (c.type === 'output_text') content += c.text || '';
                                 }
+                            }
+                            // Salvage path: some streams emit reasoning only
+                            // inside the final response.completed.output
+                            // bundle (no per-item .done event). Dedup by id.
+                            if (item.type === 'reasoning'
+                                && !reasoningItems.some(r => r.id === item.id)) {
+                                pushReasoningItem(item);
                             }
                         }
                     }

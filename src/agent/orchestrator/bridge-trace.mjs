@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync, statSync, renameSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
+import { createHash } from 'crypto';
 import { getPluginData } from './config.mjs';
 import { normalizeUsage } from './smart-bridge/cache-obs.mjs';
 import { isInclusiveProvider } from '../../shared/llm/cost.mjs';
@@ -117,6 +118,45 @@ function traceBridgeLoop({ sessionId, iteration, sendMs, messageCount, bodyBytes
         send_ms: sendMs,
         message_count: messageCount,
         body_bytes_est: bodyBytesEst,
+    });
+}
+
+// Lightweight fingerprint of the conversation prefix. Hashes the first 4096
+// characters of JSON.stringify(messages) — enough to detect prefix mutation
+// across iterations (which invalidates the provider prompt cache) without
+// hashing megabytes per turn. Truncated SHA1 keeps the trace row compact.
+function messagePrefixHash(messages) {
+    try {
+        const json = JSON.stringify(messages || []);
+        const slice = json.length > 4096 ? json.slice(0, 4096) : json;
+        return createHash('sha1').update(slice).digest('hex').slice(0, 12);
+    } catch {
+        return null;
+    }
+}
+
+function traceBridgeTrim({
+    sessionId,
+    iteration,
+    prune_count,
+    trim_changed,
+    input_prefix_hash,
+    before_count,
+    after_count,
+    before_bytes,
+    after_bytes,
+}) {
+    appendBridgeTrace({
+        sessionId,
+        iteration,
+        kind: 'trim_meta',
+        prune_count: prune_count ?? 0,
+        trim_changed: !!trim_changed,
+        input_prefix_hash: input_prefix_hash || null,
+        before_count: before_count ?? null,
+        after_count: after_count ?? null,
+        before_bytes: before_bytes ?? null,
+        after_bytes: after_bytes ?? null,
     });
 }
 
@@ -351,11 +391,13 @@ export {
     estimateGeminiTokens,
     estimateProviderPayloadBytes,
     extractCachedTokens,
+    messagePrefixHash,
     traceBridgeFetch,
     traceBridgeLoop,
     traceBridgePreset,
     traceBridgeSse,
     traceBridgeTool,
+    traceBridgeTrim,
     traceBridgeUsage,
     traceStreamAborted,
     traceStreamStalled,

@@ -2374,17 +2374,37 @@ function computeUnifiedDiff(a, b, ctx, fromLabel, toLabel) {
 // capped at 60 chars then 30) so callers see where they likely meant
 // to land. Substring only — no fuzzy diff — to keep the failure path
 // cheap.
-function _findEditHint(content, oldStr) {
+function _findEditHint(content, oldStr, snapshot = null) {
     const firstNonEmpty = String(oldStr || '').split(/\r?\n/).find((l) => l.trim().length > 0) || '';
     const trimmed = firstNonEmpty.trim();
     if (trimmed.length < 8) return '';
     const probes = [trimmed.slice(0, 60), trimmed.slice(0, 30)].filter((p) => p.length >= 8);
     const lines = String(content).split('\n');
+    // When the caller's snapshot only covered a partial window
+    // (head/tail or offset+limit read), restrict the hint search to
+    // that window. Otherwise a "Nearest match at line N" pointer can
+    // dangle outside the region the model has actually read, inviting
+    // a follow-up edit against unread content. Same window fields as
+    // _validatePartialSnapshotCoverage (offset+limit, 1-based inclusive).
+    let winStart = 1;
+    let winEnd = lines.length;
+    if (snapshot && snapshot.isPartialView === true) {
+        const offset = Number(snapshot.offset);
+        const limit = Number(snapshot.limit);
+        if (Number.isFinite(offset) && Number.isFinite(limit) && limit > 0) {
+            winStart = offset + 1;
+            winEnd = Math.min(lines.length, offset + limit);
+        } else {
+            // Partial view with no usable window info — no safe hint.
+            return '';
+        }
+    }
     for (const probe of probes) {
-        const idx = lines.findIndex((l) => l.includes(probe));
-        if (idx >= 0) {
-            const preview = lines[idx].length > 80 ? lines[idx].slice(0, 77) + '...' : lines[idx];
-            return ` Nearest match at line ${idx + 1}: ${JSON.stringify(preview)}`;
+        for (let i = winStart - 1; i < winEnd; i++) {
+            if (lines[i] !== undefined && lines[i].includes(probe)) {
+                const preview = lines[i].length > 80 ? lines[i].slice(0, 77) + '...' : lines[i];
+                return ` Nearest match at line ${i + 1}: ${JSON.stringify(preview)}`;
+            }
         }
     }
     return '';
@@ -2448,12 +2468,12 @@ async function _runMultiEdit(args, workDir, readStateScope, pathOpts, options = 
             if (partialCoverageErr) return partialCoverageErr.replace('Error [code 6]:', `Error [code 6]: edit ${i} —`);
             if (replace_all === true) {
                 if (!content.includes(old_string)) {
-                    return `Error [code 8]: edit ${i} — old_string not found in ${filePath}.${_findEditHint(content, old_string)}`;
+                    return `Error [code 8]: edit ${i} — old_string not found in ${filePath}.${_findEditHint(content, old_string, mEditSnapshot)}`;
                 }
                 content = content.split(old_string).join(new_string);
             } else {
                 const count = content.split(old_string).length - 1;
-                if (count === 0) return `Error [code 8]: edit ${i} — old_string not found in ${filePath}.${_findEditHint(content, old_string)}`;
+                if (count === 0) return `Error [code 8]: edit ${i} — old_string not found in ${filePath}.${_findEditHint(content, old_string, mEditSnapshot)}`;
                 if (count > 1) return `Error [code 9]: edit ${i} — old_string found ${count} times in ${filePath}; set replace_all:true or provide more unique context`;
                 content = content.replace(old_string, () => new_string);
             }
@@ -3016,7 +3036,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 if (partialCoverageErr) return partialCoverageErr;
                 const count = content.split(oldStr).length - 1;
                 if (count === 0)
-                    return `Error [code 8]: old_string not found in ${filePath}.${_findEditHint(content, oldStr)}`;
+                    return `Error [code 8]: old_string not found in ${filePath}.${_findEditHint(content, oldStr, editSnapshot)}`;
                 if (count > 1 && !replaceAll)
                     return `Error [code 9]: old_string found ${count} times — set replace_all:true or provide more unique context`;
                 const updated = replaceAll

@@ -200,6 +200,18 @@ async function refreshTokens(refreshToken) {
  */
 function convertMessagesToResponsesInput(messages) {
     const out = [];
+    // Buffer sidecars produced by a contiguous tool/function_call_output
+    // group and flush them as a SINGLE user input item once the group
+    // ends (next message is user/system/assistant, or the loop exits).
+    // Inserting a user item between consecutive function_call_output
+    // entries breaks the Responses API tool-call ↔ output adjacency
+    // contract (Codex returns "No tool output found for function call").
+    const pendingSidecars = [];
+    const flushSidecars = () => {
+        if (pendingSidecars.length === 0) return;
+        out.push({ role: 'user', content: pendingSidecars.join('\n\n') });
+        pendingSidecars.length = 0;
+    };
     // Detach warnSidecar so the function_call_output payload stays
     // byte-identical across iterations (cache prefix safe). The sidecar
     // is re-emitted below as a separate user input item.
@@ -211,12 +223,28 @@ function convertMessagesToResponsesInput(messages) {
                 call_id: m.toolCallId || '',
                 output: m.content,
             });
-            if (sidecar) {
-                out.push({ role: 'user', content: sidecar });
-            }
+            if (sidecar) pendingSidecars.push(sidecar);
             continue;
         }
+        // Non-tool boundary — flush any pending sidecars now so they
+        // sit AFTER the whole contiguous tool group, not interleaved.
+        flushSidecars();
         if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length) {
+            // Reasoning items must precede the function_call items they
+            // produced — Codex enforces ordering and otherwise treats the
+            // call as fresh, dropping the cache prefix. Skip when the model
+            // didn't emit any (non-reasoning models / disabled effort).
+            if (Array.isArray(m.reasoningItems)) {
+                for (const r of m.reasoningItems) {
+                    if (!r?.encrypted_content) continue;
+                    out.push({
+                        type: 'reasoning',
+                        id: r.id || undefined,
+                        encrypted_content: r.encrypted_content,
+                        summary: Array.isArray(r.summary) ? r.summary : [],
+                    });
+                }
+            }
             if (m.content) out.push({ role: 'assistant', content: m.content });
             for (const tc of m.toolCalls) {
                 out.push({
@@ -228,11 +256,25 @@ function convertMessagesToResponsesInput(messages) {
             }
             continue;
         }
+        // Plain assistant turn (no tool calls). Replay reasoning before the
+        // assistant message so the server can stitch its cache prefix.
+        if (m.role === 'assistant' && Array.isArray(m.reasoningItems) && m.reasoningItems.length) {
+            for (const r of m.reasoningItems) {
+                if (!r?.encrypted_content) continue;
+                out.push({
+                    type: 'reasoning',
+                    id: r.id || undefined,
+                    encrypted_content: r.encrypted_content,
+                    summary: Array.isArray(r.summary) ? r.summary : [],
+                });
+            }
+        }
         out.push({
             role: m.role === 'assistant' ? 'assistant' : 'user',
             content: m.content,
         });
     }
+    flushSidecars();
     return out;
 }
 export function buildRequestBody(messages, model, tools, sendOpts) {

@@ -182,7 +182,7 @@ export function trimMessages(messages, budgetTokens, opts) {
     if (estimateMessagesTokens(sanitizedAsIs) <= budgetTokens)
         return sanitizedAsIs;
     // --- Pass 0: cheap pre-prune (Hermes-style, no LLM). ---
-    const prePruned = pruneOldToolResults(messages, protectTailCount);
+    const prePruned = pruneOldToolResults(sanitizedAsIs, protectTailCount);
     if (estimateMessagesTokens(prePruned) <= budgetTokens)
         return sanitizeToolPairs(prePruned);
     // --- Pass 1: truncate long tool results ---

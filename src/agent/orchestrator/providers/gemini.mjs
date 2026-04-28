@@ -81,7 +81,13 @@ function toGeminiContent(message) {
         const parts = [];
         if (message.content) parts.push({ text: message.content });
         for (const tc of message.toolCalls) {
-            parts.push({ functionCall: { name: tc.name, args: tc.arguments } });
+            // Gemini 3 requires the original thoughtSignature to be echoed back
+            // on every functionCall part so the cached thinking prefix stays
+            // valid. Older models (1.5/2.x) and the first turn of a session
+            // simply have no signature; emit the part without the field then.
+            const fc = { name: tc.name, args: tc.arguments };
+            if (tc.thoughtSignature) fc.thoughtSignature = tc.thoughtSignature;
+            parts.push({ functionCall: fc });
         }
         return { role: 'model', parts };
     }
@@ -116,11 +122,19 @@ function parseToolCalls(parts) {
     const calls = parts.filter((p) => 'functionCall' in p && !!p.functionCall);
     if (!calls.length)
         return undefined;
-    return calls.map((p, i) => ({
-        id: `gemini_${Date.now()}_${i}`,
-        name: p.functionCall.name,
-        arguments: (p.functionCall.args ?? {}),
-    }));
+    return calls.map((p, i) => {
+        const call = {
+            id: `gemini_${Date.now()}_${i}`,
+            name: p.functionCall.name,
+            arguments: (p.functionCall.args ?? {}),
+        };
+        // Preserve Gemini 3 thoughtSignature so it can be echoed back on the
+        // next request — required to keep the thinking cache prefix valid.
+        if (p.functionCall.thoughtSignature) {
+            call.thoughtSignature = p.functionCall.thoughtSignature;
+        }
+        return call;
+    });
 }
 
 function buildGeminiCacheShapeFingerprint({ model, systemInstruction, tools }) {

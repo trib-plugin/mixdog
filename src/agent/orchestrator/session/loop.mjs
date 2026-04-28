@@ -5,7 +5,7 @@ import { executePatchTool } from '../tools/patch.mjs';
 import { executeCodeGraphTool, isCodeGraphTool } from '../tools/code-graph.mjs';
 import { executeInternalTool, isInternalTool } from '../internal-tools.mjs';
 import { collectSkillsCached, loadSkillContent } from '../context/collect.mjs';
-import { traceBridgeLoop, traceBridgeTool, traceToolLoopAborted, traceToolLoopDetected, traceToolLoopWarn, estimateProviderPayloadBytes } from '../bridge-trace.mjs';
+import { traceBridgeLoop, traceBridgeTool, traceBridgeTrim, traceToolLoopAborted, traceToolLoopDetected, traceToolLoopWarn, estimateProviderPayloadBytes, messagePrefixHash } from '../bridge-trace.mjs';
 import { markSessionToolCall, updateSessionStage, SessionClosedError } from './manager.mjs';
 import { trimMessages } from './trim.mjs';
 import { createGuard, checkToolCall, ToolLoopAbortError } from '../tool-loop-guard.mjs';
@@ -339,11 +339,33 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         throwIfAborted();
         if (sessionRef && typeof sessionRef.contextWindow === 'number') {
             const safetyBudget = Math.floor(sessionRef.contextWindow * SAFETY_TRIM_PERCENT);
+            // Snapshot pre-trim shape so trim_meta can record the actual
+            // mutation (or no-op) for prefix-mutation forensics. Bytes are
+            // a best-effort JSON.stringify length — close enough to the
+            // payload we hand the provider for prefix-cache analysis.
+            const beforeCount = messages.length;
+            let beforeBytes = null;
+            try { beforeBytes = Buffer.byteLength(JSON.stringify(messages), 'utf8'); } catch { beforeBytes = null; }
             const trimmed = trimMessages(messages, safetyBudget);
-            if (messagesArrayChanged(messages, trimmed)) {
+            const trimChanged = messagesArrayChanged(messages, trimmed);
+            const pruneCount = Math.max(beforeCount - trimmed.length, 0);
+            if (trimChanged) {
                 messages.length = 0;
                 messages.push(...trimmed);
             }
+            let afterBytes = null;
+            try { afterBytes = Buffer.byteLength(JSON.stringify(messages), 'utf8'); } catch { afterBytes = null; }
+            traceBridgeTrim({
+                sessionId,
+                iteration: iterations + 1,
+                prune_count: pruneCount,
+                trim_changed: trimChanged,
+                input_prefix_hash: messagePrefixHash(messages),
+                before_count: beforeCount,
+                after_count: messages.length,
+                before_bytes: beforeBytes,
+                after_bytes: afterBytes,
+            });
         }
         const nextIteration = iterations + 1;
         opts.iteration = nextIteration;
@@ -471,11 +493,19 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 break;
             }
         }
-        // Append assistant message with tool calls
+        // Append assistant message with tool calls. reasoningItems is the
+        // OpenAI Responses API replay payload (encrypted_content blobs);
+        // providers that ignore it just see an extra field and drop it,
+        // openai-oauth.convertMessagesToResponsesInput emits matching
+        // type:'reasoning' input items on the next turn to keep the Codex
+        // server-side cache prefix stable.
         messages.push({
             role: 'assistant',
             content: response.content || '',
             toolCalls: calls,
+            ...(Array.isArray(response.reasoningItems) && response.reasoningItems.length
+                ? { reasoningItems: response.reasoningItems }
+                : {}),
         });
         // Execute each tool and append results
         for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {

@@ -24,7 +24,25 @@ const PRESETS = {
     },
 };
 function toOpenAIMessages(messages) {
+    // NOTE: chat.completions has no equivalent slot for replaying reasoning
+    // encrypted_content the way the Responses API does (no `type:'reasoning'`
+    // input item). Whatever reasoningItems may be attached to assistant
+    // messages by the openai-oauth provider is intentionally dropped here —
+    // strict providers (DeepSeek/xai) reject unknown roles/types and would
+    // 400 the request. Documented in v0.1.160 (GPT reasoning replay).
     const out = [];
+    // Buffer sidecars produced by a contiguous tool message group and
+    // flush them as a SINGLE user message once the group ends. OpenAI
+    // Chat Completions requires each assistant tool_call.id to have a
+    // matching tool message immediately following the assistant turn;
+    // inserting a user message between consecutive tool replies breaks
+    // that pairing on strict providers (DeepSeek/xai).
+    const pendingSidecars = [];
+    const flushSidecars = () => {
+        if (pendingSidecars.length === 0) return;
+        out.push({ role: 'user', content: pendingSidecars.join('\n\n') });
+        pendingSidecars.length = 0;
+    };
     // Detach warnSidecar so the tool message content stays byte-identical
     // across iterations (cache prefix safe). Sidecar is re-emitted as a
     // separate user message right after the producing tool message.
@@ -35,9 +53,12 @@ function toOpenAIMessages(messages) {
                 tool_call_id: m.toolCallId || '',
                 content: m.content,
             });
-            if (sidecar) out.push({ role: 'user', content: sidecar });
+            if (sidecar) pendingSidecars.push(sidecar);
             continue;
         }
+        // Non-tool boundary — flush pending sidecars so they sit after
+        // the whole contiguous tool group, not interleaved.
+        flushSidecars();
         if (m.role === 'assistant' && m.toolCalls?.length) {
             out.push({
                 role: 'assistant',
@@ -52,6 +73,7 @@ function toOpenAIMessages(messages) {
         }
         out.push({ role: m.role, content: m.content });
     }
+    flushSidecars();
     return out;
 }
 function toOpenAITools(tools) {
