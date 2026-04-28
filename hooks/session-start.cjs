@@ -397,6 +397,14 @@ function extractCycleSignals(parsed) {
   let text = '';
   if (Array.isArray(parsed.content) && parsed.content[0] && typeof parsed.content[0].text === 'string') {
     text = parsed.content[0].text;
+  } else if (parsed.result && typeof parsed.result === 'object'
+             && Array.isArray(parsed.result.content)
+             && parsed.result.content[0]
+             && typeof parsed.result.content[0].text === 'string') {
+    // Channels owner wraps the memory worker's MCP envelope as
+    // { ok, result: { content:[{type:'text',text:'cycle1: ...'}], isError } },
+    // so the signal text lives at parsed.result.content[0].text.
+    text = parsed.result.content[0].text;
   } else if (parsed.result && typeof parsed.result === 'object' && typeof parsed.result.text === 'string') {
     text = parsed.result.text;
   } else if (typeof parsed.result === 'string') {
