@@ -2,6 +2,7 @@ import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { GoogleAICacheManager } from '@google/generative-ai/server';
 import { loadConfig } from '../config.mjs';
 import { estimateGeminiTokens } from '../bridge-trace.mjs';
+import { splitWithSidecars } from './sidecar-helper.mjs';
 
 const MODELS = [
     { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro', provider: 'gemini', contextWindow: 1000000 },
@@ -85,14 +86,12 @@ function toGeminiContent(message) {
         return { role: 'model', parts };
     }
     if (message.role === 'tool') {
-        // warnSidecar is loop.mjs's soft-warn channel. Append to the
-        // emitted result only — do NOT mutate message.content.
-        const result = message.warnSidecar
-            ? `${message.content}\n\n${message.warnSidecar}`
-            : message.content;
+        // Tool result content stays byte-identical for cache prefix
+        // stability; sidecar (if any) is appended as a separate user
+        // turn by toGeminiContents below.
         return {
             role: 'function',
-            parts: [{ functionResponse: { name: message.toolCallId || '', response: { result } } }],
+            parts: [{ functionResponse: { name: message.toolCallId || '', response: { result: message.content } } }],
         };
     }
     return {
@@ -103,9 +102,12 @@ function toGeminiContent(message) {
 
 function toGeminiContents(messages) {
     const contents = [];
-    for (const message of messages) {
+    for (const { message, sidecar } of splitWithSidecars(messages)) {
         const content = toGeminiContent(message);
         if (content) contents.push(content);
+        if (sidecar) {
+            contents.push({ role: 'user', parts: [{ text: sidecar }] });
+        }
     }
     return contents;
 }

@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { loadConfig } from '../config.mjs';
+import { splitWithSidecars } from './sidecar-helper.mjs';
 const PRESETS = {
     deepseek: {
         baseURL: 'https://api.deepseek.com',
@@ -23,22 +24,22 @@ const PRESETS = {
     },
 };
 function toOpenAIMessages(messages) {
-    return messages.map((m) => {
+    const out = [];
+    // Detach warnSidecar so the tool message content stays byte-identical
+    // across iterations (cache prefix safe). Sidecar is re-emitted as a
+    // separate user message right after the producing tool message.
+    for (const { message: m, sidecar } of splitWithSidecars(messages)) {
         if (m.role === 'tool') {
-            // warnSidecar is loop.mjs's soft-warn channel. Append to the
-            // emitted string only — do NOT mutate m.content so the source
-            // tool_result payload stays stable across provider re-emits.
-            const content = m.warnSidecar
-                ? `${m.content}\n\n${m.warnSidecar}`
-                : m.content;
-            return {
+            out.push({
                 role: 'tool',
                 tool_call_id: m.toolCallId || '',
-                content,
-            };
+                content: m.content,
+            });
+            if (sidecar) out.push({ role: 'user', content: sidecar });
+            continue;
         }
         if (m.role === 'assistant' && m.toolCalls?.length) {
-            return {
+            out.push({
                 role: 'assistant',
                 content: m.content || null,
                 tool_calls: m.toolCalls.map((tc) => ({
@@ -46,10 +47,12 @@ function toOpenAIMessages(messages) {
                     type: 'function',
                     function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
                 })),
-            };
+            });
+            continue;
         }
-        return { role: m.role, content: m.content };
-    });
+        out.push({ role: m.role, content: m.content });
+    }
+    return out;
 }
 function toOpenAITools(tools) {
     return tools.map((t) => ({

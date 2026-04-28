@@ -17,6 +17,7 @@ import { enrichModels } from './model-catalog.mjs';
 
 import { sendViaWebSocket } from './openai-oauth-ws.mjs';
 import { warnBridgeOnce } from '../bridge-trace.mjs';
+import { splitWithSidecars } from './sidecar-helper.mjs';
 // --- Constants ---
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize';
@@ -199,19 +200,20 @@ async function refreshTokens(refreshToken) {
  */
 function convertMessagesToResponsesInput(messages) {
     const out = [];
-    for (const m of messages) {
+    // Detach warnSidecar so the function_call_output payload stays
+    // byte-identical across iterations (cache prefix safe). The sidecar
+    // is re-emitted below as a separate user input item.
+    for (const { message: m, sidecar } of splitWithSidecars(messages)) {
         if (!m || m.role === 'system') continue;
         if (m.role === 'tool') {
-            // warnSidecar is loop.mjs's soft-warn channel. Append to the
-            // emitted output only — do NOT mutate m.content.
-            const output = m.warnSidecar
-                ? `${m.content}\n\n${m.warnSidecar}`
-                : m.content;
             out.push({
                 type: 'function_call_output',
                 call_id: m.toolCallId || '',
-                output,
+                output: m.content,
             });
+            if (sidecar) {
+                out.push({ role: 'user', content: sidecar });
+            }
             continue;
         }
         if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length) {
