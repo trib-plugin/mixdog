@@ -122,6 +122,7 @@ B_SCHED_DEFERRED=0
 B_RECALL=0
 B_JOBS=0
 B_RECAP_RUNNING=false
+B_RECAP_STATE="idle"
 B_RECAP_STARTED_AT=""
 B_RECAP_LAST_COMPLETED_AT=""
 B_NGROK=0
@@ -152,6 +153,7 @@ if [ -n "$BRIDGE_JSON" ]; then
   [[ $BRIDGE_JSON =~ \"recallLastHour\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && B_RECALL="${BASH_REMATCH[1]}"
   [[ $BRIDGE_JSON =~ \"jobs\"[[:space:]]*:[[:space:]]*\{[^}]*\"count\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && B_JOBS="${BASH_REMATCH[1]}"
   [[ $BRIDGE_JSON =~ \"recap\"[[:space:]]*:[[:space:]]*\{[^}]*\"running\"[[:space:]]*:[[:space:]]*(true|false) ]] && B_RECAP_RUNNING="${BASH_REMATCH[1]}"
+  [[ $BRIDGE_JSON =~ \"recap\"[[:space:]]*:[[:space:]]*\{[^}]*\"state\"[[:space:]]*:[[:space:]]*\"([a-z]+)\" ]] && B_RECAP_STATE="${BASH_REMATCH[1]}"
   [[ $BRIDGE_JSON =~ \"recap\"[[:space:]]*:[[:space:]]*\{[^}]*\"startedAt\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && B_RECAP_STARTED_AT="${BASH_REMATCH[1]}"
   [[ $BRIDGE_JSON =~ \"recap\"[[:space:]]*:[[:space:]]*\{[^}]*\"lastCompletedAt\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && B_RECAP_LAST_COMPLETED_AT="${BASH_REMATCH[1]}"
   [[ $BRIDGE_JSON =~ \"ngrok\"[[:space:]]*:[[:space:]]*\{[^}]*\"online\"[[:space:]]*:[[:space:]]*(true|false) ]] && {
@@ -292,6 +294,17 @@ if [ -n "$CTX_INT" ]; then
     add_l1 "${_fill}${CTX_INT}%${_ANSI_RESET}"
   fi
   unset _fill _filled _empty _bar
+fi
+
+# Recap state — single L1 badge. R… running / R✓ injected / R- empty / R! error.
+# Hidden when idle so the badge only appears when there is something to report.
+if [ -n "$B_RECAP_STATE" ]; then
+  case "$B_RECAP_STATE" in
+    running)  add_l1 "${_ANSI_DIM}R…${_ANSI_RESET}" ;;
+    injected) add_l1 "${_ANSI_GREEN}R✓${_ANSI_RESET}" ;;
+    empty)    add_l1 "${_ANSI_DIM}R-${_ANSI_RESET}" ;;
+    error)    add_l1 "${_ANSI_RED}R!${_ANSI_RESET}" ;;
+  esac
 fi
 
 # Rate limits + reset — numbers coloured by threshold; reset time dim.

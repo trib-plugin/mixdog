@@ -342,9 +342,10 @@ export function buildToolBudgetWarn(info) {
     const abortThreshold = Number.isFinite(info?.abortThreshold) ? info.abortThreshold : null;
     const lines = [
         `⚠ Tool-budget soft-warn: this session has already made ${count} tool calls.`,
-        `Tools remain available, but before calling another low-level tool, pause and consider:`,
+        `Tools remain available, but before calling another tool (low-level file or high-level retrieval), pause and consider:`,
         `- Do you already have enough evidence to synthesize an answer or patch?`,
         `- If not, can you switch up a level: \`code_graph\` for structure, \`apply_patch\` for clear edits, \`bash\` with \`persistent:true\` for stateful shell work?`,
+        `- For \`recall\` / \`search\` / \`explore\` / \`web_search\` / \`memory_search\`: if you've already gotten an answer, synthesize from it; do not re-call the same family with paraphrased queries.`,
         `- If you still need another call, make it meaningfully narrower than the previous one.`,
         ...(abortThreshold ? [`- Hard stop: at ${abortThreshold} total tool calls this session will abort.`] : []),
         `(Advisory only — the call is not blocked.)`,

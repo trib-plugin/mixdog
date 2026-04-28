@@ -922,7 +922,7 @@ setImmediate(() => {
 const STATUS_ADVERTISE_PATH = join(homedir(), '.claude', 'mixdog-status.json')
 let statusServerChild = null
 let statusServerRestartTimer = null
-let recapStatusState = { running: false, startedAt: null, lastCompletedAt: null }
+let recapStatusState = { state: 'idle', running: false, startedAt: null, lastCompletedAt: null, updatedAt: null, errorMessage: null }
 
 // Single-flight guard for spawnStatusServer. The child can fire both
 // `error` and `exit` for one death; without this guard each handler would
@@ -945,10 +945,15 @@ function normalizeRecapTimestamp(value) {
 }
 
 function sanitizeRecapStatusState(recap = {}) {
+  const validStates = new Set(['idle', 'running', 'injected', 'empty', 'error']);
+  const rawState = typeof recap.state === 'string' && validStates.has(recap.state) ? recap.state : 'idle';
   return {
+    state: rawState,
     running: recap.running === true,
     startedAt: normalizeRecapTimestamp(recap.startedAt),
     lastCompletedAt: normalizeRecapTimestamp(recap.lastCompletedAt),
+    updatedAt: normalizeRecapTimestamp(recap.updatedAt),
+    errorMessage: typeof recap.errorMessage === 'string' ? recap.errorMessage.slice(0, 200) : null,
   }
 }
 

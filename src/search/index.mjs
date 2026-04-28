@@ -1023,8 +1023,9 @@ async function handleToolCall(name, rawArgs) {
       // Fan-out: array `keywords` -> N parallel single-keyword calls,
       // grouped per-query with `### Query:` headers (mirrors memory_search).
       if (Array.isArray(args.keywords) && args.keywords.length > 1) {
+        const dedupedKeywords = [...new Set(args.keywords.map(kw => String(kw || '').trim()).filter(Boolean))]
         const settled = await Promise.allSettled(
-          args.keywords.map(async (kw) => {
+          dedupedKeywords.map(async (kw) => {
             const sub = await handleToolCall('search', { ...rawArgs, keywords: kw })
             const text = (sub.content || []).filter(p => p.type === 'text').map(p => p.text).join('\n')
             return `### Query: ${kw}\n\n${text}`
@@ -1033,7 +1034,7 @@ async function handleToolCall(name, rawArgs) {
         const sections = settled.map((r, i) =>
           r.status === 'fulfilled'
             ? r.value
-            : `### Query: ${args.keywords[i]}\n\n[error] ${r.reason?.message || r.reason}`
+            : `### Query: ${dedupedKeywords[i]}\n\n[error] ${r.reason?.message || r.reason}`
         )
         return { content: [{ type: 'text', text: sections.join('\n\n---\n\n') }] }
       }

@@ -31,7 +31,7 @@ function writeAdvertisement(path, record) {
   renameSync(tmp, path);
 }
 
-const recapState = { running: false, startedAt: null, lastCompletedAt: null };
+const recapState = { state: 'idle', running: false, startedAt: null, lastCompletedAt: null, updatedAt: null, errorMessage: null };
 
 function normalizeTimestamp(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -40,9 +40,12 @@ function normalizeTimestamp(value) {
 }
 
 function updateRecapState(next = {}) {
+  if (typeof next.state === 'string') recapState.state = next.state;
   recapState.running = next.running === true;
   recapState.startedAt = normalizeTimestamp(next.startedAt);
   recapState.lastCompletedAt = normalizeTimestamp(next.lastCompletedAt);
+  recapState.updatedAt = normalizeTimestamp(next.updatedAt);
+  recapState.errorMessage = typeof next.errorMessage === 'string' ? next.errorMessage : null;
 }
 
 function readRecapState() {

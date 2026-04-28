@@ -193,7 +193,7 @@ function sendNotifyToParent(method, params) {
   }
 }
 
-const recapState = { running: false, startedAt: null, lastCompletedAt: null };
+const recapState = { state: 'idle', running: false, startedAt: null, lastCompletedAt: null, updatedAt: null, errorMessage: null };
 function sendRecapStateToParent() {
   if (!process.send) return;
   try {
@@ -685,8 +685,11 @@ async function startOwnerHttpServer() {
           if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
           const recapPrompt = String(body?.prompt || "");
           if (!recapPrompt) { res.writeHead(400); res.end(JSON.stringify({ error: "prompt required" })); return; }
+          recapState.state = 'running';
           recapState.running = true;
           recapState.startedAt = Date.now();
+          recapState.updatedAt = recapState.startedAt;
+          recapState.errorMessage = null;
           sendRecapStateToParent();
           try {
             const recapLlm = makeBridgeLlm({ role: "recap-agent", taskType: "maintenance" });
@@ -696,13 +699,19 @@ async function startOwnerHttpServer() {
               recapPrompt,
             ].join('\n');
             const summary = await recapLlm({ prompt: userMessage });
+            const trimmed = String(summary || "").trim();
+            recapState.state = trimmed ? 'injected' : 'empty';
             res.writeHead(200);
-            res.end(JSON.stringify({ summary: String(summary || "").trim() }));
+            res.end(JSON.stringify({ summary: trimmed }));
           } catch (e) {
+            recapState.state = 'error';
+            recapState.errorMessage = String(e && e.message || e || '').slice(0, 200);
             res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
           } finally {
             recapState.running = false;
+            recapState.startedAt = null;
             recapState.lastCompletedAt = Date.now();
+            recapState.updatedAt = recapState.lastCompletedAt;
             sendRecapStateToParent();
           }
           return;

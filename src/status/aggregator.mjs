@@ -40,10 +40,15 @@ function normalizeTimestamp(value) {
 }
 
 function buildRecapSegment(recap = {}) {
+  const validStates = new Set(['idle', 'running', 'injected', 'empty', 'error']);
+  const rawState = typeof recap.state === 'string' && validStates.has(recap.state) ? recap.state : 'idle';
   return {
+    state: rawState,
     running: recap.running === true,
     startedAt: normalizeTimestamp(recap.startedAt),
     lastCompletedAt: normalizeTimestamp(recap.lastCompletedAt),
+    updatedAt: normalizeTimestamp(recap.updatedAt),
+    errorMessage: typeof recap.errorMessage === 'string' ? recap.errorMessage.slice(0, 200) : null,
   };
 }
 

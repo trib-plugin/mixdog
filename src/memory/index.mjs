@@ -639,7 +639,7 @@ async function handleSearch(args) {
   // ranked list per angle. Collapses what would otherwise be N sequential
   // tool calls into a single invocation.
   if (Array.isArray(args.query)) {
-    const queries = args.query.map(q => String(q || '').trim()).filter(Boolean)
+    const queries = [...new Set(args.query.map(q => String(q || '').trim()).filter(Boolean))]
     if (queries.length === 0) return { text: '' }
     const rest = { ...args }
     delete rest.query
