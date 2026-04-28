@@ -110,6 +110,57 @@ function countHunkChanges(hunks) {
   return { added, removed };
 }
 
+// Lenient hunk-header repair. The `diff` package validates the line
+// counts declared in `@@ -A,B +C,D @@` against the actual body and
+// throws when they disagree. LLM-authored patches frequently ship
+// with stale counts (body is correct but the writer mis-counted
+// while editing). When the initial parsePatch fails for that reason
+// we re-derive B and D from the body and retry once. Body lines are
+// classified as: ' ' = context (counts toward both old and new),
+// '-' = removed (old only), '+' = added (new only), '\\' = "No
+// newline at end of file" marker (skipped). Only header metadata
+// is rewritten, never hunk body lines, so a body that doesn't match
+// the real source is still rejected by applyPatch downstream — the
+// safety floor stays intact.
+export function normalizeHunkHeaders(patchStr) {
+  // Normalize CRLF/LF line endings up front so trailing `\r` from
+  // Windows-emitted patches doesn't leak into the rebuilt hunk header
+  // tail or get misclassified as a body line.
+  const lines = String(patchStr).replace(/\r\n/g, '\n').split('\n');
+  const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
+  const FILE_HEADER_RE = /^(?:--- |\+\+\+ |diff )/;
+  const out = [];
+  let mutated = false;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const m = HUNK_RE.exec(line);
+    if (!m) { out.push(line); i++; continue; }
+    const oldStart = m[1];
+    const newStart = m[3];
+    const tail = m[5] || '';
+    let j = i + 1;
+    let oldCount = 0;
+    let newCount = 0;
+    while (j < lines.length) {
+      const bl = lines[j];
+      if (HUNK_RE.test(bl) || FILE_HEADER_RE.test(bl)) break;
+      const c = bl.length > 0 ? bl[0] : '';
+      if (c === ' ') { oldCount++; newCount++; }
+      else if (c === '-') { oldCount++; }
+      else if (c === '+') { newCount++; }
+      // '\\' = "No newline at end of file" marker; '' = stray blank — skip both
+      j++;
+    }
+    const rebuilt = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${tail}`;
+    if (rebuilt !== line) mutated = true;
+    out.push(rebuilt);
+    for (let k = i + 1; k < j; k++) out.push(lines[k]);
+    i = j;
+  }
+  return { patch: out.join('\n'), mutated };
+}
+
 async function apply_patch(args, cwd, options = {}) {
   const patchStr = typeof args?.patch === 'string' ? args.patch : '';
   if (!patchStr.trim()) {
@@ -130,11 +181,31 @@ async function apply_patch(args, cwd, options = {}) {
     return `Error: base_path outside allowed scope — ${normalizeOutputPath(basePath)}`;
   }
 
-  let parsed;
+  // Strict parse first. Fall back to lenient repair whenever a hunk
+  // header is present — stale line counts from LLM-authored patches
+  // are the dominant failure mode, and lenient retry only rewrites
+  // header metadata (counts), never body lines, so applyPatch still
+  // rejects a body that doesn't match the real source. If lenient
+  // retry also fails, the original strict error surfaces unchanged.
+  let parsed = null;
+  let parseErr = null;
+  let lenientApplied = false;
   try {
     parsed = parsePatch(patchStr);
   } catch (err) {
-    return `Error: failed to parse patch: ${err?.message || err}`;
+    parseErr = err?.message || String(err);
+  }
+  if (!parsed && /^@@ -\d/m.test(patchStr)) {
+    try {
+      const { patch: normalized, mutated } = normalizeHunkHeaders(patchStr);
+      if (mutated) {
+        parsed = parsePatch(normalized);
+        if (parsed) lenientApplied = true;
+      }
+    } catch { /* fall through to the original error */ }
+  }
+  if (!parsed) {
+    return `Error: failed to parse patch: ${parseErr || 'unknown'}`;
   }
   if (!Array.isArray(parsed) || parsed.length === 0) {
     return 'Error: patch contained no file sections';
@@ -282,7 +353,9 @@ async function apply_patch(args, cwd, options = {}) {
 
   // Dry-run short-circuit. Report everything without touching disk.
   if (dryRun) {
-    const lines = [`dry-run: ${plan.length} file(s), ${successes.length} ok, ${failures.length} failed`];
+    const lines = [];
+    if (lenientApplied) lines.push('(lenient: hunk counts re-derived from body)');
+    lines.push(`dry-run: ${plan.length} file(s), ${successes.length} ok, ${failures.length} failed`);
     for (const p of plan) {
       if (p.ok) {
         lines.push(`  OK   ${p.kind.padEnd(6)} ${p.displayPath} (${p.lines_changed} lines changed across ${p.hunks_applied} hunk${p.hunks_applied === 1 ? '' : 's'})`);
@@ -307,7 +380,9 @@ async function apply_patch(args, cwd, options = {}) {
 
   // Atomic mode: if any entry failed and reject_partial is set, abort.
   if (failures.length > 0 && rejectPartial) {
-    const lines = [`Error: patch rejected (${failures.length} of ${plan.length} file(s) failed; reject_partial=true, nothing written)`];
+    const lines = [];
+    if (lenientApplied) lines.push('(lenient: hunk counts re-derived from body)');
+    lines.push(`Error: patch rejected (${failures.length} of ${plan.length} file(s) failed; reject_partial=true, nothing written)`);
     for (const p of failures) {
       lines.push(`  FAIL ${p.displayPath || '(unknown)'} — ${p.error}`);
       if (p.firstFailedHunk) {
@@ -436,6 +511,7 @@ async function apply_patch(args, cwd, options = {}) {
   }
 
   const lines = [];
+  if (lenientApplied) lines.push('(lenient: hunk counts re-derived from body)');
   lines.push(`applied: ${written.length} file(s)` + (failures.length ? `, ${failures.length} failed` : '') + (skipped.length ? `, ${skipped.length} skipped` : ''));
   if (written.length > 0) {
     invalidateBuiltinResultCache(written.map((p) => p.fullPath));

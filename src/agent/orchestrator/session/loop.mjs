@@ -15,26 +15,23 @@ import { loadConfig } from '../config.mjs';
 const SAFETY_TRIM_PERCENT = 0.90;
 const SOFT_ITERATION_WARN_THRESHOLDS = Object.freeze([24, 48, 96]);
 const EMERGENCY_ITERATION_FUSE = 100;
-// Per-role iteration caps. Soft = warn threshold (last in the warn ladder),
-// hard = emergency fuse. Tuned from observed p95/max in the 24h trace:
-// recall p95=9 max=19, search max=20, explorer ~5 typical, reviewer/debugger
-// p95<12, worker p95=88 on grep+read alt loops. Hidden non-retrieval roles
-// (cycle*, scheduler, webhook, recap, proactive, memory-classification) are
-// single-shot or near-single-shot in practice (cycle1 p95=1, cycle2 max=2,
-// proactive max=3) so a tight cap catches runaway loops early.
+// Iteration caps for system-spawned hidden roles only. Soft = warn threshold
+// (last in the warn ladder), hard = emergency fuse. Tuned from observed
+// p95/max in the 24h trace: recall p95=9 max=19, search max=20, explorer ~5
+// typical. Hidden non-retrieval roles (cycle*, scheduler, webhook, recap,
+// proactive, memory-classification) are single-shot or near so (cycle1 p95=1,
+// cycle2 max=2, proactive max=3); a tight cap catches runaway loops early.
 //
-// Override at runtime via agent-config.json `bridge.iterationCaps`:
+// User-defined roles from user-workflow.json are NOT listed here — their
+// names are configurable per install, so they fall to `default` unless
+// overridden via agent-config.json:
 //   { "bridge": { "iterationCaps": { "<role>": { "soft": N, "hard": M } } } }
-// Unknown roles fall back to `default`. opts.iterationEmergencyFuse on the
-// per-call payload still overrides hard for benchmarks / batch jobs.
+// opts.iterationEmergencyFuse on the per-call payload still overrides hard
+// for benchmarks / batch jobs.
 const ROLE_ITERATION_CAPS = Object.freeze({
     'recall-agent': { soft: 4, hard: 16 },
     'search-agent': { soft: 5, hard: 18 },
     'explorer': { soft: 9, hard: 25 },
-    'reviewer': { soft: 18, hard: 50 },
-    'debugger': { soft: 18, hard: 50 },
-    'worker': { soft: 35, hard: 100 },
-    'tester': { soft: 35, hard: 100 },
     'cycle1-agent': { soft: 5, hard: 20 },
     'cycle2-agent': { soft: 5, hard: 20 },
     'recap-agent': { soft: 5, hard: 20 },

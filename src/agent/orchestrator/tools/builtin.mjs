@@ -2369,6 +2369,27 @@ function computeUnifiedDiff(a, b, ctx, fromLabel, toLabel) {
     return out.join('\n');
 }
 
+// Lightweight nearest-match hint for `Error [code 8]: old_string not
+// found`. Probes by the first non-empty line of `old_string` (trimmed,
+// capped at 60 chars then 30) so callers see where they likely meant
+// to land. Substring only — no fuzzy diff — to keep the failure path
+// cheap.
+function _findEditHint(content, oldStr) {
+    const firstNonEmpty = String(oldStr || '').split(/\r?\n/).find((l) => l.trim().length > 0) || '';
+    const trimmed = firstNonEmpty.trim();
+    if (trimmed.length < 8) return '';
+    const probes = [trimmed.slice(0, 60), trimmed.slice(0, 30)].filter((p) => p.length >= 8);
+    const lines = String(content).split('\n');
+    for (const probe of probes) {
+        const idx = lines.findIndex((l) => l.includes(probe));
+        if (idx >= 0) {
+            const preview = lines[idx].length > 80 ? lines[idx].slice(0, 77) + '...' : lines[idx];
+            return ` Nearest match at line ${idx + 1}: ${JSON.stringify(preview)}`;
+        }
+    }
+    return '';
+}
+
 async function _runMultiEdit(args, workDir, readStateScope, pathOpts, options = {}) {
     args.path = normalizeInputPath(args.path);
     const filePath = args.path;
@@ -2427,12 +2448,12 @@ async function _runMultiEdit(args, workDir, readStateScope, pathOpts, options = 
             if (partialCoverageErr) return partialCoverageErr.replace('Error [code 6]:', `Error [code 6]: edit ${i} —`);
             if (replace_all === true) {
                 if (!content.includes(old_string)) {
-                    return `Error [code 8]: edit ${i} — old_string not found in ${filePath}`;
+                    return `Error [code 8]: edit ${i} — old_string not found in ${filePath}.${_findEditHint(content, old_string)}`;
                 }
                 content = content.split(old_string).join(new_string);
             } else {
                 const count = content.split(old_string).length - 1;
-                if (count === 0) return `Error [code 8]: edit ${i} — old_string not found in ${filePath}`;
+                if (count === 0) return `Error [code 8]: edit ${i} — old_string not found in ${filePath}.${_findEditHint(content, old_string)}`;
                 if (count > 1) return `Error [code 9]: edit ${i} — old_string found ${count} times in ${filePath}; set replace_all:true or provide more unique context`;
                 content = content.replace(old_string, () => new_string);
             }
@@ -2995,7 +3016,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 if (partialCoverageErr) return partialCoverageErr;
                 const count = content.split(oldStr).length - 1;
                 if (count === 0)
-                    return `Error [code 8]: old_string not found in ${filePath}`;
+                    return `Error [code 8]: old_string not found in ${filePath}.${_findEditHint(content, oldStr)}`;
                 if (count > 1 && !replaceAll)
                     return `Error [code 9]: old_string found ${count} times — set replace_all:true or provide more unique context`;
                 const updated = replaceAll
