@@ -761,7 +761,6 @@
     <div class="cat-item" data-panel="connection" onclick="switchCat(this)">Connection</div>
     <div class="cat-item" data-panel="channels" onclick="switchCat(this)">Channels</div>
     <div class="cat-item" data-panel="access" onclick="switchCat(this)">Access</div>
-    <div class="cat-item" data-panel="bot" onclick="switchCat(this)">Bot</div>
     <div class="cat-item" data-panel="dnd" onclick="switchCat(this)">Do Not Disturb</div>
     <div class="cat-item" data-panel="autotalk" onclick="switchCat(this)">Proactive</div>
     <div class="cat-item" data-panel="schedules" onclick="switchCat(this)">Schedules</div>
@@ -864,42 +863,6 @@
       </div>
       <div class="save-area">
         <div class="warn-msg" id="warn-access"></div>
-        <button class="save" onclick="savePanel()">Save</button>
-      </div>
-    </div>
-
-    <!-- BOT -->
-    <div class="panel" id="panel-bot">
-      <div class="hdr"><h1>Bot</h1></div>
-      <div class="sec">
-        <div class="sec-title">Behavior</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Sleep Mode <span class="tip">?<span class="tip-text">Auto-sleep the bot at a set time</span></span></span>
-            <select class="r-select" id="bot-sleep-preset" onchange="onSleepPresetChange()">
-              <option value="off">Off</option>
-              <option value="23:00">23:00</option>
-              <option value="00:00">00:00</option>
-              <option value="01:00">01:00</option>
-              <option value="custom">Custom...</option>
-            </select>
-            <input class="r-input" id="bot-sleep-custom" type="text" placeholder="HH:MM" style="width:80px;flex:none;margin-left:8px;display:none">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Model <span class="tip">?<span class="tip-text">Model preset for bot responses</span></span></span>
-            <select class="r-select" id="bot-model"></select>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Display Mode <span class="tip">?<span class="tip-text">view: show bot activity / hide: hide bot activity</span></span></span>
-            <select class="r-select" id="bot-display-mode">
-              <option value="view">view</option>
-              <option value="hide">hide</option>
-            </select>
-          </div>
-        </div>
-      </div>
-      <div class="save-area">
-        <div class="warn-msg" id="warn-bot"></div>
         <button class="save" onclick="savePanel()">Save</button>
       </div>
     </div>
@@ -2096,12 +2059,6 @@ function onQuietPresetChange() {
   else custom.classList.add('hidden');
 }
 
-function onSleepPresetChange() {
-  const sel = document.getElementById('bot-sleep-preset');
-  const custom = document.getElementById('bot-sleep-custom');
-  custom.style.display = sel.value === 'custom' ? '' : 'none';
-}
-
 
 // -- Channel list --
 function getChannelOptions() {
@@ -2401,7 +2358,7 @@ function populatePresetDropdowns() {
   const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
   console.log('[mixdog] populatePresetDropdowns:', presets.length, 'presets');
   if (!presets.length) return;
-  ['bot-model', 'proactive-model'].forEach(selId => {
+  ['proactive-model'].forEach(selId => {
     const sel = document.getElementById(selId);
     if (!sel) return;
     sel.innerHTML = '';
@@ -2412,8 +2369,6 @@ function populatePresetDropdowns() {
       sel.appendChild(opt);
     });
   });
-  const bot = chExtraData.bot || {};
-  document.getElementById('bot-model').value = bot.model || 'sonnet-mid';
   const proactive = chConfig?.proactive || {};
   document.getElementById('proactive-model').value = proactive.model || 'sonnet-mid';
 
@@ -2632,10 +2587,6 @@ async function populateChannels(cfg) {
   if (access.textChunkLimit) document.getElementById('ch-textchunklimit').value = access.textChunkLimit;
   if (access.chunkMode) document.getElementById('ch-chunkmode').value = access.chunkMode;
 
-  // Bot
-  const bot = chExtraData.bot || {};
-  if (bot.displayMode) document.getElementById('bot-display-mode').value = bot.displayMode;
-
   // DND: top-level cfg.quiet (server always populates default via applyChannelsDefaults)
   const quiet = cfg?.quiet || {};
   populateQuietHours(quiet.schedule);
@@ -2738,7 +2689,6 @@ function buildChannelsData() {
     proactive: proactiveOut,
     webhook,
     quiet: { schedule: quietSchedule, holidays: quietHolidays },
-    _bot: { sleepEnabled: document.getElementById('bot-sleep-preset').value !== 'off', sleepTime: (function(){ const v = document.getElementById('bot-sleep-preset').value; return v === 'off' ? undefined : v === 'custom' ? document.getElementById('bot-sleep-custom').value || undefined : v; })(), model: document.getElementById('bot-model').value || 'sonnet-mid', displayMode: document.getElementById('bot-display-mode').value },
   };
 }
 

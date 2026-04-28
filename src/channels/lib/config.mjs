@@ -182,17 +182,6 @@ function createBackend(config) {
     access: config.access
   }, stateDir);
 }
-const BOT_FILE = join(DATA_DIR, "bot.json");
-function loadBotConfig() {
-  try {
-    return JSON.parse(readFileSync(BOT_FILE, "utf8"));
-  } catch {
-    return {};
-  }
-}
-function saveBotConfig(bot) {
-  writeFileSync(BOT_FILE, JSON.stringify(bot, null, 2) + "\n");
-}
 const PROFILE_FILE = join(DATA_DIR, "profile.json");
 function loadProfileConfig() {
   try {
@@ -210,9 +199,7 @@ export {
   applyDefaults,
   createBackend,
   isInQuietWindow,
-  loadBotConfig,
   loadConfig,
   loadProfileConfig,
-  saveBotConfig,
   saveProfileConfig
 };

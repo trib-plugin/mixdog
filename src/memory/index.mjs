@@ -258,9 +258,18 @@ function getCycleLastRun() {
       // triggered an unscheduled run, rate-limited separately from the
       // normal cycle timestamp so a long chain of failures cannot tight-loop.
       cycle1_autoRestart: Number(obj.cycle1_autoRestart) || 0,
+      // #13/#14: heartbeat (every attempt, success or skip) and the auto-
+      // restart attempt timestamp (committed BEFORE the call) are tracked
+      // separately from the success timestamps above so a long string of
+      // failed/skipped runs cannot disguise itself as a healthy keeper.
+      cycle1_heartbeat: Number(obj.cycle1_heartbeat) || 0,
+      cycle1_autoRestart_attempt: Number(obj.cycle1_autoRestart_attempt) || 0,
     }
   } catch {
-    return { cycle1: 0, cycle2: 0, cycle1_autoRestart: 0 }
+    return {
+      cycle1: 0, cycle2: 0, cycle1_autoRestart: 0,
+      cycle1_heartbeat: 0, cycle1_autoRestart_attempt: 0,
+    }
   }
 }
 
@@ -437,7 +446,21 @@ function _startCycle1Run(config = {}, options = {}) {
   _cycle1InFlight = (async () => {
     try {
       const result = await runCycle1(db, config, options)
-      setCycleLastRun('cycle1', Date.now())
+      // #13: heartbeat (attempt) is always recorded so the overdue check
+      // can tell the keeper is alive; success timestamp only advances when
+      // the run actually did work. Skipped/in-flight runs do NOT count as
+      // success because the next overdue check would otherwise see a fake
+      // green and stop forcing auto-restarts.
+      const now = Date.now()
+      setCycleLastRun('cycle1_heartbeat', now)
+      const skipped = result?.skippedInFlight === true
+      const allFailed = !skipped
+        && Number(result?.chunks ?? 0) === 0
+        && Number(result?.processed ?? 0) === 0
+        && Number(result?.skipped ?? 0) > 0
+      if (!skipped && !allFailed) {
+        setCycleLastRun('cycle1', now)
+      }
       return result
     } finally {
       _cycle1InFlight = null
@@ -478,20 +501,24 @@ async function checkCycles() {
     )
     const lastAutoRestart = last.cycle1_autoRestart || 0
     if (now - lastAutoRestart >= CYCLE1_AUTO_RESTART_COOLDOWN_MS) {
-      setCycleLastRun('cycle1_autoRestart', now)
+      // #14: record the attempt timestamp BEFORE the call (so a hung run
+      // cannot tight-loop) and the result timestamp only on success. On
+      // failure we return immediately instead of falling through into the
+      // due branch — falling through would silently re-enter the same
+      // failing path within the same tick.
+      setCycleLastRun('cycle1_autoRestart_attempt', now)
       try {
-        // Cooperate with the coalesce gate: _awaitCycle1Run joins an
-        // in-flight run instead of racing it. The cooldown timestamp is
-        // already committed above so a join still spends the budget.
         const result = await _awaitCycle1Run(mainConfig?.cycle1 || {})
+        setCycleLastRun('cycle1_autoRestart', Date.now())
         process.stderr.write(
           `[cycle1] auto-restart completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`
         )
         return
       } catch (e) {
         process.stderr.write(`[cycle1] auto-restart error: ${e.message}\n`)
-        // Fall through so the normal due branch can still try on the next
-        // tick; the cooldown timestamp is already committed.
+        // Cooldown attempt timestamp is committed; do NOT fall through
+        // to the due branch — next tick will retry after cooldown.
+        return
       }
     }
   }
@@ -516,14 +543,37 @@ async function checkCycles() {
   }
 }
 
+// #12: self-rescheduling timer. setInterval would fire ticks regardless of
+// whether the previous checkCycles() call had finished; with cycle1/cycle2
+// each potentially taking minutes, that races. Use setTimeout that re-arms
+// itself only after the prior tick resolves, plus an in-flight guard so a
+// stray manual call cannot stack ticks.
+let _checkCyclesInFlight = false
+async function _runCheckCyclesGuarded() {
+  if (_checkCyclesInFlight) return
+  _checkCyclesInFlight = true
+  try { await checkCycles() }
+  catch (e) { process.stderr.write(`[cycle-tick] error: ${e.message}\n`) }
+  finally { _checkCyclesInFlight = false }
+}
+function _scheduleNextCheck() {
+  _cycleInterval = setTimeout(async () => {
+    _cycleInterval = null
+    await _runCheckCyclesGuarded()
+    if (_cyclesActive) _scheduleNextCheck()
+  }, 60_000)
+}
+let _cyclesActive = false
 function _startCycles() {
-  if (_cycleInterval) return
-  _cycleInterval = setInterval(() => { void checkCycles() }, 60_000)
-  _startupTimeout = setTimeout(() => { void checkCycles() }, 30_000)
+  if (_cyclesActive) return
+  _cyclesActive = true
+  _scheduleNextCheck()
+  _startupTimeout = setTimeout(() => { void _runCheckCyclesGuarded() }, 30_000)
 }
 
 function _stopCycles() {
-  if (_cycleInterval) { clearInterval(_cycleInterval); _cycleInterval = null }
+  _cyclesActive = false
+  if (_cycleInterval) { clearTimeout(_cycleInterval); _cycleInterval = null }
   if (_startupTimeout) { clearTimeout(_startupTimeout); _startupTimeout = null }
 }
 

@@ -33,33 +33,74 @@ function ping(timeoutMs = 1500) {
 }
 
 // Walk up the process tree from our immediate parent (the shell wrapping
-// `node launch.mjs`) to find the grandparent — the Claude Code CLI that
-// actually owns this session. process.ppid here is the shell, which exits
-// the moment launch.mjs returns; tracking it makes setup-server commit
-// suicide 5s after spawn. The grandparent is the long-lived process whose
-// death should actually reap the UI server.
+// `node launch.mjs`) and skip past short-lived shell shims to find the
+// first long-lived ancestor — the Claude Code CLI (or MCP host) that
+// actually owns this session. The immediate parent is the shell, which
+// exits the moment launch.mjs returns; the grandparent on Windows slash
+// commands is often a single-shot cmd.exe that also dies right away.
+// Tracking either makes setup-server commit suicide ~5s after spawn (see
+// the watchdog in setup-server.mjs). Walk up to MAX_DEPTH levels and
+// return the first ancestor whose image name is NOT a known shell shim.
 function findAncestorPid() {
   const immediate = process.ppid;
   if (!Number.isFinite(immediate) || immediate <= 0) return 0;
+  const MAX_DEPTH = 6;
+  const SHELL_NAMES = new Set([
+    'cmd.exe', 'powershell.exe', 'pwsh.exe',
+    'sh', 'sh.exe', 'bash', 'bash.exe', 'zsh', 'zsh.exe',
+  ]);
   try {
     if (process.platform === 'win32') {
+      // One PowerShell call walks up MAX_DEPTH levels and emits
+      // "<pid>|<name>" per ancestor (immediate parent first). Spawning
+      // powershell once per step would multiply startup cost, so the
+      // walk is batched into a single invocation.
+      const script =
+        `$pid0 = ${immediate}; ` +
+        `for ($i = 0; $i -lt ${MAX_DEPTH}; $i++) { ` +
+        `  $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $pid0) -ErrorAction SilentlyContinue; ` +
+        `  if (-not $p) { break } ` +
+        `  Write-Output ('{0}|{1}' -f $p.ProcessId, $p.Name); ` +
+        `  if (-not $p.ParentProcessId) { break } ` +
+        `  $pid0 = $p.ParentProcessId ` +
+        `}`;
       const out = execSync(
-        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${immediate}').ParentProcessId"`,
+        `powershell -NoProfile -Command "${script}"`,
         { encoding: 'utf8', timeout: 3000, windowsHide: true },
       ).trim();
-      const pid = parseInt(out, 10);
-      if (Number.isFinite(pid) && pid > 0) return pid;
+      for (const line of out.split(/\r?\n/)) {
+        const [pidStr, name] = line.split('|');
+        const pid = parseInt(pidStr, 10);
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+        const lower = (name || '').trim().toLowerCase();
+        if (SHELL_NAMES.has(lower)) continue;
+        return pid;
+      }
     } else {
-      const out = execSync(`ps -o ppid= -p ${immediate}`, { encoding: 'utf8', timeout: 3000 }).trim();
-      const pid = parseInt(out, 10);
-      if (Number.isFinite(pid) && pid > 0) return pid;
+      let cur = immediate;
+      for (let i = 0; i < MAX_DEPTH; i++) {
+        const out = execSync(
+          `ps -o ppid=,comm= -p ${cur}`,
+          { encoding: 'utf8', timeout: 3000 },
+        ).trim();
+        if (!out) break;
+        const m = out.match(/^\s*(\d+)\s+(.*)$/);
+        if (!m) break;
+        const ppid = parseInt(m[1], 10);
+        if (!Number.isFinite(ppid) || ppid <= 0) break;
+        const name = (m[2] || '').trim();
+        // basename — `ps -o comm=` may emit a full path on some systems.
+        const lower = name.split(/[\\/]/).pop().toLowerCase();
+        if (!SHELL_NAMES.has(lower)) return ppid;
+        cur = ppid;
+      }
     }
   } catch {}
-  // Grandparent lookup failed — the immediate parent is the shell wrapping
-  // `node launch.mjs`, which exits as soon as launch.mjs returns. Passing it
-  // to the watchdog would make setup-server commit suicide on the next tick.
-  // Return 0 so the caller skips MIXDOG_SETUP_PARENT_PID and the watchdog
-  // stays disabled — the detached server simply keeps running.
+  // Ancestor lookup failed or every level we could see was a known shell
+  // shim. Passing any of those to the watchdog would make setup-server
+  // commit suicide as soon as the shim exits. Return 0 so the caller
+  // skips MIXDOG_SETUP_PARENT_PID and the watchdog stays disabled — the
+  // detached server simply keeps running.
   return 0;
 }
 

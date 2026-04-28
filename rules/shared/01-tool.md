@@ -9,7 +9,7 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 - `recall` / `search` / `explore` — single rich NL query = ONE internal agent judges multi-angle probes & synthesizes. Array = N INDEPENDENT agents, mechanical merge, NO cross-synthesis. Default: single query. Array only for genuinely unrelated questions.
 - `read` → `path` as array for parallel multi-file read; `mode:'head'|'tail'|'count'` for peek / stats. NEVER serial `read`.
 - `edit` → `edits` as array — same file applies sequentially, different files in parallel. NEVER serial `edit`.
-- `apply_patch` → prefer for non-trivial multi-file or large-context edits. One patch turn beats repeated `read` → `edit` loops.
+- `apply_patch` → prefer for **2+ files**, **2+ hunks in one file**, or whenever a `read` → `edit` loop would otherwise repeat 2+ times. One patch turn beats repeated `read` → `edit` loops.
 - `grep` → `pattern` and/or `glob` as array (OR-joined).
 - `glob` → `pattern` as array (OR-joined).
 - `bash` → chain dependent commands with `&&` / `;` in ONE call. NEVER split dependent work.
@@ -21,6 +21,7 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 - `read` / `glob` / `grep` candidates 2+ → array form, never serial.
 - Never `read` the same file twice in one session — pass any needed range in one call. Never `grep` the same pattern twice — broaden once or switch tool family.
 - `write` whole files 2+ → `writes` array. `edit` 2+ files → `edits` array (per-file groups).
+- `grep` / `glob` auto-skip standard ignore dirs (node_modules, .git, dist, build, .cache, etc.). Pass an explicit `path` into one of those dirs if you need to search inside.
 
 ## General Iter Budget
 
@@ -35,7 +36,7 @@ Applies when the next move is `edit` or `apply_patch` AND the target span is not
 - After two `grep`→`read` pairs **on the same target** — same intended edit area, or the same requirement pointing at that area, even if the keywords differ (e.g. `grep "fooHandler"` → `grep "handle_foo"` on the same goal still counts) — without the target span being **Locked** (definition above: exact file path AND one or more uniquely-identified line ranges you can edit without re-reading), a third pair is the violation. Switch tool family (`find_symbol` / `code_graph`) or commit to the edit only if the span now meets the **Locked** definition — that exact file path and every line range are pinned by explicit file+line evidence already in hand (`grep -n` hits, `find_symbol` line numbers, prior `read` output covering those lines), not inferred from grep matches without line numbers or from naming conventions. Same threshold as the corresponding Anti-pattern.
   - Tiny example: `grep X → read A`, then `grep X-variant → read A` (or A+B) = two pairs; the next move must be `find_symbol` / `code_graph` / `edit`, not a third `grep`→`read`.
 - Once the span is locked, edit. Do not re-read the same file again.
-- For edits across multiple files, prefer `apply_patch` in one combined turn over looping `read` → `edit`.
+- For 2+ files or 2+ hunks in one file, prefer `apply_patch` in one combined turn over looping `read` → `edit`.
 
 ## Preflight
 
@@ -62,9 +63,9 @@ Before any tool call, scan the query for known scope and collapse multiple round
 ### Lower-level / structural
 
 - Known file path → `read` directly. Unknown location → `grep` / `glob` first, then targeted `read`.
-- Identifier / constant / function / class name known but file unknown → `find_symbol` before `grep`.
+- Identifier / constant / function / class name known: `find_symbol` answers **where is it declared** (one decisive declaration line); `grep` answers **where is it used / mentioned** (all hits, includes comments and strings). Two different questions — pick the one matching your need, or call both in parallel if both are genuinely needed. Do not run them serially as fallback for each other.
 - Imports, dependents, callers, references → use the direct alias (`find_imports` / `find_dependents` / `find_callers` / `find_references`). Generic `code_graph(mode=...)` is for mixed structural impact only.
-- Multi-file or already-clear edits: `apply_patch` over looping `read` → `edit`.
+- 2+ files or 2+ hunks: `apply_patch` over looping `read` → `edit`.
 
 ### `bash` specifics
 
@@ -103,7 +104,7 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 
 ## Anti-patterns
 
-- Do not call `find_symbol` and `grep` for the same identifier in the same round unless `find_symbol` returned no declaration candidate.
+- Do not call `find_symbol` then `grep` (or vice versa) serially as fallback for the same identifier — they answer different questions (declaration vs usage). If both are genuinely needed, call them in parallel and synthesize.
 - Do not serially `read` files one by one when the candidate list is already known.
 - Do not serially `write` several whole files when one call with a `writes` array can do it.
 - Do not `read` a whole large file when `find_symbol`, `code_graph`, or `grep` can narrow the line window first.

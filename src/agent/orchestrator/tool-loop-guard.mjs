@@ -17,7 +17,6 @@ const DEFAULT_SAME_TOOL_THRESHOLDS = Object.freeze({
     search: 24,
     recall: 24,
     explore: 24,
-    web_search: 24,
     memory_search: 24,
     read: 16,
     grep: 16,
@@ -26,6 +25,8 @@ const DEFAULT_SAME_TOOL_THRESHOLDS = Object.freeze({
     bash: 20,
     web_search: 3,
 });
+// Note: web_search appears once with threshold 3 (was duplicated as 24 above
+// before; the duplicate has been removed).
 // Unified abort ceiling: warn freely, only hard-stop at 100 per axis.
 const DEFAULT_SAME_TOOL_ABORT_THRESHOLDS = Object.freeze(
     Object.fromEntries(Object.keys(DEFAULT_SAME_TOOL_THRESHOLDS).map((name) => [name, 100])),
@@ -35,6 +36,14 @@ const DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS = Object.freeze({
     search_fanout: 100,
 });
 
+// Tools where an identical (toolName + args) call directly after an error
+// from the same tool is a terminal config-gap signature, not a recoverable
+// retry. The strict track aborts on the *second* identical attempt rather
+// than waiting for the regular detect/abort thresholds. Applied narrowly
+// (web_search default) because most tools have legitimate idempotent
+// retries; web_search auth/config errors do not.
+const DEFAULT_STRICT_IDENTICAL_ARGS_AFTER_ERROR_TOOLS = Object.freeze(['web_search']);
+
 // Tools whose success signals genuine progress (not probe grinding).
 // A successful call to any of these resets the structure_probe and
 // search_fanout family counters so probe→edit→probe cycles don't
@@ -42,7 +51,7 @@ const DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS = Object.freeze({
 const PRODUCTIVE_TOOLS = Object.freeze(new Set([
     'edit',
     'apply_patch', 'write',
-    'bash', 'bash_session',
+    'bash',
 ]));
 
 const DEFAULT_CONFIG = Object.freeze({
@@ -50,20 +59,14 @@ const DEFAULT_CONFIG = Object.freeze({
     abortThreshold: 100,
     sameToolThresholds: DEFAULT_SAME_TOOL_THRESHOLDS,
     sameToolAbortThresholds: DEFAULT_SAME_TOOL_ABORT_THRESHOLDS,
+    strictIdenticalArgsAfterErrorTools: DEFAULT_STRICT_IDENTICAL_ARGS_AFTER_ERROR_TOOLS,
     toolFamilyWarnRules: Object.freeze([
         Object.freeze({
             key: 'structure_probe',
-            threshold: 10,
-            repeatEvery: 8,
+            threshold: 12,
+            repeatEvery: 16,
             minDistinctTools: 2,
             tools: Object.freeze(['read', 'grep', 'glob', 'list']),
-        }),
-        Object.freeze({
-            key: 'edit_roundtrip',
-            threshold: 5,
-            repeatEvery: 4,
-            minDistinctTools: 2,
-            tools: Object.freeze(['edit']),
         }),
         Object.freeze({
             key: 'search_fanout',
@@ -90,12 +93,15 @@ function buildRuntimeConfig(overrides = {}) {
     };
     const sameToolAbortThresholds = {};
     const overrideSameToolAbort = overrides.sameToolAbortThresholds || {};
-    for (const [name, warnThreshold] of Object.entries(sameToolThresholds)) {
+    for (const name of Object.keys(sameToolThresholds)) {
         const overrideThreshold = overrideSameToolAbort[name];
         if (Number.isFinite(overrideThreshold)) {
             sameToolAbortThresholds[name] = overrideThreshold;
         } else {
-            sameToolAbortThresholds[name] = warnThreshold * 2;
+            // Use the unified per-axis ceiling (100) rather than warn*2;
+            // warn thresholds are intentionally low for early advisory and
+            // doubling them would abort far below the documented ceiling.
+            sameToolAbortThresholds[name] = DEFAULT_SAME_TOOL_ABORT_THRESHOLDS[name] ?? 100;
         }
     }
     return {
@@ -121,6 +127,11 @@ function buildRuntimeConfig(overrides = {}) {
         totalToolAbortThresholds: Array.isArray(overrides.totalToolAbortThresholds)
             ? [...overrides.totalToolAbortThresholds]
             : [...DEFAULT_CONFIG.totalToolAbortThresholds],
+        strictIdenticalArgsAfterErrorTools: new Set(
+            (Array.isArray(overrides.strictIdenticalArgsAfterErrorTools)
+                ? overrides.strictIdenticalArgsAfterErrorTools
+                : DEFAULT_CONFIG.strictIdenticalArgsAfterErrorTools).map((t) => String(t).toLowerCase()),
+        ),
     };
 }
 
@@ -249,7 +260,7 @@ export function buildSoftWarn(info) {
         `- Different arguments (broader/narrower pattern, different path, different glob)`,
         `- A different tool (explore instead of grep, read instead of glob, etc.)`,
         `- Accept the current result and move on`,
-        `Calling \`${toolName}\` identically a fifth time WILL abort this session.`,
+        `Repeated identical calls will abort this session at the per-axis ceiling (100).`,
     ].join('\n');
 }
 
@@ -357,6 +368,13 @@ export function createGuard() {
         sameToolName: null,
         sameToolCount: 0,
         sameToolWarnedFor: new Set(),
+        // Strict identical-args-after-error track. Maps toolKey →
+        // { argsSha, errorCategory } from the previous call. If the next call
+        // for the same tool sends the same argsSha after that prior error,
+        // we abort on the second attempt instead of waiting for the normal
+        // 4-of-a-kind detect threshold. Used for tools where the failure mode
+        // is config-gap, not a recoverable retry (e.g. web_search auth).
+        lastCallByTool: new Map(),
         familyRuns: new Map(),
         totalToolCalls: 0,
         totalToolWarnedThresholds: new Set(),
@@ -384,6 +402,46 @@ export function checkToolCall(guard, event) {
     const toolKey = String(toolName || '').toLowerCase();
     const cfg = guard?.config || getActiveRuntimeConfig();
     guard.totalToolCalls += 1;
+
+    // ── Strict identical-args-after-error abort.
+    // Whitelisted tools (default: web_search) abort on the SECOND identical
+    // (toolName + args) call when the immediately prior call for that tool
+    // returned an error. Caller-side config gaps (e.g. invalid GitHub token)
+    // surface marker-prefixed errors and would otherwise burn through 6 retries
+    // before the same-tool ceiling kicks in.
+    if (!guard.lastCallByTool) guard.lastCallByTool = new Map();
+    const strictTools = cfg.strictIdenticalArgsAfterErrorTools instanceof Set
+        ? cfg.strictIdenticalArgsAfterErrorTools
+        : new Set(Array.isArray(cfg.strictIdenticalArgsAfterErrorTools) ? cfg.strictIdenticalArgsAfterErrorTools.map((t) => String(t).toLowerCase()) : []);
+    const strictTrackEnabled = strictTools.has(toolKey);
+    let strictPriorError = null;
+    let strictCurrentArgsSha = null;
+    if (strictTrackEnabled) {
+        strictCurrentArgsSha = createHash('sha256').update(normalizeArgs(args)).digest('hex').slice(0, 16);
+        const prev = guard.lastCallByTool.get(toolKey);
+        if (prev && prev.errored && prev.argsSha === strictCurrentArgsSha) {
+            strictPriorError = prev;
+        }
+    }
+    if (strictPriorError) {
+        const argsSample = (() => {
+            try { return JSON.stringify(args).slice(0, 300); } catch { return String(args).slice(0, 300); }
+        })();
+        const errorSample = String(result).slice(0, 300);
+        return {
+            action: 'abort',
+            info: {
+                signature: `identical-args-after-error:${toolKey}:${strictCurrentArgsSha}`,
+                toolName,
+                errorCategory: 'identical-args-after-error',
+                attemptCount: 2,
+                argsSample,
+                errorSample,
+                iteration,
+                priorErrorCategory: strictPriorError.errorCategory,
+            },
+        };
+    }
 
     // ── Same-tool repetition track (independent of error-loop signature).
     // Thresholded whitelist only; non-whitelisted tools also reset the run so an
@@ -537,6 +595,15 @@ export function checkToolCall(guard, event) {
         };
     }
 
+    if (strictTrackEnabled) {
+        const errored = isErrorResult(result);
+        guard.lastCallByTool.set(toolKey, {
+            argsSha: strictCurrentArgsSha,
+            errored,
+            errorCategory: errored ? classifyError(result) : null,
+        });
+    }
+
     if (!isErrorResult(result)) {
         // Productive-tool reset: a successful edit/bash between probes means
         // the model is making progress, not grinding. Reset structure_probe
@@ -618,8 +685,8 @@ export function checkToolCall(guard, event) {
     if (guard.count >= cfg.detectThreshold) {
         // Emit the soft-warn sidecar once per run-up. If the signature
         // somehow ticks past the detect threshold more than once for the
-        // same run (shouldn't with count->5==abort, but defensive) we
-        // don't re-spam the warning.
+        // same run (shouldn't repeat with the per-axis ceiling at 100,
+        // but defensive) we don't re-spam the warning.
         const warnText = guard.warnedSig === signature ? null : buildSoftWarn(info);
         guard.warnedSig = signature;
         return { action: 'detected', info, warnText };
@@ -664,7 +731,14 @@ export function checkToolCall(guard, event) {
  * NEVER call this on the tool-result body that is fed back to the model;
  * that would defeat the self-correction signal.
  */
-const SOFT_WARN_LEADING_RE = /^\s*⚠\s+(Tool-loop|Repeated-tool|Mixed-tool|Tool-budget)\s+soft-warn[^\n]*\n+/;
+// Soft-warn blocks are multi-line: the marker line is followed by bullet
+// guidance and (for the canonical envelopes) an `(Advisory only — ...)`
+// trailer, then a blank-line separator before the actual tool body. The
+// previous regex only consumed the marker line, leaving the bullets and
+// trailer attached to the body and leaking guidance back into outbound
+// merges. Match the full block — marker line plus continuation lines —
+// up to the first blank line (or end of string).
+const SOFT_WARN_LEADING_RE = /^\s*⚠\s+(?:Tool-loop|Repeated-tool|Mixed-tool|Tool-budget)\s+soft-warn[\s\S]*?(?:\n\s*\n|$)/;
 export function stripLeadingSoftWarns(text) {
     if (typeof text !== 'string' || text.length === 0) return text;
     let out = text;

@@ -82,6 +82,9 @@ export function prepareBridgeSession({
             model: runtimeSpec?.model || null,
             provider: runtimeSpec?.provider || null,
             parentSessionId: parentSessionId || null,
+            permission: permission || null,
+            sourceName: sourceName || null,
+            cacheKeyOverride: cacheKeyOverride || null,
         });
     } catch { /* telemetry best-effort */ }
     return { session, effectiveCwd };

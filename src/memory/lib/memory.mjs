@@ -102,6 +102,17 @@ export function init(db, dims) {
         ON entries(status, score DESC) WHERE is_root = 1;
       CREATE INDEX idx_entries_root_category
         ON entries(category, status) WHERE is_root = 1;
+      -- Cycle1 backlog scan: chunk_root IS NULL AND session_id IS NOT NULL
+      -- ORDER BY ts DESC, id DESC. Without this partial index the query
+      -- falls back to idx_entries_ts_desc and post-filters every row.
+      CREATE INDEX idx_entries_pending
+        ON entries(ts DESC, id DESC)
+        WHERE chunk_root IS NULL AND session_id IS NOT NULL;
+      -- Cycle2 phase3 candidate scan: is_root=1 AND status IN ('active','processed')
+      -- ORDER BY last_seen_at ASC, score DESC.
+      CREATE INDEX idx_roots_active_old
+        ON entries(status, last_seen_at ASC, score DESC)
+        WHERE is_root = 1 AND status IN ('active', 'processed');
 
       CREATE TABLE meta (
         key   TEXT PRIMARY KEY,
@@ -149,7 +160,7 @@ export function init(db, dims) {
 
     const metaInsert = db.prepare(`INSERT INTO meta(key, value) VALUES (?, ?)`)
     metaInsert.run('embedding.current_dims', String(dimCount))
-    metaInsert.run('boot.schema_version', '3')
+    metaInsert.run('boot.schema_version', '4')
     metaInsert.run('boot.schema_bootstrap_complete', '1')
 
     db.exec('COMMIT')
@@ -228,6 +239,25 @@ function migrateIfNeeded(db) {
     }
     setMetaValue(db, 'boot.schema_version', '3')
     process.stderr.write(`[memory] schema migrated to v3 (vec_entries delete trigger)\n`)
+  }
+  if (current < 4) {
+    // v4: backfill cycle1/cycle2 hot-path partial indexes onto pre-existing
+    // databases. CREATE INDEX IF NOT EXISTS is idempotent.
+    try {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_entries_pending
+          ON entries(ts DESC, id DESC)
+          WHERE chunk_root IS NULL AND session_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_roots_active_old
+          ON entries(status, last_seen_at ASC, score DESC)
+          WHERE is_root = 1 AND status IN ('active', 'processed');
+      `)
+    } catch (e) {
+      process.stderr.write(`[memory] schema v4 migration failed: ${e.message}\n`)
+      return
+    }
+    setMetaValue(db, 'boot.schema_version', '4')
+    process.stderr.write(`[memory] schema migrated to v4 (cycle hot-path indexes)\n`)
   }
 }
 

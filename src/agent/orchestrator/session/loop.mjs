@@ -25,11 +25,15 @@ const READ_BLOCKED_TOOLS = new Set([
 ]);
 const MCP_ONLY_ALLOWED_KINDS = new Set(['mcp', 'internal', 'skill']);
 const DIRECT_HIDDEN_TOOLS = new Set(['memory_search', 'web_search']);
+// Wrappers that hidden retrieval roles back. Hidden roles MUST NOT call
+// these or they spawn another hidden agent of the same kind — nested chain
+// + token burn. Block at call time; the role's rule prompt also says so.
+const RETRIEVAL_WRAPPERS = new Set(['recall', 'search', 'explore']);
 // Eager-dispatch allowlist: read-only builtins can safely start executing
 // during SSE parsing so tool work overlaps with the rest of the stream.
 // Writes, bash, MCP and skills stay serial after send() returns.
-const EAGER_TOOLS = new Set(['read', 'grep', 'glob', 'list']);
-const COMPLETION_HINT_TOOLS = new Set(['read', 'grep', 'glob', 'list']);
+const EAGER_TOOLS = new Set(['read', 'grep', 'glob', 'list', 'find_symbol']);
+const COMPLETION_HINT_TOOLS = new Set(['read', 'grep', 'glob', 'list', 'find_symbol']);
 const EXPLICIT_TOOL_VERBS = String.raw`(?:use|call|run|invoke|prefer)`
 const EXPLICIT_TOOL_NEGATION = String.raw`(?:do\s+not|don't|never)\s+${EXPLICIT_TOOL_VERBS}`
 function isEagerDispatchable(name) { return EAGER_TOOLS.has(name); }
@@ -93,6 +97,11 @@ function isBlockedDirectHiddenTool(toolName, sessionRef) {
     if (!DIRECT_HIDDEN_TOOLS.has(toolName)) return false;
     if (sessionRef?.owner !== 'bridge') return false;
     return !isHiddenRole(sessionRef?.role);
+}
+function isBlockedHiddenWrapperCall(toolName, sessionRef) {
+    if (!RETRIEVAL_WRAPPERS.has(toolName)) return false;
+    if (sessionRef?.owner !== 'bridge') return false;
+    return isHiddenRole(sessionRef?.role);
 }
 function messagesArrayChanged(before, after) {
     if (!Array.isArray(before) || !Array.isArray(after)) return before !== after;
@@ -327,6 +336,26 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         opts.onToolCall = (call) => {
             startEagerTool(call);
         };
+        // Pre-send fuse: stop before issuing the (N+1)-th provider call when
+        // the prior iter already hit the ceiling. Avoids burning a final
+        // round-trip and emits a structured trace so the abort is observable.
+        if (iterations >= emergencyIterationFuse) {
+            try {
+                traceBridgeLoop({
+                    sessionId,
+                    iteration: iterations,
+                    sendMs: 0,
+                    messageCount: Array.isArray(messages) ? messages.length : 0,
+                    bodyBytesEst: 0,
+                    aborted: true,
+                    abortReason: `emergency-fuse:${emergencyIterationFuse}`,
+                });
+            } catch { /* trace best-effort */ }
+            response = response || { content: '', toolCalls: [] };
+            response.content = (response.content || '') +
+                `\n\n[Agent loop emergency fuse: reached ${emergencyIterationFuse} iterations, aborted before next send]`;
+            break;
+        }
         const sendStartedAt = Date.now();
         response = await provider.send(messages, model, sendTools.length ? sendTools : undefined, opts);
         opts.onToolCall = undefined;
@@ -371,13 +400,6 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         // No tool calls — done
         if (!response.toolCalls?.length)
             break;
-        // Non-negotiable runaway fuse. Soft iteration caps warn below;
-        // this remains only as an emergency brake for a genuinely broken loop.
-        if (iterations > emergencyIterationFuse) {
-            response.content = (response.content || '') +
-                `\n\n[Agent loop emergency fuse: reached ${emergencyIterationFuse} iterations]`;
-            break;
-        }
         const calls = response.toolCalls;
         toolCallsTotal += calls.length;
         onToolCall?.(iterations, calls);
@@ -435,7 +457,10 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                     // enforced at call time, not at schema build time.
                     const effectivePermission = effectiveToolPermission(sessionRef);
                     const permissionBlocked = isBlockedByPermission(call.name, toolKind, effectivePermission);
-                    if (isBlockedDirectHiddenTool(call.name, sessionRef)) {
+                    if (isBlockedHiddenWrapperCall(call.name, sessionRef)) {
+                        result = `Error: tool "${call.name}" is the wrapper your role (${sessionRef?.role || 'hidden'}) backs. Calling it would spawn another hidden agent of the same kind — use the role's direct tool (memory_search / web_search / find_symbol+grep+read) instead.`;
+                        toolEndedAt = Date.now();
+                    } else if (isBlockedDirectHiddenTool(call.name, sessionRef)) {
                         result = `Error: tool "${call.name}" is only available inside Pool C hidden retrieval roles. Use recall/search/explore instead.`;
                         toolEndedAt = Date.now();
                     } else if (permissionBlocked && effectivePermission === 'mcp') {

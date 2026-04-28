@@ -134,6 +134,7 @@ export function ttlSecondsForCache() {
     return Math.max(
         ttlToSeconds(ttls.tools),
         ttlToSeconds(ttls.system),
+        ttlToSeconds(ttls.tier3),
         ttlToSeconds(ttls.messages),
     );
 }

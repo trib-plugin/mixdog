@@ -6,29 +6,118 @@ import { callBridgeLlm } from './agent-ipc.mjs'
 import { computeEntryScore } from './memory-score.mjs'
 import { embedText } from './embedding-provider.mjs'
 
+// Embedding dirty queue (#3/#4): cycle1 commits no longer await syncRootEmbedding
+// inline because a single LLM-side embedding hiccup must not block the rest of
+// the window's Promise.all. Failed root ids land in this meta-backed queue and
+// the next cycle1/cycle2 tick drains it. The queue is bounded by however many
+// roots actually exist, so it cannot grow unbounded; duplicates are coalesced.
+const EMBED_DIRTY_KEY = 'embedding.dirty_ids'
+
+function _readDirtyIds(db) {
+  try {
+    const row = db.prepare(`SELECT value FROM meta WHERE key = ?`).get(EMBED_DIRTY_KEY)
+    if (!row) return new Set()
+    const parsed = JSON.parse(row.value)
+    if (!Array.isArray(parsed)) return new Set()
+    return new Set(parsed.map(n => Number(n)).filter(n => Number.isFinite(n)))
+  } catch { return new Set() }
+}
+
+function _writeDirtyIds(db, ids) {
+  const arr = Array.from(ids).filter(n => Number.isFinite(n))
+  try {
+    db.prepare(`
+      INSERT INTO meta(key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(EMBED_DIRTY_KEY, JSON.stringify(arr))
+  } catch (err) {
+    process.stderr.write(`[embed-sync] dirty queue persist failed: ${err.message}\n`)
+  }
+}
+
+export function markEmbeddingDirty(db, rootId) {
+  const id = Number(rootId)
+  if (!Number.isFinite(id)) return
+  const cur = _readDirtyIds(db)
+  if (cur.has(id)) return
+  cur.add(id)
+  _writeDirtyIds(db, cur)
+}
+
+function _removeDirty(db, rootId) {
+  const cur = _readDirtyIds(db)
+  if (!cur.delete(Number(rootId))) return
+  _writeDirtyIds(db, cur)
+}
+
+export async function flushEmbeddingDirty(db) {
+  const ids = Array.from(_readDirtyIds(db))
+  if (ids.length === 0) return { attempted: 0, succeeded: 0, failed: [] }
+  const failed = []
+  let succeeded = 0
+  for (const id of ids) {
+    const ok = await syncRootEmbedding(db, id)
+    if (ok) succeeded += 1
+    else failed.push(id)
+  }
+  _writeDirtyIds(db, new Set(failed))
+  return { attempted: ids.length, succeeded, failed }
+}
+
 export async function syncRootEmbedding(db, rootId) {
   const row = db.prepare(`SELECT element, summary FROM entries WHERE id = ? AND is_root = 1`).get(rootId)
-  if (!row) return false
+  if (!row) {
+    // Row no longer a root (deleted/merged) — drop from dirty queue silently.
+    _removeDirty(db, rootId)
+    return false
+  }
   const text = [row.element, row.summary].filter(Boolean).join(' — ').trim()
-  if (!text) return false
+  if (!text) {
+    _removeDirty(db, rootId)
+    return false
+  }
   let vector
   try { vector = await embedText(text) }
   catch (err) {
     process.stderr.write(`[embed-sync] embedText failed (id=${rootId}): ${err.message}\n`)
+    markEmbeddingDirty(db, rootId)
     return false
   }
-  if (!Array.isArray(vector) || vector.length === 0) return false
+  if (!Array.isArray(vector) || vector.length === 0) {
+    markEmbeddingDirty(db, rootId)
+    return false
+  }
+  // #9: vector dim must match the vec_entries table's declared dims. A
+  // mismatch corrupts vec0 silently, so refuse the write and re-queue.
+  try {
+    const dimsRow = db.prepare(`SELECT value FROM meta WHERE key = 'embedding.current_dims'`).get()
+    const expected = Number(dimsRow?.value ?? 0)
+    if (Number.isFinite(expected) && expected > 0 && vector.length !== expected) {
+      process.stderr.write(
+        `[embed-sync] dim mismatch (id=${rootId} got=${vector.length} expected=${expected})\n`,
+      )
+      markEmbeddingDirty(db, rootId)
+      return false
+    }
+  } catch {}
   const blob = Buffer.alloc(vector.length * 4)
   for (let i = 0; i < vector.length; i++) blob.writeFloatLE(vector[i], i * 4)
+  // #9: wrap entries + vec_entries write in one transaction so a partial
+  // failure cannot leave the two tables out of sync.
   try {
+    db.exec('BEGIN')
     db.prepare(`UPDATE entries SET embedding = ? WHERE id = ? AND is_root = 1`).run(blob, rootId)
     const upd = db.prepare(`UPDATE vec_entries SET embedding = ? WHERE rowid = ?`).run(blob, BigInt(rootId))
     if (Number(upd.changes ?? 0) === 0) {
       db.prepare(`INSERT INTO vec_entries(rowid, embedding) VALUES (?, ?)`).run(BigInt(rootId), blob)
     }
+    db.exec('COMMIT')
+    _removeDirty(db, rootId)
     return true
   } catch (err) {
+    try { db.exec('ROLLBACK') } catch {}
     process.stderr.write(`[embed-sync] db write failed (id=${rootId}): ${err.message}\n`)
+    markEmbeddingDirty(db, rootId)
     return false
   }
 }
@@ -127,6 +216,27 @@ const CYCLE1_SESSION_CAP = 10
 // concurrent calls against the same db SKIP (not coalesce) — each pass is
 // idempotent and the scheduler re-fires on the next tick.
 const _runCycle1InFlight = new WeakMap()
+// Mirror gate for cycle2 (#1). Same SKIP-not-coalesce policy.
+const _runCycle2InFlight = new WeakMap()
+
+// #2: tiny inline semaphore (no external dep). Used to bound the cycle1
+// window fan-out so a heavy backlog cannot fire N concurrent LLM calls.
+function createSemaphore(limit) {
+  const cap = Math.max(1, Number(limit) || 1)
+  let active = 0
+  const queue = []
+  const release = () => {
+    active -= 1
+    const next = queue.shift()
+    if (next) next()
+  }
+  return async (fn) => {
+    if (active >= cap) await new Promise(res => queue.push(res))
+    active += 1
+    try { return await fn() }
+    finally { release() }
+  }
+}
 
 function countPendingRows(db) {
   try {
@@ -172,6 +282,9 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   const sessionCap = Math.max(1, Number(config?.session_cap ?? config?.cycle1?.session_cap ?? CYCLE1_SESSION_CAP))
   const preset = options.preset || resolveMaintenancePreset('cycle1')
   const timeout = Number(config?.cycle1?.timeout ?? 600000)
+  // #2: bounded fan-out across windows. Default 4; caller-deadline-aware
+  // timeout is already propagated to callBridgeLlm above.
+  const concurrency = Math.max(1, Number(config?.cycle1?.concurrency ?? 4))
 
   // Time-ordered fetch — no GROUP BY session_id. Pull up to
   // sessionCap × batchSize rows ordered DESC (most recent first, so we
@@ -199,6 +312,9 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   `).all(fetchLimit)
 
   if (rowsDesc.length < minBatch) {
+    // #3/#4: drain the dirty embedding queue even on a quick exit so a
+    // backlog of failed embeddings still gets retried on every tick.
+    const dirty = await flushEmbeddingDirty(db)
     return {
       processed: 0,
       chunks: 0,
@@ -206,6 +322,10 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
       sessions: 0,
       skippedInFlight: false,
       pendingRows: pendingRowsAtStart,
+      failed_row_ids: [],
+      omitted_row_ids: [],
+      invalid_chunks: [],
+      embedding_dirty: { attempted: dirty.attempted, succeeded: dirty.succeeded, failed: dirty.failed.length },
     }
   }
 
@@ -268,19 +388,42 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     }
 
     const entryById = new Map(rows.map(r => [Number(r.id), r]))
+    // #5: track ids that already landed in a committed chunk so the LLM
+    // cannot reuse one row across multiple chunks within the same window.
+    const usedIds = new Set()
+    const committedRowIds = new Set()
     let committedChunks = 0
     let committedMembers = 0
     let skippedChunks = 0
+    const invalidChunks = []
+    const failedRowIds = []
 
     for (const chunk of chunkList) {
-      const memberIds = Array.isArray(chunk?.member_ids)
-        ? chunk.member_ids.map(n => Number(n)).filter(n => Number.isFinite(n) && entryById.has(n))
-        : []
+      const rawIds = Array.isArray(chunk?.member_ids) ? chunk.member_ids.map(n => Number(n)) : []
+      // #5: validate the multiset, not just membership. Reject duplicates
+      // (within chunk and across chunks) and ids outside the window.
+      const dupeWithin = rawIds.length !== new Set(rawIds).size
+      const externalIds = rawIds.filter(n => !Number.isFinite(n) || !entryById.has(n))
+      const reusedIds = rawIds.filter(n => usedIds.has(n))
+      const memberIds = rawIds.filter(n => Number.isFinite(n) && entryById.has(n) && !usedIds.has(n))
       const element = String(chunk?.element ?? '').trim()
       const category = String(chunk?.category ?? '').trim().toLowerCase()
       const summary = String(chunk?.summary ?? '').trim()
 
+      if (dupeWithin || externalIds.length > 0 || reusedIds.length > 0) {
+        const reason = dupeWithin ? 'duplicate_member_ids'
+          : externalIds.length > 0 ? 'external_member_ids'
+          : 'reused_member_ids'
+        invalidChunks.push({ reason, member_ids: rawIds })
+        skippedChunks += 1
+        process.stderr.write(
+          `[cycle1] chunk rejected: ${reason} member_ids=${JSON.stringify(rawIds)}\n`,
+        )
+        continue
+      }
+
       if (memberIds.length === 0 || !element || !summary || !VALID_CATEGORIES.has(category)) {
+        invalidChunks.push({ reason: 'incomplete_fields', member_ids: rawIds })
         skippedChunks += 1
         continue
       }
@@ -294,6 +437,7 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
         memberIds.map(id => String(entryById.get(id)?.session_id ?? '')),
       )
       if (sessionIdsInChunk.size > 1) {
+        invalidChunks.push({ reason: 'mixed_session_ids', member_ids: memberIds })
         skippedChunks += 1
         process.stderr.write(
           `[cycle1] chunk skipped: mixed session_ids in member_ids=${JSON.stringify(memberIds)} sessions=${JSON.stringify([...sessionIdsInChunk])}\n`,
@@ -304,6 +448,7 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
       const members = memberIds.map(id => entryById.get(id))
       const rootId = selectRootId(members)
       if (rootId === null) {
+        invalidChunks.push({ reason: 'no_root_id', member_ids: memberIds })
         skippedChunks += 1
         continue
       }
@@ -318,11 +463,18 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
         db.exec('COMMIT')
         committedChunks += 1
         committedMembers += memberIds.length
-        await syncRootEmbedding(db, rootId)
+        for (const mid of memberIds) {
+          usedIds.add(mid)
+          committedRowIds.add(mid)
+        }
+        // #4: queue the embedding sync rather than awaiting inline so a slow
+        // embedText call cannot stall the rest of the window's Promise.all.
+        markEmbeddingDirty(db, rootId)
       } catch (err) {
         try { db.exec('ROLLBACK') } catch {}
         process.stderr.write(`[cycle1] chunk commit failed (root=${rootId}): ${err.message}\n`)
         skippedChunks += 1
+        for (const mid of memberIds) failedRowIds.push(mid)
       }
     }
 
@@ -330,25 +482,54 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
       `[cycle1] window=${windowIdx} entries=${rows.length} chunks=${committedChunks} members=${committedMembers} skipped=${skippedChunks}\n`,
     )
 
-    return { committedChunks, committedMembers, skippedChunks, rowsConsidered: rows.length }
+    const omittedRowIds = rows
+      .map(r => Number(r.id))
+      .filter(id => !committedRowIds.has(id) && !failedRowIds.includes(id))
+
+    return {
+      committedChunks, committedMembers, skippedChunks,
+      rowsConsidered: rows.length,
+      invalidChunks, failedRowIds, omittedRowIds,
+    }
   }
 
-  const results = await Promise.all(windows.map((rows, idx) => processWindow(rows, idx)))
+  // #2: bounded concurrency fan-out (semaphore wrapper) replaces unbounded
+  // Promise.all over windows. Each call still runs in its own task, but at
+  // most `concurrency` windows are inflight against the LLM at once.
+  const sem = createSemaphore(concurrency)
+  const results = await Promise.all(
+    windows.map((rows, idx) => sem(() => processWindow(rows, idx))),
+  )
 
   let totalChunks = 0
   let totalMembers = 0
   let totalSkipped = 0
   let totalRowsConsidered = 0
+  const allInvalidChunks = []
+  const allFailedRowIds = []
+  const allOmittedRowIds = []
   for (const r of results) {
     totalChunks += r.committedChunks
     totalMembers += r.committedMembers
     totalSkipped += r.skippedChunks
     totalRowsConsidered += r.rowsConsidered
+    if (Array.isArray(r.invalidChunks)) allInvalidChunks.push(...r.invalidChunks)
+    if (Array.isArray(r.failedRowIds)) allFailedRowIds.push(...r.failedRowIds)
+    if (Array.isArray(r.omittedRowIds)) allOmittedRowIds.push(...r.omittedRowIds)
   }
 
   process.stderr.write(
     `[cycle1] windows=${windows.length} rows=${totalRowsConsidered} chunks=${totalChunks} members=${totalMembers} skipped=${totalSkipped}\n`,
   )
+
+  // #3/#4: drain the dirty embedding queue at the end of every cycle1 pass
+  // (covers entries queued this run + leftovers from prior failed runs).
+  const dirty = await flushEmbeddingDirty(db)
+  if (dirty.attempted > 0) {
+    process.stderr.write(
+      `[cycle1] embedding flush attempted=${dirty.attempted} ok=${dirty.succeeded} failed=${dirty.failed.length}\n`,
+    )
+  }
 
   return {
     processed: totalMembers,
@@ -357,6 +538,10 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     sessions: windows.length,
     skippedInFlight: false,
     pendingRows: pendingRowsAtStart,
+    failed_row_ids: allFailedRowIds,
+    omitted_row_ids: allOmittedRowIds,
+    invalid_chunks: allInvalidChunks,
+    embedding_dirty: { attempted: dirty.attempted, succeeded: dirty.succeeded, failed: dirty.failed.length, failed_ids: dirty.failed },
   }
 }
 
@@ -473,6 +658,23 @@ async function runPromotePhase(db, phaseName, rows, activeRows, config, options,
 }
 
 export async function runCycle2(db, config = {}, options = {}) {
+  // #1: per-db SKIP gate mirroring cycle1.
+  if (_runCycle2InFlight.has(db)) {
+    process.stderr.write('[cycle2] skipped: already in flight for this db\n')
+    return {
+      phase1: { added: 0, pending: 0 },
+      phase2: { promoted: 0, kept: 0, processed: 0 },
+      phase3: { demoted: 0, merged: 0, archived: 0, updated: 0 },
+      skippedInFlight: true,
+    }
+  }
+  const _p = (async () => _runCycle2Impl(db, config, options))()
+  _runCycle2InFlight.set(db, _p)
+  try { return await _p }
+  finally { _runCycle2InFlight.delete(db) }
+}
+
+async function _runCycle2Impl(db, config = {}, options = {}) {
   const batchSize = Math.max(1, Number(config.batch_size ?? 50))
   const activeCap = Math.max(1, Number(config.active_cap ?? CYCLE2_ACTIVE_CAP))
   const nowMs = Date.now()
@@ -483,11 +685,14 @@ export async function runCycle2(db, config = {}, options = {}) {
     phase3: { demoted: 0, merged: 0, archived: 0, updated: 0 },
   }
 
+  // #7: bound the active-context fetch to activeCap. Without LIMIT the cap
+  // existed only as a display value passed into the phase3 prompt; the SQL
+  // pulled every active root, blowing up the prompt on busy DBs.
   const loadActive = () => db.prepare(
     `SELECT id, element, category, summary, score, last_seen_at
      FROM entries WHERE is_root = 1 AND status = 'active'
-     ORDER BY score DESC`,
-  ).all()
+     ORDER BY score DESC LIMIT ?`,
+  ).all(activeCap)
 
   const loadPhase3Candidates = () => db.prepare(
     `SELECT id, element, category, summary, score, last_seen_at
@@ -504,9 +709,15 @@ export async function runCycle2(db, config = {}, options = {}) {
 
   if (phase1Rows.length > 0) {
     const { actions } = await runPromotePhase(db, 'phase1_new_chunks', phase1Rows, loadActive(), config, options)
+    // #6: only apply actions whose entry_id was actually presented to the LLM.
+    const allowed = new Set(phase1Rows.map(r => Number(r.id)))
     for (const act of actions) {
       const entryId = Number(act?.entry_id)
       if (!Number.isFinite(entryId)) continue
+      if (!allowed.has(entryId)) {
+        process.stderr.write(`[cycle2] phase1 action rejected: entry_id=${entryId} outside batch\n`)
+        continue
+      }
       try {
         if (act.action === 'add' && applyAddOrPromote(db, entryId, 'active', nowMs)) stats.phase1.added += 1
         else if (act.action === 'pending' && applySimpleStatus(db, entryId, 'pending')) stats.phase1.pending += 1
@@ -524,9 +735,15 @@ export async function runCycle2(db, config = {}, options = {}) {
 
   if (phase2Rows.length > 0) {
     const { actions } = await runPromotePhase(db, 'phase2_reevaluate', phase2Rows, loadActive(), config, options)
+    // #6: phase2 batch allow-list.
+    const allowed = new Set(phase2Rows.map(r => Number(r.id)))
     for (const act of actions) {
       const entryId = Number(act?.entry_id)
       if (!Number.isFinite(entryId)) continue
+      if (!allowed.has(entryId)) {
+        process.stderr.write(`[cycle2] phase2 action rejected: entry_id=${entryId} outside batch\n`)
+        continue
+      }
       try {
         if (act.action === 'promote' && applyAddOrPromote(db, entryId, 'active', nowMs)) stats.phase2.promoted += 1
         else if (act.action === 'keep') stats.phase2.kept += 1
@@ -544,21 +761,45 @@ export async function runCycle2(db, config = {}, options = {}) {
       db, 'phase3_active_review', phase3Rows, activeContext, config, options,
       { ACTIVE_COUNT: activeContext.length, ACTIVE_CAP: activeCap },
     )
+    // #6: phase3 sees both phase3Rows AND activeContext rows (the prompt
+    // formats both). All entry_id/target_id/source_ids must fall in that union.
+    const allowed = new Set([
+      ...phase3Rows.map(r => Number(r.id)),
+      ...activeContext.map(r => Number(r.id)),
+    ])
     for (const act of actions) {
       try {
         if (act.action === 'demote') {
           const eid = Number(act?.entry_id)
+          if (!allowed.has(eid)) {
+            process.stderr.write(`[cycle2] phase3 demote rejected: id=${eid} outside batch\n`); continue
+          }
           if (Number.isFinite(eid) && applySimpleStatus(db, eid, 'demoted')) stats.phase3.demoted += 1
         } else if (act.action === 'archived') {
           const eid = Number(act?.entry_id)
+          if (!allowed.has(eid)) {
+            process.stderr.write(`[cycle2] phase3 archive rejected: id=${eid} outside batch\n`); continue
+          }
           if (Number.isFinite(eid) && applySimpleStatus(db, eid, 'archived')) stats.phase3.archived += 1
         } else if (act.action === 'update') {
           const eid = Number(act?.entry_id)
+          if (!allowed.has(eid)) {
+            process.stderr.write(`[cycle2] phase3 update rejected: id=${eid} outside batch\n`); continue
+          }
           if (Number.isFinite(eid) && await applyUpdate(db, eid, act.element, act.summary)) stats.phase3.updated += 1
         } else if (act.action === 'merge') {
           const targetId = Number(act?.target_id)
           const sourceIds = Array.isArray(act?.source_ids) ? act.source_ids : []
-          const moved = applyMerge(db, targetId, sourceIds)
+          if (!allowed.has(targetId)) {
+            process.stderr.write(`[cycle2] phase3 merge target rejected: id=${targetId} outside batch\n`); continue
+          }
+          const filteredSources = sourceIds.filter(s => allowed.has(Number(s)))
+          if (filteredSources.length !== sourceIds.length) {
+            process.stderr.write(
+              `[cycle2] phase3 merge sources filtered: ${JSON.stringify(sourceIds)} -> ${JSON.stringify(filteredSources)}\n`,
+            )
+          }
+          const moved = applyMerge(db, targetId, filteredSources)
           if (moved > 0) {
             stats.phase3.merged += moved
             if (typeof act.element === 'string' || typeof act.summary === 'string') {
@@ -575,6 +816,16 @@ export async function runCycle2(db, config = {}, options = {}) {
       }
     }
   }
+
+  // #3/#4: drain the dirty embedding queue at the end of cycle2 too.
+  // applyUpdate / applyMerge above may enqueue ids on failure.
+  const dirty = await flushEmbeddingDirty(db)
+  if (dirty.attempted > 0) {
+    process.stderr.write(
+      `[cycle2] embedding flush attempted=${dirty.attempted} ok=${dirty.succeeded} failed=${dirty.failed.length}\n`,
+    )
+  }
+  stats.embedding_dirty = { attempted: dirty.attempted, succeeded: dirty.succeeded, failed: dirty.failed.length, failed_ids: dirty.failed }
 
   process.stderr.write(
     `[cycle2] phase1 added=${stats.phase1.added} pending=${stats.phase1.pending}` +

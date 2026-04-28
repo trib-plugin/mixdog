@@ -144,13 +144,11 @@ function normalizeSearchArgs(rawArgs) {
     delete args.ref
   }
   if (['file', 'repo', 'issue', 'pulls'].includes(args.github_type) && (!args.owner || !args.repo)) {
-    delete args.github_type
-    delete args.owner
-    delete args.repo
-    delete args.path
-    delete args.number
-    delete args.ref
-    delete args.state
+    throw new Error(
+      `[search-config-error:invalid-args] github_type="${args.github_type}" requires owner+repo. ` +
+      `Got owner="${args.owner || ''}" repo="${args.repo || ''}". ` +
+      `Caller must provide both — silent strip would mask the misuse.`
+    )
   }
   return args
 }
@@ -313,8 +311,8 @@ function buildRuntimeEnv(config) {
     ...(getRawProviderApiKey(config, 'tavily')
       ? { TAVILY_API_KEY: getRawProviderApiKey(config, 'tavily') }
       : {}),
-    ...(getRawProviderApiKey(config, 'github')
-      ? { GITHUB_TOKEN: getRawProviderApiKey(config, 'github') }
+    ...(getRawProviderApiKey(config, 'github') || process.env.GITHUB_TOKEN
+      ? { GITHUB_TOKEN: process.env.GITHUB_TOKEN || getRawProviderApiKey(config, 'github') }
       : {}),
     ...(getRawProviderApiKey(config, 'xai')
       ? { XAI_API_KEY: process.env.XAI_API_KEY || getRawProviderApiKey(config, 'xai'), GROK_API_KEY: process.env.GROK_API_KEY || getRawProviderApiKey(config, 'xai') }
@@ -1021,6 +1019,23 @@ async function handleToolCall(name, rawArgs) {
           return { content: [{ type: 'text', text: JSON.stringify({ error: 'Invalid arguments', details: e.errors }) }], isError: true }
         }
         throw e
+      }
+      // Fan-out: array `keywords` -> N parallel single-keyword calls,
+      // grouped per-query with `### Query:` headers (mirrors memory_search).
+      if (Array.isArray(args.keywords) && args.keywords.length > 1) {
+        const settled = await Promise.allSettled(
+          args.keywords.map(async (kw) => {
+            const sub = await handleToolCall('search', { ...rawArgs, keywords: kw })
+            const text = (sub.content || []).filter(p => p.type === 'text').map(p => p.text).join('\n')
+            return `### Query: ${kw}\n\n${text}`
+          })
+        )
+        const sections = settled.map((r, i) =>
+          r.status === 'fulfilled'
+            ? r.value
+            : `### Query: ${args.keywords[i]}\n\n[error] ${r.reason?.message || r.reason}`
+        )
+        return { content: [{ type: 'text', text: sections.join('\n\n---\n\n') }] }
       }
       try {
         const result = await _searchCore(args, { config, usageState, cacheState, timeoutMs })

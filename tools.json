@@ -728,19 +728,12 @@
       "type": "object",
       "properties": {
         "path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1
-            }
-          ],
-          "description": "File path, or array of paths for parallel read."
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Array of file paths (always array, even for one file). Single-path callers must wrap as [path]."
         },
         "mode": {
           "type": "string",
@@ -979,38 +972,24 @@
       "type": "object",
       "properties": {
         "pattern": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1
-            }
-          ],
-          "description": "Regex pattern(s). String or array (OR-joined)."
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Array of regex patterns (always array, OR-joined). Single-pattern callers must wrap as [pattern]."
         },
         "path": {
           "type": "string",
           "description": "Search root. Default: cwd."
         },
         "glob": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1
-            }
-          ],
-          "description": "Glob filter(s). String or array."
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Array of glob filters (always array). Single-glob callers must wrap as [glob]."
         },
         "output_mode": {
           "type": "string",
@@ -1078,19 +1057,12 @@
       "type": "object",
       "properties": {
         "pattern": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1
-            }
-          ],
-          "description": "Glob pattern(s). Use one array containing every requested filename category; e.g. route files + policy JSON => [\"**/*route*.mjs\",\"**/*policy*.json\"]."
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Array of glob patterns (always array). Single-pattern callers must wrap as [pattern]. Multi-category example: [\"**/*route*.mjs\",\"**/*policy*.json\"]."
         },
         "path": {
           "type": "string",

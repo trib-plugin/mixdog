@@ -1279,7 +1279,8 @@ export function markSessionToolCall(id, toolName) {
     const entry = _touchRuntime(id);
     entry.stage = 'tool_running';
     entry.lastToolCall = toolName || null;
-    entry.updatedAt = Date.now();
+    entry.toolStartedAt = Date.now();
+    entry.updatedAt = entry.toolStartedAt;
 }
 export function markSessionDone(id) {
     if (!id) return;
@@ -1287,6 +1288,7 @@ export function markSessionDone(id) {
     entry.stage = 'done';
     entry.lastError = null;
     entry.askStartedAt = null;
+    entry.toolStartedAt = null;
     entry.updatedAt = Date.now();
 }
 export function markSessionError(id, msg) {
@@ -1295,6 +1297,7 @@ export function markSessionError(id, msg) {
     entry.stage = 'error';
     entry.lastError = msg ? String(msg).slice(0, 200) : null;
     entry.askStartedAt = null;
+    entry.toolStartedAt = null;
     entry.updatedAt = Date.now();
 }
 export function getSessionRuntime(id) {
@@ -1427,6 +1430,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 session.updatedAt = Date.now();
                 session.lastUsedAt = Date.now();
                 saveSession(session);
+                markSessionDone(sessionId);
                 return fastPath;
             }
             const outgoing = [...session.messages, { role: 'user', content: prompt }];

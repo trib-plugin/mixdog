@@ -36,7 +36,6 @@ const home = homedir();
 const DATA_DIR = resolvePluginData();
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
 const MIXDOG_CONFIG_PATH = join(DATA_DIR, 'mixdog-config.json');
-const BOT_PATH = join(DATA_DIR, 'bot.json');
 const STATUS_SNAPSHOT_PATH = join(DATA_DIR, 'channels', 'status-snapshot.json');
 
 // -- Agent paths (same data dir after unification) --
@@ -1116,9 +1115,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && path === '/config') {
     const raw = readConfig();
-    const bot = readJsonFile(BOT_PATH);
     const config = applyChannelsDefaults(raw);
-    config._bot = bot;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(config));
     return;
@@ -1132,19 +1129,11 @@ const server = http.createServer(async (req, res) => {
     }
     const data = await readBody(req);
 
-    const botData = data._bot;
-    delete data._bot;
-
     const existing = readConfig();
     const merged = mergeConfig(existing, data);
     writeConfig(merged);
     console.log('  Config saved: channels');
 
-    if (botData) {
-      const existingBot = readJsonFile(BOT_PATH);
-      writeJsonFile(BOT_PATH, { ...existingBot, ...botData });
-      console.log('  Config saved: bot.json');
-    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;

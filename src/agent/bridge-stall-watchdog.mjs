@@ -79,7 +79,17 @@ export function inspectBridgeEntry(entry, thresholdSeconds = DEFAULT_THRESHOLD_S
     if (!entry) return { verdict: 'skip' };
     if (entry.closed) return { verdict: 'skip' };
     const stage = entry.stage || null;
-    if (stage === 'tool_running') return { verdict: 'skip' };
+    if (stage === 'tool_running') {
+        const toolStart = entry.toolStartedAt;
+        if (toolStart) {
+            const toolRuntimeS = Math.round((now - toolStart) / 1000);
+            const toolThreshold = thresholdSeconds * 2;
+            if (toolRuntimeS >= toolThreshold) {
+                return { verdict: 'stall', staleSeconds: toolRuntimeS, stage, reason: 'tool-runtime-exceeded' };
+            }
+        }
+        return { verdict: 'skip' };
+    }
     if (stage === 'idle' || stage === 'done' || stage === 'error' || stage === 'cancelling') {
         return { verdict: 'skip' };
     }

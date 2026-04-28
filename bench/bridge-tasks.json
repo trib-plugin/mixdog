@@ -1,56 +1,63 @@
 {
   "_meta": {
-    "version": 1,
+    "version": 2,
     "purpose": "Read-only bridge dispatch fixture for measuring per-role tool routing quality.",
-    "cwd_default": "C:\\Users\\tempe\\.claude\\plugins\\marketplaces\\trib-plugin"
+    "cwd_default": "C:\\Users\\tempe\\.claude\\plugins\\marketplaces\\trib-plugin",
+    "task_brief_format": "Each target as `path:line[range] — verb + change`. Identifiers are supporting context, not a substitute for coordinates."
   },
   "tasks": [
     {
       "id": "worker-smart-bridge-resolve",
       "role": "worker",
-      "prompt": "Find SmartBridge class definition and report (1) file path + line range, (2) resolve() vs resolveSync() difference, (3) which one is used at session creation. Read-only — do not edit. 5-8 lines.",
+      "prompt": "Open `src/agent/orchestrator/smart-bridge/index.mjs` — locate the SmartBridge class definition and report (1) file:line range of the class, (2) `resolve()` vs `resolveSync()` difference, (3) which one is used at session creation. Read-only — do not edit. 5-8 lines.",
       "expected_substrings": ["smart-bridge", "resolveSync"]
     },
     {
       "id": "worker-dispatch-builders",
       "role": "worker",
-      "prompt": "In ai-wrapped-dispatch.mjs, locate the _internals.builders export and report (1) which tools (recall/search/explore) have builders, (2) how prompt-variant swapping works at probe time, (3) the default builder for explore. Read-only. 5-8 lines.",
+      "prompt": "In `src/agent/orchestrator/ai-wrapped-dispatch.mjs:870-900`, locate the `_internals.builders` export and report (1) which tools (recall/search/explore) have builders, (2) how prompt-variant swapping works at probe time, (3) the default builder for explore. Read-only. 5-8 lines.",
       "expected_substrings": ["builders", "explore"]
     },
     {
       "id": "worker-tool-loop-guard",
       "role": "worker",
-      "prompt": "Find tool-loop-guard.mjs and report the family-threshold policy: (1) how many families are tracked, (2) the structure_probe family threshold + abort threshold, (3) what action triggers a family counter reset. Read-only. 5-8 lines.",
+      "prompt": "Open `src/agent/orchestrator/tool-loop-guard.mjs:48-80` — report the family-threshold policy: (1) how many families are tracked, (2) the structure_probe family threshold + abort threshold, (3) what action triggers a family counter reset. Read-only. 5-8 lines.",
       "expected_substrings": ["tool-loop-guard", "structure_probe"]
     },
     {
       "id": "reviewer-edit-ordering",
       "role": "reviewer",
-      "prompt": "Review the 'Edit Ordering' section in rules/shared/01-tool.md. Evaluate (1) clarity for LLM compliance, (2) whether the rules conflict with the existing Decision Table, (3) if the 'two grep+read alternations is a violation' threshold is too strict or too loose. 6-10 lines.",
+      "prompt": "Review `rules/shared/01-tool.md` 'Edit Ordering' section. Evaluate (1) clarity for LLM compliance, (2) whether the rules conflict with the existing Decision Table, (3) if the 'two grep+read alternations is a violation' threshold is too strict or too loose. 6-10 lines.",
       "expected_substrings": ["Edit Ordering", "Decision Table"]
     },
     {
       "id": "reviewer-probe-modes",
       "role": "reviewer",
-      "prompt": "Review bench/probe.mjs and compare the 'run' and 'sweep' commands: (1) what each mode does, (2) what artifacts each mode writes, (3) when to choose one over the other. 6-10 lines.",
+      "prompt": "Review `bench/probe.mjs` — compare the 'run' and 'sweep' commands: (1) what each mode does, (2) what artifacts each mode writes, (3) when to choose one over the other. 6-10 lines.",
       "expected_substrings": ["run", "sweep"]
     },
     {
       "id": "debugger-bridge-cwd",
       "role": "debugger",
-      "prompt": "We suspect that the bridge tool's cwd argument is not propagated to the worker session. Trace where 'cwd' enters the bridge dispatch path and where (if anywhere) it is dropped before reaching the worker's tool dispatch. Report the call chain and suspected drop point. 6-10 lines.",
+      "prompt": "Suspected bug: bridge tool's cwd argument is not propagated to the worker session. Trace where 'cwd' enters the bridge dispatch path (entry: `server.mjs:572` dispatchTool) and where (if anywhere) it is dropped before reaching the worker's tool dispatch. Report the call chain and suspected drop point. 6-10 lines.",
       "expected_substrings": ["bridge", "cwd"]
     },
     {
       "id": "debugger-iter-p95",
       "role": "debugger",
-      "prompt": "Worker role's iter p95 in 24h trace is 88. Investigate one likely cause from the codebase (loop control, retry policy, no early-stop condition) and report: (1) which file controls worker iter loop, (2) what conditions allow iter to grow past 50, (3) one concrete fix candidate. 6-10 lines.",
+      "prompt": "Worker role's iter p95 in 24h trace is 88. Investigate from `src/agent/orchestrator/session/loop.mjs` (loop control) and `src/agent/orchestrator/tool-loop-guard.mjs` (loop guard) and report: (1) which file controls worker iter loop, (2) what conditions allow iter to grow past 50, (3) one concrete fix candidate. 6-10 lines.",
       "expected_substrings": ["iter", "loop"]
+    },
+    {
+      "id": "tester-probe-smoke",
+      "role": "tester",
+      "prompt": "Run `node bench/probe.mjs run --concurrency=30` once and report (1) wall ms, (2) per-tool p95 ms for recall/search/explore, (3) any FAIL/TIMEOUT signatures. Read-only test execution; do not edit code. 5-8 lines.",
+      "expected_substrings": ["wall", "p95"]
     },
     {
       "id": "worker-reporting-style-ab",
       "role": "worker",
-      "prompt": "Find SmartBridge.resolveSync() definition (file + line range) and report what it returns when role lookup misses. Read-only — do not edit. After the investigation, follow your normal final-reply rules.",
+      "prompt": "Open `src/agent/orchestrator/smart-bridge/index.mjs` — locate `resolveSync()` definition (file:line range) and report what it returns when role lookup misses. Read-only — do not edit. After the investigation, follow your normal final-reply rules.",
       "expected_substrings": ["smart-bridge", "resolveSync"],
       "ab_variants": {
         "A_verbose_override": "OVERRIDE for this run only — the 'Reporting style — final reply to Lead' section in rules/bridge/00-common.md is SUSPENDED. Use the legacy verbose style instead: (1) Open with a short '## Changes' header. (2) Use a separate '### Verification' subsection. (3) Include a markdown table summarizing files inspected (path | role). (4) Quote a 3-6 line code snippet of the function body inside a ``` fence. (5) Restate the spec at the top in a one-sentence paragraph before any findings. (6) Close with a 'Notes' section listing what was NOT done. Do not abbreviate.",

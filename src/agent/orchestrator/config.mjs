@@ -29,6 +29,16 @@ export const DEFAULT_MAINTENANCE = Object.freeze({
     recall: 'HAIKU',
     explore: 'HAIKU',
     recap: 'HAIKU',
+    // Slots backing the standalone hidden roles registered in
+    // BUILTIN_HIDDEN_ROLES (scheduler-task / proactive-decision /
+    // webhook-handler / memory-classification). Without these, a fresh
+    // install fails resolvePresetName() and throws "preset unresolved"
+    // the first time the scheduler tick / webhook ingress / memory-cycle
+    // classification step dispatches its hidden role.
+    scheduler: 'HAIKU',
+    proactive: 'HAIKU',
+    webhook: 'HAIKU',
+    classification: 'HAIKU',
 });
 
 // Map short Anthropic family labels to the full model ids used by the API.

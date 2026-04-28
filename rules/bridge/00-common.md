@@ -7,35 +7,37 @@
 
 Before free-form planning, map the request to the most decisive first tool:
 
-- If the user explicitly says to use a specific tool, call that tool before answering. This applies even when the answer looks inferable from context or prior similar tasks.
-- When the request names an exact marker, identifier, or `KEY=VALUE` token, extract the requested value from that exact match. Treat surrounding/context lines as support for neighboring fields, not as substitutes for the named marker.
-- directory metadata constraints (size, mtime, newest/oldest, larger/smaller than, modified after/before) → use `list` with `mode:"find"` or metadata sort first; do not jump to a guessed filename before the listing evidence identifies it.
-- If a concrete directory path is already named (for example `src`, `releases`, `artifacts`), call `list` on that directory directly; do not list the parent first just to rediscover the named path.
-- Once a tool result visibly contains the requested marker/value/field, answer immediately. Do not repeat an identical `read`/`grep`/`list` call just to re-check or parse the same evidence.
+- **Lead provided `path:line` or `path:start-end` coordinates** → treat the target as already located. Open the specified file/range directly; do not re-locate via `find_symbol` / `grep` / `glob`. Re-locate only if coordinates are invalid (file moved, line range missed the symbol).
+- If the user explicitly says to use a specific tool, call that tool before answering.
+- When the request names an exact marker, identifier, or `KEY=VALUE` token, extract from that exact match.
+- Directory metadata constraints (size, mtime, newest/oldest) → `list mode:"find"` first.
+- Concrete directory path named (e.g. `src`, `releases`) → `list` on that directory directly; do not list parent first.
+- Once a tool result visibly contains the requested marker/value/field, answer immediately. Do not repeat an identical `read`/`grep`/`list` call to re-check.
 
-Beyond these, follow the Decision Table in `rules/shared/01-tool.md` — it is the single source of truth for query-shape → first-tool mapping, including the direct-alias preference for imports / callers / references / dependents.
-- Tie-breaker: env-var / constant / config-key name known, file unknown → `find_symbol` (per the Decision Table's "identifier name known, file unknown" row), not `grep`.
+Beyond these, follow the Decision Table in `rules/shared/01-tool.md` — the single source of truth for query-shape → first-tool mapping, including direct-alias preference for imports / callers / references / dependents.
+
+If a direct alias (`find_imports` / `find_dependents` / `find_callers` / `find_references`) is not exposed in the current bridge tool list, use `code_graph(mode='imports'|'dependents'|'callers'|'references')` instead — same backend.
 
 Do not spend a turn "thinking about which tool to use" when the query already matches one of the cases above.
 
 ## Large tasks: split, don't grind
 
-- If a task spans many files, many renames, many rewrites, or many verifications — do NOT attempt to finish it in one turn. Tool-budget aborts (120× bash, 32× read, etc.) are a signal the scope was too big for one pass, not a signal to retry.
-- Pick a narrow axis (one concern, one directory, one check) and finish it cleanly. Report the delta and stop. Lead dispatches follow-ups.
-- Prefer one broad command (e.g. a single `rg` across the whole tree) over many per-file reads. If the same file-level probe happens 5+ times, switch to an aggregate query.
-- When approaching a tool-family budget (≈70% used), stop adding scope. Wrap up, report what is done, and name what is left so Lead can dispatch the remainder.
-- On an aborted budget, never restart the same plan wholesale — the next call must use a narrower scope or a different strategy.
+- Task spans many files / renames / rewrites / verifications → do NOT finish in one turn. Tool-budget aborts (120× bash, 32× read) signal scope was too big, not retry hint.
+- Pick a narrow axis (one concern, one directory, one check) and finish it cleanly. Report delta and stop. Lead dispatches follow-ups.
+- Prefer one broad command (single `rg` across tree) over many per-file reads. Same file-level probe 5+ times → switch to aggregate query.
+- Approaching tool-family budget (≈70% used) → stop adding scope. Wrap up.
+- Aborted budget → never restart same plan. Next call must use narrower scope or different strategy.
 
 ## Reporting style — final reply to Lead
 
-This reply is read by Lead (a human), not piped into another tool. Output tokens are billed. Strip ceremony, surface only the delta.
+Lead is a human, not a tool pipe. Output tokens are billed.
 
-- Headers: at most one. No nested sub-headers, no `### Changes` then `### Verification` separate blocks — combine inline.
-- File changes: one bullet per change in `path:line — verb + what` form. No `file × verdict` tables, no `**path**` bolding inside the bullet, no nested sub-bullets paraphrasing the same change.
-- Code snippets, before/after blocks, formatted log samples, output examples: omit unless Lead's spec explicitly asked for them.
-- Verification: one inline line (`syntax + import smoke ok`). Do not list per-file pass marks or re-narrate command output.
-- Counts / tallies (`total 5 places`, `applied 4 files`, `8 matches`): drop. The bullet list itself conveys the count.
-- Side notes / unexpected findings: one line each. Omit the section entirely when nothing unusual happened.
-- Do not echo the spec, do not preface with what you are about to do, do not close with what you did not do ("push/commit not performed" is implicit when the spec said no push).
-- Failed or partial run: same tight shape — what was done, where you stopped, what blocks the rest. No filler.
-- No emoji or check-mark decorations.
+- Headers: at most one. No nested sub-headers.
+- File changes: one bullet per change in `path:line — verb + what`. No tables, no `**path**` bolding, no nested sub-bullets.
+- Code snippets / before-after blocks / log samples: omit unless explicitly asked.
+- Verification: one inline line.
+- Counts / tallies: drop. The bullet list conveys count.
+- Side notes: one line each. Omit section if nothing unusual.
+- Do not echo spec. Do not preface or close with what was not done.
+- Failed / partial: same tight shape — done, stopped, blocker.
+- No emoji or check-marks.

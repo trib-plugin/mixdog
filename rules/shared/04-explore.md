@@ -20,9 +20,9 @@ This rule applies equally to Lead and to every delegated role. Grep+read loops o
 
 The `cwd` argument is the authoritative search root. Absolute path or `~` expansion supported. When omitted, the launch workspace is used — pass `cwd: "~/.claude/..."` explicitly to target the plugin install tree or other directories outside the workspace. No silent fan-out between roots.
 
-## Forbidden cwd shapes
+## Avoid these cwd shapes (runtime warns, does not block)
 
-These roots are too broad — `explore` against them synthesises across millions of files and has historically blown the V8 string limit, killing the mcp server:
+These roots are too broad. The runtime warns rather than blocks — `explore` against them synthesises across millions of files and has historically blown the V8 string limit, killing the mcp server. Treat the warn as a self-enforced halt:
 
 - `~`, `$HOME`, `/`, `C:/`, `D:/`, drive roots
 - `~/.claude` itself (whole tree — sessions, plugins, projects, transcripts mixed)

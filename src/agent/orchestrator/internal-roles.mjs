@@ -27,6 +27,14 @@
  *                    Receive `retrieval-role-principles` shared rules in BP2.
  *   - 'standalone' : long-running internal agents (memory cycle, recap).
  *                    Receive only their own self section in BP2.
+ *
+ * Permission classification:
+ *   - 'read'       : read-only — write/edit/bash blocked at loop.mjs runtime
+ *                    guard with the same error string public read-only roles see.
+ *   - 'read-write' : full tool surface — used by hidden agents that legitimately
+ *                    mutate state (scheduler-task launches commands,
+ *                    webhook-handler persists payloads). bridge-llm honors this
+ *                    declaratively instead of forcing every hidden role to 'read'.
  */
 
 // The `slot` field is the maintenance-config key used to look up the preset
@@ -41,6 +49,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     description: 'Filesystem navigation agent invoked by the `explore` MCP tool',
     invokedBy: 'explore',
     kind: 'retrieval',
+    permission: 'read',
   }),
   'recall-agent': Object.freeze({
     slot: 'recall',
@@ -48,6 +57,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     description: 'Memory retrieval agent invoked by the `recall` MCP tool',
     invokedBy: 'recall',
     kind: 'retrieval',
+    permission: 'read',
   }),
   'search-agent': Object.freeze({
     slot: 'search',
@@ -55,6 +65,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     description: 'External info agent invoked by the `search` MCP tool',
     invokedBy: 'search',
     kind: 'retrieval',
+    permission: 'read',
   }),
   'cycle1-agent': Object.freeze({
     slot: 'cycle1',
@@ -62,6 +73,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     description: 'Chunker/classifier invoked by memory-cycle runCycle1',
     invokedBy: 'cycle1',
     kind: 'standalone',
+    permission: 'read',
   }),
   'cycle2-agent': Object.freeze({
     slot: 'cycle2',
@@ -69,6 +81,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     description: 'Root re-scorer invoked by memory-cycle runCycle2',
     invokedBy: 'cycle2',
     kind: 'standalone',
+    permission: 'read',
   }),
   'recap-agent': Object.freeze({
     slot: 'recap',
@@ -76,6 +89,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     description: 'Session-start handoff summarizer invoked by session-start hook',
     invokedBy: 'recap',
     kind: 'standalone',
+    permission: 'read',
   }),
   'proactive-decision': Object.freeze({
     slot: 'proactive',
@@ -83,6 +97,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     description: 'Decision agent invoked by scheduler proactive evaluator',
     invokedBy: 'scheduler',
     kind: 'standalone',
+    permission: 'read',
   }),
   'scheduler-task': Object.freeze({
     slot: 'scheduler',
@@ -90,6 +105,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     description: 'Scheduled-task executor invoked by scheduler tick',
     invokedBy: 'scheduler',
     kind: 'standalone',
+    permission: 'read-write',
   }),
   'webhook-handler': Object.freeze({
     slot: 'webhook',
@@ -97,6 +113,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     description: 'Webhook payload handler invoked by inbound webhook events',
     invokedBy: 'webhook',
     kind: 'standalone',
+    permission: 'read-write',
   }),
   'memory-classification': Object.freeze({
     slot: 'classification',
@@ -104,6 +121,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     description: 'Memory entry classifier invoked by memory-cycle classification step',
     invokedBy: 'memory-cycle',
     kind: 'standalone',
+    permission: 'read',
   }),
 })
 

@@ -979,7 +979,8 @@ function _cheapReferenceSearch(graph, symbol, cwd, { language = null } = {}) {
       re.lastIndex = 0;
       let match = null;
       while ((match = re.exec(line))) {
-        lines.push(`${node.rel}:${i + 1}:${match.index + 1}`);
+        const trimmed = line.trim().slice(0, 200);
+        lines.push(`${node.rel}:${i + 1}:${match.index + 1}    ${trimmed}`);
       }
     }
   }
@@ -1015,6 +1016,10 @@ function _findSymbolHits(graph, symbol, { language = null } = {}) {
     let firstContent = '';
     let contextLines = [];
     let declarationLike = Array.isArray(node.topLevelTypes) && node.topLevelTypes.includes(cleanSymbol);
+    let declLine = null;
+    let declCol = null;
+    let declContent = '';
+    let declContext = [];
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (!line.trim()) continue;
@@ -1030,19 +1035,30 @@ function _findSymbolHits(graph, symbol, { language = null } = {}) {
           firstContent = String(sourceLines[i] || '').trim();
           contextLines = sourceLines.slice(i, i + 3).map((line) => String(line || '').trim()).filter(Boolean);
         }
+        if (declLine == null && declRe.test(line)) {
+          declLine = i + 1;
+          declCol = match.index + 1;
+          declContent = String(sourceLines[i] || '').trim();
+          declContext = sourceLines.slice(i, i + 3).map((l) => String(l || '').trim()).filter(Boolean);
+        }
       }
       if (localHit && declRe.test(line)) declarationLike = true;
     }
     if (firstLine == null) continue;
+    const hasDeclPos = declLine != null;
     hits.push({
       rel: node.rel,
       lang: node.lang,
-      line: firstLine,
-      col: firstCol || 1,
+      line: hasDeclPos ? declLine : firstLine,
+      col: hasDeclPos ? declCol : (firstCol || 1),
       declarationLike,
       matchCount,
-      content: firstContent,
-      context: contextLines,
+      content: hasDeclPos ? declContent : firstContent,
+      context: hasDeclPos ? declContext : contextLines,
+      firstLine,
+      firstCol: firstCol || 1,
+      firstContent,
+      firstContext: contextLines,
     });
   }
 
@@ -1067,13 +1083,20 @@ function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 2
 
   const topHits = hits.slice(0, Math.max(1, limit));
   const primary = topHits[0];
+  const declHits = hits.filter((h) => h.declarationLike);
+  const declCount = declHits.length;
   const lines = [];
   if (primary?.declarationLike) {
     lines.push('# best declaration candidate');
-    lines.push(`${primary.rel}:${primary.line}:${primary.col} (${primary.lang}, matches=${primary.matchCount})`);
+    const multi = declCount > 1 ? `, declarations=${declCount} (multiple — review candidates)` : '';
+    lines.push(`${primary.rel}:${primary.line}:${primary.col} (${primary.lang}, matches=${primary.matchCount}${multi})`);
     if (primary.content) lines.push(primary.content.slice(0, 180));
     if (Array.isArray(primary.context) && primary.context.length > 1) {
       lines.push(`context: ${primary.context.slice(0, 3).join(' | ').slice(0, 240)}`);
+    }
+    if (declCount > 1) {
+      const others = declHits.slice(1, 4).map((h) => `${h.rel}:${h.line}:${h.col} [${h.lang}]`);
+      if (others.length) lines.push(`other declarations: ${others.join(', ')}`);
     }
     lines.push('');
   }
@@ -1109,7 +1132,7 @@ function _collapseReferenceLinesToCallers(referenceText) {
   for (const line of referenceText.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const m = /^(.*?):\d+:\d+$/.exec(trimmed);
+    const m = /^(.+?):\d+:\d+(?:[\s\t]+.*)?$/.exec(trimmed);
     if (m) files.add(m[1]);
   }
   if (files.size === 0) return '(no callers)';
@@ -1180,7 +1203,7 @@ function _referenceFiles(referenceText) {
   for (const line of referenceText.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const m = /^(.*?):\d+:\d+$/.exec(trimmed);
+    const m = /^(.+?):\d+:\d+(?:[\s\t]+.*)?$/.exec(trimmed);
     if (m) files.add(m[1]);
   }
   return [...files].sort();
@@ -1194,12 +1217,13 @@ function _parseReferenceEntries(referenceText) {
   for (const line of referenceText.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const m = /^(.*?):(\d+):(\d+)$/.exec(trimmed);
+    const m = /^(.+?):(\d+):(\d+)(?:[\s\t]+(.*))?$/.exec(trimmed);
     if (!m) continue;
     out.push({
       file: m[1],
       line: Number(m[2]),
       col: Number(m[3]),
+      text: m[4] ? m[4].trim() : '',
     });
   }
   return out;
@@ -1523,8 +1547,8 @@ export const CODE_GRAPH_TOOL_DEFS = [
       type: 'object',
       properties: {
         mode: { type: 'string', enum: ['overview', 'imports', 'dependents', 'related', 'impact', 'symbols', 'find_symbol', 'references', 'callers'], description: 'Graph query mode.' },
-        file: { type: 'string', description: 'Path to the target file. Required for non-overview modes.' },
-        symbol: { type: 'string', description: 'Symbol name. Required for find_symbol/references/callers.' },
+        file: { type: 'string', description: 'Path to the target file. Required for imports/dependents/related/impact/symbols. Optional for references/callers (narrows language/source file when ambiguous). Ignored by overview/find_symbol.' },
+        symbol: { type: 'string', description: 'Symbol name. Required for find_symbol/references/callers; optional for impact (limits analysis to that symbol).' },
         language: { type: 'string', description: 'Optional language filter for find_symbol/references/callers only when known; omit if unsure.' },
         limit: { type: 'number', description: 'Optional result cap for find_symbol. Default 20, max 50.' },
       },

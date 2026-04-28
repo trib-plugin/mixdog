@@ -686,11 +686,11 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). If the requested marker/value/field is visible in the returned lines, answer immediately; do not repeat an identical read. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.',
+        description: 'Read file(s). `path` is ALWAYS an array — single file: `path:["a.mjs"]`; parallel: `path:["a.mjs","b.mjs","c.mjs"]`. String form is rejected; serial reads are not allowed. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). If the requested marker/value/field is visible in the returned lines, answer immediately; do not repeat an identical read. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'File path, or array of paths for parallel read.' },
+                path: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Array of file paths. Single: ["a.mjs"]. Parallel: ["a.mjs","b.mjs"]. Always an array — string form is rejected.' },
                 mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'], description: 'full (default) | head | tail | count.' },
                 n: { type: 'number', description: 'Lines for head / tail mode. Default 20.' },
                 offset: { type: 'number', description: 'Start line for full mode (0-based).' },
@@ -795,13 +795,13 @@ export const BUILTIN_TOOLS = [
         name: 'grep',
         title: 'Grep',
         annotations: { title: 'Grep', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.',
+        description: 'ripgrep content search. `pattern` and `glob` are ALWAYS arrays — single: `pattern:["foo"]`; multi (OR-joined in ONE call): `pattern:["foo","bar","baz"]`. String form is rejected; serial greps are not allowed. For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.',
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Regex pattern(s). String or array (OR-joined).' },
+                pattern: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Array of regex patterns. Single: ["foo"]. Multi (OR-joined): ["foo","bar"]. Always an array.' },
                 path: { type: 'string', description: 'Search root. Default: cwd.' },
-                glob: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob filter(s). String or array.' },
+                glob: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Array of glob filters. Always an array (use [pattern] for single).' },
                 output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'] },
                 head_limit: { type: 'number', description: 'Default 250; 0 = unlimited.' },
                 offset: { type: 'number', description: 'Skip N entries before head_limit.' },
@@ -820,12 +820,12 @@ export const BUILTIN_TOOLS = [
         name: 'glob',
         title: 'Glob',
         annotations: { title: 'Glob', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'File path search via `rg --files`. PREFER ARRAY `pattern` — OR-joined multi-pattern search in ONE call instead of serial globs. Do not emit two `glob` calls in the same assistant turn; merge them into one `glob` call with a single pattern array, even when the answer needs separate groups (group the returned paths yourself). Do not drop requested categories: if the task asks for route files + policy JSON files, include route patterns and policy patterns in that same array. Example: `pattern:["**/*route*.mjs","**/*policy*.json"]`. Use `grep` for in-file content search.',
+        description: 'File path search via `rg --files`. `pattern` is ALWAYS an array — single: `pattern:["**/*.mjs"]`; multi (OR-joined): `pattern:["**/*route*.mjs","**/*policy*.json"]`. String form is rejected. Do not emit two `glob` calls in the same assistant turn; one call with a single pattern array covers every requested category — group the returned paths yourself. Do not drop requested categories: include every requested filename category in the same array. Use `grep` for in-file content search.',
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob pattern(s). Use one array containing every requested filename category; e.g. route files + policy JSON => ["**/*route*.mjs","**/*policy*.json"].' },
-                path: { type: 'string', description: 'Base dir. Default: cwd. Capped at 100.' },
+                pattern: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Array of glob patterns. Single: ["**/*.mjs"]. Multi: ["**/*route*.mjs","**/*policy*.json"]. Always an array.' },
+                path: { type: 'string', description: 'Base dir. Default: cwd. Capped at 100. All result rows are emitted as absolute paths.' },
                 head_limit: { type: 'number', description: 'Max file paths to return. Default 100; 0 = unlimited.' },
                 offset: { type: 'number', description: 'Skip N file paths before applying head_limit.' },
             },
@@ -840,7 +840,7 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Root directory. Defaults to cwd. Supports `~` expansion.' },
+                path: { type: 'string', description: 'Root directory. Defaults to cwd. Supports `~` expansion. All result rows (list/tree/find, every depth) are emitted as absolute paths.' },
                 mode: { type: 'string', enum: ['list', 'tree', 'find'], description: 'list (default) | tree | find.' },
                 depth: { type: 'number', description: 'Recursion depth. list: 1 default, max 10. tree: 3 default, max 6.' },
                 hidden: { type: 'boolean', description: 'Include dotfiles (`.foo`). Default false.' },
@@ -2604,18 +2604,44 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
         }
         case 'read': {
             // Unified-read dispatch (v0.6.283+):
+            //   reads: [{path, mode?, n?, offset?, limit?, full?}]
+            //                               → per-file batch (different
+            //                                 ranges per file in one call)
             //   path: string[]              → parallel per-file batch
+            //                                 (top-level opts apply uniformly)
             //   mode: 'head'|'tail'|'count' → head / tail / wc handlers
             //   else                        → single-file read below.
             // Single turn can touch many files or swap modes without
             // the agent iterating across multiple tool names.
+            if (Array.isArray(args.reads)) {
+                // Per-file batch: each entry carries its own options.
+                const entries = args.reads.map((r) => {
+                    const entry = { path: normalizeInputPath(r?.path ?? '') };
+                    if (r?.mode !== undefined) entry.mode = r.mode;
+                    if (r?.n !== undefined) entry.n = r.n;
+                    if (r?.offset !== undefined) entry.offset = r.offset;
+                    if (r?.limit !== undefined) entry.limit = r.limit;
+                    if (r?.full !== undefined) entry.full = r.full;
+                    return entry;
+                });
+                if (entries.length === 0) return 'Error: reads array must not be empty';
+                // Reuse the same parallel-dispatch path as args.path[] below.
+                args = { ...args, path: entries.map(e => e.path) };
+                // Strip top-level uniform opts; the per-entry loop below would
+                // re-apply them. Mark entries override via args._readsEntries.
+                args._readsEntries = entries;
+                args.mode = undefined; args.n = undefined; args.offset = undefined; args.limit = undefined; args.full = undefined;
+            }
             if (Array.isArray(args.path)) {
                 // Schema is `path: string | string[]` — array entries are
                 // strings only. Top-level mode / n / offset / limit / full
                 // apply uniformly to every entry in the batch (the only
                 // caller is the manager prefetch helper, which already
-                // shapes its calls that way).
-                const entries = args.path.map((p) => {
+                // shapes its calls that way). When _readsEntries is set,
+                // per-entry options override the uniform set.
+                const overrides = Array.isArray(args._readsEntries) ? args._readsEntries : null;
+                const entries = args.path.map((p, i) => {
+                    if (overrides && overrides[i]) return overrides[i];
                     const entry = { path: normalizeInputPath(p) };
                     if (args.mode !== undefined) entry.mode = args.mode;
                     if (args.n !== undefined) entry.n = args.n;
@@ -3113,16 +3139,17 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const withStat = unique.map((p) => {
                 const full = isAbsolute(p) ? p : resolveAgainstCwd(p, workDir);
                 try { return { path: p, full, mtime: getCachedReadOnlyStat(full).mtimeMs }; }
-                catch { return { path: p, mtime: 0 }; }
+                catch { return { path: p, full, mtime: 0 }; }
             });
             withStat.sort((a, b) => b.mtime - a.mtime);
             const windowed = offset > 0 ? withStat.slice(offset) : withStat;
             const capped = (headLimit === Infinity ? windowed : windowed.slice(0, headLimit)).map((entry) => {
-                // Relativise against workDir when the file lives inside it
-                // — matches Anthropic GlobTool toRelativePath and trims the
-                // redundant absolute prefix from the model's context.
-                const displayed = cwdRelativePath(entry.full || entry.path, workDir);
-                return normalizeOutputPath(displayed);
+                // Always emit absolute paths. Mixing relative (in-cwd) and
+                // absolute (out-of-cwd) hits in a single result triggered
+                // ENOENT loops downstream when callers fed an in-cwd row
+                // back as a path under a different cwd assumption.
+                const abs = entry.full || resolveAgainstCwd(entry.path, workDir);
+                return normalizeOutputPath(abs);
             });
             const remaining = windowed.length - capped.length;
             const out = capShellOutput((capped.join('\n') + (remaining > 0 ? `\n... [${remaining} more entries]` : '')) || '(no files found)');
@@ -3186,13 +3213,19 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         catch { /* keep zero */ }
                     }
                     rows.push({
-                        path: cwdRelativePath(entPath, workDir),
+                        // Absolute path always — keep all list/tree/find
+                        // outputs uniform so downstream callers don't have
+                        // to disambiguate cwd-relative vs absolute rows.
+                        path: entPath,
                         type: entType,
                         size,
                         mtimeMs,
                         fullPath: entPath,
                     });
-                    if (gatherLimit > 0 && rows.length >= gatherLimit) return false;
+                    // Only stop early when output order matches traversal order
+                    // (lexicographic). For mtime/size, the global top-N requires
+                    // a full sweep before sort.
+                    if (sort === 'name' && gatherLimit > 0 && rows.length >= gatherLimit) return false;
                 },
             });
 
@@ -3245,7 +3278,10 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             try { st = getCachedReadOnlyStat(fullPath); }
             catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
             if (!st.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
-            const lines = [`${normalizeOutputPath(basename(fullPath))}/`];
+            // Root header carries the absolute path so the tree caption is
+            // self-contained — same rule as list / find: every emitted
+            // path is absolute, no cwd-relative basename surprise.
+            const lines = [`${normalizeOutputPath(fullPath)}/`];
             // F5: share walkDir with list / find_files. Prefix state lives in
             // a stack keyed by depth — walkDir exposes {depth, index, total,
             // isLast} via ctx so branch drawing works without an own walk.
@@ -3261,7 +3297,11 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 visit: (ent, _entPath, ctx) => {
                     const prefix = prefixStack[ctx.depth - 1] || '';
                     const branch = ctx.isLast ? '└── ' : '├── ';
-                    const display = ent.isDirectory() ? `${ent.name}/` : ent.name;
+                    // Each branch row carries the absolute path of the
+                    // child so callers can copy-paste any line directly
+                    // (matches list/find absolute-path policy).
+                    const absDisplay = normalizeOutputPath(_entPath);
+                    const display = ent.isDirectory() ? `${absDisplay}/` : absDisplay;
                     lines.push(`${prefix}${branch}${display}`);
                     if (ent.isDirectory()) {
                         prefixStack[ctx.depth] = prefix + (ctx.isLast ? '    ' : '│   ');
@@ -3356,7 +3396,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     }
                     if (after !== null && stat.mtimeMs < after) return;
                     if (before !== null && stat.mtimeMs > before) return;
-                    matches.push({ path: cwdRelativePath(entPath, workDir), size: stat.size, mtimeMs: stat.mtimeMs });
+                    matches.push({ path: entPath, size: stat.size, mtimeMs: stat.mtimeMs });
                     const gatherLimit = headLimit > 0 ? offset + headLimit : 0;
                     if (gatherLimit > 0 && matches.length >= gatherLimit) return false;
                 },

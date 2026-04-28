@@ -291,6 +291,14 @@ async function apply_patch(args, cwd, options = {}) {
         if (p.firstFailedHunk) {
           const h = p.firstFailedHunk;
           lines.push(`       @@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`);
+          const expectedText = typeof h.oldText === 'string' ? h.oldText
+            : Array.isArray(h.lines) ? h.lines.filter(l => typeof l === 'string' && l.startsWith('-')).map(l => l.slice(1)).join('\n')
+            : '';
+          const previewLines = expectedText.split('\n').slice(0, 3).map(l => l.length > 80 ? l.slice(0, 77) + '...' : l);
+          if (previewLines.some(l => l.length > 0)) {
+            lines.push(`       expected:`);
+            for (const pl of previewLines) lines.push(`         | ${pl}`);
+          }
         }
       }
     }
@@ -305,6 +313,14 @@ async function apply_patch(args, cwd, options = {}) {
       if (p.firstFailedHunk) {
         const h = p.firstFailedHunk;
         lines.push(`       @@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`);
+        const expectedText = typeof h.oldText === 'string' ? h.oldText
+          : Array.isArray(h.lines) ? h.lines.filter(l => typeof l === 'string' && l.startsWith('-')).map(l => l.slice(1)).join('\n')
+          : '';
+        const previewLines = expectedText.split('\n').slice(0, 3).map(l => l.length > 80 ? l.slice(0, 77) + '...' : l);
+        if (previewLines.some(l => l.length > 0)) {
+          lines.push(`       expected:`);
+          for (const pl of previewLines) lines.push(`         | ${pl}`);
+        }
       }
     }
     return lines.join('\n');

@@ -301,16 +301,39 @@ function extractXaiSearchCitations(payload) {
   }))
 }
 
+function getGithubToken() {
+  return process.env.GITHUB_TOKEN || ''
+}
+
+/**
+ * Pre-flight token check. Throws a `[search-config-error:no-token]` marker
+ * error when the token is absent or visibly malformed (e.g. truncated paste).
+ * Marker prefix tells the search-agent rule layer & tool-loop-guard that
+ * this is a caller-side configuration gap, NOT a search miss — retrying
+ * with paraphrased keywords will fail identically.
+ */
+function assertGithubTokenConfigured() {
+  const token = getGithubToken()
+  if (!token) {
+    throw new Error('[search-config-error:no-token] GitHub token not configured. Set credentials.github.token in search-config.json (preferred) or GITHUB_TOKEN env. Caller (Lead) must address — further calls will fail identically.')
+  }
+  if (token.length < 20) {
+    throw new Error('[search-config-error:no-token] GitHub token malformed (length below 20 chars — likely truncated paste). Set credentials.github.token in search-config.json (preferred) or GITHUB_TOKEN env. Caller (Lead) must address — further calls will fail identically.')
+  }
+}
+
 function getGithubHeaders() {
   const headers = {
     'Accept': 'application/vnd.github+json',
     'User-Agent': 'mixdog-search',
   }
-  const token = process.env.GITHUB_TOKEN
+  const token = getGithubToken()
+  let tokenSent = false
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
+    tokenSent = true
   }
-  return headers
+  return { headers, tokenSent }
 }
 
 function formatGithubReset(reset) {
@@ -324,10 +347,13 @@ function formatGithubReset(reset) {
   }
 }
 
-async function handleGithubError(response, context) {
+async function handleGithubError(response, context, { tokenSent = false } = {}) {
   if (response.ok) return
   if (response.status === 401) {
-    throw new Error(`GitHub ${context} requires authentication. Set GITHUB_TOKEN in config or environment.`)
+    if (tokenSent) {
+      throw new Error(`[search-config-error:token-invalid] GitHub ${context} rejected token (HTTP 401). Token expired, revoked, or has wrong scope. Generate a new PAT at https://github.com/settings/tokens and update credentials.github.token in search-config.json or GITHUB_TOKEN env. Caller (Lead) must rotate — retry will fail identically.`)
+    }
+    throw new Error(`[search-config-error:no-token] GitHub ${context} requires authentication but no token was sent. Set credentials.github.token in search-config.json (preferred) or GITHUB_TOKEN env. Caller (Lead) must address — further calls will fail identically.`)
   }
   if (response.status === 404) {
     throw new Error(`GitHub ${context}: not found (404).`)
@@ -366,8 +392,9 @@ async function runGithubRead({ owner, repo, path, ref }) {
   const url = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path.split('/').map(s => encodeURIComponent(s)).join('/')}`)
   if (ref) url.searchParams.set('ref', ref)
 
-  const response = await fetch(url, { headers: getGithubHeaders() })
-  await handleGithubError(response, 'file read')
+  const { headers: ghHeaders, tokenSent } = getGithubHeaders()
+  const response = await fetch(url, { headers: ghHeaders })
+  await handleGithubError(response, 'file read', { tokenSent })
 
   const payload = await response.json()
   if (Array.isArray(payload)) {
@@ -406,10 +433,11 @@ async function runGithubRepoInfo({ owner, repo }) {
   if (!owner || !repo) {
     throw new Error('owner and repo are required for GitHub repo info.')
   }
+  const { headers: ghHeaders, tokenSent } = getGithubHeaders()
   const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
-    headers: getGithubHeaders(),
+    headers: ghHeaders,
   })
-  await handleGithubError(response, 'repo info')
+  await handleGithubError(response, 'repo info', { tokenSent })
 
   const r = await response.json()
   const metaBits = [
@@ -449,10 +477,11 @@ async function runGithubIssueDetail({ owner, repo, number }) {
   if (!owner || !repo || !number) {
     throw new Error('owner, repo, and number are required for GitHub issue detail.')
   }
+  const { headers: ghHeaders, tokenSent } = getGithubHeaders()
   const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`, {
-    headers: getGithubHeaders(),
+    headers: ghHeaders,
   })
-  await handleGithubError(response, 'issue detail')
+  await handleGithubError(response, 'issue detail', { tokenSent })
 
   const issue = await response.json()
   const metaBits = [
@@ -492,8 +521,9 @@ async function runGithubPulls({ owner, repo, state = 'open' }) {
   url.searchParams.set('state', state)
   url.searchParams.set('per_page', '10')
 
-  const response = await fetch(url, { headers: getGithubHeaders() })
-  await handleGithubError(response, 'pulls list')
+  const { headers: ghHeaders, tokenSent } = getGithubHeaders()
+  const response = await fetch(url, { headers: ghHeaders })
+  await handleGithubError(response, 'pulls list', { tokenSent })
 
   const pulls = await response.json()
   return {
@@ -531,12 +561,13 @@ async function runGithubPulls({ owner, repo, state = 'open' }) {
 
 async function runGithubSearch({ query, maxResults, github_type = 'repositories' }) {
   const endpoint = `https://api.github.com/search/${github_type}?q=${encodeURIComponent(query)}&per_page=${maxResults}`
-  const response = await fetch(endpoint, { headers: getGithubHeaders() })
+  const { headers: ghHeaders, tokenSent } = getGithubHeaders()
+  const response = await fetch(endpoint, { headers: ghHeaders })
 
   if (response.status === 422) {
     throw new Error(`GitHub API validation error for query: ${query}`)
   }
-  await handleGithubError(response, `${github_type} search`)
+  await handleGithubError(response, `${github_type} search`, { tokenSent })
 
   const payload = await response.json()
   const items = payload?.items || []
@@ -650,6 +681,7 @@ async function searchWithProvider(provider, args) {
     case 'xai':
       return runXaiSearch(args)
     case 'github': {
+      assertGithubTokenConfigured()
       const ghType = args.github_type
       if (ghType === 'file') return runGithubRead(args)
       if (ghType === 'repo') return runGithubRepoInfo(args)

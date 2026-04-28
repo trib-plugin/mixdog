@@ -680,6 +680,7 @@ function _pruneDispatchResults() {
 
 export function getDispatchResult(id) {
   if (!id) return null
+  _pruneDispatchResults()
   return _dispatchResults.get(String(id)) || null
 }
 
@@ -722,14 +723,21 @@ export async function dispatchAiWrapped(name, args, ctx) {
       const { loadSession } = await import('./session/store.mjs')
       const { isHiddenRole } = await import('./internal-roles.mjs')
       const caller = loadSession(ctx.callerSessionId)
-      if (caller && isHiddenRole(caller.role)) {
+      if (!caller) {
+        return fail(
+          `"${name}" blocked: caller session "${ctx.callerSessionId}" not found — recursion guard fails closed.`,
+        )
+      }
+      if (isHiddenRole(caller.role)) {
         return fail(
           `"${name}" is blocked inside the "${caller.role}" hidden role (recursion break). `
           + `Use the direct executor (memory_search / web_search / read / grep / glob) for your query.`,
         )
       }
-    } catch {
-      // Fail-open on introspection errors — one stray call beats a broken session.
+    } catch (e) {
+      return fail(
+        `"${name}" blocked: recursion guard introspection failed (${e?.message || e}). Fail-closed for safety.`,
+      )
     }
   }
 
@@ -784,6 +792,14 @@ export async function dispatchAiWrapped(name, args, ctx) {
             return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
           }).join('\n\n---\n\n')
     }
+    // All-failed detection: every entry rejected, OR every fulfilled value is
+    // a config-error marker. Surface as MCP isError so caller doesn't merge
+    // the failures back into context as if they were normal results.
+    const allFailed = settled.every(r =>
+      r.status === 'rejected'
+      || (typeof r.value === 'string' && /\[search-config-error[^\]]*\]/.test(r.value))
+    )
+    if (allFailed) return fail(merged)
     return ok(appendRetrievalCompleteHint(name, merged, queries.length))
   }
 
@@ -838,9 +854,15 @@ export async function dispatchAiWrapped(name, args, ctx) {
             return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
           }).join('\n\n---\n\n')
     }
+    _pruneDispatchResults()
     const entry = _dispatchResults.get(id)
     if (entry) {
-      entry.status = 'done'
+      const allFailed = settled.every(r =>
+        r.status === 'rejected'
+        || (typeof r.value === 'string' && /\[search-config-error[^\]]*\]/.test(r.value))
+      )
+      entry.status = allFailed ? 'error' : 'done'
+      entry.isError = allFailed
       entry.content = merged
       entry.completedAt = Date.now()
     }
@@ -848,6 +870,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
     pushDispatchResult(ctx, id, name, queries, merged)
   }).catch((err) => {
     const msg = err?.message || String(err)
+    _pruneDispatchResults()
     const entry = _dispatchResults.get(id)
     if (entry) {
       entry.status = 'error'
@@ -883,76 +906,15 @@ export const _internals = {
 
 function buildExplorerPrompt(query, cwd) {
   const rootLine = cwd ? `<root>${cwd}</root>\n` : ''
-  return `${rootLine}<query>${query}</query>
-
-<preflight>
-  Before any tool call, scan the query for: known identifier, file path, or regex pattern.
-  If found, issue ONE targeted call (find_symbol / read / grep with that scope).
-  Skip preflight only when the query is a broad concept search.
-</preflight>
-
-<tools>find_symbol, find_imports, find_dependents, find_callers, find_references, code_graph, glob, grep, read, list</tools>
-
-<output>
-  <shape>prose</shape>
-  <require>
-    <citation pattern="path:line">at least one per claim</citation>
-    <length unit="paragraph" max="3"/>
-  </require>
-  <reject>
-    <item>preamble or meta-commentary</item>
-    <item>restating the query</item>
-    <item>uncited claims</item>
-  </reject>
-</output>`
+  return `${rootLine}<query>${query}</query>`
 }
 
 function buildRecallPrompt(query, _cwd) {
-  return `<query>${query}</query>
-
-<preflight required="true">
-  STEP 1 — EXTRACT: parse the query for entry id (#NNNN), date, or named decision.
-  STEP 2 — ROUTE: if anchor was extracted, target memory_search with that anchor first; ONE call only.
-  STEP 3 — EXEMPT: only when no anchor can be extracted may you broaden the search.
-</preflight>
-
-<tools>memory_search</tools>
-
-<output>
-  <shape>prose</shape>
-  <require>
-    <citation pattern="#entry-id">at least one per claim</citation>
-    <length unit="paragraph" max="3"/>
-    <no-match-rule>say so explicitly when nothing relevant</no-match-rule>
-  </require>
-  <reject>
-    <item>preamble</item>
-    <item>uncited claims</item>
-  </reject>
-</output>`
+  return `<query>${query}</query>`
 }
 
 function buildSearchPrompt(query, _cwd) {
-  return `<query>${query}</query>
-
-<preflight>
-  Before searching, scan the query for: explicit URL, owner/repo, or domain.
-  If found, target that source directly first.
-</preflight>
-
-<tools>web_search</tools>
-
-<output>
-  <shape>prose</shape>
-  <require>
-    <citation pattern="url">at least one per claim</citation>
-    <length unit="paragraph" max="2"/>
-  </require>
-  <reject>
-    <item>preamble</item>
-    <item>uncited claims</item>
-  </reject>
-</output>`
+  return `<query>${query}</query>`
 }
 
 /**

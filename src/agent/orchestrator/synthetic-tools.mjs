@@ -62,8 +62,11 @@ export const SYNTHETIC_TOOL_DEFS = Object.freeze([
             type: 'object',
             properties: {
                 keywords: {
-                    type: 'string',
-                    description: 'Search query. Required unless running a GitHub read op (file/repo/issue/pulls). For GitHub read ops, omit this field entirely instead of sending an empty string.',
+                    anyOf: [
+                        { type: 'string', minLength: 1 },
+                        { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
+                    ],
+                    description: 'Search query, or an array of queries to fan out in ONE call (parallel backend, results grouped with `### Query: <text>` headers). Required unless running a GitHub read op (file/repo/issue/pulls). For GitHub read ops, omit this field entirely instead of sending an empty string. Use array form only for genuinely distinct angles — do NOT split one intent into reworded variants.',
                 },
                 site: {
                     type: 'string',

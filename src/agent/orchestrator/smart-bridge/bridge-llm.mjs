@@ -81,7 +81,7 @@ function buildUnifiedHeader({ permission, role }) {
  * plugin-managed and take precedence over user-workflow.json — users cannot
  * override them by redefining the same name.
  */
-export function resolvePresetName({ preset, optsPreset, role }) {
+export function resolvePresetName({ preset, optsPreset, role, config: cfgIn = null }) {
     if (preset) return preset;
     if (optsPreset) return optsPreset;
     if (!role) return null;
@@ -90,7 +90,7 @@ export function resolvePresetName({ preset, optsPreset, role }) {
     const hidden = getHiddenRole(role);
     if (hidden) {
         try {
-            const config = loadConfig();
+            const config = cfgIn || loadConfig();
             return config?.maintenance?.[hidden.slot] || null;
         } catch { return null; }
     }
@@ -132,6 +132,7 @@ export function makeBridgeLlm(opts = {}) {
             preset: presetArg,
             optsPreset: opts.preset,
             role,
+            config,
         });
         if (!presetName) {
             throw new Error(
@@ -168,11 +169,15 @@ export function makeBridgeLlm(opts = {}) {
         // via loop.mjs's READ_BLOCKED_TOOLS guard, not at schema build time.
         const hidden = getHiddenRole(role);
         const isPoolC = Boolean(hidden);
-        // Permission resolution: explicit opts.permission > hidden-role default
-        // ('read' for Pool C) > unset (preset/full default). Callers may still
-        // pass `permission: 'read-write'` explicitly to opt a Pool B role into
-        // the same header format without the read-only call-time guard.
-        const permission = opts.permission || (isPoolC ? 'read' : null);
+        // Permission resolution: explicit opts.permission > hidden-role
+        // declared default (entry.permission in internal-roles.mjs) > unset
+        // (preset/full default). State-changing hidden agents (scheduler-task,
+        // webhook-handler) need the full tool surface; retrieval roles stay
+        // read-only. Same call-time guard + same error string as public
+        // read-only roles (loop.mjs:469). Callers may still pass
+        // `permission: 'read-write'` explicitly to opt a Pool B role into the
+        // same header format without the read-only call-time guard.
+        const permission = opts.permission || (isPoolC ? (hidden.permission || 'read') : null);
         // Pool C hidden-role instructions live in BP2 roleCatalog (loaded
         // by loadAllAgentBodies from rules/bridge/*.md) — the Tier 3
         // reminder is suppressed so the shard stays bit-identical across
