@@ -733,7 +733,7 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
         return candidate;
     };
 
-    if (identifier && ['callers', 'references'].includes(intent || '')) {
+    if (identifier && ['callers', 'references'].includes(intent || '') && _isSimpleIdentifierLookup(prompt)) {
         const graphArgs = {
             mode: intent === 'callers' ? 'callers' : 'references',
             symbol: identifier,
@@ -750,7 +750,7 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
         }
     }
 
-    if (identifier && intent === 'usage_lookup' && !_isEnvLikeIdentifier(identifier)) {
+    if (identifier && intent === 'usage_lookup' && !_isEnvLikeIdentifier(identifier) && _isSimpleIdentifierLookup(prompt)) {
         const candidate = await resolveIdentifierCandidate();
         if (candidate) {
             const graphArgs = {
@@ -840,7 +840,7 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
         }
     }
 
-    if (knownFiles.length >= 1 && ['dependents', 'imports'].includes(intent || '')) {
+    if (knownFiles.length >= 1 && ['dependents', 'imports'].includes(intent || '') && _isSimpleIdentifierLookup(prompt)) {
         const mode = intent === 'imports' ? 'imports' : 'dependents';
         const graphArgs = { mode, file: knownFiles[0] };
         const graphOut = await executeInternalTool('code_graph', graphArgs).catch(() => null);
