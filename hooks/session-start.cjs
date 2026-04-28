@@ -201,8 +201,8 @@ const skipMemoryInject = _event.source === 'resume' || _event.source === 'compac
 
 // ---------------------------------------------------------------------------
 // Part: rules (slot 1) — owns ALL one-shot session bootstrap work and emits
-// the rules block. Must run cycle1 to completion BEFORE later parts read
-// the DB so they see the freshest roots.
+// the rules block. Static .md content only; cycle1 is triggered by
+// core/recap slots (dedupe coalesces concurrent calls into one run).
 // ---------------------------------------------------------------------------
 function ensurePromptInjectionConfig() {
   const cfgPath = path.join(DATA_DIR, 'config.json');
@@ -662,22 +662,13 @@ async function runRulesPart() {
     await requestRecapReset(3000);
   }
 
-  // Always run cycle1 to completion so later slots (core / recap) read the
-  // freshest roots. Skip only when memory inject itself is skipped.
-  // rules slot itself always emits regardless of cycle1 outcome — it just
-  // primes the pipeline so the later slots have fresh DB to read.
-  if (!skipMemoryInject) {
-    await requestCycle1(60000, { graceMs: 10000, slot: 'rules' });
-  }
-
   emit(additionalContext);
 }
 
 // ---------------------------------------------------------------------------
 // Part: core (slot 2) — DB read. Awaits cycle1 in-flight so freshly
-// classified roots from the rules slot are visible. The server-side
-// `_awaitCycle1Run` guard de-duplicates concurrent calls, so this only
-// piggybacks on the rules-slot run rather than triggering a second pass.
+// classified roots are visible. Server-side `_awaitCycle1Run` guard
+// de-duplicates against the recap slot's concurrent call.
 // ---------------------------------------------------------------------------
 async function runCorePart() {
   if (skipMemoryInject) return;

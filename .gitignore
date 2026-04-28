@@ -61,8 +61,11 @@ test/
 tests/
 __tests__/
 
-# Benchmark output
+# Local-only dev helpers (never ship via marketplace)
 dev/
+commands/dev-*.md
+
+# Benchmark output
 .bench-*.json
 .bp1-*.json
 bench/results/

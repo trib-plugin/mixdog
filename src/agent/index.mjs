@@ -1,4 +1,4 @@
-import { initProviders } from './orchestrator/providers/registry.mjs';
+import { initProviders, warmupCatalogs } from './orchestrator/providers/registry.mjs';
 import { createSession, askSession, listSessions, closeSession, findSessionByScopeKey, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge, forEachSessionRuntime } from './orchestrator/session/manager.mjs';
 import { ToolLoopAbortError } from './orchestrator/tool-loop-guard.mjs';
 import { StreamStalledAbortError, startWatchdog as startStreamWatchdog } from './orchestrator/session/stream-watchdog.mjs';
@@ -343,9 +343,6 @@ export { INSTRUCTIONS as instructions };
 
 export async function init() {
   const config = loadConfig();
-  await initProviders(config.providers);
-  seedDefaults();
-  initTrajectoryStore(getPluginData());
   // External MCP servers only. Self-MCP loopback (mcpServers.mixdog /
   // mcpServers["trib-plugin"])
   // is rejected — agent exposes the plugin's own tools (search,
@@ -362,9 +359,19 @@ export async function init() {
     }
     externalServers[name] = cfg;
   }
-  if (Object.keys(externalServers).length > 0) {
-    await connectMcpServers(externalServers);
-  }
+  // Run independent init steps in parallel: provider registry + external
+  // MCP server connections. Both are network-bound and have no shared
+  // dependency, so serialising them was wasted boot latency.
+  await Promise.all([
+    initProviders(config.providers),
+    Object.keys(externalServers).length > 0 ? connectMcpServers(externalServers) : Promise.resolve(),
+  ]);
+  // Trigger model-catalog refresh in the background so the first bridge LLM
+  // call (cycle1 on session start) does not have to wait for catalog fetch
+  // serialised in front of it.
+  setImmediate(() => warmupCatalogs());
+  seedDefaults();
+  initTrajectoryStore(getPluginData());
   startAgentMaintenance();
   startStreamWatchdog(forEachSessionRuntime);
   // Smart Bridge — unified router + cache strategy + profile system.

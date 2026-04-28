@@ -46,3 +46,20 @@ export function getAllProviders() {
 export function listProviderNames() {
     return [...providers.keys()];
 }
+
+// Background catalog warm-up. Each provider's listModels() either hits its
+// own cached model list (no-op) or fires a single HTTP refresh. Called from
+// agent.init() after providers are registered so the first bridge LLM call
+// (e.g. cycle1 on session start) does not pay the catalog refresh latency
+// inline. Fire-and-forget: failures are logged inside each provider.
+export function warmupCatalogs() {
+    for (const [name, provider] of providers) {
+        if (typeof provider?.listModels !== 'function') continue;
+        Promise.resolve()
+            .then(() => provider.listModels())
+            .catch((err) => {
+                const msg = err instanceof Error ? err.message : String(err);
+                process.stderr.write(`[provider:${name}] catalog warm-up failed: ${msg}\n`);
+            });
+    }
+}

@@ -1022,13 +1022,16 @@ setImmediate(spawnStatusServer)
 // - memory disabled → worker not spawned; channels boots immediately
 //   (episode delivery integration degrades to no-op).
 // - channels disabled → worker never spawned regardless of memory state.
+// Memory worker spawn is hoisted out of setImmediate so it runs in parallel
+// with the agent/search eager init above instead of waiting for the next
+// tick. The fork is cheap; downstream channels spawn still waits for the
+// memory `ready` event below.
+const memoryOn = isModuleEnabled('memory')
+const channelsOn = isModuleEnabled('channels')
+if (memoryOn) spawnWorker('memory')
+else log(`module 'memory' disabled — skipping worker spawn`)
+
 setImmediate(() => {
-  const memoryOn = isModuleEnabled('memory')
-  const channelsOn = isModuleEnabled('channels')
-
-  if (memoryOn) spawnWorker('memory')
-  else log(`module 'memory' disabled — skipping worker spawn`)
-
   if (!channelsOn) {
     log(`module 'channels' disabled — skipping worker spawn`)
     // CLAUDE.md reconcile is driven by channels/injection config; when

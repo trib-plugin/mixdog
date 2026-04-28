@@ -50,18 +50,34 @@ function _removeDirty(db, rootId) {
   _writeDirtyIds(db, cur)
 }
 
+const _flushInFlight = new WeakMap()
+
 export async function flushEmbeddingDirty(db) {
-  const ids = Array.from(_readDirtyIds(db))
-  if (ids.length === 0) return { attempted: 0, succeeded: 0, failed: [] }
-  const failed = []
-  let succeeded = 0
-  for (const id of ids) {
-    const ok = await syncRootEmbedding(db, id)
-    if (ok) succeeded += 1
-    else failed.push(id)
+  // Re-entrancy guard: cycle1/cycle2 now fire-and-forget this flush, so two
+  // overlapping calls on the same db handle would otherwise both iterate the
+  // dirty queue and double-embed every id. Coalesce to one in-flight flush
+  // per db; concurrent callers await the same promise.
+  const inFlight = _flushInFlight.get(db)
+  if (inFlight) return inFlight
+  const p = (async () => {
+    const ids = Array.from(_readDirtyIds(db))
+    if (ids.length === 0) return { attempted: 0, succeeded: 0, failed: [] }
+    const failed = []
+    let succeeded = 0
+    for (const id of ids) {
+      const ok = await syncRootEmbedding(db, id)
+      if (ok) succeeded += 1
+      else failed.push(id)
+    }
+    _writeDirtyIds(db, new Set(failed))
+    return { attempted: ids.length, succeeded, failed }
+  })()
+  _flushInFlight.set(db, p)
+  try {
+    return await p
+  } finally {
+    _flushInFlight.delete(db)
   }
-  _writeDirtyIds(db, new Set(failed))
-  return { attempted: ids.length, succeeded, failed }
 }
 
 export async function syncRootEmbedding(db, rootId) {
@@ -312,9 +328,12 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   `).all(fetchLimit)
 
   if (rowsDesc.length < minBatch) {
-    // #3/#4: drain the dirty embedding queue even on a quick exit so a
-    // backlog of failed embeddings still gets retried on every tick.
-    const dirty = await flushEmbeddingDirty(db)
+    // Drain the dirty embedding queue out-of-band so the recap path returns
+    // as soon as chunking is decided. flushEmbeddingDirty is re-entrancy
+    // guarded; failures are re-queued for the next tick.
+    void flushEmbeddingDirty(db).catch(err => {
+      process.stderr.write(`[cycle1] embedding flush (quick-exit) failed: ${err.message}\n`)
+    })
     return {
       processed: 0,
       chunks: 0,
@@ -325,7 +344,7 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
       failed_row_ids: [],
       omitted_row_ids: [],
       invalid_chunks: [],
-      embedding_dirty: { attempted: dirty.attempted, succeeded: dirty.succeeded, failed: dirty.failed.length },
+      embedding_dirty: { attempted: 0, succeeded: 0, failed: 0, deferred: true },
     }
   }
 
@@ -522,14 +541,20 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     `[cycle1] windows=${windows.length} rows=${totalRowsConsidered} chunks=${totalChunks} members=${totalMembers} skipped=${totalSkipped}\n`,
   )
 
-  // #3/#4: drain the dirty embedding queue at the end of every cycle1 pass
-  // (covers entries queued this run + leftovers from prior failed runs).
-  const dirty = await flushEmbeddingDirty(db)
-  if (dirty.attempted > 0) {
-    process.stderr.write(
-      `[cycle1] embedding flush attempted=${dirty.attempted} ok=${dirty.succeeded} failed=${dirty.failed.length}\n`,
-    )
-  }
+  // Fire-and-forget the embedding flush so cycle1 returns as soon as the
+  // chunking decisions are committed. The bge-m3 inference cost (especially
+  // on cold start) used to add several seconds to the recap path; running
+  // it in the background lets the next session-start hook proceed.
+  // flushEmbeddingDirty is re-entrancy guarded; failures are re-queued.
+  void flushEmbeddingDirty(db).then(d => {
+    if (d.attempted > 0) {
+      process.stderr.write(
+        `[cycle1] embedding flush (async) attempted=${d.attempted} ok=${d.succeeded} failed=${d.failed.length}\n`,
+      )
+    }
+  }).catch(err => {
+    process.stderr.write(`[cycle1] embedding flush (async) failed: ${err.message}\n`)
+  })
 
   return {
     processed: totalMembers,
@@ -541,7 +566,7 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     failed_row_ids: allFailedRowIds,
     omitted_row_ids: allOmittedRowIds,
     invalid_chunks: allInvalidChunks,
-    embedding_dirty: { attempted: dirty.attempted, succeeded: dirty.succeeded, failed: dirty.failed.length, failed_ids: dirty.failed },
+    embedding_dirty: { attempted: 0, succeeded: 0, failed: 0, failed_ids: [], deferred: true },
   }
 }
 
@@ -841,15 +866,19 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
     }
   }
 
-  // #3/#4: drain the dirty embedding queue at the end of cycle2 too.
-  // applyUpdate / applyMerge above may enqueue ids on failure.
-  const dirty = await flushEmbeddingDirty(db)
-  if (dirty.attempted > 0) {
-    process.stderr.write(
-      `[cycle2] embedding flush attempted=${dirty.attempted} ok=${dirty.succeeded} failed=${dirty.failed.length}\n`,
-    )
-  }
-  stats.embedding_dirty = { attempted: dirty.attempted, succeeded: dirty.succeeded, failed: dirty.failed.length, failed_ids: dirty.failed }
+  // Fire-and-forget — same rationale as cycle1's flush above. cycle2 emits
+  // its phase stats immediately and lets embedding catch up in the
+  // background. flushEmbeddingDirty is re-entrancy guarded.
+  void flushEmbeddingDirty(db).then(d => {
+    if (d.attempted > 0) {
+      process.stderr.write(
+        `[cycle2] embedding flush (async) attempted=${d.attempted} ok=${d.succeeded} failed=${d.failed.length}\n`,
+      )
+    }
+  }).catch(err => {
+    process.stderr.write(`[cycle2] embedding flush (async) failed: ${err.message}\n`)
+  })
+  stats.embedding_dirty = { attempted: 0, succeeded: 0, failed: 0, failed_ids: [], deferred: true }
 
   process.stderr.write(
     `[cycle2] phase1 added=${stats.phase1.added} pending=${stats.phase1.pending}` +

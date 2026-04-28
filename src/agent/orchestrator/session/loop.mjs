@@ -539,7 +539,11 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                     // enforced at call time, not at schema build time.
                     const effectivePermission = effectiveToolPermission(sessionRef);
                     const permissionBlocked = isBlockedByPermission(call.name, toolKind, effectivePermission);
-                    if (isBlockedHiddenWrapperCall(call.name, sessionRef)) {
+                    const noToolRole = sessionRef?.role === 'cycle1-agent' || sessionRef?.role === 'cycle2-agent';
+                    if (noToolRole) {
+                        result = `Error: tool "${call.name}" is not available in role "${sessionRef.role}". This role must output JSON only — re-emit the JSON without any tool call.`;
+                        toolEndedAt = Date.now();
+                    } else if (isBlockedHiddenWrapperCall(call.name, sessionRef)) {
                         result = `Error: tool "${call.name}" is the wrapper your role (${sessionRef?.role || 'hidden'}) backs. Calling it would spawn another hidden agent of the same kind — use the role's direct tool (memory_search / web_search / find_symbol+grep+read) instead.`;
                         toolEndedAt = Date.now();
                     } else if (isBlockedDirectHiddenTool(call.name, sessionRef)) {

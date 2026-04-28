@@ -63,3 +63,7 @@ Common confusions:
 - A *preference* dressed as fact → use `preference` if subjective ("I prefer X").
 - A *rule* dressed as decision → use `rule` if it applies forever ("from now on always X").
 - A *constraint* dressed as preference → use `constraint` if it is a hard prohibition.
+
+## Tool policy
+
+**Output JSON only. Never call any tool.** This role is invoked for chunking; tool calls add latency and are forbidden. If the input looks underspecified, still emit the best-effort JSON — do not fan out to retrieval tools.

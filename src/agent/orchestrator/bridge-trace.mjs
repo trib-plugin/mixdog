@@ -14,8 +14,8 @@ const WARNED_KEYS = new Set();
 // and post-hoc analysis tools start choking on it. Rotate on append when
 // the live file crosses MAX_TRACE_BYTES, and keep at most MAX_ROTATIONS
 // historical shards (older ones are deleted on rotation).
-const MAX_TRACE_BYTES = 100 * 1024 * 1024; // 100 MB
-const MAX_ROTATIONS = 5;                    // keep last 5 rotated shards
+const MAX_TRACE_BYTES = 20 * 1024 * 1024;  // 20 MB
+const MAX_ROTATIONS = 3;                    // keep last 3 rotated shards
 const ROTATION_CHECK_EVERY_N = 100;         // cheap size check cadence
 let _appendsSinceCheck = 0;
 
