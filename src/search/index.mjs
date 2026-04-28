@@ -928,7 +928,7 @@ const toolDefinitions = [
       properties: {
         query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks).' },
         cwd: { type: 'string', description: 'Optional workspace hint. Rarely needed.' },
-        background: { type: 'boolean', description: 'Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins.' },
+        background: { type: 'boolean', description: 'Default: false (sync — merged answer returned in-turn). Set true for heavy multi-angle queries that risk exceeding the MCP request timeout; the merged answer is then pushed via the channel bridge.' },
       },
       required: ['query'],
       additionalProperties: false,

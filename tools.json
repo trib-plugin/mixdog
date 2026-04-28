@@ -428,7 +428,7 @@
         },
         "background": {
           "type": "boolean",
-          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
+          "description": "Default: false (sync — merged answer returned in-turn). Set true for heavy multi-angle queries that risk exceeding the MCP request timeout; the merged answer is then pushed via the channel bridge."
         }
       },
       "required": [
@@ -476,7 +476,7 @@
         },
         "background": {
           "type": "boolean",
-          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
+          "description": "Default: false (sync — merged answer returned in-turn). Set true for heavy multi-angle queries that risk exceeding the MCP request timeout; the merged answer is then pushed via the channel bridge."
         }
       },
       "required": [
@@ -517,7 +517,7 @@
         },
         "background": {
           "type": "boolean",
-          "description": "Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins."
+          "description": "Default: false (sync — merged answer returned in-turn). Set true for heavy multi-angle queries that risk exceeding the MCP request timeout; the merged answer is then pushed via the channel bridge."
         }
       },
       "required": [
