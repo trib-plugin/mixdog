@@ -45,6 +45,18 @@ const ROLE_THRESHOLDS_S = {
     'cycle2-agent': 600,
 };
 
+// Per-role override for the tool_running window. Without an entry the default
+// is `thresholdSeconds * 2` (matches pre-existing behaviour). Cycle/chunker
+// roles should never spend more than a few minutes inside a single tool call;
+// tightening these caps recovers a stuck fan-out shard inside ~5 min instead
+// of waiting out the full 20 min default and starving the rest of the cycle.
+const ROLE_TOOL_THRESHOLDS_S = {
+    'cycle1-agent': 300,
+    'cycle2-agent': 300,
+    'memory-classification': 300,
+    'recap-agent': 300,
+};
+
 function envThresholdSeconds() {
     const raw = process.env.STALL_TIMEOUT_S;
     if (!raw) return null;
@@ -62,6 +74,13 @@ function resolveThresholdSeconds(role) {
     return DEFAULT_THRESHOLD_S;
 }
 
+function resolveToolThresholdSeconds(role, thresholdSeconds) {
+    if (role && Object.prototype.hasOwnProperty.call(ROLE_TOOL_THRESHOLDS_S, role)) {
+        return ROLE_TOOL_THRESHOLDS_S[role];
+    }
+    return thresholdSeconds * 2;
+}
+
 /**
  * Decide whether an entry is stalled right now.
  * Pure function — exposed for tests so we can feed synthetic runtime shapes.
@@ -75,20 +94,27 @@ function resolveThresholdSeconds(role) {
  * silence). Terminal stages (idle/done/error/cancelling) are skipped too
  * since askSession has already returned or is unwinding.
  */
-export function inspectBridgeEntry(entry, thresholdSeconds = DEFAULT_THRESHOLD_S, now = Date.now()) {
+export function inspectBridgeEntry(entry, thresholdSeconds = DEFAULT_THRESHOLD_S, now = Date.now(), role = null) {
     if (!entry) return { verdict: 'skip' };
     if (entry.closed) return { verdict: 'skip' };
     const stage = entry.stage || null;
     if (stage === 'tool_running') {
         const toolStart = entry.toolStartedAt;
+        const toolThreshold = resolveToolThresholdSeconds(role, thresholdSeconds);
         if (toolStart) {
             const toolRuntimeS = Math.round((now - toolStart) / 1000);
-            const toolThreshold = thresholdSeconds * 2;
             if (toolRuntimeS >= toolThreshold) {
-                return { verdict: 'stall', staleSeconds: toolRuntimeS, stage, reason: 'tool-runtime-exceeded' };
+                return { verdict: 'stall', staleSeconds: toolRuntimeS, stage, reason: 'tool-runtime-exceeded', toolName: entry.lastToolCall || null };
             }
+            return { verdict: 'skip' };
         }
-        return { verdict: 'skip' };
+        // toolStartedAt missing — fall back to last stream delta / ask start so a
+        // session pinned in tool_running with no per-tool clock can still recover.
+        const ref = entry.lastStreamDeltaAt || entry.askStartedAt;
+        if (!ref) return { verdict: 'skip' };
+        const staleSeconds = Math.round((now - ref) / 1000);
+        if (staleSeconds < toolThreshold) return { verdict: 'skip' };
+        return { verdict: 'stall', staleSeconds, stage, reason: 'tool-runtime-fallback', toolName: entry.lastToolCall || null };
     }
     if (stage === 'idle' || stage === 'done' || stage === 'error' || stage === 'cancelling') {
         return { verdict: 'skip' };
@@ -135,14 +161,17 @@ export function startBridgeStallWatchdog(params) {
         if (fired) return;
         let entry = null;
         try { entry = getRuntime(); } catch { entry = null; }
-        const res = inspectBridgeEntry(entry, thresholdSeconds);
+        const res = inspectBridgeEntry(entry, thresholdSeconds, Date.now(), role);
         if (res.verdict !== 'stall') return;
         fired = true;
         const iter = (() => {
             try { return getIteration(); } catch { return null; }
         })();
         const iterPart = typeof iter === 'number' && iter > 0 ? ` at iter ${iter}` : '';
-        const msg = `${modelTag}${role} stalled — no SSE delta for ${res.staleSeconds}s${iterPart}`;
+        const isToolStall = res.reason === 'tool-runtime-exceeded' || res.reason === 'tool-runtime-fallback';
+        const toolPart = isToolStall && res.toolName ? ` in tool ${res.toolName}` : '';
+        const causePart = isToolStall ? `tool stalled${toolPart}` : 'no SSE delta';
+        const msg = `${modelTag}${role} stalled — ${causePart} for ${res.staleSeconds}s${iterPart}`;
         try { notify(msg); } catch { /* best-effort — match other bridge emits */ }
         try {
             const reason = new Error(`bridge stall watchdog: ${res.staleSeconds}s`);

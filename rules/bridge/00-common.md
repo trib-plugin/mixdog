@@ -3,6 +3,15 @@
 - `bridge` is Lead's tool — agents cannot delegate to other bridges.
 - Tool permissions are enforced at call time. If a tool returns a denied error, don't loop — report back.
 
+## First-move discipline
+
+Two rules dominate iter waste. Apply BEFORE the first tool call:
+
+1. **One assistant turn = many parallel tool calls.** Independent calls on different tools with no data dependency MUST go in ONE message as multiple tool_use blocks. Reads, greps, status lookups, log peeks — if none depend on each other's output, they go together. Sequential single-tool turns are the #1 iter waste; default to multi-block until proven dependent. Array form on `read` / `grep` / `glob` / `edit` follows the same rule (`rules/shared/01-tool.md` covers the full Decision Table).
+2. **2 rounds per sub-problem, not per turn.** Locate → confirm → commit. A third round on the same sub-problem means the approach is wrong (switch tool family or report) — not that one more grep will save it.
+
+Lead-provided `path:line/range` coordinates are LOCKED — go straight to edit/apply_patch, never re-read for verification. Only re-read if line numbers don't match (then stop and report mismatch, not loop).
+
 ## First Tool Heuristic
 
 Before free-form planning, map the request to the most decisive first tool:

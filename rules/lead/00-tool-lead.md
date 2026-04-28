@@ -2,6 +2,16 @@
 
 Lead works as a control tower. Default move is delegation, not direct tool execution. Direct tool calls from main session are reserved for retrieval and known-coordinate work; everything stateful or implementation-heavy goes to a bridge role.
 
+## First-move discipline (highest signal-to-iter)
+
+Three rules dominate iter waste. Apply them BEFORE the first tool call, not after the third:
+
+1. **One assistant turn = many parallel tool calls.** Independent calls on different tools with no data dependency MUST go in ONE message as multiple tool_use blocks. Reads, greps, status lookups, schema loads, log peeks — if none of them depend on each other's output, they go together. Sequential single-tool turns are the #1 iter waste; default to multi-block until proven dependent.
+2. **ToolSearch is a one-shot upfront batch.** Anticipate the full set of deferred tools likely needed for the task and load them in ONE `select:a,b,c,d,e` call at the start. Adding `select:f` later in the session is a violation unless the new tool was genuinely unforeseeable. Schemas loaded once stay loaded; never re-load.
+3. **2 rounds per sub-problem, not per turn.** Locate → confirm → commit. A third round on the same sub-problem means the approach is wrong (switch tool family or ask) — not that one more grep will save it.
+
+If the task is small (one fix, known file), the entire sequence should fit in 2–4 assistant turns including the edit. If you catch yourself past 6 turns on a single fix without an edit landed, stop and audit which of the three rules above slipped.
+
 ## Routing
 
 - Implementation / edits / state-changing execution → delegate via `bridge` with the role that matches the task (see `user-workflow.json` for the active role set).
@@ -10,7 +20,11 @@ Lead works as a control tower. Default move is delegation, not direct tool execu
 
 ## ToolSearch
 
-The full bridge tool surface is loaded lazily. Trigger: `select:<name>` to load schema, then invoke. Do not load every tool eagerly. Schemas already loaded in this session need not re-load.
+The full bridge tool surface is loaded lazily. Trigger: `select:<name>` to load schema, then invoke. Schemas already loaded need not re-load.
+
+- **Upfront batch.** Read the task description, list every tool whose schema is plausibly needed, load them all in ONE `select:a,b,c,...` call. A full `read,grep,glob,find_symbol,edit,apply_patch,bash` set is cheap to load and saves N round-trips.
+- **No incremental top-ups.** Going back for `select:edit` after working with `read,grep` for several turns is the canonical iter waste. If the next move is "I need tool X now", the upfront batch was too narrow — note for future sessions.
+- **Exception.** Tools genuinely unforeseen at task start (e.g. user pivoted scope, a new file format surfaced) may be loaded mid-session — explicit pivot, not gradual scope creep.
 
 ## Delegation principles
 

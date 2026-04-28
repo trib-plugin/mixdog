@@ -230,21 +230,12 @@ function convertMessagesToResponsesInput(messages) {
         // sit AFTER the whole contiguous tool group, not interleaved.
         flushSidecars();
         if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length) {
-            // Reasoning items must precede the function_call items they
-            // produced — Codex enforces ordering and otherwise treats the
-            // call as fresh, dropping the cache prefix. Skip when the model
-            // didn't emit any (non-reasoning models / disabled effort).
-            if (Array.isArray(m.reasoningItems)) {
-                for (const r of m.reasoningItems) {
-                    if (!r?.encrypted_content) continue;
-                    out.push({
-                        type: 'reasoning',
-                        id: r.id || undefined,
-                        encrypted_content: r.encrypted_content,
-                        summary: Array.isArray(r.summary) ? r.summary : [],
-                    });
-                }
-            }
+            // Reasoning replay deliberately omitted: Codex rejects an
+            // `rs_*` reasoning item with the same id across the same
+            // handshake session_id (in-memory conversation state lives
+            // for the WS_IDLE_MS window even after a socket close).
+            // Server-side state already preserves the prefix; sending
+            // reasoning in `input` triggers "Duplicate item".
             if (m.content) out.push({ role: 'assistant', content: m.content });
             for (const tc of m.toolCalls) {
                 out.push({
@@ -255,19 +246,6 @@ function convertMessagesToResponsesInput(messages) {
                 });
             }
             continue;
-        }
-        // Plain assistant turn (no tool calls). Replay reasoning before the
-        // assistant message so the server can stitch its cache prefix.
-        if (m.role === 'assistant' && Array.isArray(m.reasoningItems) && m.reasoningItems.length) {
-            for (const r of m.reasoningItems) {
-                if (!r?.encrypted_content) continue;
-                out.push({
-                    type: 'reasoning',
-                    id: r.id || undefined,
-                    encrypted_content: r.encrypted_content,
-                    summary: Array.isArray(r.summary) ? r.summary : [],
-                });
-            }
         }
         out.push({
             role: m.role === 'assistant' ? 'assistant' : 'user',
