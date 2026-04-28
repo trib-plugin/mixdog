@@ -35,6 +35,12 @@ export class OpenAIDirectProvider {
         const apiKey = this._ensureKey();
         const useModel = model || 'gpt-5.5';
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
+        // Public Responses API supports prompt_cache_retention='24h' at no
+        // extra cost (same cached_input_tokens billing as the default 5–10
+        // min in-memory cache). Codex/oauth rejects the parameter, so it's
+        // injected only on the direct path. See openai-oauth.mjs:290-294
+        // for the rationale.
+        body.prompt_cache_retention = '24h';
         const poolKey  = opts.sessionId || opts.promptCacheKey || null;
         const cacheKey = opts.promptCacheKey || opts.sessionId || null;
         const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null;
