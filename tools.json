@@ -723,17 +723,20 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). If the requested marker/value/field is visible in the returned lines, answer immediately; do not repeat an identical read. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.",
+    "description": "Read file(s). `path` accepts a single file path string OR an array — prefer the array form to read multiple files in ONE call (serial reads waste turns and are the #1 iter waste). Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). If the requested marker/value/field is visible in the returned lines, answer immediately; do not repeat an identical read. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "path": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "description": "Array of file paths (always array, even for one file). Single-path callers must wrap as [path]."
+          "anyOf": [
+            { "type": "string" },
+            {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1
+            }
+          ],
+          "description": "Single file path string (`\"a.mjs\"`) or array of paths for parallel multi-file read (`[\"a.mjs\",\"b.mjs\"]`)."
         },
         "mode": {
           "type": "string",
@@ -823,7 +826,7 @@
             ]
           },
           "minItems": 1,
-          "description": "Multi-edit form: array of edits. Each item may specify its own path; if omitted, falls back to the top-level `path`."
+          "description": "Array of edits to apply. Each item may specify its own `path`; if omitted, falls back to the top-level `path`. Same-file edits apply sequentially; different-file edits run in parallel."
         }
       },
       "required": []
@@ -967,29 +970,35 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.",
+    "description": "ripgrep content search. `pattern` accepts a single regex string (use `|` for alternation: `pattern:\"foo|bar\"`) OR an array of patterns (`pattern:[\"foo\",\"bar\"]`, OR-joined). `glob` follows the same shape — single string or array. Prefer the array form when patterns are long or genuinely independent; serial greps are not allowed. For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "pattern": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "description": "Array of regex patterns (always array, OR-joined). Single-pattern callers must wrap as [pattern]."
+          "anyOf": [
+            { "type": "string" },
+            {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1
+            }
+          ],
+          "description": "Single regex string (use `|` for alternation: `\"foo|bar\"`) or array of patterns (OR-joined: `[\"foo\",\"bar\"]`)."
         },
         "path": {
           "type": "string",
           "description": "Search root. Default: cwd."
         },
         "glob": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "description": "Array of glob filters (always array). Single-glob callers must wrap as [glob]."
+          "anyOf": [
+            { "type": "string" },
+            {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1
+            }
+          ],
+          "description": "Single glob filter (use `{a,b}` brace expansion: `\"**/*.{mjs,json}\"`) or array of glob filters."
         },
         "output_mode": {
           "type": "string",
@@ -1052,17 +1061,20 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "File path search via `rg --files`. PREFER ARRAY `pattern` — OR-joined multi-pattern search in ONE call instead of serial globs. Do not emit two `glob` calls in the same assistant turn; merge them into one `glob` call with a single pattern array, even when the answer needs separate groups (group the returned paths yourself). Do not drop requested categories: if the task asks for route files + policy JSON files, include route patterns and policy patterns in that same array. Example: `pattern:[\"**/*route*.mjs\",\"**/*policy*.json\"]`. Use `grep` for in-file content search.",
+    "description": "File path search via `rg --files`. `pattern` accepts a single glob string (use `{a,b}` brace expansion for compact alternation: `pattern:\"**/*.{mjs,json}\"`) OR an array of globs (`pattern:[\"**/*route*.mjs\",\"**/*policy*.json\"]`). Prefer the array form when categories are genuinely independent; do not emit two `glob` calls in the same assistant turn — merge them into one call with all requested categories. Use `grep` for in-file content search.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "pattern": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "description": "Array of glob patterns (always array). Single-pattern callers must wrap as [pattern]. Multi-category example: [\"**/*route*.mjs\",\"**/*policy*.json\"]."
+          "anyOf": [
+            { "type": "string" },
+            {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1
+            }
+          ],
+          "description": "Single glob string (`\"**/*.mjs\"` or with brace expansion `\"**/*.{mjs,json}\"`) or array of glob patterns (`[\"**/*route*.mjs\",\"**/*policy*.json\"]`)."
         },
         "path": {
           "type": "string",

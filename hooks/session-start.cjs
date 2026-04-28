@@ -468,7 +468,7 @@ async function requestCycle1Once(deadline, opts) {
       port,
       path: '/cycle1',
       timeoutMs: remaining,
-      body: { timeout_ms: remaining, args: { min_batch: 1, session_cap: 50 } },
+      body: { timeout_ms: remaining, args: { min_batch: 1, session_cap: 50, batch_size: 25 } },
     });
     if (res.statusCode !== 200) {
       return finish({ ok: false, reason: 'non-200', statusCode: res.statusCode });

@@ -173,7 +173,15 @@ export function trimMessages(messages, budgetTokens, opts) {
     const protectTailCount = opts && Number.isFinite(opts.protectTail)
         ? Math.max(0, opts.protectTail | 0)
         : DEFAULT_PROTECT_TAIL;
-    // --- Pass 0: cheap pre-prune (Hermes-style, no LLM). Always-on. ---
+    // Skip prune when already under budget. pruneOldToolResults rewrites older
+    // tool message content to PRUNE_STUB_TEXT as the protectTail boundary
+    // slides forward each iteration, mutating prefix bytes and invalidating
+    // any cache_control BP placed on or after that position. Only run prune
+    // when the budget actually demands it.
+    const sanitizedAsIs = sanitizeToolPairs(messages);
+    if (estimateMessagesTokens(sanitizedAsIs) <= budgetTokens)
+        return sanitizedAsIs;
+    // --- Pass 0: cheap pre-prune (Hermes-style, no LLM). ---
     const prePruned = pruneOldToolResults(messages, protectTailCount);
     if (estimateMessagesTokens(prePruned) <= budgetTokens)
         return sanitizeToolPairs(prePruned);

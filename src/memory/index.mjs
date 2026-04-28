@@ -790,6 +790,7 @@ async function handleMemoryAction(args) {
   if (action === 'cycle1') {
     const minBatchOverride = Number(args?.min_batch)
     const sessionCapOverride = Number(args?.session_cap)
+    const batchSizeOverride = Number(args?.batch_size)
     const baseCycle1 = config?.cycle1 || {}
     let cycle1Config = baseCycle1
     // _runCycle1Impl reads `config?.min_batch ?? config?.cycle1?.min_batch ??
@@ -799,6 +800,9 @@ async function handleMemoryAction(args) {
     }
     if (Number.isFinite(sessionCapOverride) && sessionCapOverride > 0) {
       cycle1Config = { ...cycle1Config, session_cap: sessionCapOverride }
+    }
+    if (Number.isFinite(batchSizeOverride) && batchSizeOverride > 0) {
+      cycle1Config = { ...cycle1Config, batch_size: batchSizeOverride }
     }
     const result = await _awaitCycle1Run(cycle1Config)
     const pendingStr = result?.pendingRows != null ? result.pendingRows : 0

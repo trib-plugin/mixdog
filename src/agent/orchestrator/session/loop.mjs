@@ -11,9 +11,59 @@ import { trimMessages } from './trim.mjs';
 import { createGuard, checkToolCall, ToolLoopAbortError } from '../tool-loop-guard.mjs';
 import { maybeOffloadToolResult } from './tool-result-offload.mjs';
 import { isHiddenRole } from '../internal-roles.mjs';
+import { loadConfig } from '../config.mjs';
 const SAFETY_TRIM_PERCENT = 0.90;
 const SOFT_ITERATION_WARN_THRESHOLDS = Object.freeze([24, 48, 96]);
 const EMERGENCY_ITERATION_FUSE = 100;
+// Per-role iteration caps. Soft = warn threshold (last in the warn ladder),
+// hard = emergency fuse. Tuned from observed p95/max in the 24h trace:
+// recall p95=9 max=19, search max=20, explorer ~5 typical, reviewer/debugger
+// p95<12, worker p95=88 on grep+read alt loops. Hidden non-retrieval roles
+// (cycle*, scheduler, webhook, recap, proactive, memory-classification) are
+// single-shot or near-single-shot in practice (cycle1 p95=1, cycle2 max=2,
+// proactive max=3) so a tight cap catches runaway loops early.
+//
+// Override at runtime via agent-config.json `bridge.iterationCaps`:
+//   { "bridge": { "iterationCaps": { "<role>": { "soft": N, "hard": M } } } }
+// Unknown roles fall back to `default`. opts.iterationEmergencyFuse on the
+// per-call payload still overrides hard for benchmarks / batch jobs.
+const ROLE_ITERATION_CAPS = Object.freeze({
+    'recall-agent': { soft: 4, hard: 16 },
+    'search-agent': { soft: 5, hard: 18 },
+    'explorer': { soft: 9, hard: 25 },
+    'reviewer': { soft: 18, hard: 50 },
+    'debugger': { soft: 18, hard: 50 },
+    'worker': { soft: 35, hard: 100 },
+    'tester': { soft: 35, hard: 100 },
+    'cycle1-agent': { soft: 5, hard: 20 },
+    'cycle2-agent': { soft: 5, hard: 20 },
+    'recap-agent': { soft: 5, hard: 20 },
+    'proactive-decision': { soft: 5, hard: 20 },
+    'scheduler-task': { soft: 5, hard: 20 },
+    'webhook-handler': { soft: 5, hard: 20 },
+    'memory-classification': { soft: 5, hard: 20 },
+    default: { soft: 30, hard: 100 },
+});
+function resolveRoleIterationCaps(role) {
+    let override = null;
+    try {
+        const cfg = loadConfig();
+        override = cfg?.bridge?.iterationCaps || null;
+    } catch { /* config read failure → fall back to defaults */ }
+    const builtin = ROLE_ITERATION_CAPS[role] || null;
+    const fallback = ROLE_ITERATION_CAPS.default;
+    const fromOverride = (override && typeof override === 'object' && override[role]) || null;
+    const fromOverrideDefault = (override && typeof override === 'object' && override.default) || null;
+    const pick = (key) => {
+        if (fromOverride && Number.isFinite(Number(fromOverride[key]))) return Number(fromOverride[key]);
+        if (builtin && Number.isFinite(Number(builtin[key]))) return Number(builtin[key]);
+        if (fromOverrideDefault && Number.isFinite(Number(fromOverrideDefault[key]))) return Number(fromOverrideDefault[key]);
+        return Number(fallback[key]);
+    };
+    const soft = Math.max(1, pick('soft'));
+    const hard = Math.max(soft + 1, pick('hard'));
+    return { soft, hard };
+}
 // Write-class tools that a permission=read session must not execute. The
 // schema still advertises them to keep one unified shard; this runtime set
 // is the fail-safe reject at call time.
@@ -254,29 +304,19 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     const sessionId = opts.sessionId || null;
     const signal = opts.signal || null;
     const loopGuard = createGuard();
-    // Role-shaped soft ceilings — surfaced as the last warn threshold rather
-    // than a hard break. Hidden retrieval roles (recall-agent / search-agent /
-    // explorer / cycle* / recap) get the tightest ceiling; worker sits a bit
-    // tighter than other bridge roles because 24h trace shows worker p95
-    // hitting 88 on grep+read alt-loops while reviewer / debugger / tester
-    // p95 stays under 12. The absolute backstop is EMERGENCY_ITERATION_FUSE —
-    // a real broken-loop guard — and can be overridden via
-    // opts.iterationEmergencyFuse for special workloads.
-    const HIDDEN_ROLE_SOFT_CEILING = 30;
-    const WORKER_ROLE_SOFT_CEILING = 56;
-    const BRIDGE_ROLE_SOFT_CEILING = 64;
+    // Per-role soft/hard iteration caps. soft = last warn threshold; hard =
+    // emergency fuse default. Map + override resolution at module scope —
+    // see ROLE_ITERATION_CAPS / resolveRoleIterationCaps. Per-call
+    // opts.iterationEmergencyFuse still wins for benchmarks / batch jobs.
     const sessionRole = opts.session?.role;
-    const roleSoftCeiling = opts.session && isHiddenRole(sessionRole)
-        ? HIDDEN_ROLE_SOFT_CEILING
-        : sessionRole === 'worker'
-            ? WORKER_ROLE_SOFT_CEILING
-            : BRIDGE_ROLE_SOFT_CEILING;
+    const roleCaps = resolveRoleIterationCaps(sessionRole);
+    const roleSoftCeiling = roleCaps.soft;
     const softIterationWarnThresholds = Array.isArray(opts.iterationWarnThresholds) && opts.iterationWarnThresholds.length
         ? [...opts.iterationWarnThresholds].filter((n) => Number.isFinite(Number(n))).map((n) => Number(n)).sort((a, b) => a - b)
         : Array.from(new Set([...SOFT_ITERATION_WARN_THRESHOLDS, roleSoftCeiling])).sort((a, b) => a - b);
     const emergencyIterationFuse = Number.isFinite(Number(opts.iterationEmergencyFuse))
         ? Number(opts.iterationEmergencyFuse)
-        : EMERGENCY_ITERATION_FUSE;
+        : roleCaps.hard;
     const forcedFirstTool = opts.forcedFirstTool || explicitToolChoiceName(messages, tools);
     const forcedFirstToolDef = forcedFirstTool
         ? tools.find(tool => tool?.name === forcedFirstTool)

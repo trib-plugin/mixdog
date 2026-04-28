@@ -686,11 +686,11 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read file(s). `path` is ALWAYS an array — single file: `path:["a.mjs"]`; parallel: `path:["a.mjs","b.mjs","c.mjs"]`. String form is rejected; serial reads are not allowed. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). If the requested marker/value/field is visible in the returned lines, answer immediately; do not repeat an identical read. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.',
+        description: 'Read file(s). `path` accepts a single string (`path:"a.mjs"`) or array (`path:["a.mjs","b.mjs"]`) — prefer the array form for multi-file batches; serial reads are not allowed. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). If the requested marker/value/field is visible in the returned lines, answer immediately; do not repeat an identical read. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Array of file paths. Single: ["a.mjs"]. Parallel: ["a.mjs","b.mjs"]. Always an array — string form is rejected.' },
+                path: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Single file path string (`"a.mjs"`) or array of paths for parallel multi-file read (`["a.mjs","b.mjs"]`).' },
                 mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'], description: 'full (default) | head | tail | count.' },
                 n: { type: 'number', description: 'Lines for head / tail mode. Default 20.' },
                 offset: { type: 'number', description: 'Start line for full mode (0-based).' },
@@ -725,7 +725,7 @@ export const BUILTIN_TOOLS = [
                         required: ['old_string', 'new_string'],
                     },
                     minItems: 1,
-                    description: 'Multi-edit form: array of edits. Each item may specify its own path; if omitted, falls back to the top-level `path`.',
+                    description: 'Array of edits to apply. Each item may specify its own `path`; if omitted, falls back to the top-level `path`. Same-file edits apply sequentially; different-file edits run in parallel.',
                 },
             },
             required: [],
@@ -795,13 +795,13 @@ export const BUILTIN_TOOLS = [
         name: 'grep',
         title: 'Grep',
         annotations: { title: 'Grep', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'ripgrep content search. `pattern` and `glob` are ALWAYS arrays — single: `pattern:["foo"]`; multi (OR-joined in ONE call): `pattern:["foo","bar","baz"]`. String form is rejected; serial greps are not allowed. For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.',
+        description: 'ripgrep content search. `pattern` accepts a single regex string (use `|` for alternation: `pattern:"foo|bar"`) OR an array of patterns (`pattern:["foo","bar"]`, OR-joined). `glob` follows the same shape — single string or array. Prefer the array form when patterns are long or genuinely independent; serial greps are not allowed. For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.',
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Array of regex patterns. Single: ["foo"]. Multi (OR-joined): ["foo","bar"]. Always an array.' },
+                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Single regex string (use `|` for alternation: `"foo|bar"`) or array of patterns (OR-joined: `["foo","bar"]`).' },
                 path: { type: 'string', description: 'Search root. Default: cwd.' },
-                glob: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Array of glob filters. Always an array (use [pattern] for single).' },
+                glob: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Single glob filter (use `{a,b}` brace expansion: `"**/*.{mjs,json}"`) or array of glob filters.' },
                 output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'] },
                 head_limit: { type: 'number', description: 'Default 250; 0 = unlimited.' },
                 offset: { type: 'number', description: 'Skip N entries before head_limit.' },
@@ -820,11 +820,11 @@ export const BUILTIN_TOOLS = [
         name: 'glob',
         title: 'Glob',
         annotations: { title: 'Glob', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'File path search via `rg --files`. `pattern` is ALWAYS an array — single: `pattern:["**/*.mjs"]`; multi (OR-joined): `pattern:["**/*route*.mjs","**/*policy*.json"]`. String form is rejected. Do not emit two `glob` calls in the same assistant turn; one call with a single pattern array covers every requested category — group the returned paths yourself. Do not drop requested categories: include every requested filename category in the same array. Use `grep` for in-file content search.',
+        description: 'File path search via `rg --files`. `pattern` accepts a single glob string (use `{a,b}` brace expansion for compact alternation: `pattern:"**/*.{mjs,json}"`) OR an array of globs (`pattern:["**/*route*.mjs","**/*policy*.json"]`). Prefer the array form when categories are genuinely independent; do not emit two `glob` calls in the same assistant turn — merge them into one call with all requested categories. Use `grep` for in-file content search.',
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Array of glob patterns. Single: ["**/*.mjs"]. Multi: ["**/*route*.mjs","**/*policy*.json"]. Always an array.' },
+                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Single glob string (`"**/*.mjs"` or with brace expansion `"**/*.{mjs,json}"`) or array of glob patterns (`["**/*route*.mjs","**/*policy*.json"]`).' },
                 path: { type: 'string', description: 'Base dir. Default: cwd. Capped at 100. All result rows are emitted as absolute paths.' },
                 head_limit: { type: 'number', description: 'Max file paths to return. Default 100; 0 = unlimited.' },
                 offset: { type: 'number', description: 'Skip N file paths before applying head_limit.' },
