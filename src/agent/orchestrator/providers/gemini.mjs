@@ -85,8 +85,14 @@ function toGeminiContent(message) {
             // on every functionCall part so the cached thinking prefix stays
             // valid. Older models (1.5/2.x) and the first turn of a session
             // simply have no signature; emit the part without the field then.
+            // Send under both casings so whichever the v1beta endpoint accepts
+            // is honoured — the API rejects a missing signature, not an extra
+            // alias field.
             const fc = { name: tc.name, args: tc.arguments };
-            if (tc.thoughtSignature) fc.thoughtSignature = tc.thoughtSignature;
+            if (tc.thoughtSignature) {
+                fc.thoughtSignature = tc.thoughtSignature;
+                fc.thought_signature = tc.thoughtSignature;
+            }
             parts.push({ functionCall: fc });
         }
         return { role: 'model', parts };
@@ -122,17 +128,32 @@ function parseToolCalls(parts) {
     const calls = parts.filter((p) => 'functionCall' in p && !!p.functionCall);
     if (!calls.length)
         return undefined;
+    // The @google/generative-ai 0.24.1 SDK predates Gemini 3 thinking — its
+    // FunctionCall type only declares { name, args }. The runtime object,
+    // however, retains whatever the wire response carried, which means the
+    // signature may sit under any of:
+    //   • part.functionCall.thoughtSignature   (camelCase, expected)
+    //   • part.functionCall.thought_signature  (snake_case, raw protobuf)
+    //   • part.thoughtSignature / part.thought_signature (sibling on Part)
+    // Read all four and use the first non-empty hit. Set MIXDOG_DEBUG_GEMINI=1
+    // to dump the raw parts so we can confirm the actual key location on the
+    // next session and harden the parser.
+    if (process.env.MIXDOG_DEBUG_GEMINI === '1') {
+        try { process.stderr.write(`[gemini fc raw] ${JSON.stringify(parts)}\n`); } catch {}
+    }
     return calls.map((p, i) => {
+        const fc = p.functionCall;
+        const sig = fc.thoughtSignature
+            || fc.thought_signature
+            || p.thoughtSignature
+            || p.thought_signature
+            || null;
         const call = {
             id: `gemini_${Date.now()}_${i}`,
-            name: p.functionCall.name,
-            arguments: (p.functionCall.args ?? {}),
+            name: fc.name,
+            arguments: (fc.args ?? {}),
         };
-        // Preserve Gemini 3 thoughtSignature so it can be echoed back on the
-        // next request — required to keep the thinking cache prefix valid.
-        if (p.functionCall.thoughtSignature) {
-            call.thoughtSignature = p.functionCall.thoughtSignature;
-        }
+        if (sig) call.thoughtSignature = sig;
         return call;
     });
 }

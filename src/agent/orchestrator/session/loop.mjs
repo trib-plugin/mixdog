@@ -506,6 +506,9 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             ...(Array.isArray(response.reasoningItems) && response.reasoningItems.length
                 ? { reasoningItems: response.reasoningItems }
                 : {}),
+            ...(typeof response.reasoningContent === 'string' && response.reasoningContent
+                ? { reasoningContent: response.reasoningContent }
+                : {}),
         });
         // Execute each tool and append results
         for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {

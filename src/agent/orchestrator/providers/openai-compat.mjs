@@ -23,13 +23,21 @@ const PRESETS = {
         defaultModel: 'default',
     },
 };
-function toOpenAIMessages(messages) {
+function toOpenAIMessages(messages, providerName) {
     // NOTE: chat.completions has no equivalent slot for replaying reasoning
     // encrypted_content the way the Responses API does (no `type:'reasoning'`
     // input item). Whatever reasoningItems may be attached to assistant
     // messages by the openai-oauth provider is intentionally dropped here —
-    // strict providers (DeepSeek/xai) reject unknown roles/types and would
-    // 400 the request. Documented in v0.1.160 (GPT reasoning replay).
+    // strict providers (xai) reject unknown roles/types and would 400 the
+    // request. Documented in v0.1.160 (GPT reasoning replay).
+    //
+    // DeepSeek thinking models are the exception: deepseek-reasoner /
+    // deepseek-v4-pro require the prior turn's `reasoning_content` string
+    // to be echoed back inside the assistant message, otherwise the API
+    // returns 400 "reasoning_content in the thinking mode must be passed
+    // back to the API". reasoningContent (plain string, not encrypted) is
+    // captured per-turn in _doSend below and gated to providerName==='deepseek'.
+    const isDeepseek = providerName === 'deepseek';
     const out = [];
     // Buffer sidecars produced by a contiguous tool message group and
     // flush them as a SINGLE user message once the group ends. OpenAI
@@ -60,7 +68,7 @@ function toOpenAIMessages(messages) {
         // the whole contiguous tool group, not interleaved.
         flushSidecars();
         if (m.role === 'assistant' && m.toolCalls?.length) {
-            out.push({
+            const msg = {
                 role: 'assistant',
                 content: m.content || null,
                 tool_calls: m.toolCalls.map((tc) => ({
@@ -68,7 +76,13 @@ function toOpenAIMessages(messages) {
                     type: 'function',
                     function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
                 })),
-            });
+            };
+            if (isDeepseek && m.reasoningContent) msg.reasoning_content = m.reasoningContent;
+            out.push(msg);
+            continue;
+        }
+        if (m.role === 'assistant' && isDeepseek && m.reasoningContent) {
+            out.push({ role: m.role, content: m.content, reasoning_content: m.reasoningContent });
             continue;
         }
         out.push({ role: m.role, content: m.content });
@@ -154,7 +168,7 @@ export class OpenAICompatProvider {
         }
         const params = {
             model: useModel,
-            messages: toOpenAIMessages(messages),
+            messages: toOpenAIMessages(messages, this.name),
         };
         if (tools?.length) {
             params.tools = toOpenAITools(tools);
@@ -167,10 +181,17 @@ export class OpenAICompatProvider {
         const response = await this.client.chat.completions.create(params, requestOpts);
         const choice = response.choices[0];
         const toolCalls = choice ? parseToolCalls(choice) : undefined;
+        // Capture deepseek thinking-mode reasoning_content so loop.mjs can
+        // attach it to the assistant message and echo it back next turn.
+        // Other compat providers don't emit this field.
+        const reasoningContent = (this.name === 'deepseek' && typeof choice?.message?.reasoning_content === 'string')
+            ? choice.message.reasoning_content
+            : null;
         return {
             content: choice?.message?.content || '',
             model: response.model,
             toolCalls,
+            ...(reasoningContent ? { reasoningContent } : {}),
             usage: response.usage ? (() => {
                 const input = response.usage.prompt_tokens || 0;
                 const cached = response.usage.prompt_tokens_details?.cached_tokens
