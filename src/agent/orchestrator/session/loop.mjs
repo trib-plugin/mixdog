@@ -51,15 +51,15 @@ const ROLE_ITERATION_CAPS = Object.freeze({
 // the user. Repair runs every iteration but is a no-op on healthy paths.
 function _ensureTranscriptPairing(msgs, sessionId) {
     // Walk backwards to find the last assistant message that emitted
-    // tool_use, then validate that EVERY id has a matching tool result
-    // strictly after it. Three failure shapes to catch:
-    //   (a) assistant{a,b} — tail is the assistant itself, no tools yet.
-    //   (b) assistant{a,b} → tool{a} — partial: b never got a result.
-    //   (c) assistant{a} → tool{a} → assistant{b} — chained dangle.
-    // Earlier shape (last !== 'assistant' → break) only caught (a).
-    // When validation fails, drop the offending assistant + every message
-    // after it: those tail messages are an orphaned suffix that cannot
-    // form a valid request body.
+    // tool_use, then validate that every id has a matching tool result
+    // inside the CONTIGUOUS tool-message block immediately following it.
+    // Earlier guard splice'd the entire tail — which silently deleted any
+    // user prompt appended after the dangling assistant by manager.mjs:
+    // when the guard fired with shape
+    //     [..., assistant{a,b}, tool{a}, user{new prompt}]
+    // the splice removed user{new prompt} along with the orphan suffix.
+    // Fix: remove only assistant + the contiguous tool block; preserve
+    // anything past it (user / system / next assistant) untouched.
     let popped = 0;
     while (msgs.length > 0) {
         let lastAssistantIdx = -1;
@@ -71,12 +71,19 @@ function _ensureTranscriptPairing(msgs, sessionId) {
             }
         }
         if (lastAssistantIdx === -1) break;
+        // Collect the contiguous tool messages directly after this assistant.
+        // Anything past that block is unrelated (next user prompt, system
+        // marker, etc.) and must survive the repair.
+        let toolBlockEnd = lastAssistantIdx + 1;
+        while (toolBlockEnd < msgs.length && msgs[toolBlockEnd]?.role === 'tool') {
+            toolBlockEnd += 1;
+        }
+        const toolBlock = msgs.slice(lastAssistantIdx + 1, toolBlockEnd);
         const ids = msgs[lastAssistantIdx].toolCalls.map(c => c.id);
-        const tail = msgs.slice(lastAssistantIdx + 1);
-        const matched = ids.every(id => tail.some(m => m.role === 'tool' && m.toolCallId === id));
+        const matched = ids.every(id => toolBlock.some(m => m.toolCallId === id));
         if (matched) break;
-        const removed = msgs.length - lastAssistantIdx;
-        msgs.splice(lastAssistantIdx);
+        const removed = toolBlockEnd - lastAssistantIdx;
+        msgs.splice(lastAssistantIdx, removed);
         popped += removed;
     }
     if (popped > 0 && sessionId) {

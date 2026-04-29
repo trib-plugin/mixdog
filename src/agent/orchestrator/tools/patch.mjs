@@ -425,6 +425,7 @@ async function apply_patch(args, cwd, options = {}) {
   const skipped = [];
 
   const persistOne = async (p) => {
+    const t0 = Date.now();
     if (p.kind === 'delete') {
       const curStat = statSync(p.fullPath);
       if (curStat.mtimeMs > p.preMtime + 1) {
@@ -441,6 +442,7 @@ async function apply_patch(args, cwd, options = {}) {
       }
       await atomicWrite(p.fullPath, p.newContent, { sessionId: options?.sessionId });
     }
+    process.stderr.write(`[patch] applied path=${p.displayPath} hunks=${p.hunks_applied} ms=${Date.now() - t0}\n`);
   };
 
   const rollbackOne = async (p) => {
