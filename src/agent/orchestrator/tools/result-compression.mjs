@@ -26,6 +26,13 @@ const DEDUP_TRIGGER = 3; // 3+ same lines in a row → collapse to (×N)
 // lose diagnostic value when collapsed.
 const PROTECTED_LINE_RE = /\b(error|fail(?:ed|ure)?|panic|traceback|stacktrace|fatal|aborted|exception)\b/i;
 
+// Terse test-runner progress (`.F.F.F`, `....FF`, `EE.E.`) carries failure
+// counts in single characters and contains no `fail` word. If such a line
+// repeats the dedup would silently drop failure markers — a false signal
+// to the caller. Match strings made entirely of `.`, `F`, `E` that
+// contain at least one F or E and never collapse them.
+const TEST_PROGRESS_FAIL_RE = /^(?=.*[FE])[.FE]+$/;
+
 const SHELL_TOOLS = new Set(['bash', 'bash_session', 'job_wait']);
 const FILE_QUERY_TOOLS = new Set(['read', 'grep', 'glob', 'list', 'tree', 'find_files']);
 
@@ -46,7 +53,10 @@ export function dedupRepeatedLines(text) {
         dupRun = 0;
     };
     for (const line of lines) {
-        if (prev !== null && line === prev && !PROTECTED_LINE_RE.test(line)) {
+        if (prev !== null
+            && line === prev
+            && !PROTECTED_LINE_RE.test(line)
+            && !TEST_PROGRESS_FAIL_RE.test(line)) {
             dupRun += 1;
         } else {
             flush();
@@ -96,8 +106,15 @@ export function compressToolResult(toolName, args, result, ctx) {
     } else {
         return result;
     }
-    if (ctx?.sessionId && out.length !== before) {
-        try { traceBridgeCompress({ sessionId: ctx.sessionId, toolName, before, after: out.length }); } catch { /* trace best-effort */ }
+    if (ctx?.sessionId && out.length < before) {
+        // Volume gate — only record materially-different rows so 24h trace
+        // growth from this layer stays under ~1 MB/day. Rows that saved
+        // < 5% or < 512 bytes carry no useful `gain` signal anyway.
+        const saved = before - out.length;
+        const savingsPct = Math.round((1 - out.length / before) * 100);
+        if (savingsPct >= 5 && saved >= 512) {
+            try { traceBridgeCompress({ sessionId: ctx.sessionId, toolName, before, after: out.length }); } catch { /* trace best-effort */ }
+        }
     }
     return out;
 }
