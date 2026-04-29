@@ -339,8 +339,20 @@ function probeTcpPort(port, probeMs) {
 async function pollActiveInstance(graceMs) {
   const activePath = path.join(os.tmpdir(), 'mixdog', 'active-instance.json');
   const deadline = Date.now() + Math.max(0, graceMs);
-  // 100ms cadence — active-instance.json appears ~ms after channels owner HTTP ready.
+  // 25ms cadence with immediate first probe — closes the gap between
+  // active-instance.json appearing and hook detecting it. Each
+  // sleep / probe duration is clamped to the remaining deadline so
+  // the loop honors graceMs precisely (without clamping a fresh
+  // 25ms sleep + 200ms probe near deadline can overrun by ~225ms).
+  let first = true;
   while (Date.now() <= deadline) {
+    if (!first) {
+      const sleepMs = Math.min(25, deadline - Date.now());
+      if (sleepMs <= 0) break;
+      await new Promise((r) => setTimeout(r, sleepMs));
+      if (Date.now() > deadline) break;
+    }
+    first = false;
     try {
       if (fs.existsSync(activePath)) {
         const active = JSON.parse(fs.readFileSync(activePath, 'utf8'));
@@ -350,12 +362,13 @@ async function pollActiveInstance(graceMs) {
           // briefly; only return when something actually accepts a
           // connection. Otherwise keep polling so a freshly-booting owner
           // can register and be picked up.
-          const alive = await probeTcpPort(active.httpPort, 200);
+          const probeMs = Math.min(200, deadline - Date.now());
+          if (probeMs <= 0) break;
+          const alive = await probeTcpPort(active.httpPort, probeMs);
           if (alive) return active;
         }
       }
     } catch {}
-    await new Promise((r) => setTimeout(r, 100));
   }
   return null;
 }
@@ -683,7 +696,7 @@ async function runRulesPart() {
 // ---------------------------------------------------------------------------
 async function runCorePart() {
   if (skipMemoryInject) return;
-  const r = await requestCycle1(60000, { graceMs: 10000, slot: 'core' });
+  const r = await requestCycle1(60000, { graceMs: 3000, slot: 'core' });
   if (r.ok !== true) {
     teeStderr(`[session-start] core skipped: cycle1 await failed reason=${r.reason}\n`);
     return;
@@ -703,7 +716,7 @@ async function runCorePart() {
 // ---------------------------------------------------------------------------
 async function runRecapPart() {
   if (skipMemoryInject) return;
-  const r = await requestCycle1(60000, { graceMs: 10000, slot: 'recap' });
+  const r = await requestCycle1(60000, { graceMs: 3000, slot: 'recap' });
   if (r.ok !== true) {
     teeStderr(`[session-start] recap skipped: cycle1 await failed reason=${r.reason}\n`);
     return;

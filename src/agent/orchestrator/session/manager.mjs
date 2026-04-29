@@ -219,13 +219,6 @@ function _dedupByName(tools) {
     return [...seen.values()];
 }
 
-// NOTE: a prior BRIDGE_EXCLUDED_MCP_TOOLS / _filterMcpForBridge pair lived here
-// (v0.6.301) as a secondary MCP filter applied inside _computeBaseTools. It was
-// removed in v0.6.302 after verifying every one of its 14 entries was already
-// present in `BRIDGE_DENY_TOOLS` below — the authoritative bridge deny list
-// applied later in createSession — making the function a 100% no-op. Single
-// source of truth for "what bridge cannot call" is BRIDGE_DENY_TOOLS.
-//
 // Canonical bridge deny list — the SINGLE source of truth for which tools a
 // bridge-owned session strips from its tool schema. Exported so benchmarks
 // (scripts/measure-bp1.mjs) and tests can import the same list instead of
@@ -1444,6 +1437,13 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                     fast: session.fast === true,
                     sessionId,
                     promptCacheKey: session.promptCacheKey || sessionId,
+                    // Provider-scoped cache key (mixdog-codex, mixdog-claude…).
+                    // Distinct from sessionId — providers that pool sockets
+                    // per-session (openai-oauth WS) use sessionId as the
+                    // pool bucket and providerCacheKey as the server-side
+                    // prompt-cache shard so parallel callers don't collide
+                    // on a mid-turn socket while still sharing prefix cache.
+                    providerCacheKey: session.promptCacheKey || null,
                     signal,
                     providerState: session.providerState ?? undefined,
                     session,

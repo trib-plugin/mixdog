@@ -209,29 +209,32 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason) => { logCrash('unhandledRejection', reason) })
 
 // ── Bridge orphan cleanup ───────────────────────────────────────────
-try {
-  const { cleanupOrphanedPids } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/shared/llm/pid-cleanup.mjs')).href)
-  const killed = cleanupOrphanedPids()
-  if (killed > 0) log(`[bridge-cleanup] cleaned ${killed} orphaned processes`)
-} catch (e) {
-  log(`[bridge-cleanup] failed: ${e && (e.stack || e.message) || e}`)
-}
+// Non-blocking: cleanup of stale state from a previous server PID.
+// Awaiting these used to gate the boot path (memory worker spawn, agent
+// eager init) behind disk + module-load work that has no semantic
+// dependency on the rest of boot. Fire-and-forget so the critical path
+// proceeds; failures stay logged.
+import(pathToFileURL(join(PLUGIN_ROOT, 'src/shared/llm/pid-cleanup.mjs')).href)
+  .then(({ cleanupOrphanedPids }) => {
+    const killed = cleanupOrphanedPids()
+    if (killed > 0) log(`[bridge-cleanup] cleaned ${killed} orphaned processes`)
+  })
+  .catch(e => log(`[bridge-cleanup] failed: ${e && (e.stack || e.message) || e}`))
 
 // ── Session cleanup: bridge sessions from previous MCP process ─────
-try {
-  const { listSessions, closeSession, startIdleCleanup } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.mjs')).href)
-  const sessions = listSessions()
-  let closed = 0
-  for (const s of sessions) {
-    if (s.owner === 'bridge' && (!s.mcpPid || s.mcpPid !== process.pid)) { closeSession(s.id); closed++ }
-  }
-  log(`[session-cleanup] closed ${closed} stale bridge sessions (pid≠${process.pid}), ${sessions.length - closed} remaining`)
-  // Start periodic idle session cleanup (check every 5 min; TTL lives in session/store.mjs)
-  startIdleCleanup()
-  log(`[session-cleanup] idle sweep timer started (interval=5m)`)
-} catch (e) {
-  log(`[session-cleanup] failed: ${e && (e.stack || e.message) || e}`)
-}
+// Non-blocking, same rationale as bridge-cleanup above.
+import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.mjs')).href)
+  .then(({ listSessions, closeSession, startIdleCleanup }) => {
+    const sessions = listSessions()
+    let closed = 0
+    for (const s of sessions) {
+      if (s.owner === 'bridge' && (!s.mcpPid || s.mcpPid !== process.pid)) { closeSession(s.id); closed++ }
+    }
+    log(`[session-cleanup] closed ${closed} stale bridge sessions (pid≠${process.pid}), ${sessions.length - closed} remaining`)
+    startIdleCleanup()
+    log(`[session-cleanup] idle sweep timer started (interval=5m)`)
+  })
+  .catch(e => log(`[session-cleanup] failed: ${e && (e.stack || e.message) || e}`))
 
 // ── MCP server ──────────────────────────────────────────────────────
 const SERVER_INSTRUCTIONS = [
@@ -731,11 +734,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 //
 // Search eager-load stays fire-and-forget: it doesn't seed any registry,
 // just avoids the first-call compile-JIT cost.
-if (isModuleEnabled('search')) {
-  loadModule('search').catch(e => log(`eager search init failed: ${e.message}`))
-} else {
-  log(`module 'search' disabled — skipping eager init`)
-}
+//
+// Memory worker spawn is hoisted up to here so the worker bootstrap
+// (~290ms) runs in parallel with `await loadModule('agent')` (~500ms)
+// instead of waiting for it to complete. The channels-spawn block
+// further down handles the case where memory `ready` arrives before
+// its setImmediate listener attaches.
+const memoryOn = isModuleEnabled('memory')
+const channelsOn = isModuleEnabled('channels')
+if (memoryOn) spawnWorker('memory')
+else log(`module 'memory' disabled — skipping worker spawn`)
+
+// Search eager-load is deferred until after the channels-spawn setImmediate
+// is registered so the channels worker fork lands at the head of the
+// microtask FIFO. The first search call still pays cold-start cost; this
+// just keeps that cost off the boot critical path.
 try {
   if (!isModuleEnabled('agent')) {
     log(`module 'agent' disabled — skipping eager init, bridge and synthetic tools will not register`)
@@ -797,17 +810,102 @@ try {
 await server.connect(new StdioServerTransport())
 log(`connected pid=${process.pid} v${PLUGIN_VERSION} tools=${TOOL_DEFS.length}`)
 
-// ── Dispatch restart recovery ──────────────────────────────────────
-// If this bootstrap follows a process death that interrupted any async
-// dispatch (recall / search / explore), emit one Aborted notification per
-// orphaned handle so the Lead can close the loop instead of waiting forever.
-try {
-  const { recoverPending } = await import('./src/agent/orchestrator/dispatch-persist.mjs')
-  const recovered = recoverPending(PLUGIN_DATA, pushChannelNotification)
-  if (recovered > 0) log(`dispatch-recovery: emitted ${recovered} Aborted notifications`)
-} catch (err) {
-  log(`dispatch-recovery failed: ${err instanceof Error ? err.message : String(err)}`)
+// ── Spawn workers: channels (gated on memory) ───────────────────────
+// Hoisted to register at the head of the setImmediate FIFO so the
+// channels fork lands ahead of the rules-watcher and status-fork
+// setImmediates registered later in this file. `reconcileClaudeMd`
+// is a function declaration, so it's hoisted and safe to reference
+// here even though its source location is below.
+setImmediate(() => {
+  if (!channelsOn) {
+    log(`module 'channels' disabled — skipping worker spawn`)
+    // CLAUDE.md reconcile is driven by channels/injection config; when
+    // channels is off we still reconcile once so managed blocks stay in
+    // sync with the current mode.
+    try { reconcileClaudeMd() } catch {}
+    return
+  }
+
+  // channels + CLAUDE.md depend on memory — wait for memory ready when enabled
+  const memEntry = memoryOn ? workers.get('memory') : null
+  const channelsWaitStart = Date.now()
+  if (memEntry) {
+    // Fast-path: with the memory spawn hoisted ahead of the agent-init
+    // await, the worker may already be ready by the time this
+    // setImmediate runs. Without this branch the message listener
+    // attaches too late and the 10s safety timeout becomes the
+    // channels-spawn floor.
+    //
+    // Race guard: between `ready` and this setImmediate firing, the
+    // memory worker could die (proc exit handler at L437 deletes from
+    // `workers`). Confirm the entry is still the live owner of the
+    // memory slot AND the IPC channel is still connected before
+    // skipping the listener attach.
+    if (
+      memEntry.ready &&
+      memEntry.proc?.connected &&
+      workers.get('memory') === memEntry
+    ) {
+      reconcileClaudeMd()
+      if (!workers.has('channels')) {
+        log(`[server] channels spawn reason=memory-already-ready wait=${Date.now()-channelsWaitStart}ms`)
+        spawnWorker('channels')
+      }
+      return
+    }
+    const onReady = (msg) => {
+      if (msg.type === 'ready') {
+        reconcileClaudeMd()
+        if (!workers.has('channels')) {
+          log(`[server] channels spawn reason=memory-ready wait=${Date.now()-channelsWaitStart}ms`)
+          spawnWorker('channels')
+        }
+        memEntry.proc.removeListener('message', onReady)
+      }
+    }
+    memEntry.proc.on('message', onReady)
+    // Safety: proceed anyway after 10s if ready never arrives
+    setTimeout(() => {
+      if (!workers.has('channels')) {
+        reconcileClaudeMd()
+        log(`[server] channels spawn reason=memory-ready-timeout wait=${Date.now()-channelsWaitStart}ms`)
+        spawnWorker('channels')
+      }
+    }, 10000)
+  } else {
+    // memory disabled (or spawn failed) — boot channels immediately.
+    // Previously this branch only covered the spawn-failed case; with B6
+    // the memory-disabled path also lands here.
+    setTimeout(() => {
+      reconcileClaudeMd()
+      if (!workers.has('channels')) spawnWorker('channels')
+    }, memoryOn ? 2000 : 0)
+  }
+})
+
+// ── Deferred: search eager-load + dispatch recovery ────────────────
+// Both are fire-and-forget after channels-spawn is enqueued so they
+// don't sit on the boot critical path. Search eager-load only avoids
+// the first-call JIT cost; dispatch recovery emits Aborted
+// notifications for orphaned handles from a prior process death.
+if (isModuleEnabled('search')) {
+  setImmediate(() => {
+    loadModule('search').catch(e => log(`eager search init failed: ${e.message}`))
+  })
+} else {
+  log(`module 'search' disabled — skipping eager init`)
 }
+
+setImmediate(() => {
+  import('./src/agent/orchestrator/dispatch-persist.mjs')
+    .then(({ recoverPending }) => {
+      const recovered = recoverPending(PLUGIN_DATA, pushChannelNotification)
+      if (recovered > 0) log(`dispatch-recovery: emitted ${recovered} Aborted notifications`)
+    })
+    .catch((err) => {
+      log(`dispatch-recovery failed: ${err instanceof Error ? err.message : String(err)}`)
+    })
+})
 
 // ── CLAUDE.md managed block reconciliation ─────────────────────────
 // Writes static rules into the managed block. Session recap is NOT
@@ -1017,66 +1115,10 @@ function spawnStatusServer() {
 }
 setImmediate(spawnStatusServer)
 
-// ── Spawn workers: memory + channels ──────────────────────────────
-// Workers own all heavy work. Session recap, buffer flush, cycle
-// scheduling all run inside the worker process. No in-process fallback.
-//
-// B6 gating:
-// - memory disabled → worker not spawned; channels boots immediately
-//   (episode delivery integration degrades to no-op).
-// - channels disabled → worker never spawned regardless of memory state.
-// Memory worker spawn is hoisted out of setImmediate so it runs in parallel
-// with the agent/search eager init above instead of waiting for the next
-// tick. The fork is cheap; downstream channels spawn still waits for the
-// memory `ready` event below.
-const memoryOn = isModuleEnabled('memory')
-const channelsOn = isModuleEnabled('channels')
-if (memoryOn) spawnWorker('memory')
-else log(`module 'memory' disabled — skipping worker spawn`)
-
-setImmediate(() => {
-  if (!channelsOn) {
-    log(`module 'channels' disabled — skipping worker spawn`)
-    // CLAUDE.md reconcile is driven by channels/injection config; when
-    // channels is off we still reconcile once so managed blocks stay in
-    // sync with the current mode.
-    try { reconcileClaudeMd() } catch {}
-    return
-  }
-
-  // channels + CLAUDE.md depend on memory — wait for memory ready when enabled
-  const memEntry = memoryOn ? workers.get('memory') : null
-  const channelsWaitStart = Date.now()
-  if (memEntry) {
-    const onReady = (msg) => {
-      if (msg.type === 'ready') {
-        reconcileClaudeMd()
-        if (!workers.has('channels')) {
-          log(`[server] channels spawn reason=memory-ready wait=${Date.now()-channelsWaitStart}ms`)
-          spawnWorker('channels')
-        }
-        memEntry.proc.removeListener('message', onReady)
-      }
-    }
-    memEntry.proc.on('message', onReady)
-    // Safety: proceed anyway after 10s if ready never arrives
-    setTimeout(() => {
-      if (!workers.has('channels')) {
-        reconcileClaudeMd()
-        log(`[server] channels spawn reason=memory-ready-timeout wait=${Date.now()-channelsWaitStart}ms`)
-        spawnWorker('channels')
-      }
-    }, 10000)
-  } else {
-    // memory disabled (or spawn failed) — boot channels immediately.
-    // Previously this branch only covered the spawn-failed case; with B6
-    // the memory-disabled path also lands here.
-    setTimeout(() => {
-      reconcileClaudeMd()
-      if (!workers.has('channels')) spawnWorker('channels')
-    }, memoryOn ? 2000 : 0)
-  }
-})
+// Channels worker spawn + reconcileClaudeMd + deferred search/dispatch
+// recovery were hoisted above the rules-watcher / status-fork
+// setImmediates so they sit at the head of the FIFO. See the block right
+// after `await server.connect(...)`.
 
 // ── Shutdown ────────────────────────────────────────────────────────
 const isWin = process.platform === 'win32'

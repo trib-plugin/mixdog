@@ -278,14 +278,14 @@ export function buildRequestBody(messages, model, tools, sendOpts) {
         tool_choice: opts.toolChoice || 'auto',
         parallel_tool_calls: true,
     };
-    const cacheKey = opts.promptCacheKey || opts.sessionId;
+    const cacheKey = opts.providerCacheKey || opts.promptCacheKey || opts.sessionId;
     if (cacheKey) {
         body.prompt_cache_key = String(cacheKey);
     } else {
         // No stable cache key → Codex server prefix-cache cannot match,
         // every call is uncached. Bridge dispatch always supplies one;
         // log a one-shot warn for raw callers so the silent miss is visible.
-        warnBridgeOnce('codex-no-cache-key', '[bridge-cache] openai-oauth: no promptCacheKey/sessionId — request will be uncached');
+        warnBridgeOnce('codex-no-cache-key', '[bridge-cache] openai-oauth: no providerCacheKey/promptCacheKey/sessionId — request will be uncached');
     }
     // NOTE: prompt_cache_retention is a public OpenAI Responses API parameter —
     // the Codex endpoint (chatgpt.com/backend-api/codex/responses) returns
@@ -380,21 +380,19 @@ export class OpenAIOAuthProvider {
         let auth = await this.ensureAuth();
         const useModel = model || 'gpt-5.5';
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
-        // poolKey == cacheKey: socket pool bucket is keyed by the same
-        // provider-scoped unified key as the Codex handshake session_id, so
-        // sequential calls in the same bucket reuse a kept-alive socket.
-        // Without this, every mixdog session was opening a fresh WS handshake
-        // and Codex's server-side conversation state for the new socket
-        // started empty — multi-turn cache hit collapsed (measured: hot iter1
-        // 99% but iter2 0% because the new socket emitted a different
-        // tool_call_id chain). Sharing the bucket lets the server keep the
-        // prefix prefix matching consistent across follow-up turns.
-        // Parallel collision risk: if two callers grab the same idle socket
-        // mid-turn, Codex returns "No tool output found for function call".
-        // Mitigated by the pool entry's busy flag in openai-oauth-ws.mjs;
-        // unsafe parallel callers fall back to a fresh socket.
-        const poolKey  = opts.promptCacheKey || opts.sessionId || null;
-        const cacheKey = opts.promptCacheKey || opts.sessionId || null;
+        // poolKey ≠ cacheKey by design (see openai-oauth-ws.mjs:57-68).
+        // poolKey is per-session so parallel reviewer/worker callers each
+        // get their own socket bucket — a sibling cannot grab a mid-turn
+        // entry and trip Codex's "No tool call found for function call
+        // output with call_id …" rejection. cacheKey is provider-scoped
+        // (e.g. `mixdog-codex`) and feeds both `body.prompt_cache_key` and
+        // the handshake `session_id` header, so all orchestrator-internal
+        // dispatches land on the same server-side prompt-cache shard
+        // regardless of which logical session opened the socket.
+        // Both keys default down to sessionId for raw callers that don't
+        // supply explicit values.
+        const poolKey  = opts.sessionId || null;
+        const cacheKey = opts.providerCacheKey || opts.promptCacheKey || opts.sessionId || null;
         const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null;
         // WebSocket is the only dispatch path. Catalog refresh + 401 retry +
         // unknown-model catalog invalidation are layered around the WS call.

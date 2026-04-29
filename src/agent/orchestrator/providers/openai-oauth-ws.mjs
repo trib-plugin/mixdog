@@ -24,6 +24,7 @@
  * parsing, and tracing.
  */
 import WebSocket from 'ws';
+import { createHash } from 'crypto';
 import {
     extractCachedTokens,
     traceBridgeFetch,
@@ -200,6 +201,11 @@ async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh }) {
         if (idle) {
             _clearIdle(idle);
             idle.busy = true;
+            // Defensive: pre-existing pooled entries created before the
+            // prefix-hash field was introduced may not have it set. Normalize
+            // to null so the first delta check reads a deterministic value
+            // (and falls back to full-create instead of silently passing).
+            if (idle.lastInputPrefixHash === undefined) idle.lastInputPrefixHash = null;
             return { entry: idle, reused: true };
         }
         // All entries busy and bucket at cap: fall through to ephemeral socket.
@@ -213,6 +219,7 @@ async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh }) {
                 lastResponseId: null,
                 lastRequestSansInput: null,
                 lastInputLen: 0,
+                lastInputPrefixHash: null,
                 turnState: turnState || null,
                 closing: false,
                 ephemeral: true,
@@ -235,6 +242,7 @@ async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh }) {
         lastResponseId: null,
         lastRequestSansInput: null,
         lastInputLen: 0,
+        lastInputPrefixHash: null,
         turnState: turnState || null,
         closing: false,
         ephemeral: false,
@@ -289,6 +297,26 @@ function _computeDelta({ entry, body }) {
     const prevLen = entry.lastInputLen | 0;
     const curInput = Array.isArray(body.input) ? body.input : [];
     if (curInput.length < prevLen) {
+        return { mode: 'full', frame: { type: 'response.create', ...body } };
+    }
+    // Prefix integrity guard: the cached state on `entry` only stays valid
+    // if the current request's first `prevLen` items are byte-identical to
+    // the prior full input. If anything in the prefix mutated (a tool result
+    // got rewritten, a reasoning item dropped, a system note rotated) the
+    // server would mis-anchor the delta. Compare a sha256 of the serialized
+    // prefix against the hash captured on the previous success. Mismatch →
+    // fall back to a full create for this turn only; the entry itself stays
+    // in the pool so the next turn can retry the delta path after
+    // sendViaWebSocket refreshes the cache state.
+    // Without a hash baseline prefix integrity is unprovable — force full
+    // so sendViaWebSocket can seed the hash on success.
+    if (entry.lastInputPrefixHash == null) {
+        return { mode: 'full', frame: { type: 'response.create', ...body } };
+    }
+    const curPrefixHash = createHash('sha256')
+        .update(JSON.stringify(curInput.slice(0, prevLen)))
+        .digest('hex');
+    if (curPrefixHash !== entry.lastInputPrefixHash) {
         return { mode: 'full', frame: { type: 'response.create', ...body } };
     }
     const tail = curInput.slice(prevLen);
@@ -437,13 +465,28 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
                     const pending = pendingCalls.get(itemId);
                     let args = {};
                     try { args = JSON.parse(event.arguments || '{}'); } catch {}
-                    const call = {
-                        id: pending?.callId || `tc_${Date.now()}_${toolCalls.length}`,
-                        name: pending?.name || '',
-                        arguments: args,
-                    };
-                    toolCalls.push(call);
-                    try { onToolCall?.(call); } catch {}
+                    if (pending?.callId && pending?.name) {
+                        const call = { id: pending.callId, name: pending.name, arguments: args };
+                        toolCalls.push(call);
+                        try { onToolCall?.(call); } catch {}
+                    } else {
+                        // Synthesizing a `tc_${Date.now()}` callId here would
+                        // make the next turn fail to match the model's
+                        // function_call_output reference. Defer instead and
+                        // salvage call_id/name from the final
+                        // response.completed.output bundle below. If salvage
+                        // also fails we fail the stream explicitly — masking
+                        // the gap with a synthetic id just shifts the failure
+                        // one turn later under a confusing "No tool output
+                        // found for function call" error.
+                        toolCalls.push({
+                            id: pending?.callId || '',
+                            name: pending?.name || '',
+                            arguments: args,
+                            _pendingItemId: itemId,
+                            _deferred: true,
+                        });
+                    }
                     try { onStreamDelta?.(); } catch {}
                     break;
                 }
@@ -487,7 +530,40 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
                                 && !reasoningItems.some(r => r.id === item.id)) {
                                 pushReasoningItem(item);
                             }
+                            // Salvage path for function_call: when
+                            // arguments.done fired before (or without) a
+                            // matching output_item.added, the deferred tool
+                            // call placeholder has empty id/name. The
+                            // completed.output bundle carries the canonical
+                            // call_id/name; fill them in and emit onToolCall.
+                            if (item.type === 'function_call') {
+                                const tc = toolCalls.find(
+                                    (t) => t._deferred && t._pendingItemId === (item.id || ''),
+                                );
+                                if (tc) {
+                                    if (!tc.id && item.call_id) tc.id = item.call_id;
+                                    if (!tc.name && item.name) tc.name = item.name;
+                                    if (tc.id && tc.name) {
+                                        delete tc._deferred;
+                                        delete tc._pendingItemId;
+                                        try { onToolCall?.(tc); } catch {}
+                                    }
+                                }
+                            }
                         }
+                    }
+                    // Salvage validation. Any deferred call still missing
+                    // id/name would propagate to the next turn as a
+                    // function_call_output the server can't anchor. Fail the
+                    // stream now so the caller sees a deterministic error
+                    // instead of a cryptic mismatch one turn later.
+                    const unresolved = toolCalls.find((t) => t._deferred);
+                    if (unresolved) {
+                        terminalError = new Error(
+                            `Codex WS function_call salvage failed: missing call_id/name for item_id=${unresolved._pendingItemId || '?'}`,
+                        );
+                        finish();
+                        break;
                     }
                     midState.sawCompleted = true;
                     done = true;
@@ -941,7 +1017,15 @@ export async function sendViaWebSocket({
         if (result.responseId) {
             entry.lastResponseId = result.responseId;
             entry.lastRequestSansInput = _stableStringify(_sansInput(body));
-            entry.lastInputLen = Array.isArray(body.input) ? body.input.length : 0;
+            const inputArr = Array.isArray(body.input) ? body.input : [];
+            entry.lastInputLen = inputArr.length;
+            // Capture the prefix hash for the next turn's delta integrity
+            // check. Serialize the full input (matching what _computeDelta
+            // will hash on the next turn's first prevLen items, where
+            // prevLen === inputArr.length).
+            entry.lastInputPrefixHash = createHash('sha256')
+                .update(JSON.stringify(inputArr))
+                .digest('hex');
         }
 
         const liveModel = result.model || useModel;

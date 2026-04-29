@@ -723,7 +723,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read file(s). `path` accepts a single string (`path:\"a.mjs\"`) or array (`path:[\"a.mjs\",\"b.mjs\"]`) — prefer the array form for multi-file batches; serial reads are not allowed. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). If the requested marker/value/field is visible in the returned lines, answer immediately; do not repeat an identical read. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.",
+    "description": "Read file(s). `path` accepts a single string or array (`[\"a.mjs\",\"b.mjs\"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. Do not repeat an identical read on the same file/range — open a wider window or different range instead.",
     "inputSchema": {
       "type": "object",
       "properties": {

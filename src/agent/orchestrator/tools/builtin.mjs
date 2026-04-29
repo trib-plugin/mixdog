@@ -686,7 +686,7 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read file(s). `path` accepts a single string (`path:"a.mjs"`) or array (`path:["a.mjs","b.mjs"]`) — prefer the array form for multi-file batches; serial reads are not allowed. Use this AFTER you already have a concrete file candidate (`find_symbol`, `code_graph`, `grep`, `glob`, `list`). If the requested marker/value/field is visible in the returned lines, answer immediately; do not repeat an identical read. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Files over the byte cap return a short error unless you use offset/limit, head, tail, count, or `grep`; moderately large default reads return a compact head+tail summary.',
+        description: 'Read file(s). `path` accepts a single string or array (`["a.mjs","b.mjs"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. Do not repeat an identical read on the same file/range — open a wider window or different range instead.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -1065,16 +1065,70 @@ function _hashText(text) {
 
 function _recordReadSnapshot(fullPath, st, scope = null, meta = {}) {
     const readFiles = _readFilesForScope(scope);
+    let mtimeMs;
+    let size;
     try {
         if (st && typeof st.mtimeMs === 'number') {
-            readFiles.set(fullPath, { mtimeMs: st.mtimeMs, size: st.size, ...meta });
-            return;
+            mtimeMs = st.mtimeMs;
+            size = st.size;
+        } else {
+            const fresh = statSync(fullPath);
+            mtimeMs = fresh.mtimeMs;
+            size = fresh.size;
         }
-        const fresh = statSync(fullPath);
-        readFiles.set(fullPath, { mtimeMs: fresh.mtimeMs, size: fresh.size, ...meta });
     } catch {
-        readFiles.set(fullPath, { mtimeMs: Date.now(), size: 0, ...meta });
+        mtimeMs = Date.now();
+        size = 0;
     }
+    const incomingRanges = Array.isArray(meta.ranges) && meta.ranges.length > 0
+        ? meta.ranges
+        : [{ startLine: 1, endLine: Infinity }];
+    const existing = readFiles.get(fullPath);
+    const sameFile = existing
+        && existing.mtimeMs === mtimeMs
+        && existing.size === size
+        && Array.isArray(existing.ranges);
+    const merged = sameFile
+        ? _mergeReadRanges([...existing.ranges, ...incomingRanges])
+        : _mergeReadRanges(incomingRanges);
+    const { ranges: _omitRanges, ...restMeta } = meta;
+    const next = { ...restMeta, mtimeMs, size, ranges: merged };
+    if (!next.contentHash && sameFile && existing.contentHash) {
+        next.contentHash = existing.contentHash;
+    }
+    readFiles.set(fullPath, next);
+}
+
+function _mergeReadRanges(ranges) {
+    const filtered = (Array.isArray(ranges) ? ranges : [])
+        .filter((r) => r && Number.isFinite(Number(r.startLine)) && (Number.isFinite(Number(r.endLine)) || r.endLine === Infinity))
+        .map((r) => ({
+            startLine: Math.max(1, Number(r.startLine)),
+            endLine: r.endLine === Infinity ? Infinity : Number(r.endLine),
+        }))
+        .filter((r) => r.endLine === Infinity || r.endLine >= r.startLine)
+        .sort((a, b) => a.startLine - b.startLine);
+    if (filtered.length === 0) return [];
+    const out = [{ ...filtered[0] }];
+    for (let i = 1; i < filtered.length; i++) {
+        const top = out[out.length - 1];
+        const cur = filtered[i];
+        const topEnd = top.endLine === Infinity ? Infinity : top.endLine;
+        const adjacent = topEnd === Infinity ? true : cur.startLine <= topEnd + 1;
+        if (adjacent) {
+            top.endLine = top.endLine === Infinity || cur.endLine === Infinity
+                ? Infinity
+                : Math.max(top.endLine, cur.endLine);
+        } else {
+            out.push({ ...cur });
+        }
+    }
+    return out;
+}
+
+function _snapshotCoversFullFile(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.ranges)) return false;
+    return snapshot.ranges.some((r) => r.startLine <= 1 && r.endLine === Infinity);
 }
 
 function _getReadSnapshot(fullPath, scope = null) {
@@ -1086,7 +1140,7 @@ function _isSnapshotStale(stat, snapshot) {
 }
 
 function _readContentIfSnapshotHashMatches(fullPath, snapshot) {
-    if (!snapshot || snapshot.isPartialView || !snapshot.contentHash) return null;
+    if (!snapshot || !snapshot.contentHash) return null;
     try {
         const content = readFileSync(fullPath, 'utf-8');
         return _hashText(content) === snapshot.contentHash ? content : null;
@@ -1095,35 +1149,49 @@ function _readContentIfSnapshotHashMatches(fullPath, snapshot) {
     }
 }
 
-// Reject edits whose target text sits outside the line window the
-// snapshot actually covered. Without this, a partial `read` (head/tail
-// or offset+limit) was treated as proof the model had seen the whole
-// file — letting it author edits against unread regions from cached
-// assumptions. Returns null when fully covered, or an error string the
-// caller should return verbatim. Full-file snapshots (isPartialView
-// false) bypass this check; line range info absent → cannot validate,
-// reject conservatively.
+// Reject edits whose target text sits outside any line window the
+// snapshot actually covered. The snapshot tracks one or more ranges
+// (full reads → [{1, ∞}]; partial reads accumulate the union of
+// windows for the same mtime/size). An edit passes when its match
+// line range is contained in at least one snapshot range. Full
+// coverage bypasses the check; missing/empty ranges → reject.
 function _validatePartialSnapshotCoverage(content, oldStr, snapshot, filePath) {
-    if (!snapshot || snapshot.isPartialView !== true) return null;
+    if (!snapshot) return null;
+    if (_snapshotCoversFullFile(snapshot)) return null;
     if (typeof oldStr !== 'string' || oldStr.length === 0) return null;
-    const offset = Number(snapshot.offset);
-    const limit = Number(snapshot.limit);
-    if (!Number.isFinite(offset) || !Number.isFinite(limit) || limit <= 0) {
+    const ranges = Array.isArray(snapshot.ranges) ? snapshot.ranges : [];
+    if (ranges.length === 0) {
         return `Error [code 6]: edit target lies outside the read window for ${filePath} — re-read the file (or read with a wider range covering the edit) before editing`;
     }
-    // 1-based inclusive window of lines the snapshot saw.
-    const winStart = offset + 1;
-    const winEnd = offset + limit;
     let idx = 0;
     while ((idx = content.indexOf(oldStr, idx)) !== -1) {
         const startLine = _lineForIndex(content, idx);
         const endLine = startLine + oldStr.split('\n').length - 1;
-        if (startLine < winStart || endLine > winEnd) {
-            return `Error [code 6]: edit target at lines ${startLine}-${endLine} lies outside the read window ${winStart}-${winEnd} for ${filePath} — re-read the file (or read with a wider range covering the edit) before editing`;
+        const covered = ranges.some((r) => r.startLine <= startLine && (r.endLine === Infinity || r.endLine >= endLine));
+        if (!covered) {
+            const windows = ranges.map((r) => `${r.startLine}-${r.endLine === Infinity ? 'EOF' : r.endLine}`).join(', ');
+            return `Error [code 6]: edit target at lines ${startLine}-${endLine} lies outside the read windows [${windows}] for ${filePath} — re-read the file (or read with a wider range covering the edit) before editing`;
         }
         idx += oldStr.length;
     }
     return null;
+}
+
+// Lenient widening: when a unique `old_string` match is found in the
+// current on-disk content of a snapshot whose mtime/size still matches,
+// extend the snapshot's ranges to cover the match site. Skips a forced
+// re-read when the model edits adjacent to (but outside) what it
+// already read. Multi-match keeps the strict reject upstream.
+function _maybeExtendSnapshotForUniqueMatch(content, oldStr, snapshot) {
+    if (!snapshot || typeof oldStr !== 'string' || oldStr.length === 0) return false;
+    const first = content.indexOf(oldStr);
+    if (first === -1) return false;
+    if (content.indexOf(oldStr, first + oldStr.length) !== -1) return false;
+    const startLine = _lineForIndex(content, first);
+    const endLine = startLine + oldStr.split('\n').length - 1;
+    const existing = Array.isArray(snapshot.ranges) ? snapshot.ranges : [];
+    snapshot.ranges = _mergeReadRanges([...existing, { startLine, endLine }]);
+    return true;
 }
 
 function _countOccurrences(haystack, needle) {
@@ -1167,7 +1235,6 @@ function _primeReadSnapshotForEdit({ fullPath, filePath, st, scope, oldStrings =
     const lines = content.split('\n');
     _recordReadSnapshot(fullPath, st, scope, {
         source: 'auto_snapshot',
-        isPartialView: false,
         contentHash: _hashText(content),
     });
 
@@ -2388,16 +2455,16 @@ function _findEditHint(content, oldStr, snapshot = null) {
     // _validatePartialSnapshotCoverage (offset+limit, 1-based inclusive).
     let winStart = 1;
     let winEnd = lines.length;
-    if (snapshot && snapshot.isPartialView === true) {
-        const offset = Number(snapshot.offset);
-        const limit = Number(snapshot.limit);
-        if (Number.isFinite(offset) && Number.isFinite(limit) && limit > 0) {
-            winStart = offset + 1;
-            winEnd = Math.min(lines.length, offset + limit);
-        } else {
-            // Partial view with no usable window info — no safe hint.
-            return '';
-        }
+    if (snapshot && !_snapshotCoversFullFile(snapshot)) {
+        const ranges = Array.isArray(snapshot.ranges) ? snapshot.ranges : [];
+        if (ranges.length === 0) return '';
+        // Restrict the hint search to the smallest envelope spanning all
+        // covered ranges. The validator below still enforces per-range
+        // membership at edit time; this is just to avoid pointing the
+        // model at a line outside any read window.
+        winStart = ranges[0].startLine;
+        const last = ranges[ranges.length - 1];
+        winEnd = last.endLine === Infinity ? lines.length : Math.min(lines.length, last.endLine);
     }
     for (const probe of probes) {
         for (let i = winStart - 1; i < winEnd; i++) {
@@ -2464,8 +2531,17 @@ async function _runMultiEdit(args, workDir, readStateScope, pathOpts, options = 
             // here already incorporates earlier edits, but the line window
             // anchors to the current text, which is the buffer the model
             // is targeting in this hop.
-            const partialCoverageErr = _validatePartialSnapshotCoverage(content, old_string, mEditSnapshot, filePath);
-            if (partialCoverageErr) return partialCoverageErr.replace('Error [code 6]:', `Error [code 6]: edit ${i} —`);
+            let partialCoverageErr = _validatePartialSnapshotCoverage(content, old_string, mEditSnapshot, filePath);
+            if (partialCoverageErr) {
+                // Lenient path: if the snapshot's mtime/size still matches
+                // the on-disk file and `old_string` is unique in the buffer,
+                // widen the snapshot's ranges to cover the match site and
+                // proceed. Multi-match keeps the strict reject.
+                if (_maybeExtendSnapshotForUniqueMatch(content, old_string, mEditSnapshot)) {
+                    partialCoverageErr = _validatePartialSnapshotCoverage(content, old_string, mEditSnapshot, filePath);
+                }
+                if (partialCoverageErr) return partialCoverageErr.replace('Error [code 6]:', `Error [code 6]: edit ${i} —`);
+            }
             if (replace_all === true) {
                 if (!content.includes(old_string)) {
                     return `Error [code 8]: edit ${i} — old_string not found in ${filePath}.${_findEditHint(content, old_string, mEditSnapshot)}`;
@@ -2483,7 +2559,6 @@ async function _runMultiEdit(args, workDir, readStateScope, pathOpts, options = 
         markCodeGraphDirtyPaths(workDir, [fullPath]);
         _recordReadSnapshot(fullPath, undefined, readStateScope, {
             source: 'edit',
-            isPartialView: false,
             contentHash: _hashText(content),
         });
         return `Edited: ${normalizeOutputPath(filePath)} (${edits.length} replacements applied)`;
@@ -2752,7 +2827,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     }
                 }
                 const summaryLine = summaries.length ? `\nSummary: ${summaries.join('; ')}.` : '';
-                const header = `### read complete (${results.length} reads)${summaryLine}\nUse these results; do not repeat an identical read batch.`;
+                const header = `### read complete (${results.length} reads)${summaryLine}`;
                 const body = results.map(r => {
                     const match = /\[TRUNCATED — file is (\d+) lines \/ (\d+) KB\./.exec(r.body || '');
                     const suffix = match ? ` (truncated, ${match[1]} total lines / ${match[2]} KB — pass full:true or offset/limit for more)` : '';
@@ -2810,9 +2885,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     const out = await streamReadRange(fullPath, offset, limit);
                     const snapshotMeta = {
                         source: 'read',
-                        offset,
-                        limit,
-                        isPartialView: true,
+                        ranges: [{ startLine: offset + 1, endLine: offset + limit }],
                     };
                     _cacheSet(cacheKey, out, { paths: [fullPath], readSnapshotMeta: snapshotMeta });
                     _recordReadSnapshot(fullPath, st, readStateScope, snapshotMeta);
@@ -2859,9 +2932,9 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 const isFullFileView = offset === 0 && offset + limit >= lines.length;
                 const snapshotMeta = {
                     source: 'read',
-                    offset,
-                    limit,
-                    isPartialView: !isFullFileView,
+                    ranges: isFullFileView
+                        ? [{ startLine: 1, endLine: Infinity }]
+                        : [{ startLine: offset + 1, endLine: Math.min(lines.length, offset + limit) }],
                     ...(isFullFileView ? { contentHash: _hashText(content) } : {}),
                 };
                 _cacheSet(cacheKey, out, { paths: [fullPath], readSnapshotMeta: snapshotMeta });
@@ -2898,7 +2971,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         dirtyPaths.push(fullPath);
                         _recordReadSnapshot(fullPath, undefined, readStateScope, {
                             source: 'write',
-                            isPartialView: false,
                             contentHash: _hashText(content),
                         });
                         results.push(`OK ${normalizeOutputPath(filePath)}`);
@@ -2944,7 +3016,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // Read round-trip.
                 _recordReadSnapshot(fullPath, undefined, readStateScope, {
                     source: 'write',
-                    isPartialView: false,
                     contentHash: _hashText(content),
                 });
                 return `Written: ${normalizeOutputPath(filePath)}`;
@@ -3032,8 +3103,16 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 const content = editPreloadedContent === null
                     ? readFileSync(fullPath, 'utf-8')
                     : editPreloadedContent;
-                const partialCoverageErr = _validatePartialSnapshotCoverage(content, oldStr, editSnapshot, filePath);
-                if (partialCoverageErr) return partialCoverageErr;
+                let partialCoverageErr = _validatePartialSnapshotCoverage(content, oldStr, editSnapshot, filePath);
+                if (partialCoverageErr) {
+                    // Lenient path: snapshot's mtime/size still matches on-disk
+                    // file + unique `old_string` match → widen ranges and proceed.
+                    // Multi-match keeps the strict reject below via Error [code 9].
+                    if (_maybeExtendSnapshotForUniqueMatch(content, oldStr, editSnapshot)) {
+                        partialCoverageErr = _validatePartialSnapshotCoverage(content, oldStr, editSnapshot, filePath);
+                    }
+                    if (partialCoverageErr) return partialCoverageErr;
+                }
                 const count = content.split(oldStr).length - 1;
                 if (count === 0)
                     return `Error [code 8]: old_string not found in ${filePath}.${_findEditHint(content, oldStr, editSnapshot)}`;
@@ -3051,7 +3130,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // check on the second hop.
                 _recordReadSnapshot(fullPath, undefined, readStateScope, {
                     source: 'edit',
-                    isPartialView: false,
                     contentHash: _hashText(updated),
                 });
                 return `Edited: ${normalizeOutputPath(filePath)}`;
