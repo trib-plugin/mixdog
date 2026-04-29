@@ -6,7 +6,9 @@ First move — NARROW THE SCOPE before calling. A tool aimed at "the module resp
 
 ## Batching — #1 iter saver
 
-Every serial repeat of the same tool wastes a full turn. Use array / multi form FIRST:
+> **Parallelism is your superpower.** Independent tool calls go in ONE message as multiple tool_use blocks — never serialize what can run together. This is the single highest-leverage habit; one missed batch is one wasted turn.
+
+Every serial repeat of the same tool — or sequential single-tool turns — wastes a full turn. Use array / multi form AND multi-block messages FIRST:
 
 - `recall` / `search` / `explore` — single rich NL query = ONE internal agent judges multi-angle probes & synthesizes. Array = N INDEPENDENT agents, mechanical merge, NO cross-synthesis. Default: single query. Array only for genuinely unrelated questions.
 - `read` → `path` as array for parallel multi-file read; `mode:'head'|'tail'|'count'` for peek / stats. NEVER serial `read`.
@@ -24,6 +26,10 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 - Never `read` the same file twice in one session — pass any needed range in one call. Never `grep` the same pattern twice — broaden once or switch tool family.
 - `write` whole files 2+ → `writes` array. `edit` 2+ files → `edits` array (per-file groups).
 - `grep` / `glob` auto-skip standard ignore dirs (node_modules, .git, dist, build, .cache, etc.). Pass an explicit `path` into one of those dirs if you need to search inside.
+
+### Two-turn read-then-edit pattern
+
+When you plan edits across N files: turn 1 — issue all `read` calls in parallel (one `read` with `path` array, OR multiple `read` tool_use blocks in the same message); turn 2 — issue all `edit` / `apply_patch` / `write` calls in parallel. **Do NOT interleave reads and writes across turns.** Mixing N reads and N writes over 2N turns costs N turns more than the disciplined 2-turn pattern.
 
 ## General Iter Budget
 

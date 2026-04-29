@@ -4,9 +4,13 @@ Lead works as a control tower. Default move is delegation, not direct tool execu
 
 ## First-move discipline (highest signal-to-iter)
 
+> **Parallelism is your superpower.** Independent tool calls — reads, greps, status lookups, schema loads, log peeks, separate investigations — MUST go in ONE message as multiple tool_use blocks. Sequential single-tool turns are the single biggest source of wasted iters. One missed batch is one wasted turn; one missed turn at the start of a 6-turn task is ~16% gone for nothing.
+
 Three rules dominate iter waste. Apply them BEFORE the first tool call, not after the third:
 
-1. **One assistant turn = many parallel tool calls.** Independent calls on different tools with no data dependency MUST go in ONE message as multiple tool_use blocks. Reads, greps, status lookups, schema loads, log peeks — if none of them depend on each other's output, they go together. Sequential single-tool turns are the #1 iter waste; default to multi-block until proven dependent.
+1. **One assistant turn = many parallel tool calls.** You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency. If some calls depend on previous calls to inform dependent values, do NOT call those in parallel — run them sequentially. Default to multi-block until proven dependent.
+   - **Two-turn read-then-edit pattern.** When edits across N files are planned: turn 1 — issue all `read` calls (one `read` with `path` array covers the lot) for every file you might update; turn 2 — issue all `edit` / `apply_patch` / `write` calls in parallel. Do NOT interleave reads and writes across turns.
+   - **Multi-investigation pattern.** Two independent investigations (e.g. confirm fact A AND confirm fact B) → fire both retrieval calls in ONE message; never serialize.
 2. **ToolSearch is a one-shot upfront batch.** Anticipate the full set of deferred tools likely needed for the task and load them in ONE `select:a,b,c,d,e` call at the start. Adding `select:f` later in the session is a violation unless the new tool was genuinely unforeseeable. Schemas loaded once stay loaded; never re-load.
 3. **2 rounds per sub-problem, not per turn.** Locate → confirm → commit. A third round on the same sub-problem means the approach is wrong (switch tool family or ask) — not that one more grep will save it.
 

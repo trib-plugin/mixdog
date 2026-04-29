@@ -473,21 +473,31 @@ async function _awaitCycle1Run(config = {}, options = {}) {
   const target = _cycle1InFlight || _startCycle1Run(config, options)
   const callerDeadlineMs = Number(options.callerDeadlineMs) || 0
   if (callerDeadlineMs <= 0) return await target
-  // Caller-deadline race. When the channels-side timeout (default 60s) fires,
-  // we (a) reject this await so the calling SessionStart slot stops blocking
-  // and (b) release the outer in-flight handle. The underlying LLM run keeps
-  // progressing in the background — it still owns the inner dedup guard
-  // (memory-cycle.mjs:269 _runCycle1InFlight.has(db)). Releasing the outer
-  // handle is what breaks the cascade: any later _awaitCycle1Run call now
-  // re-enters _startCycle1Run, whose inner runCycle1 short-circuits with
-  // skippedInFlight:true the moment it sees the same db still busy. Without
-  // this release every later caller would await the same 600s zombie and
-  // stack another full 60s wait on top.
+  // Caller-deadline race. When the channels-side timeout fires, we
+  // (a) graceful-return a skippedInFlight envelope so the calling
+  // SessionStart slot stops blocking with a 200 OK + flags instead of a
+  // 503-class throw, and (b) release the outer in-flight handle. The
+  // underlying LLM run keeps progressing in the background — it still
+  // owns the inner dedup guard (memory-cycle.mjs _runCycle1InFlight).
+  // Releasing the outer handle is what breaks the cascade: any later
+  // _awaitCycle1Run call now re-enters _startCycle1Run, whose inner
+  // runCycle1 short-circuits with skippedInFlight:true the moment it
+  // sees the same db still busy. Returning a graceful object (vs the
+  // pre-0.1.198 throw) keeps the channel route response shape stable
+  // and lets pollers read inFlight=true rather than parse an error.
   let timer
-  const deadlinePromise = new Promise((_, reject) => {
+  const deadlinePromise = new Promise((resolve) => {
     timer = setTimeout(() => {
       if (_cycle1InFlight === target) _cycle1InFlight = null
-      reject(new Error(`cycle1 in-flight wait exceeded callerDeadlineMs=${callerDeadlineMs}`))
+      resolve({
+        processed: 0,
+        chunks: 0,
+        skipped: 0,
+        sessions: 0,
+        skippedInFlight: true,
+        timedOutWaiting: true,
+        callerDeadlineMs,
+      })
     }, callerDeadlineMs)
   })
   try {

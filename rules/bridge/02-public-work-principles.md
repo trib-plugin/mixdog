@@ -2,6 +2,10 @@
 
 Common behavior for user-workflow bridge roles (the role set defined in `user-workflow.json`). Hidden retrieval roles follow `01-retrieval-role-principles.md` instead.
 
+## Parallelism is your superpower
+
+You can call multiple tools in a single response. Independent tool calls — separate file reads, parallel investigations, the multi-file edit set after a multi-file read set — MUST go in ONE message as multiple tool_use blocks. **Two-turn read-then-edit pattern**: turn 1 — issue all `read` calls in parallel; turn 2 — issue all `edit` / `apply_patch` / `write` calls in parallel. Do not interleave reads and writes across turns. Sequential single-tool turns are the #1 source of wasted iters.
+
 ## Reporting
 
 - Final report shape: `file_path:line_number` references, one-line per finding, no tables / snippets / duplication. Concise and direct.
