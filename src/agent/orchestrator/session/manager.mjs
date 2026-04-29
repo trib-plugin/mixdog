@@ -387,9 +387,20 @@ function providerCacheKey(provider, override) {
 function _isSimpleIdentifierLookup(prompt) {
     const text = String(prompt || '').trim();
     if (!text) return false;
+    // Char cap defends the words>12 gate against languages without inter-word
+    // spaces. A 200-char Korean / Japanese / Chinese instruction can tokenise
+    // as 1-3 whitespace "words" and slip through, then return a one-line
+    // symbol match instead of routing to the LLM.
+    if (text.length > 200) return false;
     const words = text.split(/\s+/).filter(Boolean);
     if (words.length > 12) return false;
     if (/\b(list|propose|evaluate|identify|trace|review|audit|summarize|design|implement|refactor|analyze|compare|suggest|recommend|walkthrough|walk\s+through)\b/i.test(text)) return false;
+    // CJK imperative / verb denylist — same intent in Korean / Japanese /
+    // Chinese. Mirrors the English denylist above so long instructions in
+    // any of those languages also fall through to the LLM path.
+    if (/(분석|검토|구현|수정|정리|리팩토|리뷰|감사|요약|설계|비교|추천|평가|조사|확인|작성|개선|보고)/.test(text)) return false;
+    if (/(分析|検討|実装|修正|整理|レビュー|要約|設計|比較|推薦|評価|調査|確認)/.test(text)) return false;
+    if (/(分析|检查|实现|修改|整理|审查|总结|设计|比较|推荐|评价|调查|确认)/.test(text)) return false;
     return true;
 }
 

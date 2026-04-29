@@ -337,8 +337,14 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   // outlive the channel ack by more than ~1s.
   const callerDeadlineMs = Number(options.callerDeadlineMs ?? 0)
   const baseTimeout = Number(config?.cycle1?.timeout ?? 60000)
+  // Inner must finish ~1s before the caller so the channel side has time
+  // to ack with a graceful {timedOutWaiting:true} envelope. The previous
+  // 15000 floor turned the formula into a no-op for the default 15s
+  // caller (max(15000, 14000) = 15000), forcing inner == caller and
+  // re-introducing the deadline race. 5000 floor keeps the inner above
+  // a useful working minimum without overriding the -1000 alignment.
   const timeout = callerDeadlineMs > 0
-    ? Math.min(baseTimeout, Math.max(15000, callerDeadlineMs - 1000))
+    ? Math.min(baseTimeout, Math.max(5000, callerDeadlineMs - 1000))
     : baseTimeout
   // #2: bounded fan-out across windows. Default 5 to match the on-demand
   // hook fan-out (5×20 rows); periodic path runs 2×50 so concurrency cap

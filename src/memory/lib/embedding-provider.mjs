@@ -104,7 +104,13 @@ export function configureEmbedding(config = {}) {
   _device = 'cpu'
   queryEmbeddingCache.clear()
   if (worker) {
-    sendToWorker('configure', { dtype: config.dtype }).catch(() => {})
+    sendToWorker('configure', { dtype: config.dtype }).catch((err) => {
+      // Silent .catch hid worker reconfigure failures (dtype mismatch,
+      // worker crash, IPC closed). At least one log line so cycle1 /
+      // cycle2 root-cause investigation can see the upstream failure
+      // instead of just the downstream `db write failed`.
+      process.stderr.write(`[embed] worker configure failed: ${err?.message || err}\n`)
+    })
   }
 }
 

@@ -37,14 +37,14 @@
           "items": {
             "type": "object"
           },
-          "description": "Discord embed objects. Fields: title, description, color (int), fields [{name, value, inline}], footer {text}, timestamp."
+          "description": "Discord embed objects."
         },
         "components": {
           "type": "array",
           "items": {
             "type": "object"
           },
-          "description": "Discord message components. Use Action Rows containing Buttons, Select Menus, etc. See Discord Components V2 docs."
+          "description": "Discord message components (Action Rows + Buttons/Select Menus)."
         }
       },
       "required": [

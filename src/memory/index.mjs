@@ -694,15 +694,26 @@ async function handleSearch(args) {
   // ranked list per angle. Collapses what would otherwise be N sequential
   // tool calls into a single invocation.
   if (Array.isArray(args.query)) {
-    const queries = [...new Set(args.query.map(q => String(q || '').trim()).filter(Boolean))]
-    if (queries.length === 0) return { text: '' }
+    // Dedup + fan-out cap. The cap protects the result envelope from
+    // over-eager callers (20+ near-duplicate queries N× the IO) without
+    // silently swallowing the caller's intent: when the input exceeds
+    // QUERIES_CAP, prepend a one-line note so the caller can see the
+    // truncation and re-shape their query list.
+    const QUERIES_CAP = 5
+    const dedup = [...new Set(args.query.map(q => String(q || '').trim()).filter(Boolean))]
+    if (dedup.length === 0) return { text: '' }
+    const queries = dedup.slice(0, QUERIES_CAP)
+    const dropped = dedup.length - queries.length
     const rest = { ...args }
     delete rest.query
     const parts = await Promise.all(queries.map(async (q) => {
       const sub = await handleSearch({ ...rest, query: q })
-      return `### Query: ${q}\n${sub.text || '(no results)'}`
+      return `[${q}]\n${sub.text || '(no results)'}`
     }))
-    return { text: parts.join('\n\n---\n\n') }
+    const header = dropped > 0
+      ? `note: ${dedup.length} queries received, ${queries.length} processed, ${dropped} dropped (cap ${QUERIES_CAP})\n\n`
+      : ''
+    return { text: header + parts.join('\n\n') }
   }
   const query = String(args.query ?? '').trim()
   const period = String(args.period ?? '').trim() || undefined
@@ -769,15 +780,21 @@ function _turnRange(row, members) {
   return null
 }
 
-function _renderAnchor(row, members) {
-  // Origin anchor. Surfaces source Claude Code session + entry id so a
-  // reader can navigate back to the originating jsonl transcript, plus the
-  // jsonl turn range when schema v2 data is available.
+function _renderAnchor(row, members, opts) {
+  // Origin anchor. Default mode emits only the entry id so the recall
+  // envelope stays compact — sid/turns add ~30 chars per row and were
+  // never used outside debug/includeMembers paths. Verbose mode (opts.
+  // verbose=true) restores the full sid/turns trailer for transcript
+  // navigation; callers that need it (includeMembers, debug rendering)
+  // pass it explicitly.
+  const verbose = Boolean(opts && opts.verbose)
   const bits = []
-  if (row.session_id) bits.push(`sid:${String(row.session_id).slice(0, 8)}`)
+  if (verbose && row.session_id) bits.push(`sid:${String(row.session_id).slice(0, 8)}`)
   if (row.id != null) bits.push(`id:${row.id}`)
-  const turn = _turnRange(row, members)
-  if (turn) bits.push(`turns:${turn}`)
+  if (verbose) {
+    const turn = _turnRange(row, members)
+    if (turn) bits.push(`turns:${turn}`)
+  }
   return bits.length > 0 ? `  ⟨${bits.join(' ')}⟩` : ''
 }
 

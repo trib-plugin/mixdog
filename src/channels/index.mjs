@@ -737,9 +737,17 @@ async function startOwnerHttpServer() {
           return;
         }
         case "/cycle1": {
-          if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
+          if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ ok: false, reason: "method-not-allowed", error: "POST required" })); return; }
           const tCycleEntry = Date.now();
           const timeoutMs = Number(body?.timeout_ms) > 0 ? Math.min(60000, Number(body.timeout_ms)) : 15000;
+          // IPC timer must outlive the worker-side deadline so a graceful
+          // {timedOutWaiting:true} resolve has time to traverse IPC before
+          // the channel timer rejects with memory-timeout. Without the
+          // buffer, the worker resolves at deadline-0ms and the local
+          // setTimeout fires at deadline+0ms in the same tick — race won by
+          // whichever scheduler ordering wins, turning intended 200 flags
+          // into 503 responses.
+          const ipcTimeoutMs = timeoutMs + 2000;
           try {
             // Carry the caller deadline through to the memory worker so a
             // pending cycle1 in-flight is awaited under the same budget.
@@ -749,7 +757,7 @@ async function startOwnerHttpServer() {
             const result = await callMemoryAction(
               'cycle1',
               { ...(body?.args || {}), _callerDeadlineMs: timeoutMs },
-              timeoutMs,
+              ipcTimeoutMs,
             );
             try { process.stderr.write(`[cycle1-time] route ms=${Date.now() - tCycleEntry}\n`); } catch {}
             res.writeHead(200);

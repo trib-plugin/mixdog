@@ -243,9 +243,23 @@ export function normalizeOutputPath(p) {
 function normalizeGrepLine(line) {
     if (process.platform !== 'win32') return line;
     const searchFrom = /^[A-Za-z]:/.test(line) ? 2 : 0;
-    const colonIdx = line.indexOf(':', searchFrom);
-    if (colonIdx === -1) return line.replace(/\\/g, '/');
-    return line.slice(0, colonIdx).replace(/\\/g, '/') + line.slice(colonIdx);
+    // rg emits three shapes after any optional drive-letter prefix:
+    //   match:    path:lineNo:content  (output_mode content default, count)
+    //   context:  path-lineNo-content  (-A / -B / -C context lines)
+    //   summary:  path                 (files_with_matches mode)
+    // Path itself may contain `-`, so we cannot pick the first dash; the
+    // line-number is always digits surrounded by the same delimiter on
+    // both sides. Match `:N:` or `-N-` to find the path/lineNo split.
+    // Without this, dash-context lines normalised the entire line as path
+    // and content with `\` (e.g. `queries\.slice`) got corrupted.
+    const delim = line.slice(searchFrom).match(/([:\-])(\d+)\1/);
+    if (!delim) {
+        const colonIdx = line.indexOf(':', searchFrom);
+        if (colonIdx === -1) return line.replace(/\\/g, '/');
+        return line.slice(0, colonIdx).replace(/\\/g, '/') + line.slice(colonIdx);
+    }
+    const splitIdx = searchFrom + delim.index;
+    return line.slice(0, splitIdx).replace(/\\/g, '/') + line.slice(splitIdx);
 }
 
 function _primaryIdentifierPattern(patterns) {
@@ -3156,9 +3170,23 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 return `Error: path outside allowed scope — ${normalizeOutputPath(searchPath)}`;
             }
             const rawGlob = args.glob;
-            const globPatterns = (Array.isArray(rawGlob)
+            const rawGlobs = (Array.isArray(rawGlob)
                 ? rawGlob.filter(g => typeof g === 'string' && g)
                 : (rawGlob ? [String(rawGlob)] : [])).map(normalizeInputPath);
+            // CC GrepTool parity: when a caller passes an absolute glob
+            // (e.g. after `~` expansion or fully-qualified path matching),
+            // rg --glob would receive `<root>/<absolute-glob>` and match
+            // nothing. Strip the absolute prefix to the relative tail so
+            // glob behaves the same way the glob tool already handles it.
+            const globPatterns = [];
+            for (const g of rawGlobs) {
+                if (isAbsolute(g)) {
+                    const { relativePattern } = extractGlobBaseDirectory(g);
+                    globPatterns.push(relativePattern);
+                } else {
+                    globPatterns.push(g);
+                }
+            }
             // output_mode mirrors Anthropic GrepTool: files_with_matches
             // (default — paths only, lowest token cost), content (matched
             // lines + path + line number), count (per-file match counts).
@@ -3471,6 +3499,13 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // a stack keyed by depth — walkDir exposes {depth, index, total,
             // isLast} via ctx so branch drawing works without an own walk.
             const prefixStack = [''];
+            // Hoisted so the visit closure can short-circuit traversal as
+            // soon as the eventual cap is reached, instead of walking the
+            // whole tree before the post-walk slice. Without this, a
+            // mode:tree without head_limit on a 50k-entry repo walks all
+            // 50k entries first, then trims to 500 — wall time blows up
+            // on large trees.
+            const TREE_BRANCH_LINE_CAP = 500;
             walkDir(fullPath, {
                 hidden,
                 maxDepth: depth,
@@ -3482,17 +3517,25 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 visit: (ent, _entPath, ctx) => {
                     const prefix = prefixStack[ctx.depth - 1] || '';
                     const branch = ctx.isLast ? '└── ' : '├── ';
-                    // Each branch row carries the absolute path of the
-                    // child so callers can copy-paste any line directly
-                    // (matches list/find absolute-path policy).
-                    const absDisplay = normalizeOutputPath(_entPath);
-                    const display = ent.isDirectory() ? `${absDisplay}/` : absDisplay;
+                    // Branches carry the basename only — the root header
+                    // already pins the absolute path, and emitting it on
+                    // every branch destroys the visual hierarchy that
+                    // mode:tree exists to convey. Callers needing exact
+                    // paths use mode:list / mode:find which retain the
+                    // absolute-path policy.
+                    const display = ent.isDirectory() ? `${ent.name}/` : ent.name;
                     lines.push(`${prefix}${branch}${display}`);
                     if (ent.isDirectory()) {
                         prefixStack[ctx.depth] = prefix + (ctx.isLast ? '    ' : '│   ');
                     }
-                    const gatherLimit = headLimit > 0 ? offset + headLimit + 1 : 0;
-                    if (gatherLimit > 0 && lines.length >= gatherLimit) return false;
+                    // Stop walking as soon as we have enough lines for the
+                    // eventual slice. headLimit > 0 uses caller-provided
+                    // budget; unset/0 still bounds via TREE_BRANCH_LINE_CAP
+                    // so the walk does not run unbounded on huge trees.
+                    const gatherLimit = headLimit > 0
+                        ? offset + headLimit + 1
+                        : offset + TREE_BRANCH_LINE_CAP + 1;
+                    if (lines.length >= gatherLimit) return false;
                 },
             });
             const root = lines[0];
@@ -3502,7 +3545,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // so a default-`list mode:tree` over a populated repo cannot dump
             // 50k branch lines into the LLM context. Explicit head_limit > 0
             // still wins; this is the floor for the unset-or-0 case.
-            const TREE_BRANCH_LINE_CAP = 500;
+            // (TREE_BRANCH_LINE_CAP is hoisted above for traversal early-stop.)
             const branchLimit = headLimit > 0 ? headLimit : TREE_BRANCH_LINE_CAP;
             const sliced = windowed.slice(0, branchLimit);
             const outLines = [root, ...sliced];
