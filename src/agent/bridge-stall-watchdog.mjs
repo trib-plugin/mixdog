@@ -90,9 +90,13 @@ function resolveToolThresholdSeconds(role, thresholdSeconds) {
  *   'ok'    — entry live but below threshold.
  *   'stall' — stale beyond threshold; caller should notify + abort.
  *
- * Never treats `tool_running` as a stall (client-side work, not server
- * silence). Terminal stages (idle/done/error/cancelling) are skipped too
- * since askSession has already returned or is unwinding.
+ * `tool_running` is treated as a stall ONLY when the per-tool runtime
+ * exceeds the role-specific threshold from `resolveToolThresholdSeconds`
+ * (defaults are generous so normal long-running tools — build, test,
+ * archive — do not trip). Below that threshold the verdict is `skip`,
+ * because tool work is client-side and the server is not silent.
+ * Terminal stages (idle/done/error/cancelling) are skipped too since
+ * askSession has already returned or is unwinding.
  */
 export function inspectBridgeEntry(entry, thresholdSeconds = DEFAULT_THRESHOLD_S, now = Date.now(), role = null) {
     if (!entry) return { verdict: 'skip' };

@@ -538,10 +538,26 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
                     if (event.type === 'content_block_stop') {
                         const pending = pendingToolInputs.get(event.index);
                         if (pending) {
+                            // Bare JSON.parse threw straight up into the
+                            // surrounding broad catch, which swallowed the
+                            // whole tool_call — the loop never saw it and
+                            // the assistant turn ended with an unmatched
+                            // tool_use id. Wrap the parse so a malformed
+                            // input still produces a tool_call (with empty
+                            // arguments and a logged error) instead of a
+                            // silent drop.
+                            let parsedArgs = {};
+                            if (pending.inputJson) {
+                                try { parsedArgs = JSON.parse(pending.inputJson); }
+                                catch (parseErr) {
+                                    process.stderr.write(`[anthropic-oauth] tool args JSON.parse failed (id=${pending.id}, name=${pending.name}): ${parseErr?.message || parseErr}\n`);
+                                    parsedArgs = {};
+                                }
+                            }
                             const call = {
                                 id: pending.id,
                                 name: pending.name,
-                                arguments: pending.inputJson ? JSON.parse(pending.inputJson) : {},
+                                arguments: parsedArgs,
                             };
                             toolCalls.push(call);
                             pendingToolInputs.delete(event.index);
