@@ -231,6 +231,33 @@ function traceBridgeTool({ sessionId, iteration, toolName, toolKind, toolMs, too
     });
 }
 
+// Compression layer trace (result-compression.mjs). One row per tool call
+// where compression actually changed the byte count, so `gain` analytics
+// can sum savings_pct over a window (mirrors RTK's `rtk gain` model
+// without an external binary). No-op rows are dropped at the call site.
+export function traceBridgeCompress({ sessionId, toolName, before, after }) {
+    appendBridgeTrace({
+        sessionId,
+        kind: 'compress',
+        tool_name: toolName,
+        bytes_before: before,
+        bytes_after: after,
+        savings_pct: before > 0 ? Math.round((1 - after / before) * 100) : 0,
+    });
+}
+
+// Per-turn batch shape — one row per assistant turn with the number of
+// tool calls observed. Lets a consumer compute Lead-side multi-tool
+// adoption ratio (calls > 1 / total turns) directly from trace rows
+// instead of re-parsing every assistant message body.
+export function traceBridgeBatch({ sessionId, toolCallCount }) {
+    appendBridgeTrace({
+        sessionId,
+        kind: 'batch',
+        tool_call_count: toolCallCount,
+    });
+}
+
 function traceToolLoopDetected({ sessionId, iteration, info }) {
     appendBridgeTrace({
         sessionId,

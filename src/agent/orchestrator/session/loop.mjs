@@ -10,6 +10,7 @@ import { markSessionToolCall, updateSessionStage, SessionClosedError } from './m
 import { trimMessages } from './trim.mjs';
 import { createGuard, checkToolCall, ToolLoopAbortError } from '../tool-loop-guard.mjs';
 import { maybeOffloadToolResult } from './tool-result-offload.mjs';
+import { compressToolResult, recordToolBatch } from '../tools/result-compression.mjs';
 import { isHiddenRole } from '../internal-roles.mjs';
 import { loadConfig } from '../config.mjs';
 const SAFETY_TRIM_PERCENT = 0.90;
@@ -528,6 +529,10 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             break;
         const calls = response.toolCalls;
         toolCallsTotal += calls.length;
+        // Per-turn batch shape — one row per assistant turn so trace
+        // consumers can derive multi-tool adoption ratio without scanning
+        // every assistant message body.
+        recordToolBatch(sessionId, calls.length);
         onToolCall?.(iterations, calls);
         let iterationWarnText = null;
         for (const threshold of softIterationWarnThresholds) {
@@ -621,6 +626,12 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 toolEndedAt = Date.now();
                 result = `Error: ${err instanceof Error ? err.message : String(err)}`;
             }
+            // Compression layer runs BEFORE offload so per-tool dedup /
+            // family formatting can pull a result back under the offload
+            // threshold (caller then sees a normal inline body instead of
+            // a 2k preview pointer). offload still fires when the bound
+            // is exceeded after compression.
+            result = compressToolResult(call.name, call.arguments, result, { sessionId, toolKind });
             result = maybeOffloadToolResult(sessionId, call.id, call.name, result);
             result = withToolCompletionHint(call.name, result);
             traceBridgeTool({
