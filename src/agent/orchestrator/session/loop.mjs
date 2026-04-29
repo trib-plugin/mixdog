@@ -41,6 +41,32 @@ const ROLE_ITERATION_CAPS = Object.freeze({
     'memory-classification': { soft: 5, hard: 20 },
     default: { soft: 30, hard: 100 },
 });
+// Transcript pairing guard. Anthropic 400-rejects when an assistant message
+// ends with tool_use blocks and the next message isn't tool results for
+// those exact ids. abort/timeout/error race in the loop body can leave a
+// dangling assistant tool_use at the tail (e.g. the structure_probe loop
+// running 12 deep then aborting between push-assistant and push-tool).
+// Strip any trailing assistant tool_use that has no matching tool result
+// so provider.send sees a valid transcript instead of leaking the 400 to
+// the user. Repair runs every iteration but is a no-op on healthy paths.
+function _ensureTranscriptPairing(msgs, sessionId) {
+    let popped = 0;
+    while (msgs.length > 0) {
+        const last = msgs[msgs.length - 1];
+        if (last?.role !== 'assistant'
+            || !Array.isArray(last.toolCalls)
+            || last.toolCalls.length === 0) break;
+        const ids = last.toolCalls.map(c => c.id);
+        const matched = ids.every(id => msgs.some(m => m.role === 'tool' && m.toolCallId === id));
+        if (matched) break;
+        msgs.pop();
+        popped += 1;
+    }
+    if (popped > 0 && sessionId) {
+        try { process.stderr.write(`[transcript-repair] sess=${sessionId} popped=${popped} dangling assistant tool_use\n`); } catch {}
+    }
+}
+
 function resolveRoleIterationCaps(role) {
     let override = null;
     try {
@@ -427,6 +453,11 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 `\n\n[Agent loop emergency fuse: reached ${emergencyIterationFuse} iterations, aborted before next send]`;
             break;
         }
+        // Repair any dangling assistant tool_use left over from a prior
+        // abort/error path before the provider sees the transcript. No-op
+        // on the healthy iteration cycle (every assistant tool_use is
+        // followed by tool results in the same loop body below).
+        _ensureTranscriptPairing(messages, sessionId);
         const sendStartedAt = Date.now();
         response = await provider.send(messages, model, sendTools.length ? sendTools : undefined, opts);
         opts.onToolCall = undefined;
