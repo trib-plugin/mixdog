@@ -618,13 +618,14 @@ async function runRulesPart() {
           { stdio: 'pipe', windowsHide: true }
         );
         if (ngrokCheck.status !== 0) {
-          spawn('npm', ['install', '-g', 'ngrok'], {
-            detached: true,
-            stdio: 'ignore',
-            windowsHide: true,
-            shell: true,
-          }).unref();
-          process.stderr.write('[session-start] ngrok not found — installing globally in background\n');
+          // SessionStart must not make global package changes without
+          // explicit user consent. The previous version spawned
+          // `npm install -g ngrok` in the background on every fresh
+          // session that had no ngrok in PATH — a supply-chain risk
+          // and an opaque global side effect. Surface a hint instead
+          // so the user can install manually if and when they need
+          // the bridge tunnel feature.
+          process.stderr.write('[session-start] ngrok not found in PATH — install manually with `npm install -g ngrok` if you need the bridge tunnel feature\n');
         }
       } catch (e) {
         process.stderr.write(`[session-start] ngrok auto-install check failed: ${e.message}\n`);
