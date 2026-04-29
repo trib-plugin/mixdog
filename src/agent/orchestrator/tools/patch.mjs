@@ -441,7 +441,17 @@ async function apply_patch(args, cwd, options = {}) {
     if (curStat.size !== preBytes) {
       throw Object.assign(new Error('file modified since read (size drift)'), { __skip: true });
     }
-    if ((p.preContent ?? '') !== readFileSync(p.fullPath, 'utf-8')) {
+    // Read for the final byte-equal compare. If even this fails
+    // (permission churn, mid-rename, file vanished between stat and
+    // read), classify as drift instead of letting an unrelated
+    // exception bubble up — atomicWrite would fail anyway and the
+    // caller wants a consistent skip classification.
+    let cur;
+    try { cur = readFileSync(p.fullPath, 'utf-8'); }
+    catch (err) {
+      throw Object.assign(new Error(`file unreadable since read (${err?.code || 'ERR'})`), { __skip: true });
+    }
+    if ((p.preContent ?? '') !== cur) {
       throw Object.assign(new Error('file modified since read (content drift)'), { __skip: true });
     }
   };
