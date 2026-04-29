@@ -1,0 +1,40 @@
+{
+  "_doc": "cycle2 evaluation fixtures. Each case = phase + candidate root entries + active core (existing roots) + expected actions per entry. The harness inserts entries as is_root=1 then runs runPromotePhase() and verifies the action keyword + (for update/merge) presence of element/summary fields.",
+  "base_ts": 1714000000000,
+  "active_count": 12,
+  "active_cap": 50,
+  "cases": [
+    {
+      "name": "phase1_user_identity",
+      "phase": "phase1_new_chunks",
+      "candidates": [
+        { "id": 9001, "category": "fact",       "score": 0.8, "element": "user 박재영 자기소개 — Windows 메인, Korean 1차 언어",                "summary": "User confirmed identity Park Jae-young. Primary OS Windows 11, primary language Korean. Operates under handle 재영님.",         "expected_action": "add" },
+        { "id": 9002, "category": "preference", "score": 0.7, "element": "user prefers concise path:line bullets in reports",                "summary": "User explicitly asked for short path:line bullet style on every report. Confirmed across multiple sessions. Treat as durable.", "expected_action": "add" },
+        { "id": 9003, "category": "rule",       "score": 0.5, "element": "cycle1 BatchSize 25 with 4 windows for parallelism",               "summary": "Project-level rule: cycle1 windows split at 25 rows × 4 windows. Implementation detail of the mixdog plugin.",                  "expected_action": "pending" },
+        { "id": 9004, "category": "fact",       "score": 0.4, "element": "session-start hook recap unparseable response bug fixed v0.1.190", "summary": "Bug in cycle2 phase1 unparseable response was fixed in v0.1.190. Specific incident, not user-durable.",                          "expected_action": "pending" },
+        { "id": 9005, "category": "task",       "score": 0.3, "element": "cycle1 prompt slim experiments to reduce 35s outlier",             "summary": "Investigated cycle1 boot 35s outlier. Tried line format, output schema compression. Project-specific work.",                    "expected_action": "pending" }
+      ]
+    },
+    {
+      "name": "phase2_promote_decision",
+      "phase": "phase2_reevaluate",
+      "candidates": [
+        { "id": 9101, "category": "preference", "score": 0.6, "element": "user prefers Haiku for maintenance to keep cost low",                                                "summary": "User confirmed Haiku for cycle1/cycle2/recall/explore/recap. Cost-driven preference, durable across projects when user picks model tiers.", "expected_action": "promote" },
+        { "id": 9102, "category": "fact",       "score": 0.5, "element": "Discord webhook payload routing through channels/index.mjs",                                         "summary": "Webhook routing flows via channels/index.mjs entry point. Project-specific architecture.",                                                  "expected_action": "processed" },
+        { "id": 9103, "category": "issue",      "score": 0.2, "element": "ws.mjs socket retry log missing for cycle1 outlier",                                                  "summary": "Diagnosis gap — socket retry/reconnect log not present in worker.log. Single-incident debug item.",                                          "expected_action": "processed" }
+      ]
+    },
+    {
+      "name": "phase3_merge_duplicates",
+      "phase": "phase3_active_review",
+      "active_core": [
+        { "id": 8001, "category": "preference", "score": 0.9, "element": "user prefers concise path:line bullet reports",       "summary": "User asked for short path:line bullet style on every report. Confirmed across multiple sessions. Treat as durable preference covering all project work." }
+      ],
+      "candidates": [
+        { "id": 8002, "category": "preference", "score": 0.8, "element": "user wants short path:line markdown bullets",         "summary": "User wants concise reports with file:line markers. No long prose. Keep summaries dense.",                                                                          "expected_action": "merge", "expected_target": 8001 },
+        { "id": 8003, "category": "preference", "score": 0.7, "element": "report style: tight bullets, no padding",             "summary": "Report style preference — short bullets and minimal padding. Same domain as 8001/8002.",                                                                            "expected_action": "any" },
+        { "id": 8004, "category": "issue",      "score": 0.1, "element": "obsolete debug session for v0.1.166 module cache",    "summary": "Outdated incident from v0.1.166 module cache issue. Long since resolved.",                                                                                          "expected_action": "archived" }
+      ]
+    }
+  ]
+}

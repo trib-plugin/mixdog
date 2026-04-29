@@ -207,8 +207,11 @@ export function makeBridgeLlm(opts = {}) {
 
         updateSessionStatus(session.id, 'running');
         let terminalStatus = 'idle';
+        process.stderr.write(`[bridge-llm] role=${role} preset=${presetName} model=${preset.model} provider=${preset.provider} session=${session.id}\n`);
+        const _bridgeT0 = Date.now();
         try {
             const result = await askSession(session.id, finalPrompt, null, null, cwd);
+            process.stderr.write(`[bridge-llm] role=${role} session=${session.id} elapsed=${Date.now() - _bridgeT0}ms\n`);
             const raw = result?.content || '';
             // v0.6.231 brief cap. Sub-agent answers (explore/recall/search)
             // occasionally balloon to 8-10k token walls that then ride in the

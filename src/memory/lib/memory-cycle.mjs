@@ -204,13 +204,43 @@ function selectRootId(members) {
 }
 
 function buildEntriesText(entries) {
-  return entries.map(e => {
+  // @N is a 1-based prompt-local index; cycle1-agent answers with @N indexes
+  // and we map them back to row ids via the entries array order. Keeps the
+  // content/ts/role/sess fields untouched so the LLM still sees full context
+  // for chunking decisions.
+  return entries.map((e, i) => {
     const content = cleanMemoryText(String(e.content ?? '')).slice(0, 400)
-    // [sess:XXXXXXXX] = first 8 chars of session_id; the cycle1-agent rule
-    // forbids merging member_ids across different session markers.
     const sess = e.session_id ? String(e.session_id).slice(0, 8) : 'null----'
-    return `- id:${e.id} ts:${e.ts} role:${e.role} [sess:${sess}] content:${content}`
+    return `@${i + 1} ts:${e.ts} role:${e.role} [sess:${sess}] content:${content}`
   }).join('\n')
+}
+
+function parseCycle1LineFormat(raw) {
+  if (raw == null) return null
+  const text = String(raw).trim()
+  if (!text) return null
+  const lines = text.split('\n')
+  const chunks = []
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line) continue
+    if (line.startsWith('//') || line.startsWith('#')) continue
+    if (line.startsWith('```')) continue
+    const parts = line.split('|')
+    if (parts.length < 4) continue
+    const idxField = parts[0].trim()
+    const idxList = idxField.split(',')
+      .map(s => Number(String(s).replace(/^@/, '').trim()))
+      .filter(n => Number.isFinite(n) && n > 0)
+    if (idxList.length === 0) continue
+    chunks.push({
+      _idxList: idxList,
+      element: parts[1].trim(),
+      category: parts[2].trim(),
+      summary: parts.slice(3).join('|').trim(),
+    })
+  }
+  return chunks.length > 0 ? { chunks } : null
 }
 
 // D10: cycle1 must never group entries across session/channel boundaries.
@@ -298,9 +328,11 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   const sessionCap = Math.max(1, Number(config?.session_cap ?? config?.cycle1?.session_cap ?? CYCLE1_SESSION_CAP))
   const preset = options.preset || resolveMaintenancePreset('cycle1')
   const timeout = Number(config?.cycle1?.timeout ?? 600000)
-  // #2: bounded fan-out across windows. Default 4; caller-deadline-aware
-  // timeout is already propagated to callBridgeLlm above.
-  const concurrency = Math.max(1, Number(config?.cycle1?.concurrency ?? 4))
+  // #2: bounded fan-out across windows. Default 5 to match the on-demand
+  // hook fan-out (5×20 rows); periodic path runs 2×50 so concurrency cap
+  // never bites. caller-deadline-aware timeout is already propagated to
+  // callBridgeLlm above.
+  const concurrency = Math.max(1, Number(config?.cycle1?.concurrency ?? 5))
 
   // Time-ordered fetch — no GROUP BY session_id. Pull up to
   // sessionCap × batchSize rows ordered DESC (most recent first, so we
@@ -382,8 +414,9 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     }
 
     const userMessage = [
-      `Run cycle1: chunk these entries and emit JSON per the cycle1 spec.`,
-      `Entries below carry [sess:XXXXXXXX] markers; never merge member_ids across different session markers.`,
+      `Chunk these entries. Emit one chunk per line, NO JSON, NO tool calls, NO prose.`,
+      `Format: idx_csv|element|category|summary  (example: 1,2,3|cycle1 v20 applied|decision|Switched chunk emission to declarative tone.)`,
+      `First character of your response must be a digit. Use the @N indexes from below (bare numbers, no @ in output). Never merge across [sess:] markers.`,
       '',
       buildEntriesText(rows),
     ].join('\n')
@@ -411,13 +444,16 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     }
     process.stderr.write(`[cycle1-time] window=${windowIdx} llmMs=${Date.now() - _tLlm}\n`)
 
-    const parsed = extractJsonObject(raw)
+    const parsed = parseCycle1LineFormat(raw) || extractJsonObject(raw)
     const chunkList = Array.isArray(parsed?.chunks) ? parsed.chunks : null
     if (!chunkList) {
       process.stderr.write(`[cycle1] unparseable response (window=${windowIdx}) (${String(raw).slice(0, 200)})\n`)
       return { committedChunks: 0, committedMembers: 0, skippedChunks: rows.length, rowsConsidered: rows.length }
     }
 
+    // Build idx (1-based) → row map matching buildEntriesText order so we can
+    // resolve cycle1-agent's @N answers back to entry ids.
+    const entryByIdx = new Map(rows.map((r, i) => [i + 1, r]))
     const entryById = new Map(rows.map(r => [Number(r.id), r]))
     // #5: track ids that already landed in a committed chunk so the LLM
     // cannot reuse one row across multiple chunks within the same window.
@@ -430,7 +466,18 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     const failedRowIds = []
 
     for (const chunk of chunkList) {
-      const rawIds = Array.isArray(chunk?.member_ids) ? chunk.member_ids.map(n => Number(n)) : []
+      // Line-format path: chunk._idxList holds 1-based @N indexes; map them
+      // back to row ids. Legacy JSON path: chunk.member_ids already contains
+      // raw entry ids — keep that branch for fallback.
+      let rawIds
+      if (Array.isArray(chunk?._idxList)) {
+        rawIds = chunk._idxList
+          .map(n => entryByIdx.get(Number(n)))
+          .filter(r => r != null)
+          .map(r => Number(r.id))
+      } else {
+        rawIds = Array.isArray(chunk?.member_ids) ? chunk.member_ids.map(n => Number(n)) : []
+      }
       // #5: validate the multiset, not just membership. Reject duplicates
       // (within chunk and across chunks) and ids outside the window.
       const dupeWithin = rawIds.length !== new Set(rawIds).size
@@ -589,10 +636,59 @@ function formatEntriesForPromotePrompt(rows) {
   ).join('\n')
 }
 
+function parseCycle2LineFormat(raw) {
+  if (raw == null) return null
+  const text = String(raw).trim()
+  if (!text) return [] // empty response = no actions, valid
+  const lines = text.split('\n')
+  const actions = []
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line) continue
+    if (line.startsWith('//') || line.startsWith('#')) continue
+    if (line.startsWith('```')) continue
+    const parts = line.split('|')
+    if (parts.length < 2) continue
+    const entryId = Number(parts[0].trim())
+    const action = parts[1].trim()
+    if (!Number.isFinite(entryId) || !action) continue
+    if (action === 'update') {
+      actions.push({
+        entry_id: entryId,
+        action,
+        element: (parts[2] ?? '').trim(),
+        summary: parts.slice(3).join('|').trim(),
+      })
+    } else if (action === 'merge') {
+      const targetId = Number((parts[2] ?? '').trim())
+      const sourceIds = (parts[3] ?? '').split(',').map(s => Number(String(s).trim())).filter(Number.isFinite)
+      actions.push({
+        entry_id: entryId,
+        action,
+        target_id: Number.isFinite(targetId) ? targetId : entryId,
+        source_ids: sourceIds,
+        element: (parts[4] ?? '').trim(),
+        summary: parts.slice(5).join('|').trim(),
+      })
+    } else {
+      actions.push({ entry_id: entryId, action })
+    }
+  }
+  return actions
+}
+
 function parsePromoteActions(raw) {
+  // Line-format-first: cycle2-agent now emits `<entry_id>|<action>...` per
+  // line. Empty body returns []. JSON path stays as fallback for any prior
+  // model behaviour or hand-crafted callers still emitting `{"actions":[]}`.
+  const lineActions = parseCycle2LineFormat(raw)
+  if (Array.isArray(lineActions) && lineActions.length > 0) return lineActions
   const parsed = extractJsonObject(raw)
-  if (!parsed || !Array.isArray(parsed.actions)) return null
-  return parsed.actions
+  if (parsed && Array.isArray(parsed.actions)) return parsed.actions
+  // Empty line-parse + no JSON → genuinely empty (valid) only when raw was
+  // empty/whitespace; otherwise treat as unparseable so caller can fail loud.
+  if (Array.isArray(lineActions)) return lineActions
+  return null
 }
 
 function applyAddOrPromote(db, entryId, nextStatus, nowMs) {
@@ -661,7 +757,7 @@ function applyMerge(db, targetId, sourceIds) {
   return moved
 }
 
-async function runPromotePhase(db, phaseName, rows, activeRows, config, options, extraReplacements = {}) {
+export async function runPromotePhase(db, phaseName, rows, activeRows, config, options, extraReplacements = {}) {
   if (!rows || rows.length === 0) return { actions: [] }
   const promptPath = join(resourceDir(), 'defaults', 'memory-promote-prompt.md')
   if (!existsSync(promptPath)) {

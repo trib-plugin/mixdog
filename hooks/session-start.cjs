@@ -491,10 +491,11 @@ async function requestCycle1Once(deadline, opts) {
       port,
       path: '/cycle1',
       timeoutMs: remaining,
-      // On-demand path: 1 row is enough to enter; cap fan-out at 4 windows
-      // of 25 rows each (≤100 rows total) so the hook can't trigger the
-      // 1,250-row blast that the periodic path was originally sized for.
-      body: { timeout_ms: remaining, args: { min_batch: 1, session_cap: 4, batch_size: 25 } },
+      // On-demand path: 1 row is enough to enter; cap fan-out at 5 windows
+      // of 20 rows each (≤100 rows total). Smaller windows than the periodic
+      // path (50/window) shorten max(window_t) since output token volume is
+      // the dominant latency component for cycle1.
+      body: { timeout_ms: remaining, args: { min_batch: 1, session_cap: 5, batch_size: 20 } },
     });
     teeStderr(`[session-start] cycle1 slot=${slot} timing pollMs=${tPollEnd - start} postMs=${Date.now() - tPostStart}\n`);
     if (res.statusCode !== 200) {
