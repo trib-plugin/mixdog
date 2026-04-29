@@ -17,7 +17,7 @@
       "strict": false,
       "mcpServers": {
         "mixdog": {
-          "command": "node",
+          "command": "bun",
           "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/run-mcp.mjs"],
           "cwd": "${CLAUDE_PLUGIN_ROOT}",
           "timeout": 120000

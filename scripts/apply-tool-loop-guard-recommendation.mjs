@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { loadConfig, saveConfig } from '../src/agent/orchestrator/config.mjs';
 import { loadToolLoopGuardRecommendation } from '../src/agent/orchestrator/tool-loop-guard-recommend.mjs';
 

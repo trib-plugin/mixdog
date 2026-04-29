@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // bench/search-probe.mjs — grep / glob / list array-form benchmark.
 //
 // Validates the OR-join semantics on grep `pattern`/`glob`, glob `pattern`,

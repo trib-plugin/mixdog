@@ -1,13 +1,12 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * check-version.mjs
- * Verifies that all version fields across package.json, package-lock.json,
- * and .claude-plugin/plugin.json are identical.
+ * Verifies that version fields in package.json and .claude-plugin/plugin.json match.
  *
- * Exit 0 → all in sync.
- * Exit 1 → mismatch found (prints a table of mismatches).
+ * Exit 0 → in sync.
+ * Exit 1 → mismatch (prints a table of mismatches).
  *
- * Pure Node, no external deps.
+ * Pure JS, no external deps.
  */
 
 import fs from 'fs';
@@ -28,33 +27,16 @@ function readJson(filePath) {
 
 const readings = [];
 
-// 1. package.json
 const pkgPath = path.join(ROOT, 'package.json');
 const pkg = readJson(pkgPath);
 readings.push({ file: 'package.json', field: 'version', value: pkg.version });
 
-// 2. package-lock.json (skip if absent)
-const lockPath = path.join(ROOT, 'package-lock.json');
-if (fs.existsSync(lockPath)) {
-  const lock = readJson(lockPath);
-  readings.push({ file: 'package-lock.json', field: 'version (top-level)', value: lock.version });
-  if (lock.packages && lock.packages[''] !== undefined) {
-    readings.push({
-      file: 'package-lock.json',
-      field: 'packages[""].version',
-      value: lock.packages[''].version,
-    });
-  }
-}
-
-// 3. .claude-plugin/plugin.json (skip if absent)
 const pluginJsonPath = path.join(ROOT, '.claude-plugin', 'plugin.json');
 if (fs.existsSync(pluginJsonPath)) {
   const plugin = readJson(pluginJsonPath);
   readings.push({ file: '.claude-plugin/plugin.json', field: 'version', value: plugin.version });
 }
 
-// Collect all distinct values
 const uniqueValues = [...new Set(readings.map(r => r.value))];
 
 if (uniqueValues.length === 1) {
@@ -62,10 +44,8 @@ if (uniqueValues.length === 1) {
   process.exit(0);
 }
 
-// Mismatch — print table
 process.stderr.write('✗ version mismatch detected:\n\n');
 
-// Determine column widths
 const colFile  = Math.max('File'.length,    ...readings.map(r => r.file.length));
 const colField = Math.max('Field'.length,   ...readings.map(r => r.field.length));
 const colValue = Math.max('Version'.length, ...readings.map(r => (r.value ?? '(missing)').length));
@@ -82,5 +62,5 @@ for (const r of readings) {
   process.stderr.write(row(r.file, r.field, r.value ?? '(missing)') + marker + '\n');
 }
 process.stderr.write(sep + '\n');
-process.stderr.write('\nRun `node scripts/bump-version.mjs <version>` to fix all at once.\n');
+process.stderr.write('\nRun `bun scripts/bump-version.mjs <version>` to fix all at once.\n');
 process.exit(1);

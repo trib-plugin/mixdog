@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Build tools.json — the static tool manifest consumed by server.mjs.
  *

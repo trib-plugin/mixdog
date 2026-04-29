@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // bench/probe.mjs — in-process probe for recall / search / explore.
 //
 // Bypasses the MCP stdio transport: connects directly to the running

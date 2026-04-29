@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * SessionStart hook — clear the active orchestrator session pointer.
  * Each Claude Code session starts fresh; users opt back in via /mixdog:resume

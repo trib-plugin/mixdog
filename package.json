@@ -1,6 +1,6 @@
 {
   "name": "mixdog",
-  "version": "0.1.188",
+  "version": "0.1.189",
   "description": "Claude Code all-in-one agent plugin — autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing.",
   "author": "jyp8877 <dev@tribgames.com>",
   "license": "MIT",
@@ -10,7 +10,7 @@
     "mcfg": "./setup/launch.mjs"
   },
   "engines": {
-    "node": ">=20.10.0"
+    "bun": ">=1.1.0"
   },
   "files": [
     ".claude-plugin/",
@@ -19,7 +19,7 @@
     "LICENSE",
     "README.md",
     "CHANGELOG.md",
-    "package-lock.json",
+    "bun.lock",
     "server.mjs",
     "tools.json",
     "agents/",
@@ -37,11 +37,11 @@
     "src/"
   ],
   "scripts": {
-    "start": "node server.mjs",
-    "smoke:io-live": "node scripts/live-io-smoke.mjs",
-    "build:tools": "node scripts/build-tools-manifest.mjs",
-    "bump": "node scripts/bump-version.mjs",
-    "check:version": "node scripts/check-version.mjs"
+    "start": "bun server.mjs",
+    "smoke:io-live": "bun scripts/live-io-smoke.mjs",
+    "build:tools": "bun scripts/build-tools-manifest.mjs",
+    "bump": "bun scripts/bump-version.mjs",
+    "check:version": "bun scripts/check-version.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
@@ -62,5 +62,10 @@
     "ffmpeg-static": "^5.2.0",
     "node-cron": "^4.2.1",
     "sqlite-vec": "^0.1.9"
-  }
+  },
+  "trustedDependencies": [
+    "@ast-grep/cli",
+    "onnxruntime-node",
+    "protobufjs"
+  ]
 }

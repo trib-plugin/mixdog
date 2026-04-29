@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { readFileSync } from 'fs';
 import { initProviders } from '../src/agent/orchestrator/providers/registry.mjs';
 import { createSession, closeSession } from '../src/agent/orchestrator/session/manager.mjs';

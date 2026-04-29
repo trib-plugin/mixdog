@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // bench/boot-probe.mjs — MCP cold-start breakdown probe.
 //
 // Measures three timestamps per cold boot of `node scripts/run-mcp.mjs`:

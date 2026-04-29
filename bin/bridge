@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // bridge — CLI prompt store + lightweight bridge for mixdog
 // Usage:
 //   bridge store <key> <file>   Store file content with key

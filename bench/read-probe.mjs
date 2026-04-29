@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // bench/read-probe.mjs — read tool structural benchmark.
 //
 // Validates the read tool's mode dispatchers (full / head / tail / count)

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, statSync, readFileSync, utimesSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
 import { homedir, tmpdir } from 'os';

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Standalone memory worker launcher for benchmark / dev use.
 // Imports src/memory/index.mjs (so the import.meta.url mainline guard does
 // NOT fire) and calls init() — HTTP transport binds to 127.0.0.1:<port>

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // bench/cache-provider-probe.mjs
 //
 // Provider-wide cache behaviour probe. Iterates every preset registered in

@@ -37,6 +37,7 @@ mcp-debug.log
 
 # Locks
 *.lock
+!bun.lock
 mcp.lock
 mixdog-scheduler.lock
 

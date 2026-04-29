@@ -1,14 +1,15 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * bump-version.mjs
- * Usage: node scripts/bump-version.mjs <semver>
+ * Usage: bun scripts/bump-version.mjs <semver>
  *
  * Updates version in:
- *   - package.json          → .version
- *   - package-lock.json     → .version + .packages[""].version  (skipped if absent)
- *   - .claude-plugin/plugin.json → .version                     (skipped if absent)
+ *   - package.json                → .version
+ *   - .claude-plugin/plugin.json  → .version  (skipped if absent)
  *
- * Pure Node, no external deps.
+ * After bumping, run `bun install` to refresh bun.lock.
+ *
+ * Pure JS, no external deps.
  */
 
 import fs from 'fs';
@@ -22,8 +23,8 @@ const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[\w.]+)?$/;
 
 const newVersion = process.argv[2];
 if (!newVersion) {
-  process.stderr.write('Usage: node scripts/bump-version.mjs <semver>\n');
-  process.stderr.write('Example: node scripts/bump-version.mjs 1.2.3\n');
+  process.stderr.write('Usage: bun scripts/bump-version.mjs <semver>\n');
+  process.stderr.write('Example: bun scripts/bump-version.mjs 1.2.3\n');
   process.exit(1);
 }
 if (!SEMVER_RE.test(newVersion)) {
@@ -42,30 +43,12 @@ function writeJson(filePath, data) {
 
 const touched = [];
 
-// 1. package.json — always required
 const pkgPath = path.join(ROOT, 'package.json');
 const pkg = readJson(pkgPath);
 pkg.version = newVersion;
 writeJson(pkgPath, pkg);
 touched.push('package.json');
 
-// 2. package-lock.json — skip if absent
-// Only lockfileVersion 2/3 (npm 7+) uses packages[""]; lockfileVersion 1 (npm 6)
-// only has the top-level .version, which is still updated above — fine for this repo.
-const lockPath = path.join(ROOT, 'package-lock.json');
-if (fs.existsSync(lockPath)) {
-  const lock = readJson(lockPath);
-  lock.version = newVersion;
-  if (lock.packages && lock.packages[''] !== undefined) {
-    lock.packages[''].version = newVersion;
-  }
-  writeJson(lockPath, lock);
-  touched.push('package-lock.json');
-} else {
-  process.stderr.write('Notice: package-lock.json not found — skipped.\n');
-}
-
-// 3. .claude-plugin/plugin.json — skip if absent
 const pluginJsonPath = path.join(ROOT, '.claude-plugin', 'plugin.json');
 if (fs.existsSync(pluginJsonPath)) {
   const plugin = readJson(pluginJsonPath);
@@ -77,3 +60,4 @@ if (fs.existsSync(pluginJsonPath)) {
 }
 
 process.stdout.write(`bumped to ${newVersion}: ${touched.join(', ')}\n`);
+process.stdout.write('Run `bun install` to refresh bun.lock.\n');

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // bench/trace-analyze.mjs — bridge-trace.jsonl iter-cost analyzer.
 //
 // Streams the trace file once and reports iter-saving signals:

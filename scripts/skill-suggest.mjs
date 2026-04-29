@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * skill-suggest.mjs — Detect repeated patterns from memory trajectory
  * and generate skill .md drafts.

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * install-git-hooks.mjs
  * Installs a pre-commit hook that runs check-version.mjs before every commit.

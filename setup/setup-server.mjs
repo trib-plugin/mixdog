@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, createWriteStream, mkdirSync, renameSync, unlinkSync, readdirSync, rmSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join, dirname, basename } from 'path';
@@ -25,8 +25,7 @@ function isAllowedOrigin(req) {
   return /^http:\/\/(localhost|127\.0\.0\.1):3458(\/|$)/.test(o);
 }
 
-let DatabaseSync;
-try { ({ DatabaseSync } = await import('node:sqlite')); } catch {}
+import { DatabaseSync } from '../lib/sqlite-bridge.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isWin = process.platform === 'win32';
@@ -626,7 +625,7 @@ function mergeSearchConfig(existing, data) {
 // -- Memory SQLite --
 
 function openMemoryDb(readonly = false) {
-  if (!DatabaseSync) throw new Error('node:sqlite not available');
+  if (!DatabaseSync) throw new Error('sqlite-bridge unavailable');
   const db = new DatabaseSync(MEMORY_DB_PATH, { open: true, readOnly: readonly });
   // WAL is pinned to the file by src/memory/lib/memory.mjs init. Apply
   // busy_timeout per-connection so this surface (UI / backfill / writes)

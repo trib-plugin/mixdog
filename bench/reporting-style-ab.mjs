@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // bench/reporting-style-ab.mjs — A/B benchmark for the
 // "Reporting style — final reply to Lead" section in
 // rules/bridge/00-common.md (added at 0.1.118).

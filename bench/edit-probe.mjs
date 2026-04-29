@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // bench/edit-probe.mjs — edit tool array-form benchmark.
 //
 // Validates the unified edit dispatcher: single form, array form on one

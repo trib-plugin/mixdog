@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // bench/cycle-probe.mjs — cycle1 chunking-quality benchmark.
 //
 // Loads each fixture in bench/cycle-fixtures.json into a fresh temp sqlite

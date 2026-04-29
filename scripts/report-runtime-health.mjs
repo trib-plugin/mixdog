@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { getPluginData } from '../src/agent/orchestrator/config.mjs';

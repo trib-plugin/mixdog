@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // bench/analyze-boot-prof.mjs — V8 cpuprofile cold-boot analyzer.
 //
 // Usage:

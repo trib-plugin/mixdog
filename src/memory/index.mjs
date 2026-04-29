@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 process.removeAllListeners('warning')
 process.on('warning', () => {})
 
