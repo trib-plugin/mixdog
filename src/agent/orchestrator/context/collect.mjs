@@ -366,8 +366,23 @@ function loadAgentSections(pluginRoot) {
     return agentSections;
 }
 
-export function loadScopedRoleCatalog(role) {
-    const cacheKey = role || '__all__';
+// Providers with explicit cache breakpoints (anthropic cache_control,
+// openai prompt_cache_key, gemini cachedContents) tolerate the larger
+// unified BP2 — first registration is paid once, then 1h cache makes
+// cross-role hot paths free. Implicit-prefix-hash providers (deepseek,
+// xai, lmstudio, ollama) match by raw prefix bytes and react badly to
+// the +83% size jump, so they keep the self-only emit. Codex is in the
+// explicit set because its conversation_id slot still benefits from a
+// shared catalog when the same role recurs in a turn chain.
+const EXPLICIT_CACHE_PROVIDERS = new Set([
+    'anthropic', 'anthropic-oauth',
+    'openai', 'openai-oauth',
+    'gemini',
+]);
+
+export function loadScopedRoleCatalog(role, provider = null) {
+    const useUnified = !!(provider && EXPLICIT_CACHE_PROVIDERS.has(provider));
+    const cacheKey = useUnified ? '__unified__' : (role || '__all__');
     const cached = _scopedRoleCatalogCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < SCOPED_ROLE_CATALOG_TTL) {
         return cached.value;
@@ -385,7 +400,15 @@ export function loadScopedRoleCatalog(role) {
         // catalog.
         let hiddenSectionsToEmit = null; // null → drop the Hidden block entirely
         let agentSectionsToEmit = agentSections; // default: full (unknown-role fallback)
-        if (role && classification.retrieval.has(role)) {
+        if (useUnified) {
+            // Explicit-cache providers — every role sees the same all-in-one
+            // catalog. Cross-role calls hit the same provider-side prefix
+            // shard, eliminating the role-shard miss seen on Pool C
+            // transitions for codex/openai. BP3 sessionMarker still carries
+            // role identity, so behavior parity is preserved.
+            hiddenSectionsToEmit = hiddenPairs.map(p => `## ${p.name}\n\n${p.body}`);
+            agentSectionsToEmit = agentSections;
+        } else if (role && classification.retrieval.has(role)) {
             const principles = hiddenPairs.find(p => p.name === RETRIEVAL_PRINCIPLES_NAME);
             const self = hiddenPairs.find(p => p.name === role);
             hiddenSectionsToEmit = [];
@@ -489,7 +512,7 @@ export function composeSystemPrompt(opts) {
     // repeat calls of the same role on the same workspace stick the full
     // BP1+BP2 prefix; only BP3 (task-specific instructions) and BP4
     // (per-turn task brief) churn.
-    const roleCatalogScoped = loadScopedRoleCatalog(opts.role || null);
+    const roleCatalogScoped = loadScopedRoleCatalog(opts.role || null, opts.provider || null);
     const catalogParts = [];
     if (roleCatalogScoped) catalogParts.push(roleCatalogScoped);
     if (opts.role && !opts.skipRoleReminder) {

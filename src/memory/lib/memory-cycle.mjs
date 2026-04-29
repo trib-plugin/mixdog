@@ -350,10 +350,20 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
 
   const allRows = rowsDesc.slice().reverse() // chronological ASC
 
-  // Split into sub-windows of batchSize rows for Promise.all parallelism.
+  // Split into sub-windows for Promise.all parallelism. batchSize is the
+  // upper cap that decides how many windows we need; the actual rows are
+  // distributed evenly across those windows so wallclock = max(window_t)
+  // does not get pinned by a tail window of 1-2 rows. e.g. 26 rows with
+  // batchSize=25 → 2 windows of 13 each, not [25, 1].
+  const windowCount = Math.max(1, Math.ceil(allRows.length / batchSize))
+  const baseSize = Math.floor(allRows.length / windowCount)
+  const remainder = allRows.length % windowCount
   const windows = []
-  for (let i = 0; i < allRows.length; i += batchSize) {
-    windows.push(allRows.slice(i, i + batchSize))
+  let _offset = 0
+  for (let i = 0; i < windowCount; i++) {
+    const size = baseSize + (i < remainder ? 1 : 0)
+    windows.push(allRows.slice(_offset, _offset + size))
+    _offset += size
   }
 
   const updateRoot = db.prepare(`
@@ -379,6 +389,7 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     ].join('\n')
 
     let raw
+    const _tLlm = Date.now()
     try {
       raw = await callBridgeLlm({
         role: 'cycle1-agent',
@@ -398,6 +409,7 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
       process.stderr.write(`[cycle1] LLM error (window=${windowIdx}): ${err.message}\n`)
       return { committedChunks: 0, committedMembers: 0, skippedChunks: rows.length, rowsConsidered: rows.length }
     }
+    process.stderr.write(`[cycle1-time] window=${windowIdx} llmMs=${Date.now() - _tLlm}\n`)
 
     const parsed = extractJsonObject(raw)
     const chunkList = Array.isArray(parsed?.chunks) ? parsed.chunks : null

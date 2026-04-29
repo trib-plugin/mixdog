@@ -1079,6 +1079,9 @@ export function createSession(opts) {
         // their search root without needing to shove "Override cwd:" into
         // the user message body (that used to fragment the shard prefix).
         cwd: opts.cwd || null,
+        // BP2 catalog policy — explicit-cache providers see the unified
+        // all-roles catalog; implicit-prefix-hash providers keep self-only.
+        provider: providerName || null,
     });
     // 4-BP layout (see composeSystemPrompt docs):
     //   system block #1 = baseRules    — BP1 (1h) shared across ALL roles

@@ -296,17 +296,6 @@ if [ -n "$CTX_INT" ]; then
   unset _fill _filled _empty _bar
 fi
 
-# Recap state — single L1 badge. R… running / R✓ injected / R- empty / R! error.
-# Hidden when idle so the badge only appears when there is something to report.
-if [ -n "$B_RECAP_STATE" ]; then
-  case "$B_RECAP_STATE" in
-    running)  add_l1 "${_ANSI_DIM}R…${_ANSI_RESET}" ;;
-    injected) add_l1 "${_ANSI_GREEN}R✓${_ANSI_RESET}" ;;
-    empty)    add_l1 "${_ANSI_DIM}R-${_ANSI_RESET}" ;;
-    error)    add_l1 "${_ANSI_RED}R!${_ANSI_RESET}" ;;
-  esac
-fi
-
 # Rate limits + reset — numbers coloured by threshold; reset time dim.
 if [ -n "$RL_5H_INT" ]; then
   colour_pct "$RL_5H_INT"; add_l1 "${_ANSI_DIM}5H${_ANSI_RESET} $COLOURED"

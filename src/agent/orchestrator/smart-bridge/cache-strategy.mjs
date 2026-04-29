@@ -33,10 +33,20 @@
  *   'none' → no cache_control  (1x flat, no premium, no cache)
  *
  * Bridge/agent calls never experience interactive idle that would threaten
- * the 5m tail TTL, so a single policy applies to every role.
+ * the 5m tail TTL, so the default tail policy is 5m.
+ *
+ * Maintenance roles (cycle1-agent / cycle2-agent) finish in iter=1 with
+ * no tool calls, and their user message body (entries text / window
+ * summary) varies per call. The BP4 cache_creation cost (1.25× write
+ * premium) is single-use waste — the next cycle never reuses the same
+ * tail. We override messages → 'none' for those roles so the body ships
+ * uncached at flat 1× cost. The 1h BP1/BP2/BP3 prefix still hits.
  */
-export function resolveCacheStrategy() {
-    return { tools: '1h', system: '1h', tier3: '1h', messages: '5m' };
+const NONCACHED_TAIL_ROLES = new Set(['cycle1-agent', 'cycle2-agent']);
+
+export function resolveCacheStrategy({ role } = {}) {
+    const messages = NONCACHED_TAIL_ROLES.has(role) ? 'none' : '5m';
+    return { tools: '1h', system: '1h', tier3: '1h', messages };
 }
 
 /**
@@ -46,8 +56,8 @@ export function resolveCacheStrategy() {
  * @param {string} [sessionId]
  * @returns {object} partial sendOpts — spread into provider.send call
  */
-export function buildProviderCacheOpts(provider, sessionId) {
-    const ttls = resolveCacheStrategy();
+export function buildProviderCacheOpts(provider, sessionId, role) {
+    const ttls = resolveCacheStrategy({ role });
 
     switch (provider) {
         case 'anthropic-oauth':

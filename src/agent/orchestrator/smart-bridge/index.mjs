@@ -114,7 +114,7 @@ export class SmartBridge {
         const effort = preset?.effort || null;
         const fast = preset?.fast === true;
 
-        const cacheOpts = buildProviderCacheOpts(provider, request.sessionId);
+        const cacheOpts = buildProviderCacheOpts(provider, request.sessionId, request.role);
 
         return {
             profile,

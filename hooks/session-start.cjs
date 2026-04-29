@@ -55,7 +55,7 @@ function parseArgs(argv) {
     }
     if (key === 'part' && typeof val === 'string') out.part = val;
   }
-  if (!['rules', 'core', 'recap'].includes(out.part)) out.part = 'rules';
+  if (!['rules', 'memory'].includes(out.part)) out.part = 'rules';
   return out;
 }
 
@@ -672,46 +672,29 @@ async function runRulesPart() {
 }
 
 // ---------------------------------------------------------------------------
-// Part: core (slot 2) — DB read. Awaits cycle1 in-flight so freshly
-// classified roots are visible. Server-side `_awaitCycle1Run` guard
-// de-duplicates against the recap slot's concurrent call.
+// Part: memory (slot 2) — single-process DB read for both Core Memory and
+// Recap. Awaits cycle1 once, opens sqlite once, emits both blocks in one
+// additionalContext. Replaces the previous core+recap split which spawned
+// two separate Node processes for the same wait.
 // ---------------------------------------------------------------------------
-async function runCorePart() {
+async function runMemoryPart() {
   if (skipMemoryInject) return;
-  const r = await requestCycle1(60000, { graceMs: 10000, slot: 'core' });
+  const r = await requestCycle1(60000, { graceMs: 10000, slot: 'memory' });
   if (r.ok !== true) {
-    teeStderr(`[session-start] core skipped: cycle1 await failed reason=${r.reason}\n`);
+    teeStderr(`[session-start] memory skipped: cycle1 await failed reason=${r.reason}\n`);
     return;
   }
   const db = openMemoryDb();
   if (!db) return;
   try {
     const ctx = buildContext(db);
-    emit(ctx);
-  } finally {
-    try { db.close(); } catch {}
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Part: recap — DB read. Same in-flight piggyback as core: wait for the
-// rules-slot cycle1 to finish so the recap block reflects the freshest
-// roots before the hook output cap is applied.
-// ---------------------------------------------------------------------------
-async function runRecapPart() {
-  if (skipMemoryInject) return;
-  const r = await requestCycle1(60000, { graceMs: 10000, slot: 'recap' });
-  if (r.ok !== true) {
-    teeStderr(`[session-start] recap skipped: cycle1 await failed reason=${r.reason}\n`);
-    return;
-  }
-  const db = openMemoryDb();
-  if (!db) return;
-  try {
     const recapData = buildRecapData(db);
-    const lines = recapData.lines || [];
-    if (lines.length === 0) return;
-    emit(`## Recap\n${lines.join('\n')}`);
+    const lines = (recapData && recapData.lines) || [];
+    const parts = [];
+    if (ctx) parts.push(ctx);
+    if (lines.length > 0) parts.push(`## Recap\n${lines.join('\n')}`);
+    if (parts.length === 0) return;
+    emit(parts.join('\n\n'));
   } finally {
     try { db.close(); } catch {}
   }
@@ -723,9 +706,7 @@ async function runRecapPart() {
 (async () => {
   if (PART === 'rules') {
     await runRulesPart();
-  } else if (PART === 'core') {
-    await runCorePart();
-  } else if (PART === 'recap') {
-    await runRecapPart();
+  } else if (PART === 'memory') {
+    await runMemoryPart();
   }
 })();

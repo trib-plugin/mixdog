@@ -43,6 +43,10 @@ export class OpenAIDirectProvider {
         body.prompt_cache_retention = '24h';
         const poolKey  = opts.sessionId || opts.promptCacheKey || null;
         const cacheKey = opts.promptCacheKey || opts.sessionId || null;
+        // Force explicit cache grouping so back-to-back calls don't race the
+        // server's implicit prefix-hash registration (codex path already does
+        // this — see openai-oauth.mjs:281-283).
+        if (cacheKey) body.prompt_cache_key = String(cacheKey);
         const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null;
         const auth = { type: 'openai-direct', apiKey };
         return sendViaWebSocket({

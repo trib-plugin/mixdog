@@ -113,7 +113,7 @@ function _isOpen(entry) {
     return entry?.socket?.readyState === WebSocket.OPEN;
 }
 
-function _buildHandshakeHeaders({ auth, cacheKey, turnState }) {
+function _buildHandshakeHeaders({ auth, sessionToken, turnState }) {
     const headers = auth.type === 'openai-direct'
         ? {
             'Authorization': `Bearer ${auth.apiKey}`,
@@ -125,8 +125,8 @@ function _buildHandshakeHeaders({ auth, cacheKey, turnState }) {
             'originator': 'mixdog',
             'OpenAI-Beta': 'responses_websockets=2026-02-06',
         };
-    if (cacheKey) {
-        const sid = String(cacheKey);
+    if (sessionToken) {
+        const sid = String(sessionToken);
         headers['session_id'] = sid;
         headers['x-client-request-id'] = sid;
     }
@@ -134,10 +134,21 @@ function _buildHandshakeHeaders({ auth, cacheKey, turnState }) {
     return headers;
 }
 
-function _openSocket({ auth, cacheKey, turnState }) {
-    const headers = _buildHandshakeHeaders({ auth, cacheKey, turnState });
+// handshake session_id is the per-socket conversation slot Codex uses for
+// in-memory prefix state. Use the cacheKey verbatim so all calls sharing
+// the same logical conversation land on the same server-side slot, matching
+// codex-rs which keys both the slot and prompt_cache_key off conversation_id.
+// Per-socket randomization was tried (unique policy) and measured worse at
+// every turn depth: cross-call baseline never hit, deep iters hit cached=0
+// from server-side eviction. See recap 04-29 02:09–02:18.
+function _mintSessionToken(cacheKey) {
+    return cacheKey || 'mixdog-default';
+}
+
+function _openSocket({ auth, sessionToken, turnState }) {
+    const headers = _buildHandshakeHeaders({ auth, sessionToken, turnState });
     const baseUrl = auth.type === 'openai-direct' ? OPENAI_WS_URL : CODEX_WS_URL;
-    const url = baseUrl + (cacheKey ? `?session_id=${encodeURIComponent(String(cacheKey))}` : '');
+    const url = baseUrl + (sessionToken ? `?session_id=${encodeURIComponent(String(sessionToken))}` : '');
     return new Promise((resolve, reject) => {
         let settled = false;
         const socket = new WebSocket(url, { headers, handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS });
@@ -193,7 +204,8 @@ async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh }) {
         }
         // All entries busy and bucket at cap: fall through to ephemeral socket.
         if (arr.length >= MAX_POOLED_SOCKETS_PER_KEY) {
-            const { socket, turnState } = await _openSocket({ auth, cacheKey, turnState: null });
+            const ephSessionToken = _mintSessionToken(cacheKey);
+            const { socket, turnState } = await _openSocket({ auth, sessionToken: ephSessionToken, turnState: null });
             const entry = {
                 socket,
                 busy: true,
@@ -204,6 +216,7 @@ async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh }) {
                 turnState: turnState || null,
                 closing: false,
                 ephemeral: true,
+                sessionToken: ephSessionToken,
             };
             socket.on('close', () => { entry.closing = true; });
             return { entry, reused: false };
@@ -213,7 +226,8 @@ async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh }) {
     // treats the new request as a continuation of another in-flight turn and
     // returns "No tool output found for function call …". turnState only
     // propagates within a single entry across its own iterations.
-    const { socket, turnState } = await _openSocket({ auth, cacheKey, turnState: null });
+    const sessionToken = _mintSessionToken(cacheKey);
+    const { socket, turnState } = await _openSocket({ auth, sessionToken, turnState: null });
     const entry = {
         socket,
         busy: true,
@@ -224,6 +238,7 @@ async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh }) {
         turnState: turnState || null,
         closing: false,
         ephemeral: false,
+        sessionToken,
     };
     if (poolKey && !forceFresh) _getPoolArr(poolKey).push(entry);
     socket.on('close', () => {

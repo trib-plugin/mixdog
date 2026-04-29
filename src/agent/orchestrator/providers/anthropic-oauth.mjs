@@ -984,6 +984,7 @@ export class AnthropicOAuthProvider {
                 emittedToolCall: false,
                 userAbort: false,
                 watchdogAbort: null,
+                ttftAt: null,
             };
 
             try {
@@ -997,9 +998,11 @@ export class AnthropicOAuthProvider {
                     midState,
                 );
 
+                const ttftMs = midState.ttftAt ? midState.ttftAt - sseStartedAt : null;
                 traceBridgeSse({
                     sessionId,
                     sseParseMs: Date.now() - sseStartedAt,
+                    ttftMs,
                 });
 
                 const liveModel = result.model || useModel;

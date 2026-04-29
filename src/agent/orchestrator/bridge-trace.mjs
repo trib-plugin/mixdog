@@ -321,11 +321,12 @@ function traceBridgeFetch({ sessionId, headersMs, httpStatus }) {
     });
 }
 
-function traceBridgeSse({ sessionId, sseParseMs }) {
+function traceBridgeSse({ sessionId, sseParseMs, ttftMs }) {
     appendBridgeTrace({
         sessionId,
         kind: 'sse',
         sse_parse_ms: sseParseMs,
+        ttft_ms: ttftMs,
     });
 }
 

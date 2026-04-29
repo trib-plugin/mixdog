@@ -81,16 +81,15 @@ function toGeminiContent(message) {
         const parts = [];
         if (message.content) parts.push({ text: message.content });
         for (const tc of message.toolCalls) {
-            // Gemini 3 requires the original thoughtSignature to be echoed back
-            // on every functionCall part so the cached thinking prefix stays
-            // valid. Older models (1.5/2.x) and the first turn of a session
-            // simply have no signature; emit the part without the field then.
-            // Send under both casings so whichever the v1beta endpoint accepts
-            // is honoured — the API rejects a missing signature, not an extra
-            // alias field.
+            // Gemini 3 requires the original thought signature to be echoed
+            // back on every functionCall part so the cached thinking prefix
+            // stays valid. v1beta strictly enforces snake_case here:
+            // sending the camelCase alias OR sending both casings together
+            // makes generateContent return 400 "Unknown name 'thoughtSignature'".
+            // Older models (1.5/2.x) and the first turn of a session simply
+            // have no signature; emit the part without the field then.
             const fc = { name: tc.name, args: tc.arguments };
             if (tc.thoughtSignature) {
-                fc.thoughtSignature = tc.thoughtSignature;
                 fc.thought_signature = tc.thoughtSignature;
             }
             parts.push({ functionCall: fc });
@@ -284,9 +283,24 @@ export class GeminiProvider {
         // BP1 payload. The placeholder text never leaks into the model's view
         // of the live conversation because subsequent generateContent calls
         // pass the real user message after the cached prefix.
-        const createContents = prefixContents.length > 0
-            ? prefixContents
-            : [{ role: 'user', parts: [{ text: '.' }] }];
+        //
+        // The cachedContents endpoint schema rejects functionCall fields that
+        // generateContent accepts — notably thoughtSignature/thought_signature
+        // (Gemini 3 thinking replay tokens). Strip them on the cache copy so
+        // the live request keeps signatures while the cached prefix conforms.
+        const stripCacheUnsupportedFields = (contents) => contents.map(c => ({
+            ...c,
+            parts: (c.parts || []).map(p => {
+                if (!p?.functionCall) return p;
+                const { thoughtSignature: _ts1, thought_signature: _ts2, ...fc } = p.functionCall;
+                return { ...p, functionCall: fc };
+            }),
+        }));
+        const createContents = stripCacheUnsupportedFields(
+            prefixContents.length > 0
+                ? prefixContents
+                : [{ role: 'user', parts: [{ text: '.' }] }]
+        );
 
         const cachedContent = await this.cacheManager.create({
             model: useModel,
@@ -346,7 +360,21 @@ export class GeminiProvider {
         // no silent fallback. Empty-prefix single-shot calls are now allowed:
         // the cache payload is systemInstruction + tools (BP1).
         if (cacheKey) {
-            const prefixContents = contents.slice(0, -1);
+            // Gemini 3 thinking models attach thought_signature to every
+            // functionCall part (Gemini 3 Developer Guide). The cachedContents
+            // endpoint schema rejects that field, but generateContent later
+            // requires it for cached prefixes that include tool turns — a
+            // hard contradiction (langchain-google#1364, goose#5792, etc.).
+            // Avoid the trap by cutting the cache prefix at the first
+            // functionCall/functionResponse, so the cache only stores the
+            // pre-tool-call envelope (system + tools + initial user) while
+            // tool turns travel as live request content with signatures
+            // preserved.
+            const firstToolIdx = contents.findIndex(c =>
+                (c?.parts || []).some(p => p?.functionCall || p?.functionResponse)
+            );
+            const prefixUpper = firstToolIdx === -1 ? contents.length - 1 : firstToolIdx;
+            const prefixContents = contents.slice(0, Math.max(0, prefixUpper));
             const cachedModel = await this._getCachedGeminiModel(
                 cacheKey,
                 useModel,
