@@ -866,13 +866,16 @@ async function handleMemoryAction(args) {
     )
     const pendingStr = result?.pendingRows != null ? result.pendingRows : 0
     const inFlightStr = result?.skippedInFlight === true ? 'true' : 'false'
-    return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped} pending=${pendingStr} inFlight=${inFlightStr}` }
+    const timedOutPart = result?.timedOutWaiting === true ? ' timedOut=true' : ''
+    return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped} pending=${pendingStr} inFlight=${inFlightStr}${timedOutPart}` }
   }
 
   if (action === 'cycle2' || action === 'sleep') {
     const result = await runCycle2(db, config?.cycle2 || {})
     setCycleLastRun('cycle2', Date.now())
-    return { text: `cycle2: ${JSON.stringify(result)}` }
+    const promoted = result?.promoted ?? result?.merged ?? 0
+    const reviewed = result?.reviewed ?? result?.processed ?? 0
+    return { text: `cycle2 promoted=${promoted} reviewed=${reviewed}` }
   }
 
   if (action === 'flush') {

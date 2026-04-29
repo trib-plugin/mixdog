@@ -511,8 +511,11 @@ async function apply_patch(args, cwd, options = {}) {
   }
 
   const lines = [];
-  if (lenientApplied) lines.push('(lenient: hunk counts re-derived from body)');
-  lines.push(`applied: ${written.length} file(s)` + (failures.length ? `, ${failures.length} failed` : '') + (skipped.length ? `, ${skipped.length} skipped` : ''));
+  if (lenientApplied) lines.push('(lenient hunks)');
+  const summary = [`applied ${written.length}`];
+  if (failures.length) summary.push(`${failures.length} failed`);
+  if (skipped.length) summary.push(`${skipped.length} skipped`);
+  lines.push(summary.join(', '));
   if (written.length > 0) {
     invalidateBuiltinResultCache(written.map((p) => p.fullPath));
     markCodeGraphDirtyPaths(cwd, written.map((p) => p.fullPath));
@@ -526,7 +529,7 @@ async function apply_patch(args, cwd, options = {}) {
     }
   }
   for (const p of written) {
-    lines.push(`  OK   ${p.kind.padEnd(6)} ${p.displayPath} (${p.lines_changed} lines changed across ${p.hunks_applied} hunk${p.hunks_applied === 1 ? '' : 's'})`);
+    lines.push(`  OK ${p.kind} ${p.displayPath} ±${p.lines_changed}L/${p.hunks_applied}h`);
   }
   for (const p of failures) {
     lines.push(`  FAIL ${p.displayPath || '(unknown)'} — ${p.error}`);

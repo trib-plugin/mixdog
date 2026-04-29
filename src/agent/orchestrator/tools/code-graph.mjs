@@ -969,7 +969,16 @@ function _cheapReferenceSearch(graph, symbol, cwd, { language = null } = {}) {
     : [...graph.nodes.values()].filter((node) => !language || node.lang === language);
   if (indexedFiles) _codeGraphCacheStats.symbolIndexHits++;
   else _codeGraphCacheStats.symbolIndexMisses++;
-  for (const node of candidateNodes) {
+  // Output cap. Default 40 hits / 80 chars per lineText — enough to spot the
+  // declaration plus the major usage clusters, while preventing a 2k+ token
+  // dump on commonly-referenced helpers (`logger`, `cfg`, `db`). Hit overflow
+  // appends a single `... +N more references` footer so the caller knows the
+  // result was clipped. Override via REFERENCE_HIT_CAP / REFERENCE_LINE_CAP
+  // env when a one-off audit needs the full surface.
+  const REFERENCE_HIT_CAP = Math.max(1, Number(process.env.REFERENCE_HIT_CAP) || 40);
+  const REFERENCE_LINE_CAP = Math.max(20, Number(process.env.REFERENCE_LINE_CAP) || 80);
+  let totalHits = 0;
+  outer: for (const node of candidateNodes) {
     const sourceText = _getSourceTextForNode(graph, node);
     if (!sourceText.includes(symbol)) continue;
     const fileLines = _getMaskedLinesForNode(graph, node);
@@ -979,10 +988,18 @@ function _cheapReferenceSearch(graph, symbol, cwd, { language = null } = {}) {
       re.lastIndex = 0;
       let match = null;
       while ((match = re.exec(line))) {
-        const trimmed = line.trim().slice(0, 200);
-        lines.push(`${node.rel}:${i + 1}:${match.index + 1}    ${trimmed}`);
+        totalHits += 1;
+        if (lines.length < REFERENCE_HIT_CAP) {
+          const trimmed = line.trim().slice(0, REFERENCE_LINE_CAP);
+          lines.push(`${node.rel}:${i + 1}:${match.index + 1}    ${trimmed}`);
+        } else if (totalHits > REFERENCE_HIT_CAP * 4) {
+          break outer;
+        }
       }
     }
+  }
+  if (totalHits > lines.length) {
+    lines.push(`... +${totalHits - lines.length} more references (raise REFERENCE_HIT_CAP to widen)`);
   }
   const result = lines.length ? lines.join('\n') : '(no references)';
   graph?._referenceSearchCache?.set(cacheKey, result);
@@ -1079,7 +1096,7 @@ function _findSymbolHits(graph, symbol, { language = null } = {}) {
   return hits;
 }
 
-function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 20 } = {}) {
+function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 5 } = {}) {
   let hits = _findSymbolHits(graph, symbol, { language });
   const retriedWithoutLanguage = !hits.length && Boolean(language);
   if (retriedWithoutLanguage) {
@@ -1095,14 +1112,14 @@ function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 2
   const lines = [];
   if (primary?.declarationLike) {
     lines.push('# best declaration candidate');
-    const multi = declCount > 1 ? `, declarations=${declCount} (multiple — review candidates)` : '';
+    const multi = declCount > 1 ? `, declarations=${declCount}` : '';
     lines.push(`${primary.rel}:${primary.line}:${primary.col} (${primary.lang}, matches=${primary.matchCount}${multi})`);
-    if (primary.content) lines.push(primary.content.slice(0, 180));
+    if (primary.content) lines.push(primary.content.slice(0, 100));
     if (Array.isArray(primary.context) && primary.context.length > 1) {
-      lines.push(`context: ${primary.context.slice(0, 3).join(' | ').slice(0, 240)}`);
+      lines.push(`context: ${primary.context.slice(0, 2).join(' | ').slice(0, 120)}`);
     }
     if (declCount > 1) {
-      const others = declHits.slice(1, 4).map((h) => `${h.rel}:${h.line}:${h.col} [${h.lang}]`);
+      const others = declHits.slice(1, 3).map((h) => `${h.rel}:${h.line}:${h.col} [${h.lang}]`);
       if (others.length) lines.push(`other declarations: ${others.join(', ')}`);
     }
     lines.push('');
@@ -1113,7 +1130,7 @@ function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 2
   }
   lines.push(...topHits.map((hit, idx) => {
     const kind = hit.declarationLike ? 'decl' : 'ref';
-    const suffix = hit.content ? ` — ${hit.content.slice(0, 140)}` : '';
+    const suffix = hit.content ? ` — ${hit.content.slice(0, 100)}` : '';
     return `${idx + 1}. ${hit.rel}:${hit.line}:${hit.col} [${kind}, ${hit.lang}, matches=${hit.matchCount}]${suffix}`;
   }));
   return lines.join('\n');
@@ -1189,10 +1206,13 @@ function _formatCallerReferences(graph, symbol, referenceText, { limit = 40 } = 
   const callSites = detailed.filter((entry) => entry.kind === 'call');
   const format = (entry) => {
     const caller = entry.caller ? `\tcaller=${entry.caller}` : '';
-    return `${entry.file}:${entry.line}:${entry.col}\t${entry.kind}${caller}\t${entry.lineText.slice(0, 180)}`;
+    return `${entry.file}:${entry.line}:${entry.col}\t${entry.kind}${caller}\t${entry.lineText.slice(0, 80)}`;
   };
   if (callSites.length) {
-    return ['# call sites', ...callSites.slice(0, limit).map(format)].join('\n');
+    const total = callSites.length;
+    const head = callSites.slice(0, limit).map(format);
+    const overflow = total > limit ? [`... +${total - limit} more call sites`] : [];
+    return ['# call sites', ...head, ...overflow].join('\n');
   }
 
   const nonCallFiles = [...new Set(detailed.map((entry) => entry.file))].sort();

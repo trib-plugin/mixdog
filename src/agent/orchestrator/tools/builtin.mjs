@@ -2826,13 +2826,13 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         if (m) summaries.push(`${normalizeOutputPath(r.path)} has ${m[1]} lines`);
                     }
                 }
-                const summaryLine = summaries.length ? `\nSummary: ${summaries.join('; ')}.` : '';
-                const header = `### read complete (${results.length} reads)${summaryLine}`;
+                const summaryLine = summaries.length ? ` ${summaries.join('; ')}` : '';
+                const header = `read ${results.length}${summaryLine}`;
                 const body = results.map(r => {
                     const match = /\[TRUNCATED — file is (\d+) lines \/ (\d+) KB\./.exec(r.body || '');
-                    const suffix = match ? ` (truncated, ${match[1]} total lines / ${match[2]} KB — pass full:true or offset/limit for more)` : '';
+                    const suffix = match ? ` (truncated ${match[1]}L/${match[2]}KB)` : '';
                     const mode = r.n !== undefined ? `${r.mode} n=${r.n}` : r.mode;
-                    return `### ${normalizeOutputPath(r.path)} [mode=${mode}]${suffix}\n${r.body}`;
+                    return `${normalizeOutputPath(r.path)} [${mode}]${suffix}\n${r.body}`;
                 }).join('\n\n');
                 return `${header}\n\n${body}`;
             }

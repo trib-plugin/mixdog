@@ -327,7 +327,19 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   const minBatch = Math.max(1, Number(config?.min_batch ?? config?.cycle1?.min_batch ?? CYCLE1_MIN_BATCH))
   const sessionCap = Math.max(1, Number(config?.session_cap ?? config?.cycle1?.session_cap ?? CYCLE1_SESSION_CAP))
   const preset = options.preset || resolveMaintenancePreset('cycle1')
-  const timeout = Number(config?.cycle1?.timeout ?? 600000)
+  // Inner LLM timeout. Default 60s (down from 600s); the previous 6× margin
+  // outlived the channel-side caller deadline and let a stalled callBridgeLlm
+  // pin the inner _runCycle1InFlight WeakMap entry long after the route had
+  // already returned a graceful skippedInFlight envelope, accreting zombies
+  // and forcing every later POST through the same lock. caller-deadline
+  // (when supplied) shrinks this further so the inner reject lines up just
+  // before the caller's 50s graceful-return so background work cannot
+  // outlive the channel ack by more than ~1s.
+  const callerDeadlineMs = Number(options.callerDeadlineMs ?? 0)
+  const baseTimeout = Number(config?.cycle1?.timeout ?? 60000)
+  const timeout = callerDeadlineMs > 0
+    ? Math.min(baseTimeout, Math.max(15000, callerDeadlineMs - 1000))
+    : baseTimeout
   // #2: bounded fan-out across windows. Default 5 to match the on-demand
   // hook fan-out (5×20 rows); periodic path runs 2×50 so concurrency cap
   // never bites. caller-deadline-aware timeout is already propagated to
