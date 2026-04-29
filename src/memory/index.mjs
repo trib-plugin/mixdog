@@ -138,7 +138,16 @@ async function runProxyMode(port) {
         const detail = json ? JSON.stringify(json).slice(0, 500) : `HTTP ${res.status}`
         return { content: [{ type: 'text', text: `proxy error: ${detail}` }], isError: true }
       }
-      if (Array.isArray(json.content)) return json
+      if (Array.isArray(json.content)) {
+        // Canonical envelope shape, but caller may still signal failure
+        // via `ok:false` / `isError:true` / `error`. Force isError to
+        // true in those cases so MCP clients don't read the failure as
+        // a successful no-op.
+        if (json.error || json.isError === true || json.ok === false) {
+          return { ...json, isError: true }
+        }
+        return json
+      }
       const fallbackText = typeof json === 'string'
         ? json
         : (json.text || json.error || json.message || JSON.stringify(json))
