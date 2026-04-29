@@ -293,5 +293,21 @@ export function trimMessages(messages, budgetTokens, opts) {
     // Sort kept by original order to preserve conversation flow
     const middleOrder = new Map(middle.map((m, idx) => [m, idx]));
     kept.sort((a, b) => (middleOrder.get(a) ?? 0) - (middleOrder.get(b) ?? 0));
-    return sanitizeToolPairs([...system, ...kept, lastMsg]);
+    // Final budget verification — sanitizeToolPairs can insert stub
+    // tool messages for surviving assistant tool_calls whose paired
+    // results were trimmed away, pushing the post-sanitize total
+    // back over budgetTokens. Drop the oldest non-system message and
+    // re-sanitize until we fit; bounded by a safety iteration cap so
+    // pathological inputs cannot loop indefinitely.
+    let result = sanitizeToolPairs([...system, ...kept, lastMsg]);
+    let safety = 16;
+    while (
+        safety-- > 0
+        && result.length > system.length + 1
+        && estimateMessagesTokens(result) > budgetTokens
+    ) {
+        result.splice(system.length, 1);
+        result = sanitizeToolPairs(result);
+    }
+    return result;
 }

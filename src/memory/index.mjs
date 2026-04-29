@@ -144,7 +144,10 @@ async function runProxyMode(port) {
         : (json.text || json.error || json.message || JSON.stringify(json))
       return {
         content: [{ type: 'text', text: String(fallbackText) }],
-        isError: Boolean(json.error || json.isError),
+        // Legacy `{ ok: false, text: "..." }` shape carries error
+        // intent in `ok` rather than a dedicated error key, so honour
+        // either signal when deciding isError.
+        isError: Boolean(json.error || json.isError || json.ok === false),
       }
     } catch (err) {
       return { content: [{ type: 'text', text: `proxy error: ${err.message}` }], isError: true }
