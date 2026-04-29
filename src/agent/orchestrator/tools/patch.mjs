@@ -255,12 +255,19 @@ async function apply_patch(args, cwd, options = {}) {
         continue;
       }
       // Read original bytes so rollback can recreate the file if a
-      // downstream rename fails mid-batch.
+      // downstream rename fails mid-batch. Store the raw Buffer
+      // alongside the utf-8 decode so phase 2 can do a byte-perfect
+      // compare — string compare alone misses invalid-UTF-8 byte
+      // changes that both decode to U+FFFD.
       let preContent = '';
-      try { preContent = readFileSync(fullPath, 'utf-8'); } catch { /* best-effort; rollback may be lossy for binary deletes */ }
+      let preBytes = null;
+      try {
+        preBytes = readFileSync(fullPath);
+        preContent = preBytes.toString('utf-8');
+      } catch { /* best-effort; rollback may be lossy for binary deletes */ }
       plan.push({
         ok: true, index: i, kind, fullPath, displayPath,
-        preContent, preMtime: stat.mtimeMs,
+        preContent, preBytes, preMtime: stat.mtimeMs,
         hunks_applied: entry.hunks?.length || 0,
         lines_changed: added + removed,
       });
@@ -310,14 +317,20 @@ async function apply_patch(args, cwd, options = {}) {
       continue;
     }
     let source;
-    try { source = readFileSync(fullPath, 'utf-8'); }
+    let preBytes = null;
+    try {
+      preBytes = readFileSync(fullPath);
+      source = preBytes.toString('utf-8');
+    }
     catch (err) {
       plan.push({ ok: false, index: i, displayPath, error: err?.message || String(err) });
       continue;
     }
     // Keep the original content for rollback: when reject_partial:true and
     // a mid-batch rename fails, we replay this snapshot back onto disk for
-    // every file we already rewrote.
+    // every file we already rewrote. preBytes is the raw Buffer so phase 2
+    // can compare bytes directly instead of going through the lossy utf-8
+    // round-trip (invalid bytes both decode to U+FFFD).
     const preContent = source;
     // `applyPatch(source, patch)` returns the new string, or `false` when
     // any hunk's context didn't match. There's no per-hunk error detail
@@ -342,7 +355,7 @@ async function apply_patch(args, cwd, options = {}) {
     }
     plan.push({
       ok: true, index: i, kind, fullPath, displayPath,
-      newContent: merged, preContent, preMtime: stat.mtimeMs,
+      newContent: merged, preContent, preBytes, preMtime: stat.mtimeMs,
       hunks_applied: entry.hunks?.length || 0,
       lines_changed: added + removed,
     });
@@ -426,32 +439,33 @@ async function apply_patch(args, cwd, options = {}) {
 
   // Three-stage drift check: mtime first (cheap, catches the common
   // editor-save case), size next (cheap, no extra IO since statSync
-  // already returned size), content last (expensive readFileSync, only
-  // runs when mtime AND size match — covers coarse-mtime filesystems
-  // (FAT 2s, network mounts) where an external writer hit the same
-  // tick with same-size content). Without the byte-equal final stage
-  // an outside edit that lands inside the mtime resolution window
-  // would silently get overwritten by atomicWrite.
+  // already returned size), bytes last (one readFileSync without an
+  // encoding so two invalid-UTF-8 sequences that both decode to
+  // U+FFFD are still distinguished). Without the byte-perfect final
+  // stage an outside edit that lands inside the mtime resolution
+  // window with same-size lossy-decode-equal content would silently
+  // get overwritten by atomicWrite.
   const _assertUnchangedSinceRead = (p) => {
     const curStat = statSync(p.fullPath);
     if (curStat.mtimeMs > p.preMtime + 1) {
       throw Object.assign(new Error('file modified since read (mtime drift)'), { __skip: true });
     }
-    const preBytes = Buffer.byteLength(p.preContent ?? '', 'utf-8');
-    if (curStat.size !== preBytes) {
+    const preByteLen = p.preBytes ? p.preBytes.length : Buffer.byteLength(p.preContent ?? '', 'utf-8');
+    if (curStat.size !== preByteLen) {
       throw Object.assign(new Error('file modified since read (size drift)'), { __skip: true });
     }
-    // Read for the final byte-equal compare. If even this fails
+    // Read raw bytes for the final compare. If even this fails
     // (permission churn, mid-rename, file vanished between stat and
     // read), classify as drift instead of letting an unrelated
-    // exception bubble up — atomicWrite would fail anyway and the
+    // exception bubble out — atomicWrite would fail anyway and the
     // caller wants a consistent skip classification.
-    let cur;
-    try { cur = readFileSync(p.fullPath, 'utf-8'); }
+    let curBuf;
+    try { curBuf = readFileSync(p.fullPath); }
     catch (err) {
       throw Object.assign(new Error(`file unreadable since read (${err?.code || 'ERR'})`), { __skip: true });
     }
-    if ((p.preContent ?? '') !== cur) {
+    const preBuf = p.preBytes || Buffer.from(p.preContent ?? '', 'utf-8');
+    if (!curBuf.equals(preBuf)) {
       throw Object.assign(new Error('file modified since read (content drift)'), { __skip: true });
     }
   };
