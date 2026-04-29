@@ -507,31 +507,15 @@ export function composeSystemPrompt(opts) {
     const baseRules = baseParts.join('\n\n---\n\n');
 
     // ── BP2: roleCatalog (system block #2, 1h cache) ────────────────────
-    // Role + project envelope: scoped agents/<role>.md catalog + role marker
-    // + permission + project context. Stable per (role, project) pair, so
-    // repeat calls of the same role on the same workspace stick the full
-    // BP1+BP2 prefix; only BP3 (task-specific instructions) and BP4
-    // (per-turn task brief) churn.
+    // Cross-role-stable layer: scoped agents/<role>.md catalog + project
+    // context. Role / permission markers are emitted in BP4 instead so a
+    // cross-role burst within the same project shares BP1+BP2+BP3 entirely
+    // (matches the design note above). Without this split, a worker→reviewer
+    // hand-off on the same project would churn BP2 every time the role line
+    // changed even though the catalog and project context were identical.
     const roleCatalogScoped = loadScopedRoleCatalog(opts.role || null, opts.provider || null);
     const catalogParts = [];
     if (roleCatalogScoped) catalogParts.push(roleCatalogScoped);
-    if (opts.role && !opts.skipRoleReminder) {
-        catalogParts.push('# role\n' + opts.role);
-    }
-    const permission = opts.permission || opts.roleTemplate?.permission || null;
-    if (permission) {
-        const allow =
-            permission === 'read'
-                ? 'read-only; write/edit/bash rejected'
-                : permission === 'read-write'
-                    ? 'read + write/edit/bash'
-                    : permission === 'mcp'
-                        ? 'MCP/internal retrieval tools only; file/shell/edit tools rejected'
-                    : permission === 'full'
-                        ? 'full — all tools'
-                        : 'unknown — treat as read-only';
-        catalogParts.push(`# permission\n${permission} — ${allow}.`);
-    }
     if (opts.projectContext) {
         catalogParts.push('# project-context\n' + opts.projectContext);
     }
@@ -548,9 +532,29 @@ export function composeSystemPrompt(opts) {
         : '';
 
     // ── BP4-adjacent: volatileTail (second user <system-reminder>, 5m) ──
-    // Per-call variance only: task brief. memoryContext is Lead-only
-    // (injected by hooks/session-start.cjs); bridge sessions never carry it.
+    // Per-call variance: role marker, permission, task brief. memoryContext
+    // is Lead-only (injected by hooks/session-start.cjs); bridge sessions
+    // never carry it. Keeping role/permission here (rather than in BP2)
+    // means cross-role bursts on the same project share BP1+BP2+BP3
+    // entirely — only this 5m volatile tail picks up the per-call variance.
     const volatileParts = [];
+    if (opts.role && !opts.skipRoleReminder) {
+        volatileParts.push('# role\n' + opts.role);
+    }
+    const permission = opts.permission || opts.roleTemplate?.permission || null;
+    if (permission) {
+        const allow =
+            permission === 'read'
+                ? 'read-only; write/edit/bash rejected'
+                : permission === 'read-write'
+                    ? 'read + write/edit/bash'
+                    : permission === 'mcp'
+                        ? 'MCP/internal retrieval tools only; file/shell/edit tools rejected'
+                    : permission === 'full'
+                        ? 'full — all tools'
+                        : 'unknown — treat as read-only';
+        volatileParts.push(`# permission\n${permission} — ${allow}.`);
+    }
     if (opts.taskBrief) volatileParts.push('# task-brief\n' + opts.taskBrief);
     const volatileTail = volatileParts.length > 0
         ? volatileParts.join('\n\n')
