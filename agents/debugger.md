@@ -22,3 +22,5 @@ These retrieval tools return in the SAME turn for delegated role sessions — us
 - `edit`: if you patch while debugging, prefer `edits` array / `apply_patch`
 
 Avoid `bash persistent:true` for search / navigation. Use one-shot `bash` only for running the repro command or inspecting runtime logs.
+
+**Multi-angle in ONE message.** When tracing a failure, fire `explore` + `recall` + `code_graph` (or whatever combination fits) as parallel tool_use blocks in a single turn rather than serializing the trace.

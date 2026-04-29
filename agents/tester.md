@@ -16,3 +16,5 @@ Report format: pass/fail counts, specific failure details with file:line citatio
 
 For investigating failures, prefer `code_graph` / `explore` over grepping through logs.
 When a test/build runs in the background, use `job_wait` instead of repeated `job_status` polling.
+
+**Multi-angle in ONE message.** When investigating multiple failing cases, fire the location lookups as parallel tool_use blocks in a single turn instead of serializing them.

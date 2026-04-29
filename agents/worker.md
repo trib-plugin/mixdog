@@ -22,3 +22,5 @@ These retrieval tools return in the SAME turn for delegated role sessions — us
 
 Edits: prefer `edit` (single or array form) and `apply_patch` over shell `sed` / `perl -pi`. Pass `bash persistent:true` ONLY when you genuinely need shell state (cwd, env, virtualenv) to persist across calls — NEVER for grep / search / navigation. If you catch yourself running the same `bash persistent:true` grep twice, stop and switch to `explore`.
 When a command runs in the background, prefer `job_wait` instead of polling `job_status` in a loop.
+
+**Two-turn read-then-edit.** When edits across N files are planned, issue ALL `read` calls in ONE message (one `read` with `path` array, or multiple `read` blocks); on the next turn, issue ALL `edit` / `apply_patch` / `write` calls in ONE message. Do not interleave reads and writes.

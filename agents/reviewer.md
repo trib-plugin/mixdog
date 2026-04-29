@@ -27,3 +27,5 @@ These retrieval tools return in the SAME turn for delegated role sessions — do
 - `edit`: when suggesting concrete fixes, prefer `edits` array / `apply_patch` over serial replacements
 
 Avoid `bash persistent:true` for search / navigation. Use `grep` array patterns when a literal string match is enough.
+
+**Multi-angle in ONE message.** Independent investigations — cross-file impact + spec lookup + history recall — fire as parallel tool_use blocks in a single message. Sequential single-tool turns are the #1 source of wasted iters.
