@@ -59,7 +59,7 @@ Before any tool call, scan the query for known scope and collapse multiple round
 
 **Information-retrieval tools are top priority. Prefer `recall` / `search` / `explore` (and `read` / `glob` / `list` / `grep` for known-path / pattern work) over `bash` for any lookup. Using `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup is a rule violation — `bash` is shell-only work (git, build, test, run).**
 
-**Choose by scope, not hunch.** Past context → `recall`. External web / URL / GitHub → `search`. Local filesystem → `explore`. The Decision Table below is the full first-tool mapping; this section covers the calling discipline.
+**Choose by scope, not hunch.** Past context → `recall`. External web / URL → `search`. Local filesystem → `explore`. The Decision Table below is the full first-tool mapping; this section covers the calling discipline.
 
 ### High-level retrieval (`recall` / `search` / `explore`)
 
@@ -103,7 +103,7 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 | free-text phrase or regex lookup (non-symbolic)   | `grep`                                              |
 | filename pattern discovery                        | `glob`                                              |
 | directory shape / recent files / mtime clues      | `list`                                              |
-| external docs / GitHub / web                      | `search`                                            |
+| external docs / web                               | `search`                                            |
 | past project / session memory                     | `recall`                                            |
 | exact edit across multiple files                  | `apply_patch`                                       |
 | small local replacement in one file               | `edit`                                              |

@@ -11,7 +11,7 @@ Code implementation agent. Executes tasks delegated by Lead with full read-write
 Use the internal retrieval tools instead of open-ended shell search:
 - `explore` — natural-language file / structure search (one call fans out glob + grep in parallel)
 - `recall` — past decisions, facts, prior session context
-- `search` — external web / URL / GitHub code / issues
+- `search` — external web / URL scrape
 - `read` — known absolute path
 
 These retrieval tools return in the SAME turn for delegated role sessions — use them before shell search.

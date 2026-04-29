@@ -435,43 +435,6 @@ function _isEnvLikeIdentifier(identifier) {
     return /^[A-Z][A-Z0-9_]+$/.test(String(identifier || ''));
 }
 
-const GITHUB_OWNER_PATTERN = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})`;
-const GITHUB_REPO_PATTERN = String.raw`[A-Za-z0-9._-]{1,100}`;
-
-function _extractGithubRepoSlug(prompt) {
-    const text = String(prompt || '');
-    const urlRe = new RegExp(String.raw`(?:https?:\/\/)?(?:www\.)?github\.com\/(${GITHUB_OWNER_PATTERN})\/(${GITHUB_REPO_PATTERN})(?=$|[\/?#\s"'` + "`" + String.raw`.,:;!])`, 'i');
-    const urlMatch = text.match(urlRe);
-    if (urlMatch?.[1] && urlMatch?.[2]) {
-        return { owner: urlMatch[1], repo: urlMatch[2], source: 'github_url' };
-    }
-
-    const quotedRe = new RegExp(String.raw`["'` + "`" + String.raw`](${GITHUB_OWNER_PATTERN})\/(${GITHUB_REPO_PATTERN})["'` + "`" + String.raw`]`, 'g');
-    for (const m of text.matchAll(quotedRe)) {
-        const owner = m[1];
-        const repo = m[2];
-        if (owner && repo) return { owner, repo, source: 'quoted_slug' };
-    }
-
-    const standaloneRe = new RegExp(String.raw`(^|[\s(])(${GITHUB_OWNER_PATTERN})\/(${GITHUB_REPO_PATTERN})(?=$|[\s).,:;!?])`, 'g');
-    for (const m of text.matchAll(standaloneRe)) {
-        const owner = m[2];
-        const repo = m[3];
-        if (!owner || !repo) continue;
-        // Avoid treating file names / local paths as repo names.
-        if (/\.[A-Za-z0-9]{1,6}$/.test(repo)) continue;
-        return { owner, repo, source: 'bare_slug' };
-    }
-    return null;
-}
-
-function _isGithubRepoQuery(prompt, repoSlug) {
-    if (!repoSlug?.owner || !repoSlug?.repo) return false;
-    if (repoSlug.source === 'github_url' || repoSlug.source === 'quoted_slug') return true;
-    const text = String(prompt || '').toLowerCase();
-    return /\bgithub(?:\.com)?\b|\brepo(?:sitory)?\b/.test(text);
-}
-
 function _extractKnownFilePaths(prompt, cwd, maxFiles = 4) {
     // Fix 3: no launcher-cwd fallback. When caller has no project cwd
     // (cycle1/memory-cycle etc.), we cannot validate path existence against
@@ -646,55 +609,6 @@ function _firstListedPath(listText) {
     return null;
 }
 
-function _extractRepoSearchEvidence(owner, repo, searchText) {
-    const lines = String(searchText || '').split('\n').map((line) => line.trim()).filter(Boolean);
-    if (!lines.length) return null;
-    const slug = `${owner}/${repo}`.toLowerCase();
-    const joined = lines.join('\n').toLowerCase();
-    if (!joined.includes(slug) && !joined.includes(`github.com/${slug}`)) return null;
-    const title = lines[0]?.replace(/^\d+\.\s*/, '') || `${owner}/${repo}`;
-    const summaryLine = lines.find((line, idx) => idx > 0 && !/^https?:\/\//.test(line) && !/^(stars|language|license|default|forks)\b/i.test(line));
-    const metaLine = lines.find((line) => /(stars|language|license|default|forks)\b/i.test(line));
-    if (!summaryLine && !metaLine) return null;
-    return { title, summaryLine, metaLine };
-}
-
-function _summarizeRepoSearchText(owner, repo, searchText) {
-    const evidence = _extractRepoSearchEvidence(owner, repo, searchText);
-    if (!evidence) return null;
-    const parts = [`${evidence.title} is ${evidence.summaryLine || 'a GitHub repository.'}`];
-    if (evidence.metaLine) parts.push(evidence.metaLine);
-    return parts.join('\n\n');
-}
-
-async function _searchGithubRepoText(repoSlug) {
-    if (!repoSlug?.owner || !repoSlug?.repo) return { searchOut: null, evidence: null, summary: null };
-    const searchArgs = {
-        github_type: 'repo',
-        owner: repoSlug.owner,
-        repo: repoSlug.repo,
-        site: 'github.com',
-        maxResults: 5,
-        keywords: `${repoSlug.owner}/${repoSlug.repo}`,
-    };
-    let searchOut = null;
-    try {
-        const searchMod = await import('../../../search/index.mjs');
-        const raw = await searchMod.handleToolCall('search', searchArgs);
-        searchOut = Array.isArray(raw?.content)
-            ? raw.content.map((c) => c?.type === 'text' ? c.text || '' : JSON.stringify(c)).join('\n')
-            : null;
-    } catch {
-        searchOut = await executeInternalTool('search', searchArgs).catch(() => null);
-    }
-    if (!searchOut || String(searchOut).startsWith('Error:')) {
-        return { searchOut: null, evidence: null, summary: null };
-    }
-    const evidence = _extractRepoSearchEvidence(repoSlug.owner, repoSlug.repo, searchOut);
-    const summary = evidence ? _summarizeRepoSearchText(repoSlug.owner, repoSlug.repo, searchOut) : null;
-    return { searchOut, evidence, summary };
-}
-
 async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     if (session?.owner !== 'bridge') return null;
     // Hidden roles (recall-agent / search-agent / explorer / cycle1-agent /
@@ -704,7 +618,6 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     // recall prompt routes to code_graph(references) and returns the graph's
     // "file not found" string in place of an actual memory hit.
     if (isHiddenRole(session?.role)) return null;
-    const repoSlug = _extractGithubRepoSlug(prompt);
     // Fix 3: pass null cwd through — `_extractKnownFilePaths` returns [] when
     // there is no project cwd, so filesystem-existence checks never leak the
     // launcher's working directory into bridge fast-path intent classification.
@@ -712,7 +625,6 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     const knownFiles = _extractKnownFilePaths(prompt, fastPathCwd, 1);
     const identifier = _extractBridgeIdentifier(prompt);
     const intentCandidates = [];
-    if (_isGithubRepoQuery(prompt, repoSlug)) intentCandidates.push('github_repo');
     if (identifier) intentCandidates.push('definition_lookup', 'usage_lookup', 'callers', 'references');
     if (knownFiles.length >= 1) intentCandidates.push('dependents', 'imports');
     const intent = await classifyPromptIntent(prompt, [...new Set(intentCandidates)]).catch(() => null);
@@ -812,27 +724,6 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
         }
     }
 
-    if (intent === 'github_repo' && _isGithubRepoQuery(prompt, repoSlug) && repoSlug && !identifier && knownFiles.length === 0) {
-        const searchArgs = {
-            github_type: 'repo',
-            owner: repoSlug.owner,
-            repo: repoSlug.repo,
-            site: 'github.com',
-            maxResults: 5,
-            keywords: `${repoSlug.owner}/${repoSlug.repo}`,
-        };
-        const { summary } = await _searchGithubRepoText(repoSlug);
-        if (summary) {
-            onToolCall?.(1, [{ name: 'search', arguments: searchArgs }]);
-            return {
-                content: summary,
-                iterations: 2,
-                toolCallsTotal: 1,
-                usage: null,
-            };
-        }
-    }
-
     if (knownFiles.length >= 1 && ['dependents', 'imports'].includes(intent || '') && _isSimpleIdentifierLookup(prompt)) {
         const mode = intent === 'imports' ? 'imports' : 'dependents';
         const graphArgs = { mode, file: knownFiles[0] };
@@ -853,31 +744,12 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
 
 async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCall) {
     if (session?.owner !== 'bridge') return null;
-    const repoSlug = _extractGithubRepoSlug(prompt);
     // Fix 3: pass null cwd through — `_extractKnownFilePaths` returns [] for
     // cwd-less callers, so the read-array prefetch further down naturally
     // becomes a no-op instead of resolving against the launcher's cwd.
     const prefetchCwd = effectiveCwd || session.cwd || null;
     const knownFiles = _extractKnownFilePaths(prompt, prefetchCwd);
     const identifier = _extractBridgeIdentifier(prompt);
-    const repoIntent = _isGithubRepoQuery(prompt, repoSlug)
-        ? await classifyPromptIntent(prompt, ['github_repo']).catch(() => null)
-        : null;
-    if (repoSlug && repoIntent === 'github_repo' && !identifier && knownFiles.length === 0) {
-        const searchArgs = {
-            github_type: 'repo',
-            owner: repoSlug.owner,
-            repo: repoSlug.repo,
-            site: 'github.com',
-            maxResults: 5,
-            keywords: `${repoSlug.owner}/${repoSlug.repo}`,
-        };
-        const { searchOut, evidence } = await _searchGithubRepoText(repoSlug);
-        if (evidence && searchOut) {
-            onToolCall?.(1, [{ name: 'search', arguments: searchArgs }]);
-            return `Prefetched repository context for this request. Answer directly from this unless it is clearly insufficient. Do NOT call \`search\` again for the same repository unless the provided result is missing the requested information.\n\n${searchOut}`;
-        }
-    }
 
     const metadataRequest = _extractDirectoryMetadataRequest(prompt);
     if (metadataRequest && prefetchCwd) {
@@ -1800,8 +1672,6 @@ export function stopIdleCleanup() {
 // Test-only exports for local smoke harnesses.
 export const _internals = {
     _extractBridgeIdentifier,
-    _extractGithubRepoSlug,
-    _isGithubRepoQuery,
     _tryBridgeFastPath,
     _tryBridgePrefetchContext,
 };

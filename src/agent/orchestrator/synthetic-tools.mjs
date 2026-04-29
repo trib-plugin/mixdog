@@ -57,7 +57,7 @@ export const SYNTHETIC_TOOL_DEFS = Object.freeze([
     },
     {
         name: 'web_search',
-        description: 'Search web / GitHub / restricted domains. Web search: pass `keywords` (+ optional `site`, `type`). GitHub read ops (file/repo/issue/pulls): omit keywords and pass `owner`+`repo` (+ path/number). Omit unused optional fields entirely.',
+        description: 'Search web / restricted domains. Pass `keywords` (string or array for parallel fan-out). Optional `site` to restrict, `type` for surface (web/news/images).',
         inputSchema: {
             type: 'object',
             properties: {
@@ -66,37 +66,23 @@ export const SYNTHETIC_TOOL_DEFS = Object.freeze([
                         { type: 'string', minLength: 1 },
                         { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
                     ],
-                    description: 'Query string, or array for parallel fan-out. Required unless running a GitHub read op (file/repo/issue/pulls); for those, omit entirely.'
+                    description: 'Query string, or array for parallel fan-out.'
                 },
                 site: {
                     type: 'string',
-                    description: 'Restrict results to a domain (e.g. "github.com", "anthropic.com"). Omit when not needed; do not send an empty string.',
+                    description: 'Restrict results to a domain (e.g. "anthropic.com"). Omit when not needed.',
                 },
                 type: {
                     type: 'string',
                     enum: ['web', 'news', 'images'],
                     description: 'Search surface. Default: web.',
                 },
-                github_type: {
-                    type: 'string',
-                    enum: ['repositories', 'code', 'issues', 'file', 'repo', 'issue', 'pulls'],
-                    description: 'GitHub mode. Search (repositories/code/issues) uses keywords. Read (file/repo/issue/pulls) uses owner+repo. Omit for normal web or non-GitHub site searches.',
-                },
-                owner: { type: 'string', description: 'GitHub owner (user or org). Required for github_type file/repo/issue/pulls.' },
-                repo:  { type: 'string', description: 'GitHub repo name. Required for github_type file/repo/issue/pulls.' },
-                path:  { type: 'string', description: 'File path within repo. Required for github_type=file.' },
-                number: { type: 'number', description: 'Issue or PR number. Required for github_type=issue.' },
-                ref:   { type: 'string', description: 'Git ref (branch/tag/SHA). Optional for github_type=file.' },
-                state: {
-                    type: 'string',
-                    enum: ['open', 'closed', 'all'],
-                    description: 'PR filter state for github_type=pulls. Default: open.',
-                },
                 maxResults: {
                     type: 'number',
                     description: 'Max results returned (1-20).',
                 },
             },
+            required: ['keywords'],
         },
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },

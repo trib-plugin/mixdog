@@ -5,14 +5,13 @@
     "priority": ["serper", "brave", "perplexity", "firecrawl", "tavily", "xai"],
     "maxResults": 10,
     "credentials": {
-      "__comment": "Leave apiKey (or github.token) as empty string to disable a provider.",
+      "__comment": "Leave apiKey as empty string to disable a provider.",
       "serper": { "apiKey": "" },
       "brave": { "apiKey": "" },
       "perplexity": { "apiKey": "" },
       "firecrawl": { "apiKey": "" },
       "tavily": { "apiKey": "" },
-      "xai": { "apiKey": "" },
-      "github": { "token": "" }
+      "xai": { "apiKey": "" }
     }
   },
   "requestTimeoutMs": 15000,

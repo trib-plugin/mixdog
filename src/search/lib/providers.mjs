@@ -4,7 +4,7 @@ const SERPER_ENDPOINTS = {
   images: 'https://google.serper.dev/images',
 }
 
-export const RAW_PROVIDER_IDS = ['serper', 'brave', 'perplexity', 'firecrawl', 'tavily', 'xai', 'github']
+export const RAW_PROVIDER_IDS = ['serper', 'brave', 'perplexity', 'firecrawl', 'tavily', 'xai']
 
 export const RAW_PROVIDER_CAPABILITIES = {
   serper: {
@@ -75,18 +75,6 @@ export const RAW_PROVIDER_CAPABILITIES = {
       quota: false,
     },
   },
-  github: {
-    searchTypes: ['repositories', 'code', 'issues'],
-    readTypes: ['file', 'repo', 'issue', 'pulls'],
-    siteSearch: false,
-    xContentSearch: false,
-    usageSupport: {
-      available: false,
-      timestamps: false,
-      cost: false,
-      quota: false,
-    },
-  },
 }
 
 function normalizeKeywords(keywords) {
@@ -110,7 +98,6 @@ export function getAvailableRawProviders(env = process.env) {
   if (env.FIRECRAWL_API_KEY) providers.push('firecrawl')
   if (env.TAVILY_API_KEY) providers.push('tavily')
   if (env.XAI_API_KEY || env.GROK_API_KEY) providers.push('xai')
-  providers.push('github')
   return providers
 }
 
@@ -301,311 +288,6 @@ function extractXaiSearchCitations(payload) {
   }))
 }
 
-function getGithubToken() {
-  return process.env.GITHUB_TOKEN || ''
-}
-
-/**
- * Pre-flight token check. Throws a `[search-config-error:no-token]` marker
- * error when the token is absent or visibly malformed (e.g. truncated paste).
- * Marker prefix tells the search-agent rule layer & tool-loop-guard that
- * this is a caller-side configuration gap, NOT a search miss — retrying
- * with paraphrased keywords will fail identically.
- */
-function assertGithubTokenConfigured() {
-  const token = getGithubToken()
-  if (!token) {
-    throw new Error('[search-config-error:no-token] GitHub token not configured. Set credentials.github.token in search-config.json (preferred) or GITHUB_TOKEN env. Caller (Lead) must address — further calls will fail identically.')
-  }
-  if (token.length < 20) {
-    throw new Error('[search-config-error:no-token] GitHub token malformed (length below 20 chars — likely truncated paste). Set credentials.github.token in search-config.json (preferred) or GITHUB_TOKEN env. Caller (Lead) must address — further calls will fail identically.')
-  }
-}
-
-function getGithubHeaders() {
-  const headers = {
-    'Accept': 'application/vnd.github+json',
-    'User-Agent': 'mixdog-search',
-  }
-  const token = getGithubToken()
-  let tokenSent = false
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-    tokenSent = true
-  }
-  return { headers, tokenSent }
-}
-
-function formatGithubReset(reset) {
-  if (!reset) return 'unknown'
-  const n = Number(reset)
-  if (!Number.isFinite(n) || n <= 0) return 'unknown'
-  try {
-    return new Date(n * 1000).toISOString()
-  } catch {
-    return 'unknown'
-  }
-}
-
-async function handleGithubError(response, context, { tokenSent = false } = {}) {
-  if (response.ok) return
-  if (response.status === 401) {
-    if (tokenSent) {
-      throw new Error(`[search-config-error:token-invalid] GitHub ${context} rejected token (HTTP 401). Token expired, revoked, or has wrong scope. Generate a new PAT at https://github.com/settings/tokens and update credentials.github.token in search-config.json or GITHUB_TOKEN env. Caller (Lead) must rotate — retry will fail identically.`)
-    }
-    throw new Error(`[search-config-error:no-token] GitHub ${context} requires authentication but no token was sent. Set credentials.github.token in search-config.json (preferred) or GITHUB_TOKEN env. Caller (Lead) must address — further calls will fail identically.`)
-  }
-  if (response.status === 404) {
-    throw new Error(`GitHub ${context}: not found (404).`)
-  }
-  if (response.status === 403 || response.status === 429) {
-    const body = await response.text().catch(() => '')
-    const headers = response.headers
-    const remaining = Number(headers.get('x-ratelimit-remaining') ?? -1)
-    const reset = headers.get('x-ratelimit-reset')
-    const retryAfter = headers.get('retry-after')
-    const bodySnippet = body.slice(0, 200)
-
-    if (/abuse|secondary/i.test(body)) {
-      const retryHint = retryAfter ? ` Retry-After: ${retryAfter}s.` : ' Back off and retry in a few minutes.'
-      throw new Error(`GitHub ${context}: secondary rate limit (abuse detection).${retryHint}`)
-    }
-    if (remaining === 0) {
-      throw new Error(`GitHub ${context}: rate limit exhausted (resets at ${formatGithubReset(reset)}). Set GITHUB_TOKEN for higher limits.`)
-    }
-    if (response.status === 429) {
-      const retryHint = retryAfter ? ` Retry-After: ${retryAfter}s.` : ''
-      throw new Error(`GitHub ${context}: 429 too many requests.${retryHint} ${bodySnippet}`)
-    }
-    if (/resource not accessible/i.test(body) || /must authenticate/i.test(body)) {
-      throw new Error(`GitHub ${context}: 403 ${bodySnippet} — token may lack scope or repo is private.`)
-    }
-    throw new Error(`GitHub ${context}: 403 (unclassified) ${bodySnippet}`)
-  }
-  throw new Error(`GitHub ${context} failed: ${response.status}`)
-}
-
-async function runGithubRead({ owner, repo, path, ref }) {
-  if (!owner || !repo || !path) {
-    throw new Error('owner, repo, and path are required for GitHub file read.')
-  }
-  const url = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path.split('/').map(s => encodeURIComponent(s)).join('/')}`)
-  if (ref) url.searchParams.set('ref', ref)
-
-  const { headers: ghHeaders, tokenSent } = getGithubHeaders()
-  const response = await fetch(url, { headers: ghHeaders })
-  await handleGithubError(response, 'file read', { tokenSent })
-
-  const payload = await response.json()
-  if (Array.isArray(payload)) {
-    // Directory listing
-    return {
-      results: payload.map(item => ({
-        title: item.name,
-        url: item.html_url || '',
-        snippet: `${item.type} — ${item.path}${item.size ? ` (${item.size} bytes)` : ''}`,
-        source: 'github',
-        publishedDate: null,
-        provider: 'github',
-      })),
-      usage: null,
-    }
-  }
-  if (payload.size > 1048576) {
-    throw new Error(`File too large (${payload.size} bytes). GitHub contents API does not support files over 1 MB.`)
-  }
-  const content = Buffer.from(payload.content || '', 'base64').toString('utf8')
-  return {
-    results: [{
-      title: `${payload.name} (${owner}/${repo})`,
-      url: payload.html_url || '',
-      snippet: content,
-      source: 'github',
-      publishedDate: null,
-      provider: 'github',
-      meta: { sha: payload.sha, size: payload.size, path: payload.path, encoding: payload.encoding },
-    }],
-    usage: null,
-  }
-}
-
-async function runGithubRepoInfo({ owner, repo }) {
-  if (!owner || !repo) {
-    throw new Error('owner and repo are required for GitHub repo info.')
-  }
-  const { headers: ghHeaders, tokenSent } = getGithubHeaders()
-  const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
-    headers: ghHeaders,
-  })
-  await handleGithubError(response, 'repo info', { tokenSent })
-
-  const r = await response.json()
-  const metaBits = [
-    Number.isFinite(Number(r.stargazers_count)) ? `stars ${r.stargazers_count}` : null,
-    Number.isFinite(Number(r.forks_count)) ? `forks ${r.forks_count}` : null,
-    r.language ? `language ${r.language}` : null,
-    r.default_branch ? `default ${r.default_branch}` : null,
-    r.license?.spdx_id ? `license ${r.license.spdx_id}` : null,
-    Array.isArray(r.topics) && r.topics.length ? `topics ${r.topics.slice(0, 6).join(', ')}` : null,
-    r.archived ? 'archived' : null,
-  ].filter(Boolean)
-  return {
-    results: [{
-      title: r.full_name || `${owner}/${repo}`,
-      url: r.html_url || '',
-      snippet: [r.description || '', metaBits.join(' · ')].filter(Boolean).join('\n'),
-      source: 'github',
-      publishedDate: r.updated_at || null,
-      provider: 'github',
-      meta: {
-        stars: r.stargazers_count,
-        forks: r.forks_count,
-        language: r.language,
-        default_branch: r.default_branch,
-        open_issues: r.open_issues_count,
-        license: r.license?.spdx_id || null,
-        topics: r.topics || [],
-        archived: r.archived,
-        created_at: r.created_at,
-      },
-    }],
-    usage: null,
-  }
-}
-
-async function runGithubIssueDetail({ owner, repo, number }) {
-  if (!owner || !repo || !number) {
-    throw new Error('owner, repo, and number are required for GitHub issue detail.')
-  }
-  const { headers: ghHeaders, tokenSent } = getGithubHeaders()
-  const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`, {
-    headers: ghHeaders,
-  })
-  await handleGithubError(response, 'issue detail', { tokenSent })
-
-  const issue = await response.json()
-  const metaBits = [
-    issue.state ? `state ${issue.state}` : null,
-    Number.isFinite(Number(issue.comments)) ? `comments ${issue.comments}` : null,
-    issue.user?.login ? `author ${issue.user.login}` : null,
-    issue.closed_at ? `closed ${issue.closed_at}` : null,
-    Array.isArray(issue.labels) && issue.labels.length ? `labels ${(issue.labels || []).map(l => l.name || l).slice(0, 6).join(', ')}` : null,
-    issue.pull_request ? 'pull request' : 'issue',
-  ].filter(Boolean)
-  return {
-    results: [{
-      title: issue.title || '',
-      url: issue.html_url || '',
-      snippet: [metaBits.join(' · '), issue.body || ''].filter(Boolean).join('\n'),
-      source: 'github',
-      publishedDate: issue.created_at || null,
-      provider: 'github',
-      meta: {
-        state: issue.state,
-        labels: (issue.labels || []).map(l => l.name || l),
-        comments: issue.comments,
-        user: issue.user?.login,
-        is_pull_request: !!issue.pull_request,
-        closed_at: issue.closed_at,
-      },
-    }],
-    usage: null,
-  }
-}
-
-async function runGithubPulls({ owner, repo, state = 'open' }) {
-  if (!owner || !repo) {
-    throw new Error('owner and repo are required for GitHub pulls list.')
-  }
-  const url = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`)
-  url.searchParams.set('state', state)
-  url.searchParams.set('per_page', '10')
-
-  const { headers: ghHeaders, tokenSent } = getGithubHeaders()
-  const response = await fetch(url, { headers: ghHeaders })
-  await handleGithubError(response, 'pulls list', { tokenSent })
-
-  const pulls = await response.json()
-  return {
-    results: pulls.map(pr => ({
-      title: pr.title || '',
-      url: pr.html_url || '',
-      snippet: [
-        [
-          Number.isFinite(Number(pr.number)) ? `#${pr.number}` : null,
-          pr.state ? `state ${pr.state}` : null,
-          pr.user?.login ? `author ${pr.user.login}` : null,
-          pr.head?.ref ? `head ${pr.head.ref}` : null,
-          pr.base?.ref ? `base ${pr.base.ref}` : null,
-          pr.draft ? 'draft' : null,
-          pr.merged_at ? `merged ${pr.merged_at}` : null,
-        ].filter(Boolean).join(' · '),
-        (pr.body || '').slice(0, 200),
-      ].filter(Boolean).join('\n'),
-      source: 'github',
-      publishedDate: pr.created_at || null,
-      provider: 'github',
-      meta: {
-        number: pr.number,
-        state: pr.state,
-        user: pr.user?.login,
-        head: pr.head?.ref,
-        base: pr.base?.ref,
-        draft: pr.draft,
-        merged_at: pr.merged_at,
-      },
-    })),
-    usage: null,
-  }
-}
-
-async function runGithubSearch({ query, maxResults, github_type = 'repositories' }) {
-  const endpoint = `https://api.github.com/search/${github_type}?q=${encodeURIComponent(query)}&per_page=${maxResults}`
-  const { headers: ghHeaders, tokenSent } = getGithubHeaders()
-  const response = await fetch(endpoint, { headers: ghHeaders })
-
-  if (response.status === 422) {
-    throw new Error(`GitHub API validation error for query: ${query}`)
-  }
-  await handleGithubError(response, `${github_type} search`, { tokenSent })
-
-  const payload = await response.json()
-  const items = payload?.items || []
-
-  return items.slice(0, maxResults).map(item => {
-    switch (github_type) {
-      case 'code':
-        return {
-          title: `${item.name} in ${item.repository?.full_name || ''}`,
-          url: item.html_url || '',
-          snippet: item.path || '',
-          source: 'github',
-          publishedDate: null,
-          provider: 'github',
-        }
-      case 'issues':
-        return {
-          title: item.title || '',
-          url: item.html_url || '',
-          snippet: (item.body || '').slice(0, 200),
-          source: 'github',
-          publishedDate: item.created_at || null,
-          provider: 'github',
-        }
-      case 'repositories':
-      default:
-        return {
-          title: item.full_name || '',
-          url: item.html_url || '',
-          snippet: item.description || '',
-          source: 'github',
-          publishedDate: item.updated_at || null,
-          provider: 'github',
-        }
-    }
-  })
-}
-
 async function runXaiSearch({ query, maxResults }) {
   const apiKey = process.env.XAI_API_KEY || process.env.GROK_API_KEY
   if (!apiKey) {
@@ -680,15 +362,6 @@ async function searchWithProvider(provider, args) {
       return { results: await runTavilySearch(args), usage: null }
     case 'xai':
       return runXaiSearch(args)
-    case 'github': {
-      assertGithubTokenConfigured()
-      const ghType = args.github_type
-      if (ghType === 'file') return runGithubRead(args)
-      if (ghType === 'repo') return runGithubRepoInfo(args)
-      if (ghType === 'issue') return runGithubIssueDetail(args)
-      if (ghType === 'pulls') return runGithubPulls(args)
-      return { results: await runGithubSearch(args), usage: null }
-    }
     default:
       throw new Error(`Unsupported raw provider: ${provider}`)
   }
@@ -700,19 +373,10 @@ export async function runRawSearch({
   site,
   type = 'web',
   maxResults = 10,
-  github_type,
-  owner,
-  repo,
-  path,
-  number,
-  ref,
-  state,
   minResults = 1,
 }) {
-  // GitHub read types don't need a search query
-  const isGithubReadType = ['file', 'repo', 'issue', 'pulls'].includes(github_type)
-  const query = isGithubReadType ? (keywords ? buildQuery(keywords, site) : '') : buildQuery(keywords, site)
-  if (!query && !isGithubReadType) {
+  const query = buildQuery(keywords, site)
+  if (!query) {
     throw new Error('keywords is required')
   }
 
@@ -724,11 +388,10 @@ export async function runRawSearch({
   // Track the last empty-but-successful result so we can return it if every
   // provider comes up dry (user's query legitimately has no matches).
   let lastEmpty = null
-  // GitHub read types return a single object, not a list — skip empty check.
-  const enforceMin = !isGithubReadType && minResults > 0
+  const enforceMin = minResults > 0
   for (const provider of providers) {
     try {
-      const searchResult = await searchWithProvider(provider, { query, type, maxResults, github_type, owner, repo, path, number, ref, state })
+      const searchResult = await searchWithProvider(provider, { query, type, maxResults })
       const resultCount = Array.isArray(searchResult.results) ? searchResult.results.length : (searchResult.results ? 1 : 0)
       if (enforceMin && resultCount < minResults) {
         failures.push({

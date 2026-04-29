@@ -28,21 +28,8 @@ the only one who can fix them.
 ## Decision sequence
 
 1. Explicit URL → call `web_search` with the URL as `keywords` (backend resolves to scrape). ONE call. Cite URL. STOP.
-2. `owner/repo` named → `github_type: "repo"` (or `file` / `issue`). ONE call. Cite `owner/repo#N`. STOP.
-3. Identifier + lang → `github_type: "code"`. ONE call. STOP.
-4. Free-form text → 1st call with filters + `maxResults: 3`. 2nd call ONLY if 1st returned 0-1 useful results — widen to `maxResults: 10`, drop one filter.
-
-## GitHub type table
-
-| `github_type` | extra args | use |
-|---|---|---|
-| `code` | — | source-code search |
-| `repositories` | — | repo discovery |
-| `issues` | — | cross-repo issue/PR search |
-| `file` | `owner`+`repo`+`path`(+`ref`) | read a specific file |
-| `repo` | `owner`+`repo` | repo metadata |
-| `issue` | `owner`+`repo`+`number` | one issue/PR |
-| `pulls` | `owner`+`repo`(+`state`) | PR list |
+2. GitHub `owner/repo` lookup → call `web_search` with `keywords: "<owner>/<repo>"` and `site: "github.com"`. The backend has no GitHub-specific path — a generic web search of github.com is the route. ONE call. STOP.
+3. Free-form text → 1st call with filters + `maxResults: 3`. 2nd call ONLY if 1st returned 0-1 useful results — widen to `maxResults: 10`, drop one filter.
 
 ## Argument hints
 

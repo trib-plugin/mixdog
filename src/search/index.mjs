@@ -59,37 +59,13 @@ import { handleSetup } from './lib/setup-handler.mjs'
 ensureDataDir()
 
 const searchArgsSchema = z.object({
-  keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional().describe('Search query string or array of queries. Required for non-GitHub-read operations.'),
-  site: z.string().optional().describe('Restrict results to a specific domain (e.g. "github.com").'),
+  keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).describe('Search query string or array of queries.'),
+  site: z.string().optional().describe('Restrict results to a specific domain.'),
   type: z.enum(['web', 'news', 'images']).optional().describe('Search type. Default: web.'),
-  github_type: z.enum(['repositories', 'code', 'issues', 'file', 'repo', 'issue', 'pulls']).optional().describe('GitHub type. Search: repositories/code/issues. Read: file (read file contents), repo (repo info), issue (issue/PR detail), pulls (PR list).'),
-  owner: z.string().optional().describe('GitHub owner (org or user). Required for github_type: file, repo, issue, pulls.'),
-  repo: z.string().optional().describe('GitHub repository name. Required for github_type: file, repo, issue, pulls.'),
-  path: z.string().optional().describe('File path within repo. Required for github_type: file.'),
-  number: z.number().int().optional().describe('Issue or PR number. Required for github_type: issue.'),
-  ref: z.string().optional().describe('Git ref (branch, tag, SHA). Optional for github_type: file.'),
-  state: z.enum(['open', 'closed', 'all']).optional().describe('Filter state for github_type: pulls. Default: open.'),
   maxResults: z.number().int().min(1).max(20).optional().describe('Maximum number of results to return (1-20).'),
-}).refine(
-  data => {
-    const isGithubRead = ['file', 'repo', 'issue', 'pulls'].includes(data.github_type)
-    if (isGithubRead) return true
-    return !!data.keywords
-  },
-  { message: 'keywords is required for non-GitHub-read operations' },
-)
+})
 
-const SEARCH_EMPTY_STRING_FIELDS = [
-  'keywords',
-  'site',
-  'type',
-  'github_type',
-  'owner',
-  'repo',
-  'path',
-  'ref',
-  'state',
-]
+const SEARCH_EMPTY_STRING_FIELDS = ['keywords', 'site', 'type']
 
 function normalizeSearchArgs(rawArgs) {
   if (!rawArgs || typeof rawArgs !== 'object' || Array.isArray(rawArgs)) return rawArgs
@@ -108,47 +84,6 @@ function normalizeSearchArgs(rawArgs) {
       .filter(value => typeof value === 'string' ? value.length > 0 : Boolean(value))
     if (keywords.length > 0) args.keywords = keywords
     else delete args.keywords
-  }
-  if (args.number === 0 && args.github_type !== 'issue') {
-    delete args.number
-  }
-  if (args.github_type && args.site && !/(^|\.)github\.com$/i.test(args.site)) {
-    delete args.github_type
-    delete args.owner
-    delete args.repo
-    delete args.path
-    delete args.number
-    delete args.ref
-    delete args.state
-  }
-  if (['file', 'repo', 'issue', 'pulls'].includes(args.github_type)) {
-    delete args.keywords
-    delete args.site
-    delete args.type
-  }
-  if (args.github_type === 'repo') {
-    delete args.path
-    delete args.number
-    delete args.ref
-    delete args.state
-  } else if (args.github_type === 'file') {
-    delete args.number
-    delete args.state
-  } else if (args.github_type === 'issue') {
-    delete args.path
-    delete args.ref
-    delete args.state
-  } else if (args.github_type === 'pulls') {
-    delete args.path
-    delete args.number
-    delete args.ref
-  }
-  if (['file', 'repo', 'issue', 'pulls'].includes(args.github_type) && (!args.owner || !args.repo)) {
-    throw new Error(
-      `[search-config-error:invalid-args] github_type="${args.github_type}" requires owner+repo. ` +
-      `Got owner="${args.owner || ''}" repo="${args.repo || ''}". ` +
-      `Caller must provide both — silent strip would mask the misuse.`
-    )
   }
   return args
 }
@@ -174,16 +109,9 @@ const crawlArgsSchema = z.object({
 const batchItemSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('search'),
-    keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
+    keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
     site: z.string().optional(),
     type: z.enum(['web', 'news', 'images']).optional(),
-    github_type: z.enum(['repositories', 'code', 'issues', 'file', 'repo', 'issue', 'pulls']).optional(),
-    owner: z.string().optional(),
-    repo: z.string().optional(),
-    path: z.string().optional(),
-    number: z.number().int().optional(),
-    ref: z.string().optional(),
-    state: z.enum(['open', 'closed', 'all']).optional(),
     maxResults: z.number().int().min(1).max(20).optional(),
   }),
   z.object({
@@ -248,35 +176,6 @@ function buildInputSchema(zodSchema) {
   return jsonSchema
 }
 
-const GITHUB_CODE_KEYWORDS = /\b(function|class|import|require|package|module|npm|pip|cargo|crate|library|lib|sdk|api|source\s*code|implementation|snippet|middleware|decorator|hook)\b/
-const GITHUB_REPO_KEYWORDS = /\b(repo|repository|github|project|framework|boilerplate|starter|template|toolkit|open\s*source|oss)\b/
-const GITHUB_ISSUE_KEYWORDS = /\b(bug|issue|error|fix|patch|regression|crash|pr\b|pull\s*request|changelog|breaking\s*change|deprecat)/
-
-// GitHub owner/repo slug. Guard: owner cannot be a dotted host, and repo
-// cannot look like a file extension path.
-// File paths like "src/foo.mjs" should NOT be treated as slugs.
-const GITHUB_OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/
-const SLUG_RE = /^([^/\s]+)\/([^/\s]+)$/
-const FILE_EXT_RE = /\.[a-z0-9]{1,6}$/i
-
-function looksLikeGithubSlug(query) {
-  const trimmed = (query || '').trim()
-  const match = trimmed.match(SLUG_RE)
-  if (!match) return false
-  const [, owner, repo] = match
-  if (!GITHUB_OWNER_RE.test(owner)) return false
-  if (FILE_EXT_RE.test(repo)) return false
-  return owner.length > 0 && repo.length > 0
-}
-
-function inferGithubType(query) {
-  if (looksLikeGithubSlug(query)) return 'repositories'
-  if (GITHUB_ISSUE_KEYWORDS.test(query)) return 'issues'
-  if (GITHUB_CODE_KEYWORDS.test(query)) return 'code'
-  if (GITHUB_REPO_KEYWORDS.test(query)) return 'repositories'
-  return null
-}
-
 function getSearchCacheTtlMs(type = 'web') {
   switch (type) {
     case 'news':
@@ -310,9 +209,6 @@ function buildRuntimeEnv(config) {
       : {}),
     ...(getRawProviderApiKey(config, 'tavily')
       ? { TAVILY_API_KEY: getRawProviderApiKey(config, 'tavily') }
-      : {}),
-    ...(getRawProviderApiKey(config, 'github') || process.env.GITHUB_TOKEN
-      ? { GITHUB_TOKEN: process.env.GITHUB_TOKEN || getRawProviderApiKey(config, 'github') }
       : {}),
     ...(getRawProviderApiKey(config, 'xai')
       ? { XAI_API_KEY: process.env.XAI_API_KEY || getRawProviderApiKey(config, 'xai'), GROK_API_KEY: process.env.GROK_API_KEY || getRawProviderApiKey(config, 'xai') }
@@ -618,101 +514,6 @@ async function writeStartupSnapshot() {
 // ── Core action implementations (shared by individual and batch handlers) ──
 
 async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) {
-  const isGithubReadType = ['file', 'repo', 'issue', 'pulls'].includes(args.github_type)
-  if (isGithubReadType) {
-    try {
-      const response = await runRawSearch({
-        ...args,
-        keywords: args.keywords || '',
-        providers: ['github'],
-        maxResults: args.maxResults || getRawSearchMaxResults(config),
-      })
-      return { tool: 'search', provider: 'github', github_type: args.github_type, response }
-    } catch (error) {
-      if (args.github_type !== 'repo' || !args.owner || !args.repo) throw error
-      const githubError = error instanceof Error ? error.message : String(error)
-      const runtimeEnv = buildRuntimeEnv(config)
-      const available = getAvailableRawProviders(runtimeEnv)
-      const providers = rankProviders(
-        getRawSearchPriority(config).filter(provider => provider !== 'github' && available.includes(provider)),
-        usageState,
-        'github.com',
-      )
-      if (!providers.length) throw error
-
-      const fallbackArgs = {
-        keywords: `GitHub repository ${args.owner}/${args.repo}`,
-        site: 'github.com',
-        type: 'web',
-        maxResults: args.maxResults || getRawSearchMaxResults(config),
-      }
-      const searchCacheKey = buildCacheKey('search', {
-        keywords: fallbackArgs.keywords,
-        providers,
-        site: fallbackArgs.site,
-        type: fallbackArgs.type,
-        github_type: 'repo:fallback',
-        owner: args.owner,
-        repo: args.repo,
-        maxResults: fallbackArgs.maxResults,
-      })
-      const cachedSearch = getCachedEntry(cacheState, searchCacheKey)
-      if (cachedSearch) {
-        return {
-          ...cachedSearch.payload,
-          cache: buildCacheMeta(cachedSearch, true),
-          github_type: args.github_type,
-          githubFallback: true,
-          githubError,
-        }
-      }
-
-      try {
-        const response = await runRawSearch({
-          ...fallbackArgs,
-          providers,
-        })
-        noteProviderSuccess(usageState, response.usedProvider, {
-          lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
-        })
-        for (const failure of response.failures || []) {
-          noteProviderFailure(usageState, failure.provider, failure.error, 60000)
-        }
-        rememberPreferredRawProviders(usageState, 'github.com', [response.usedProvider, ...providers.filter(item => item !== response.usedProvider)])
-        const cachedEntry = setCachedEntry(
-          cacheState,
-          searchCacheKey,
-          { tool: 'search', providers, response, github_type: args.github_type, githubFallback: true, githubError },
-          getSearchCacheTtlMs('web'),
-        )
-        return { tool: 'search', providers, response, cache: buildCacheMeta(cachedEntry, false), github_type: args.github_type, githubFallback: true, githubError }
-      } catch (fallbackError) {
-        for (const provider of providers) {
-          noteProviderFailure(usageState, provider, fallbackError instanceof Error ? fallbackError.message : String(fallbackError), 60000)
-        }
-        throw error
-      }
-    }
-  }
-
-  if (!args.github_type && !args.site && args.keywords) {
-    const queryLower = (Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords).toLowerCase()
-    const autoGithubType = inferGithubType(queryLower)
-    if (autoGithubType) {
-      try {
-        const response = await runRawSearch({
-          ...args,
-          providers: ['github'],
-          github_type: autoGithubType,
-          maxResults: args.maxResults || getRawSearchMaxResults(config),
-        })
-        return { tool: 'search', provider: 'github', github_type: autoGithubType, autoRouted: true, response }
-      } catch {
-        // GitHub auto-route failed, fall through to normal search
-      }
-    }
-  }
-
   const siteRule = args.site ? getSiteRule(config, args.site) : null
   if (siteRule?.search === 'xai.x_search') {
     try {
@@ -754,7 +555,6 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) 
     providers,
     site: args.site || null,
     type: args.type || 'web',
-    github_type: args.github_type || null,
     docs_index: args.site && (args.type || 'web') === 'web' ? 4 : null,
     maxResults: args.maxResults || getRawSearchMaxResults(config),
   })
@@ -922,7 +722,7 @@ const toolDefinitions = [
     name: 'search',
     title: 'Search',
     aiWrapped: true,
-    description: 'External web / URL / GitHub search. `query`: single NL string for one synthesized answer, or array of strings for unrelated multi-question. URL → scrape, `owner/repo` → GitHub. Past memory → recall, codebase → explore.',
+    description: 'External web / URL scrape. `query`: single NL string for one synthesized answer, or array of strings for unrelated multi-question. URL → scrape. Past memory → recall, codebase → explore.',
     inputSchema: {
       type: 'object',
       properties: {

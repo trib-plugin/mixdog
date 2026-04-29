@@ -37,9 +37,6 @@ export const DEFAULT_CONFIG = {
       xai: {
         apiKey: '',
       },
-      github: {
-        token: '',
-      },
     },
   },
   requestTimeoutMs: 15000,
@@ -144,7 +141,6 @@ export function getRawSearchMaxResults(config) {
 
 export function getRawProviderApiKey(config, provider) {
   const cred = config.rawSearch?.credentials?.[provider]
-  if (provider === 'github') return cred?.token || ''
   return cred?.apiKey || ''
 }
 
@@ -160,7 +156,6 @@ export function getRawProviderCredentialSource(config, provider, env = process.e
     firecrawl: 'FIRECRAWL_API_KEY',
     tavily: 'TAVILY_API_KEY',
     xai: ['XAI_API_KEY', 'GROK_API_KEY'],
-    github: 'GITHUB_TOKEN',
   }
 
   const envKey = envKeyByProvider[provider]

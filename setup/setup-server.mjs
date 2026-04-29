@@ -318,10 +318,6 @@ async function validateSearchKey(provider, key) {
           { api_key: key, query: 'test', max_results: 1 },
           { 'Content-Type': 'application/json' });
         return 'valid';
-      case 'github':
-        await httpGetJson('https://api.github.com/user',
-          { 'Authorization': `token ${key}`, 'User-Agent': 'mixdog-setup' });
-        return 'valid';
       default: return 'valid';
     }
   } catch { return 'invalid'; }
@@ -346,8 +342,7 @@ async function detectAuth(config = {}) {
     ? (process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'))
     : join(home, '.config');
   result.copilot = existsSync(join(configDir, 'github-copilot', 'hosts.json'))
-    || existsSync(join(configDir, 'github-copilot', 'apps.json'))
-    || !!process.env.GITHUB_TOKEN;
+    || existsSync(join(configDir, 'github-copilot', 'apps.json'));
   result.envKeys = {};
   for (const [name, envKey] of [
     ['openai', 'OPENAI_API_KEY'], ['anthropic', 'ANTHROPIC_API_KEY'],
@@ -609,10 +604,6 @@ function mergeSearchConfig(existing, data) {
     if (!key) continue;
     if (!config.rawSearch.credentials[id]) config.rawSearch.credentials[id] = {};
     config.rawSearch.credentials[id].apiKey = key;
-  }
-  if (data.github) {
-    if (!config.rawSearch.credentials.github) config.rawSearch.credentials.github = {};
-    config.rawSearch.credentials.github.token = data.github;
   }
   if (data.mode) config.defaultMode = data.mode;
   if (data.maxResults) config.rawSearch.maxResults = data.maxResults;
@@ -1902,7 +1893,6 @@ const server = http.createServer(async (req, res) => {
     for (const [id, val] of Object.entries(data.aiProviders || {})) {
       if (val && val !== 'cli') checks.push(validateSearchKey(id, val).then(r => { validation[id] = r; }));
     }
-    if (data.github) checks.push(validateSearchKey('github', data.github).then(r => { validation.github = r; }));
     await Promise.all(checks);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, validation }));

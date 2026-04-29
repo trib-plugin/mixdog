@@ -39,11 +39,6 @@ const INTENT_PROTOTYPES = Object.freeze({
     'Summarize the differences between file A and file B.',
     '두 파일을 비교해서 요약해 주세요.',
   ]),
-  github_repo: Object.freeze([
-    'Read the GitHub repository openai/codex and summarize it.',
-    'Summarize the repository openai/codex.',
-    'github 저장소 openai/codex를 요약해 주세요.',
-  ]),
 });
 
 const CLASSIFIER_CACHE = new Map();

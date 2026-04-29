@@ -247,7 +247,7 @@ const SERVER_INSTRUCTIONS = [
   '',
   'Information retrieval (HIGHEST PRIORITY — always prefer these; never reach for `bash` to list / read / find files):',
   '- `recall` — past context from the memory store.',
-  '- `search` — external web / URL scrape / GitHub code / issues / repos.',
+  '- `search` — external web / URL scrape.',
   '- `explore` — internal codebase search. `cwd` is authoritative.',
   '- Order when unsure: recall → search → explore → grep+read. This order is mandatory, not a suggestion.',
   '- `bash` is for shell-only work (git, build, test, run). Using `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup is a violation — use `read` / `glob` / `list` / `grep` / `explore` instead.',

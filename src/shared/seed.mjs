@@ -59,7 +59,6 @@ const SEEDS = {
                 firecrawl: { apiKey: '' },
                 tavily: { apiKey: '' },
                 xai: { apiKey: '' },
-                github: { token: '' },
             },
         },
         requestTimeoutMs: 15000,

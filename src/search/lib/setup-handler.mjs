@@ -11,7 +11,7 @@ function icon(key) {
 
 function statusBlock(config) {
   const c = config.rawSearch?.credentials || {}
-  const providers = ['serper', 'brave', 'perplexity', 'tavily', 'firecrawl', 'xai', 'github']
+  const providers = ['serper', 'brave', 'perplexity', 'tavily', 'firecrawl', 'xai']
 
   const lines = [
     '',
@@ -71,8 +71,7 @@ function applyKeys(config, section, data) {
     if (!config[section]) config[section] = {}
     if (!config[section][target]) config[section][target] = {}
     if (!config[section][target][provider]) config[section][target][provider] = {}
-    const key = section === 'rawSearch' && provider === 'github' ? 'token' : 'apiKey'
-    config[section][target][provider][key] = value === 'clear' ? '' : value
+    config[section][target][provider].apiKey = value === 'clear' ? '' : value
   }
 }
 
@@ -115,7 +114,6 @@ export async function handleSetup(server) {
         ['serper', c.serper?.apiKey], ['brave', c.brave?.apiKey],
         ['perplexity', c.perplexity?.apiKey], ['tavily', c.tavily?.apiKey],
         ['firecrawl', c.firecrawl?.apiKey], ['xai', c.xai?.apiKey],
-        ['github', c.github?.token],
       ]),
       requestedSchema: {
         type: 'object',
@@ -126,7 +124,6 @@ export async function handleSetup(server) {
           tavily: { type: 'string', title: 'Tavily' },
           firecrawl: { type: 'string', title: 'Firecrawl' },
           xai: { type: 'string', title: 'xAI / Grok' },
-          github: { type: 'string', title: 'GitHub Token' },
         },
       },
     })

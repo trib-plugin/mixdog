@@ -19,32 +19,11 @@ function formatSearchResults(data) {
       const url = r.url || ''
       const date = r.publishedDate || ''
       const snippet = (r.snippet || '').trim()
-      const meta = r.meta && typeof r.meta === 'object' ? r.meta : null
 
       const urlPart = [url, date].filter(Boolean).join(' — ')
       const lines = [`${num}. ${title}`]
       if (urlPart) lines.push(`   ${urlPart}`)
       if (snippet) lines.push(`   ${snippet}`)
-      if (meta && r.provider === 'github') {
-        const bits = [
-          meta.number != null ? `number ${meta.number}` : null,
-          meta.state ? `state ${meta.state}` : null,
-          meta.user ? `author ${meta.user}` : null,
-          meta.language ? `language ${meta.language}` : null,
-          meta.stars != null ? `stars ${meta.stars}` : null,
-          meta.forks != null ? `forks ${meta.forks}` : null,
-          meta.default_branch ? `default ${meta.default_branch}` : null,
-          meta.license ? `license ${meta.license}` : null,
-          Array.isArray(meta.topics) && meta.topics.length ? `topics ${meta.topics.slice(0, 6).join(', ')}` : null,
-          meta.head ? `head ${meta.head}` : null,
-          meta.base ? `base ${meta.base}` : null,
-          meta.draft === true ? 'draft' : null,
-          meta.archived === true ? 'archived' : null,
-          meta.is_pull_request === true ? 'pull request' : null,
-          meta.comments != null ? `comments ${meta.comments}` : null,
-        ].filter(Boolean)
-        if (bits.length) lines.push(`   ${bits.join(' · ')}`)
-      }
       return lines.join('\n')
     })
     .join('\n\n')
