@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from 'path';
 import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { performance } from 'perf_hooks';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from '../lib/sqlite-bridge.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');

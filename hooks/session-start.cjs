@@ -6,7 +6,7 @@ const os = require('os');
 const http = require('http');
 const net = require('net');
 const { spawn } = require('child_process');
-const { DatabaseSync } = require('node:sqlite');
+const { DatabaseSync } = require('../lib/sqlite-bridge.cjs');
 const { resolvePluginData } = require(path.join(__dirname, '..', 'lib', 'plugin-paths.cjs'));
 
 // Mirror selected stderr lines to a plugin-data log file so cycle1 traces

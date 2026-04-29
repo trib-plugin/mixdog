@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync } from '../../../lib/sqlite-bridge.mjs'
 import { mkdirSync, existsSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { cleanMemoryText } from './memory-extraction.mjs'

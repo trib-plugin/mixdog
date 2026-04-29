@@ -7,17 +7,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=rules",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=rules",
             "timeout": 60
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=core",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=core",
             "timeout": 60
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=recap",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=recap",
             "timeout": 60
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.cjs\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.cjs\"",
             "timeout": 5
           }
         ]

@@ -270,7 +270,7 @@ try {
 
 // ── Spawn server ──────────────────────────────────────────────────────────────
 const isWin = process.platform === 'win32';
-const proc = spawn('node', [serverPath], {
+const proc = spawn('bun', [serverPath], {
   cwd: pluginRoot,
   stdio: 'inherit',
   env: {

@@ -19,7 +19,7 @@
  * Also exports detectPatterns() and generateSkillMd() for programmatic use.
  */
 
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from '../lib/sqlite-bridge.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { homedir } from 'node:os';

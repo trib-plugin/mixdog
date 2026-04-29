@@ -2,7 +2,7 @@
  * Trajectory store — records execution metadata for every bridge call.
  * Uses node:sqlite DatabaseSync for atomic, zero-dependency persistence.
  */
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from '../../../lib/sqlite-bridge.mjs';
 import { join } from 'path';
 import { mkdirSync } from 'fs';
 
