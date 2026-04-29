@@ -504,8 +504,11 @@ function collectTelemetry(traceStart, durationMs) {
   for (const r of rows) {
     if (r.sessionId && !cycle1Sessions.has(r.sessionId)) continue
     switch (r.kind) {
-      case 'preset_assign': tally.llmCalls += 1; break
-      case 'loop':          tally.iters += 1; break
+      // preset_assign fires on every dispatch attempt (retry / fallback /
+      // re-route), so summing it overcounts LLM calls when the provider
+      // bounces. `loop` is one row per actual provider.send, the
+      // deterministic per-LLM-call counter we want to measure here.
+      case 'loop':          tally.iters += 1; tally.llmCalls += 1; break
       case 'tool':          tally.toolCalls += 1; break
       case 'usage_raw':
         // prompt_tokens = uncached input + cached input (full prompt size we sent).
