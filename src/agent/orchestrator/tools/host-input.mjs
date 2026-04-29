@@ -156,7 +156,7 @@ const HOST_HANDLERS = {
 export const HOST_INPUT_TOOL_DEFS = [
   {
     name: 'inject_input',
-    description: 'Inject text into host terminal (parent console; powershell.exe/pwsh.exe on Windows). Always submits — appends a newline if absent.',
+    description: 'Inject text into host terminal (parent console). Always submits — appends newline if absent.',
     inputSchema: {
       type: 'object',
       properties: {

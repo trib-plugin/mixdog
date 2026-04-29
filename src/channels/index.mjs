@@ -1712,7 +1712,7 @@ const TOOL_DEFS = [
     name: "edit_message",
     title: "Edit Message",
     annotations: { title: "Edit Message", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
-    description: "Edit a message the bot previously sent. Supports text, embeds, and components.",
+    description: "Edit a previously-sent bot message. Supports text, embeds, components.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1768,7 +1768,7 @@ const TOOL_DEFS = [
     name: "schedule_status",
     title: "Schedule Status",
     annotations: { title: "Schedule Status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: "Show all configured schedules, their next fire time, and whether they are currently running.",
+    description: "Show configured schedules with next fire time and running state.",
     inputSchema: {
       type: "object",
       properties: {}
@@ -1820,7 +1820,7 @@ const TOOL_DEFS = [
     name: "reload_config",
     title: "Reload Config",
     annotations: { title: "Reload Config", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: "Reload config from disk and re-register all schedules, webhooks, and event rules without restarting.",
+    description: "Reload config from disk; re-register schedules, webhooks, event rules without restart.",
     inputSchema: { type: "object", properties: {} }
   }
 ];

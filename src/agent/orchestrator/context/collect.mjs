@@ -166,7 +166,7 @@ export function buildSkillToolDefs(skills, { ownerIsBridge = false } = {}) {
     _skillToolDefsCache = [
         {
             name: 'skills_list',
-            description: 'List available skills with short descriptions. Call this first to discover what skills are available before using skill_view or skill_execute.',
+            description: 'List available skills with short descriptions. Call before skill_view or skill_execute.',
             inputSchema: {
                 type: 'object',
                 properties: {},
@@ -175,7 +175,7 @@ export function buildSkillToolDefs(skills, { ownerIsBridge = false } = {}) {
         },
         {
             name: 'skill_view',
-            description: 'Return the full body of a skill by name (without executing it). Use this to inspect skill contents.',
+            description: 'Return the full body of a skill by name (without executing).',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -186,7 +186,7 @@ export function buildSkillToolDefs(skills, { ownerIsBridge = false } = {}) {
         },
         {
             name: 'skill_execute',
-            description: 'Load and execute a skill by name. The skill body is injected into the conversation context.',
+            description: 'Load and execute a skill. Skill body is injected into context.',
             inputSchema: {
                 type: 'object',
                 properties: {

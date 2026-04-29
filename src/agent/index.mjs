@@ -233,7 +233,7 @@ const TOOLS = [
     description: 'Close an orchestrator session.',
     inputSchema: {
       type: 'object',
-      properties: { sessionId: { type: 'string', description: 'Id of the session to close (as returned by `create_session` or `list_sessions`). Plants a tombstone and aborts any in-flight work; re-closing the same id is a no-op.' } },
+      properties: { sessionId: { type: 'string', description: 'Session id to close (from create_session / list_sessions). Plants a tombstone, aborts in-flight work; re-closing is a no-op.' } },
       required: ['sessionId'],
     },
   },
@@ -247,13 +247,13 @@ const TOOLS = [
   {
     name: 'get_workflows',
     public: false,
-    description: 'List all available workflow plans (name + description).',
+    description: 'List workflow plans (name + description).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'get_workflow',
     public: false,
-    description: 'Get a specific workflow plan by name. Returns full JSON with steps.',
+    description: 'Get a workflow plan by name. Returns full JSON with steps.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -266,7 +266,7 @@ const TOOLS = [
     name: 'set_prompt',
     title: 'Store Prompt',
     public: false,
-    description: 'Store a long prompt and get a short reference key. Use with bridge tool\'s ref parameter.',
+    description: 'Store a long prompt and return a reference key for bridge.ref.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -279,7 +279,7 @@ const TOOLS = [
   {
     name: 'skill_suggest',
     public: false,
-    description: 'Analyze trajectory data and suggest skills from repeating patterns. Returns a report of skill candidates.',
+    description: 'Analyze trajectory data and suggest skills from repeating patterns.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -294,7 +294,7 @@ const TOOLS = [
         taskType: { type: 'string', description: 'Explicit task type override (maintenance, one-shot, etc).' },
         profileId: { type: 'string', description: 'Explicit profile id (overrides role/taskType).' },
         prompt: { type: 'string', description: 'Initial prompt for the agent. Required when wait=true.' },
-        wait: { type: 'boolean', description: 'When true, send prompt and return the response. When false, return sessionId for later use. Default: true if prompt given, false otherwise.' },
+        wait: { type: 'boolean', description: 'true: send prompt and return response sync. false: return sessionId for later. Default true if prompt given.' },
         provider: { type: 'string', description: 'Override provider (defaults to profile.preferredProviders[0]).' },
         model: { type: 'string', description: 'Override model.' },
         cwd: { type: 'string', description: 'Working directory for agent tool execution.' },
@@ -324,7 +324,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'The task instruction for the agent.' },
-        role: { type: 'string', description: 'Agent role as defined in user-workflow.json. Check your workflow file for the active set.' },
+        role: { type: 'string', description: 'Agent role from user-workflow.json.' },
         preset: { type: 'string', description: 'Advanced: explicit preset name (bypass role mapping).' },
         context: { type: 'string', description: 'Extra context appended to the prompt.' },
         ref: { type: 'string', description: 'Prompt store key (populated by prompt_store).' },
