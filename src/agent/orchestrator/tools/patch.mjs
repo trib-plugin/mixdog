@@ -476,6 +476,17 @@ async function apply_patch(args, cwd, options = {}) {
       _assertUnchangedSinceRead(p);
       unlinkSync(p.fullPath);
     } else if (p.kind === 'create') {
+      // Re-check existence right before write — phase 1 ran tens of
+      // ms ago at minimum and another process could have raced a file
+      // into the target path in the gap. Refusing to overwrite
+      // preserves the same "create target already exists" contract
+      // phase 1 already enforces; without this, atomicWrite happily
+      // clobbers the racing writer.
+      let raceExists = false;
+      try { statSync(p.fullPath); raceExists = true; } catch {}
+      if (raceExists) {
+        throw Object.assign(new Error('create target appeared since plan (race)'), { __skip: true });
+      }
       mkdirSync(dirname(p.fullPath), { recursive: true });
       await atomicWrite(p.fullPath, p.newContent, { sessionId: options?.sessionId });
     } else {

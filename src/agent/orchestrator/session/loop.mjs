@@ -87,6 +87,34 @@ function _ensureTranscriptPairing(msgs, sessionId) {
         msgs.splice(lastAssistantIdx, removed);
         popped += removed;
     }
+    // Second sweep — catch dangling tool results that survived the
+    // contiguous-block splice. Anthropic strict spec requires every
+    // tool result to sit in a contiguous block right after the
+    // assistant whose toolCalls produced it; a `[..., assistant{a,b},
+    // tool{a}, user, tool{b}]` shape leaves tool{b} orphaned even
+    // after assistant + tool{a} are repaired by the loop above.
+    // Walk back from each tool message to the nearest non-tool
+    // ancestor; if it is not an assistant whose toolCalls include
+    // this id, drop the orphan.
+    for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m?.role !== 'tool') continue;
+        if (!m.toolCallId) {
+            msgs.splice(i, 1);
+            popped += 1;
+            continue;
+        }
+        let prevIdx = i - 1;
+        while (prevIdx >= 0 && msgs[prevIdx]?.role === 'tool') prevIdx--;
+        const anchor = prevIdx >= 0 ? msgs[prevIdx] : null;
+        const anchorOk = anchor?.role === 'assistant'
+            && Array.isArray(anchor.toolCalls)
+            && anchor.toolCalls.some(c => c.id === m.toolCallId);
+        if (!anchorOk) {
+            msgs.splice(i, 1);
+            popped += 1;
+        }
+    }
     if (popped > 0 && sessionId) {
         try { process.stderr.write(`[transcript-repair] sess=${sessionId} popped=${popped} dangling assistant tool_use\n`); } catch {}
     }
