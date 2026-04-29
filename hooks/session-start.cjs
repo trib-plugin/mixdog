@@ -462,6 +462,7 @@ async function requestCycle1Once(deadline, opts) {
   const remainingForGrace = deadline - Date.now();
   if (remainingForGrace <= 0) return finish({ ok: false, reason: 'timeout' });
   const active = await pollActiveInstance(Math.min(graceMs, remainingForGrace));
+  const tPollEnd = Date.now();
   if (!active) {
     const reason = (Date.now() >= deadline) ? 'timeout' : 'no-active-instance';
     return finish({ ok: false, reason });
@@ -471,13 +472,18 @@ async function requestCycle1Once(deadline, opts) {
   if (remaining <= 0) return finish({ ok: false, reason: 'timeout' });
 
   try {
+    const tPostStart = Date.now();
     const res = await httpPostJson({
       hostname: '127.0.0.1',
       port,
       path: '/cycle1',
       timeoutMs: remaining,
-      body: { timeout_ms: remaining, args: { min_batch: 1, session_cap: 50, batch_size: 25 } },
+      // On-demand path: 1 row is enough to enter; cap fan-out at 4 windows
+      // of 25 rows each (≤100 rows total) so the hook can't trigger the
+      // 1,250-row blast that the periodic path was originally sized for.
+      body: { timeout_ms: remaining, args: { min_batch: 1, session_cap: 4, batch_size: 25 } },
     });
+    teeStderr(`[session-start] cycle1 slot=${slot} timing pollMs=${tPollEnd - start} postMs=${Date.now() - tPostStart}\n`);
     if (res.statusCode !== 200) {
       return finish({ ok: false, reason: 'non-200', statusCode: res.statusCode });
     }

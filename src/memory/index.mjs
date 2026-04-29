@@ -470,8 +470,45 @@ function _startCycle1Run(config = {}, options = {}) {
 }
 
 async function _awaitCycle1Run(config = {}, options = {}) {
-  if (_cycle1InFlight) return await _cycle1InFlight
-  return await _startCycle1Run(config, options)
+  const target = _cycle1InFlight || _startCycle1Run(config, options)
+  const callerDeadlineMs = Number(options.callerDeadlineMs) || 0
+  if (callerDeadlineMs <= 0) return await target
+  // Caller-deadline race. When the channels-side timeout (default 60s) fires,
+  // we (a) reject this await so the calling SessionStart slot stops blocking
+  // and (b) release the outer in-flight handle. The underlying LLM run keeps
+  // progressing in the background — it still owns the inner dedup guard
+  // (memory-cycle.mjs:269 _runCycle1InFlight.has(db)). Releasing the outer
+  // handle is what breaks the cascade: any later _awaitCycle1Run call now
+  // re-enters _startCycle1Run, whose inner runCycle1 short-circuits with
+  // skippedInFlight:true the moment it sees the same db still busy. Without
+  // this release every later caller would await the same 600s zombie and
+  // stack another full 60s wait on top.
+  let timer
+  const deadlinePromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (_cycle1InFlight === target) _cycle1InFlight = null
+      reject(new Error(`cycle1 in-flight wait exceeded callerDeadlineMs=${callerDeadlineMs}`))
+    }, callerDeadlineMs)
+  })
+  try {
+    return await Promise.race([target, deadlinePromise])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// Periodic cycle1 sizing: only enter when ≥ 20 pending rows have built up,
+// then split into 2 windows of 50 rows each (≤100 rows per tick). The on-
+// demand path used by SessionStart hooks runs with a 1-row threshold and
+// 4×25 windows instead — see hooks/session-start.cjs:481. mainConfig.cycle1
+// values still win, so users can override any of these in config.json.
+function periodicCycle1Config() {
+  return {
+    min_batch: 20,
+    session_cap: 2,
+    batch_size: 50,
+    ...(mainConfig?.cycle1 || {}),
+  }
 }
 
 async function checkCycles() {
@@ -492,7 +529,15 @@ async function checkCycles() {
   // shard gets re-touched before the next Worker / Sub call pays the 2×
   // write premium. Cooldown prevents a tight retry loop when the underlying
   // cause (network, provider outage) is still broken.
-  const cycle1OverdueMs = Math.max(0, now - last.cycle1 - cycle1Ms)
+  //
+  // Cold-start guard: a fresh DB has last.cycle1 = 0, which would make
+  // (now - 0 - cycle1Ms) blow past HEALTH_OVERDUE_MS on every first boot
+  // and force-trigger the auto-restart branch even though the shard never
+  // existed in the first place. The "drifting cold" concept doesn't apply
+  // until at least one successful run has anchored a baseline.
+  const cycle1OverdueMs = last.cycle1 > 0
+    ? Math.max(0, now - last.cycle1 - cycle1Ms)
+    : 0
   if (cycle1OverdueMs > CYCLE1_HEALTH_OVERDUE_MS) {
     const lastSeen = last.cycle1 ? new Date(last.cycle1).toISOString() : 'never'
     process.stderr.write(
@@ -508,7 +553,7 @@ async function checkCycles() {
       // failing path within the same tick.
       setCycleLastRun('cycle1_autoRestart_attempt', now)
       try {
-        const result = await _awaitCycle1Run(mainConfig?.cycle1 || {})
+        const result = await _awaitCycle1Run(periodicCycle1Config())
         setCycleLastRun('cycle1_autoRestart', Date.now())
         process.stderr.write(
           `[cycle1] auto-restart completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`
@@ -525,7 +570,7 @@ async function checkCycles() {
 
   if (now - last.cycle1 >= cycle1Ms) {
     try {
-      const result = await _awaitCycle1Run(mainConfig?.cycle1 || {})
+      const result = await _awaitCycle1Run(periodicCycle1Config())
       process.stderr.write(`[cycle1] completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`)
     } catch (e) {
       process.stderr.write(`[cycle1] error: ${e.message}\n`)
@@ -804,7 +849,11 @@ async function handleMemoryAction(args) {
     if (Number.isFinite(batchSizeOverride) && batchSizeOverride > 0) {
       cycle1Config = { ...cycle1Config, batch_size: batchSizeOverride }
     }
-    const result = await _awaitCycle1Run(cycle1Config)
+    const callerDeadlineMs = Number(args?._callerDeadlineMs) || 0
+    const result = await _awaitCycle1Run(
+      cycle1Config,
+      callerDeadlineMs > 0 ? { callerDeadlineMs } : {},
+    )
     const pendingStr = result?.pendingRows != null ? result.pendingRows : 0
     const inFlightStr = result?.skippedInFlight === true ? 'true' : 'false'
     return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped} pending=${pendingStr} inFlight=${inFlightStr}` }

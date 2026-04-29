@@ -738,9 +738,20 @@ async function startOwnerHttpServer() {
         }
         case "/cycle1": {
           if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
+          const tCycleEntry = Date.now();
           const timeoutMs = Number(body?.timeout_ms) > 0 ? Math.min(60000, Number(body.timeout_ms)) : 15000;
           try {
-            const result = await callMemoryAction('cycle1', body?.args || {}, timeoutMs);
+            // Carry the caller deadline through to the memory worker so a
+            // pending cycle1 in-flight is awaited under the same budget.
+            // Without this, when the previous cycle1's LLM call lives past
+            // 60s, every later SessionStart slot stacks another full 60s
+            // wait behind the same zombie promise.
+            const result = await callMemoryAction(
+              'cycle1',
+              { ...(body?.args || {}), _callerDeadlineMs: timeoutMs },
+              timeoutMs,
+            );
+            try { process.stderr.write(`[cycle1-time] route ms=${Date.now() - tCycleEntry}\n`); } catch {}
             res.writeHead(200);
             res.end(JSON.stringify({ ok: true, result }));
           } catch (e) {
