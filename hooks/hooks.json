@@ -12,7 +12,12 @@
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=memory",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=core",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\" --part=recap",
             "timeout": 60
           }
         ]
