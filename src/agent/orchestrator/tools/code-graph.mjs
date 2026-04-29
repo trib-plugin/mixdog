@@ -1555,7 +1555,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'code_graph',
     title: 'Code Graph',
     annotations: { title: 'Code Graph', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. In bridge sessions, call the matching `mode` directly (for example `mode:"callers"`); alias tools may be absent. `callers` returns call-site lines and the enclosing caller symbol when possible, so answer from it before reading files. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. In main/public sessions where aliases exist, direct aliases (`find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`) are fine for exact questions.',
+    description: 'Repository graph / symbol navigation. Modes: overview, imports, dependents, related, impact, symbols, find_symbol, references, callers. `callers` returns call-site lines + enclosing caller symbol — answer from it before reading files. Use direct aliases (find_*) when available.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1572,7 +1572,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_symbol',
     title: 'Find Symbol',
     annotations: { title: 'Find Symbol', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Find a symbol/identifier across the repository and return the best declaration/reference candidates with file:line and nearby code. Prefer this over grep when you know the symbol name but not the file. If a best declaration candidate is returned, read that file directly instead of running another grep on the same identifier. If the nearby declaration/import code already identifies the requested helper or caller name, answer from that evidence; do not read the helper implementation unless the task asks what the helper does.',
+    description: 'Find a symbol/identifier across the repository — returns best declaration/reference candidates with file:line and nearby code. Prefer over grep when symbol is known but file is not. Read the declaration directly; do not re-grep the same identifier.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1587,7 +1587,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_imports',
     title: 'Find Imports',
     annotations: { title: 'Find Imports', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'What does this file import from others? Returns modules/files that the target file pulls in. Use this instead of `code_graph(mode:"imports")` when you already know the file path. Optimized alias for quicker tool selection in the main session.',
+    description: 'What does this file import? Returns modules/files the target pulls in. Prefer over `code_graph(mode:"imports")` when file path is known.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1600,7 +1600,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_dependents',
     title: 'Find Dependents',
     annotations: { title: 'Find Dependents', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Who imports from this file? Returns files that depend on or pull in the target file. Use this instead of `code_graph(mode:"dependents")` when you already know the file path. Optimized alias for quicker tool selection in the main session.',
+    description: 'Who imports this file? Returns files that depend on the target. Prefer over `code_graph(mode:"dependents")` when file path is known.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1613,7 +1613,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_references',
     title: 'Find References',
     annotations: { title: 'Find References', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Find references for a symbol across the repository. Use this instead of `code_graph(mode:"references")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. For non-function symbols (constants, type aliases, variables), this is the correct tool — `find_callers` only matches call-site invocations.',
+    description: 'Find references for a symbol across the repository. Prefer over `code_graph(mode:"references")` when symbol is known. For non-function symbols (constants, type aliases, variables), use this — `find_callers` only matches call-sites.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1628,7 +1628,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_callers',
     title: 'Find Callers',
     annotations: { title: 'Find Callers', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Find call sites for a symbol across the repository, including caller file, line, and enclosing caller symbol when possible. Use this instead of `code_graph(mode:"callers")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. Only matches call-site invocations — for non-function symbols (constants, type aliases, variables), prefer `find_references` instead.',
+    description: 'Find call sites for a symbol — caller file, line, and enclosing caller symbol. Only matches call-site invocations. For non-function symbols (constants, type aliases, variables), use `find_references` instead.',
     inputSchema: {
       type: 'object',
       properties: {

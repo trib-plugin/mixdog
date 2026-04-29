@@ -690,7 +690,7 @@ function appendRetrievalCompleteHint(tool, body, queryCount) {
   return [
     text,
     '',
-    `[${tool} retrieval complete: synthesize from the result for ${plural}; do not call ${tool} again with the same query unless the result explicitly says there were no useful hits.]`,
+    `[${tool}: synthesize from result; do not re-call ${plural} unless result explicitly returns no hits.]`,
   ].join('\n')
 }
 

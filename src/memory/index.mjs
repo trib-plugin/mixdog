@@ -1029,7 +1029,7 @@ const TOOL_DEFS = [
     name: 'memory',
     title: 'Memory Cycle',
     annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    description: 'Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild (requires confirm: "REBUILD MEMORY"), prune (requires confirm: "PRUNE OLD ENTRIES"), cycle1, backfill, status, remember (store fact), forget (archive a root), delete (requires confirm: "DELETE ALL MEMORY" — wipes all entries).',
+    description: 'Run memory operations: cycle1, cycle2/sleep (promote+dedup), flush, prune, status, remember (store fact), forget (archive a root), backfill, rebuild, delete. Destructive ops (rebuild, prune, delete) require matching `confirm` string.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1051,13 +1051,13 @@ const TOOL_DEFS = [
     title: 'Recall',
     aiWrapped: true,
     annotations: { title: 'Recall', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'FIRST CHOICE for past project / session memory — never start with grep / read / bash for memory questions. Past context from the memory store. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. External web → `search`, codebase → `explore`.',
+    description: 'Search past project / session memory. `query`: single NL string for one synthesized answer, or array of strings for unrelated multi-question (parallel mechanical merge). Codebase → explore, web → search.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks).' },
-        cwd: { type: 'string', description: 'Optional workspace hint. Absolute path; `~` and forward slashes supported.' },
-        background: { type: 'boolean', description: 'Default: false (sync — merged answer returned in-turn). Set true for heavy multi-angle queries that risk exceeding the MCP request timeout; the merged answer is then pushed via the channel bridge.' },
+        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Single NL string, or array of strings for unrelated multi-question.' },
+        cwd: { type: 'string', description: 'Optional workspace hint.' },
+        background: { type: 'boolean', description: 'Default false (sync). Set true for heavy queries to dispatch async and receive answer via channel.' },
       },
       required: ['query'],
       additionalProperties: false,
@@ -1068,13 +1068,13 @@ const TOOL_DEFS = [
     title: 'Explore',
     aiWrapped: true,
     annotations: { title: 'Explore', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: 'FIRST CHOICE for codebase / file / structure lookup when location is uncertain — never start with grep / read / bash / find_symbol on an unknown target. Internal codebase search. Local filesystem only — not web, not memory. `query`: single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Omit `cwd` for the current workspace; set `cwd` only when the user explicitly names that root/path. Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.',
+    description: 'Search internal codebase / filesystem. `query`: single NL string for one synthesized answer, or array of strings for unrelated multi-question. Omit `cwd` for the current workspace; set only when the user names a path. Past memory → recall, web → search.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks).' },
-        cwd: { type: 'string', description: 'Optional search root. Omit for the current workspace. Use an absolute/`~` root only when the user explicitly names that path. No silent fan-out.' },
-        background: { type: 'boolean', description: 'Default: false (sync — merged answer returned in-turn). Set true for heavy multi-angle queries that risk exceeding the MCP request timeout; the merged answer is then pushed via the channel bridge.' },
+        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Single NL string, or array of strings for unrelated multi-question.' },
+        cwd: { type: 'string', description: 'Optional search root. Omit for current workspace; pass only when the user names a path.' },
+        background: { type: 'boolean', description: 'Default false (sync). Set true for heavy queries to dispatch async and receive answer via channel.' },
       },
       required: ['query'],
       additionalProperties: false,

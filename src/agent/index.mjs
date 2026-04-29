@@ -204,7 +204,7 @@ const TOOLS = [
     name: 'create_session',
     title: 'Create Session',
     annotations: { title: 'Create Session', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    description: 'Create external AI session with tool access. Auto-injects context. Use preset: full/readonly/mcp. Use agent: Worker/Reviewer.',
+    description: 'Create external AI session with tool access. preset: full/readonly/mcp. agent: Worker/Reviewer.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -286,7 +286,7 @@ const TOOLS = [
     name: 'bridge_spawn',
     title: 'Spawn Bridge Agent',
     public: false,
-    description: 'Create a Smart Bridge agent session with a role/taskType and optionally send the first prompt. Prefer `explore` for ordinary filesystem/code lookup; use `bridge_spawn` only when a standalone role session is explicitly needed. Replacement for native Agent/TeamCreate flow — no team container required, sessions are standalone. For one-shot lookup/research, put the exact file/line/evidence requirements in the first prompt and wait for that response; do not spawn multiple agents for the same question unless the first answer is missing a clearly required field. When wait=true, returns the agent\'s first response synchronously. When wait=false, returns sessionId immediately for later bridge_send calls.',
+    description: 'Create a Smart Bridge agent session with a role/taskType. Replacement for native Agent/TeamCreate. wait=true returns first response sync; wait=false returns sessionId for later bridge_send. Prefer `explore` for filesystem lookup; use bridge_spawn only for standalone role sessions.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -305,7 +305,7 @@ const TOOLS = [
     name: 'bridge_send',
     title: 'Send to Bridge Agent',
     public: false,
-    description: 'Send a message to an existing bridge agent session. Returns the agent\'s response synchronously. Replacement for SendMessage in native team flow.',
+    description: 'Send a message to an existing bridge agent session. Returns response synchronously.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -319,7 +319,7 @@ const TOOLS = [
     name: 'bridge',
     title: 'Bridge to External Model',
     annotations: { title: 'Bridge to External Model', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.',
+    description: 'Delegate one turn to an external agent by role (mapped via user-workflow.json). Detached: returns jobId + sessionId; agent runs in background. Pass exactly one of prompt / ref / file. Use close_session to stop early.',
     inputSchema: {
       type: 'object',
       properties: {

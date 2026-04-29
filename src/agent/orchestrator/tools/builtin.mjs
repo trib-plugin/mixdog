@@ -686,7 +686,7 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read file(s). `path` accepts a single string or array (`["a.mjs","b.mjs"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. Do not repeat an identical read on the same file/range — open a wider window or different range instead.',
+        description: 'Read file(s). `path`: string or array for parallel multi-file. `mode`: full | head | tail | count. `n` sets head/tail lines; `offset`/`limit` set full-mode window. Files over byte cap require offset/limit, head, tail, count, or `grep`.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -704,7 +704,7 @@ export const BUILTIN_TOOLS = [
         name: 'edit',
         title: 'Edit',
         annotations: { title: 'Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Replace text in file(s). For multiple edits prefer the `edits` array form — same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.',
+        description: 'Replace text in file(s). For 2+ edits use `edits` array (same file applies sequentially, different files in parallel). Single form is for one-off only. `replace_all:true` drops the uniqueness check.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -735,7 +735,7 @@ export const BUILTIN_TOOLS = [
         name: 'write',
         title: 'Write',
         annotations: { title: 'Write', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Create or overwrite a file. Prefer `apply_patch` for multi-file or context-heavy edits; use `write` when you are creating a new file or replacing the whole contents intentionally. For multiple whole-file writes in one turn, pass `writes` array.',
+        description: 'Create or overwrite a file. Prefer `apply_patch` for multi-file or context-heavy edits. For 2+ whole-file writes pass `writes` array.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -762,7 +762,7 @@ export const BUILTIN_TOOLS = [
         name: 'bash',
         title: 'Bash',
         annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-        description: 'Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Pass `persistent:true` to keep cwd/env/venv across calls in the same session (the bridge reuses one shell). Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.',
+        description: 'Execute a shell command. Batch related commands with `&&` or `;` in one call. `persistent:true` keeps cwd/env/venv across calls. `run_in_background:true` for long jobs, then `job_wait` + `read` stdout/stderr paths. Destructive patterns (rm -rf /, force-push, format) are blocked.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -795,7 +795,7 @@ export const BUILTIN_TOOLS = [
         name: 'grep',
         title: 'Grep',
         annotations: { title: 'Grep', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'ripgrep content search. `pattern` accepts a single regex string (use `|` for alternation: `pattern:"foo|bar"`) OR an array of patterns (`pattern:["foo","bar"]`, OR-joined). `glob` follows the same shape — single string or array. Prefer the array form when patterns are long or genuinely independent; serial greps are not allowed. For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.',
+        description: 'ripgrep content search. `pattern`: regex string (use `|` for alternation) or array (OR-joined). `glob`: same shape. For known identifier prefer `find_symbol`. Output modes: `files_with_matches` (default), `content`, `count`. `multiline:true` for cross-line patterns.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -820,7 +820,7 @@ export const BUILTIN_TOOLS = [
         name: 'glob',
         title: 'Glob',
         annotations: { title: 'Glob', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'File path search via `rg --files`. `pattern` accepts a single glob string (use `{a,b}` brace expansion for compact alternation: `pattern:"**/*.{mjs,json}"`) OR an array of globs (`pattern:["**/*route*.mjs","**/*policy*.json"]`). Prefer the array form when categories are genuinely independent; do not emit two `glob` calls in the same assistant turn — merge them into one call with all requested categories. Use `grep` for in-file content search.',
+        description: 'File path search via `rg --files`. `pattern`: glob string (`{a,b}` brace expansion supported) or array (OR-joined). Prefer array for genuinely independent categories. For in-file content search use `grep`.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -836,7 +836,7 @@ export const BUILTIN_TOOLS = [
         name: 'list',
         title: 'List Directory',
         annotations: { title: 'List Directory', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). For newest-file tasks, use `list` with `sort:"mtime", type:"file"` or `find` and read the top hit directly; do not list the workspace root again just to verify. Use `find` mode to filter by filename pattern within a directory tree; for repository-wide filename pattern search use `glob` instead, and for in-file content search use `grep`. Use `find_symbol` for identifier lookup.',
+        description: 'Directory inspection. `mode`: list (metadata: name/type/size/mtime) | tree (ASCII) | find (filter by name/size/mtime). For newest files use `list sort:"mtime"` or `find`. For repo-wide filename pattern use `glob`; for in-file content use `grep`; for symbols use `find_symbol`.',
         inputSchema: {
             type: 'object',
             properties: {

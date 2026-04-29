@@ -922,13 +922,13 @@ const toolDefinitions = [
     name: 'search',
     title: 'Search',
     aiWrapped: true,
-    description: 'FIRST CHOICE for external web / URL / GitHub questions — never start with bash / curl / WebFetch when the query targets the open web. External web search, URL scrape, GitHub code/issues/repos. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes; URL → scrape, `owner/repo` → GitHub) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, codebase → `explore`.',
+    description: 'External web / URL / GitHub search. `query`: single NL string for one synthesized answer, or array of strings for unrelated multi-question. URL → scrape, `owner/repo` → GitHub. Past memory → recall, codebase → explore.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks).' },
+        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Single NL string, or array of strings for unrelated multi-question.' },
         cwd: { type: 'string', description: 'Optional workspace hint. Rarely needed.' },
-        background: { type: 'boolean', description: 'Default: false (sync — merged answer returned in-turn). Set true for heavy multi-angle queries that risk exceeding the MCP request timeout; the merged answer is then pushed via the channel bridge.' },
+        background: { type: 'boolean', description: 'Default false (sync). Set true for heavy queries to dispatch async and receive answer via channel.' },
       },
       required: ['query'],
       additionalProperties: false,
