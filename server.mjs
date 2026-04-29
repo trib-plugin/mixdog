@@ -34,6 +34,7 @@ import { ensureDataSeeds } from './src/shared/seed.mjs'
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || process.cwd()
 const PLUGIN_DATA = resolvePluginData()
 mkdirSync(PLUGIN_DATA, { recursive: true })
+process.stderr.write(`[boot-time] tag=server-entry tMs=${Date.now()}\n`)
 try { ensureDataSeeds(PLUGIN_DATA) } catch {}
 
 // ── Singleton lock ──────────────────────────────────────────────────
@@ -341,6 +342,7 @@ async function handleAgentIpcRequest(msg) {
 }
 
 function spawnWorker(name) {
+  process.stderr.write(`[boot-time] tag=worker-spawn name=${name} tMs=${Date.now()}\n`)
   const modulePath = join(PLUGIN_ROOT, 'src', name, 'index.mjs')
   // Per-worker stderr file so cycle1/cycle2/embed/recap diagnostics are
   // captured even when the worker hangs before answering an IPC call.
@@ -368,6 +370,7 @@ function spawnWorker(name) {
 
   proc.on('message', msg => {
     if (msg.type === 'ready') {
+      process.stderr.write(`[boot-time] tag=worker-ready name=${name} tMs=${Date.now()}\n`)
       entry.ready = true
       log(`worker ${name} ready (pid=${proc.pid})`)
       return

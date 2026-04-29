@@ -86,7 +86,7 @@ function runOnce(runIdx, { cpuProf = false } = {}) {
     }
 
     const t0 = Date.now()
-    const proc = spawn('node', [RUN_MCP], {
+    const proc = spawn('bun', [RUN_MCP], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
       cwd: PLUGIN_ROOT,

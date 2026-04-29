@@ -519,6 +519,7 @@ async function requestCycle1(timeoutMs, opts = {}) {
   const start = Date.now();
   const deadline = start + Math.max(0, timeoutMs);
   teeStderr(`[session-start] cycle1 slot=${slot} start graceMs=${graceMs} timeoutMs=${timeoutMs}\n`);
+  teeStderr(`[boot-time] tag=cycle1-entry slot=${slot} tMs=${start}\n`);
 
   // Memory worker is brought up by the parent independently of the channels
   // owner HTTP server. Since v0.1.118 the channels owner publishes
@@ -531,9 +532,12 @@ async function requestCycle1(timeoutMs, opts = {}) {
 
   try {
     let r1 = await requestCycle1Once(deadline, opts);
+    let retry503 = 0;
     while (isMemoryNotReady(r1)) {
       const remaining = deadline - Date.now();
       if (remaining <= READY_POLL_MS + 50) return r1;
+      retry503 += 1;
+      teeStderr(`[boot-time] tag=cycle1-503-retry slot=${slot} attempt=${retry503} tMs=${Date.now()}\n`);
       await new Promise((r) => setTimeout(r, READY_POLL_MS));
       r1 = await requestCycle1Once(deadline, { ...opts, slot: `${slot}:w` });
     }
@@ -587,7 +591,7 @@ async function runRulesPart() {
   try {
     const flagPath = path.join(DATA_DIR, '.first-boot-seen');
     if (!fs.existsSync(flagPath)) {
-      spawn('node', [path.join(PLUGIN_ROOT, 'setup', 'launch.mjs')], {
+      spawn('bun', [path.join(PLUGIN_ROOT, 'setup', 'launch.mjs')], {
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
@@ -615,7 +619,7 @@ async function runRulesPart() {
       try {
         const gitDir = path.join(PLUGIN_ROOT, '.git');
         if (fs.existsSync(gitDir)) {
-          spawn('node', [path.join(PLUGIN_ROOT, 'scripts', 'install-git-hooks.mjs')], {
+          spawn('bun', [path.join(PLUGIN_ROOT, 'scripts', 'install-git-hooks.mjs')], {
             detached: true,
             stdio: 'ignore',
             windowsHide: true,

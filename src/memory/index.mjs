@@ -1290,9 +1290,11 @@ export { MEMORY_INSTRUCTIONS_TEXT as instructions }
 
 export async function init() {
   if (_initialized) return
+  process.stderr.write(`[boot-time] tag=memory-init-start tMs=${Date.now()}\n`)
   await _initRuntime()
   await _startHttpServer()
   if (process.env.MIXDOG_WORKER_MODE === '1' && process.send) {
+    process.stderr.write(`[boot-time] tag=memory-ready tMs=${Date.now()}\n`)
     process.send({ type: 'ready' })
   }
   process.stderr.write(`[memory-service] init() complete (entries unified mode, version=${PLUGIN_VERSION})\n`)

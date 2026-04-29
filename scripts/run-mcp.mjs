@@ -27,6 +27,8 @@ const pluginPkg  = join(pluginRoot, 'package.json');
 const pluginLock = join(pluginRoot, 'bun.lock');
 const pluginNm   = join(pluginRoot, 'node_modules');
 
+process.stderr.write(`[boot-time] tag=run-mcp-entry tMs=${Date.now()}\n`);
+
 // Surface plugin.json/package.json version drift at boot — warn-only.
 try {
   const pluginVer  = JSON.parse(fs.readFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), 'utf8')).version;
@@ -194,6 +196,7 @@ if (!fs.existsSync(probe)) {
 }
 
 const isWin = process.platform === 'win32';
+process.stderr.write(`[boot-time] tag=run-mcp-spawn-server tMs=${Date.now()}\n`);
 const proc = spawn('bun', [serverPath], {
   cwd: pluginRoot,
   stdio: 'inherit',
