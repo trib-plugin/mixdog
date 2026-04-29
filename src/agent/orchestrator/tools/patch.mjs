@@ -424,22 +424,38 @@ async function apply_patch(args, cwd, options = {}) {
   const written = [];
   const skipped = [];
 
+  // Three-stage drift check: mtime first (cheap, catches the common
+  // editor-save case), size next (cheap, no extra IO since statSync
+  // already returned size), content last (expensive readFileSync, only
+  // runs when mtime AND size match — covers coarse-mtime filesystems
+  // (FAT 2s, network mounts) where an external writer hit the same
+  // tick with same-size content). Without the byte-equal final stage
+  // an outside edit that lands inside the mtime resolution window
+  // would silently get overwritten by atomicWrite.
+  const _assertUnchangedSinceRead = (p) => {
+    const curStat = statSync(p.fullPath);
+    if (curStat.mtimeMs > p.preMtime + 1) {
+      throw Object.assign(new Error('file modified since read (mtime drift)'), { __skip: true });
+    }
+    const preBytes = Buffer.byteLength(p.preContent ?? '', 'utf-8');
+    if (curStat.size !== preBytes) {
+      throw Object.assign(new Error('file modified since read (size drift)'), { __skip: true });
+    }
+    if ((p.preContent ?? '') !== readFileSync(p.fullPath, 'utf-8')) {
+      throw Object.assign(new Error('file modified since read (content drift)'), { __skip: true });
+    }
+  };
+
   const persistOne = async (p) => {
     const t0 = Date.now();
     if (p.kind === 'delete') {
-      const curStat = statSync(p.fullPath);
-      if (curStat.mtimeMs > p.preMtime + 1) {
-        throw Object.assign(new Error('file modified since read (mtime drift)'), { __skip: true });
-      }
+      _assertUnchangedSinceRead(p);
       unlinkSync(p.fullPath);
     } else if (p.kind === 'create') {
       mkdirSync(dirname(p.fullPath), { recursive: true });
       await atomicWrite(p.fullPath, p.newContent, { sessionId: options?.sessionId });
     } else {
-      const curStat = statSync(p.fullPath);
-      if (curStat.mtimeMs > p.preMtime + 1) {
-        throw Object.assign(new Error('file modified since read (mtime drift)'), { __skip: true });
-      }
+      _assertUnchangedSinceRead(p);
       await atomicWrite(p.fullPath, p.newContent, { sessionId: options?.sessionId });
     }
     process.stderr.write(`[patch] applied path=${p.displayPath} hunks=${p.hunks_applied} ms=${Date.now() - t0}\n`);
