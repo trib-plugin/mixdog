@@ -1,5 +1,7 @@
 # Tool Routing
 
+**HARD RULE — file/code/memory/web lookup MUST start with `recall` (past) / `search` (web) / `explore` (codebase). Reaching for `bash` / `grep` / `glob` / `read` / `find_symbol` as the very first move on an unknown target is a violation. Shell and low-level file tools are reserved for known-coordinate work — exact path + line range or a precise literal pattern.**
+
 First move — NARROW THE SCOPE before calling. A tool aimed at "the module responsible for X" finds it; a tool aimed at "X" returns noise.
 
 ## Batching — #1 iter saver

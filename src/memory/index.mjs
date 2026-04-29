@@ -1051,7 +1051,7 @@ const TOOL_DEFS = [
     title: 'Recall',
     aiWrapped: true,
     annotations: { title: 'Recall', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Past context from the memory store. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. External web → `search`, codebase → `explore`.',
+    description: 'FIRST CHOICE for past project / session memory — never start with grep / read / bash for memory questions. Past context from the memory store. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. External web → `search`, codebase → `explore`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1068,7 +1068,7 @@ const TOOL_DEFS = [
     title: 'Explore',
     aiWrapped: true,
     annotations: { title: 'Explore', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: 'Internal codebase search. Local filesystem only — not web, not memory. `query`: single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Omit `cwd` for the current workspace; set `cwd` only when the user explicitly names that root/path. Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.',
+    description: 'FIRST CHOICE for codebase / file / structure lookup when location is uncertain — never start with grep / read / bash / find_symbol on an unknown target. Internal codebase search. Local filesystem only — not web, not memory. `query`: single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Omit `cwd` for the current workspace; set `cwd` only when the user explicitly names that root/path. Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.',
     inputSchema: {
       type: 'object',
       properties: {

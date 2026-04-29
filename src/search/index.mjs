@@ -922,7 +922,7 @@ const toolDefinitions = [
     name: 'search',
     title: 'Search',
     aiWrapped: true,
-    description: 'External web search, URL scrape, GitHub code/issues/repos. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes; URL → scrape, `owner/repo` → GitHub) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, codebase → `explore`.',
+    description: 'FIRST CHOICE for external web / URL / GitHub questions — never start with bash / curl / WebFetch when the query targets the open web. External web search, URL scrape, GitHub code/issues/repos. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes; URL → scrape, `owner/repo` → GitHub) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, codebase → `explore`.',
     inputSchema: {
       type: 'object',
       properties: {
