@@ -229,7 +229,15 @@ export function trimMessages(messages, budgetTokens, opts) {
         }
     }
     if (total + baseCost <= budgetTokens) {
-        return sanitizeToolPairs([...system, ...middle, lastMsg]);
+        const sanitized = sanitizeToolPairs([...system, ...middle, lastMsg]);
+        // sanitizeToolPairs may insert stub tool messages for surviving
+        // assistant tool_calls whose results were trimmed away. Those
+        // stubs add tokens the Pass 2 accounting did not see, so the
+        // returned transcript can technically exceed budgetTokens.
+        // Verify here; fall through to Pass 3 when the post-sanitize
+        // total is over budget.
+        const sanitizedTotal = estimateMessagesTokens(sanitized);
+        if (sanitizedTotal <= budgetTokens) return sanitized;
     }
     // --- Pass 3: drop oldest non-system messages (preserving tool-call pairs) ---
     let remaining = budgetTokens - baseCost;

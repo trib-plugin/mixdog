@@ -1279,13 +1279,25 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             const provider = getProvider(session.provider);
             if (!provider)
                 throw new Error(`Provider "${session.provider}" not available`);
+            // Cap caller-supplied / prefetched context so an oversized
+            // payload can't blow the session token budget before the
+            // first model call. 32 KB ~ 8k tokens at the 4 B/tok
+            // working average; longer is silently truncated with a
+            // visible marker so the model still sees the prefix and
+            // a hint about the cut.
+            const _CTX_CHAR_CAP = 32 * 1024;
+            const _capCtx = (text) => {
+                if (typeof text !== 'string') return '';
+                if (text.length <= _CTX_CHAR_CAP) return text;
+                return `${text.slice(0, _CTX_CHAR_CAP)}\n\n... [context truncated; original ${text.length} chars]`;
+            };
             if (context) {
-                session.messages.push({ role: 'user', content: `Additional context:\n\n${context}` });
+                session.messages.push({ role: 'user', content: `Additional context:\n\n${_capCtx(context)}` });
                 session.messages.push({ role: 'assistant', content: 'Noted.' });
             }
             const prefetchedContext = await _tryBridgePrefetchContext(session, prompt, cwdOverride || session.cwd, onToolCall);
             if (prefetchedContext) {
-                session.messages.push({ role: 'user', content: `Additional context:\n\n${prefetchedContext}` });
+                session.messages.push({ role: 'user', content: `Additional context:\n\n${_capCtx(prefetchedContext)}` });
                 session.messages.push({ role: 'assistant', content: 'Noted.' });
             }
             const beforeCount = session.messages.length + 1;

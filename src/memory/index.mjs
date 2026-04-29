@@ -128,7 +128,24 @@ async function runProxyMode(port) {
         signal: controller.signal,
       })
       clearTimeout(timer)
-      return await res.json()
+      // Normalise the upstream response so the proxy always emits a
+      // valid MCP envelope. Older /api/tool versions could return
+      // bare {text|error|ok} shapes, which broke MCP clients that
+      // require a content[] array. Pass through anything already in
+      // canonical form; wrap legacy / error / non-200 shapes.
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !json) {
+        const detail = json ? JSON.stringify(json).slice(0, 500) : `HTTP ${res.status}`
+        return { content: [{ type: 'text', text: `proxy error: ${detail}` }], isError: true }
+      }
+      if (Array.isArray(json.content)) return json
+      const fallbackText = typeof json === 'string'
+        ? json
+        : (json.text || json.error || json.message || JSON.stringify(json))
+      return {
+        content: [{ type: 'text', text: String(fallbackText) }],
+        isError: Boolean(json.error || json.isError),
+      }
     } catch (err) {
       return { content: [{ type: 'text', text: `proxy error: ${err.message}` }], isError: true }
     }
