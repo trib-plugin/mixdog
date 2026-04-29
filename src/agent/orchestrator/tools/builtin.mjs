@@ -2910,7 +2910,12 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // line-number prefixing.
                 let out;
                 if (rendered.length > READ_MAX_OUTPUT_BYTES) {
-                    out = rendered.slice(0, READ_MAX_OUTPUT_BYTES) + `\n\n... [output truncated at ${Math.round(READ_MAX_OUTPUT_BYTES/1024)} KB] ...`;
+                    const linesShown = (() => {
+                        const slice = rendered.slice(0, READ_MAX_OUTPUT_BYTES);
+                        return slice.split('\n').length;
+                    })();
+                    const nextOffset = offset + linesShown;
+                    out = rendered.slice(0, READ_MAX_OUTPUT_BYTES) + `\n\n... [output truncated at ${Math.round(READ_MAX_OUTPUT_BYTES/1024)} KB] ...\nnext_call: read({path, offset:${nextOffset}, limit:${limit}})`;
                 } else {
                     out = rendered;
                 }
@@ -3212,7 +3217,15 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // Apply offset before head_limit so pagination is predictable:
                 // page 1 = offset 0, page 2 = offset + head_limit, etc.
                 const windowed = offset > 0 ? allLines.slice(offset) : allLines;
-                const lines = headLimit === Infinity ? windowed : windowed.slice(0, headLimit);
+                // Hard cap for content-mode grep when head_limit is unset/0/Infinity.
+                // Without this a `grep -n` with no head_limit on a busy term would
+                // dump every match into the LLM context. Match CC GrepTool's
+                // 250-default semantic at the floor; explicit head_limit overrides.
+                const GREP_CONTENT_HARD_CAP = 1000;
+                const effectiveHeadLimit = headLimit === Infinity
+                    ? (outputMode === 'content' ? GREP_CONTENT_HARD_CAP : Infinity)
+                    : headLimit;
+                const lines = effectiveHeadLimit === Infinity ? windowed : windowed.slice(0, effectiveHeadLimit);
                 // Unify separators in the path portion so Windows results
                 // don't surface mixed `C:/.../foo\bar.mjs` lines.
                 const normalized = lines.map(normalizeGrepLine);
@@ -3485,10 +3498,26 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const root = lines[0];
             const body = lines.slice(1);
             const windowed = offset > 0 ? body.slice(offset) : body;
-            const sliced = headLimit > 0 ? windowed.slice(0, headLimit) : windowed;
+            // Tree branch line cap. Mirrors CC LSTool's truncated-flag pattern
+            // so a default-`list mode:tree` over a populated repo cannot dump
+            // 50k branch lines into the LLM context. Explicit head_limit > 0
+            // still wins; this is the floor for the unset-or-0 case.
+            const TREE_BRANCH_LINE_CAP = 500;
+            const branchLimit = headLimit > 0 ? headLimit : TREE_BRANCH_LINE_CAP;
+            const sliced = windowed.slice(0, branchLimit);
             const outLines = [root, ...sliced];
-            if (windowed.length > sliced.length) outLines.push('... (truncated, increase head_limit)');
-            const out = outLines.join('\n');
+            if (windowed.length > sliced.length) {
+                outLines.push(`... +${windowed.length - sliced.length} more entries (raise head_limit or narrow path)`);
+            }
+            // Char cap on the joined output. Even bounded line counts can still
+            // exceed a sane context budget when names are long; truncate at 50KB
+            // to match CC's GlobTool / GrepTool spill threshold and append a
+            // pagination hint so the caller knows how to widen.
+            const TREE_OUTPUT_CHAR_CAP = 50_000;
+            let out = outLines.join('\n');
+            if (out.length > TREE_OUTPUT_CHAR_CAP) {
+                out = out.slice(0, TREE_OUTPUT_CHAR_CAP) + `\n... [output truncated at ${Math.round(TREE_OUTPUT_CHAR_CAP/1024)} KB; narrow path or lower depth]`;
+            }
             _cacheSet(cacheKey, out, { scopes: [fullPath] });
             return out;
         }

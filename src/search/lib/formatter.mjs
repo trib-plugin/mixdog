@@ -12,13 +12,21 @@ function formatSearchResults(data) {
     return '(no search results)'
   }
 
+  // Per-field caps. Without these a single chunky search hit (a long
+  // README or a multi-paragraph excerpt) can outweigh the rest of the
+  // page combined; CC keeps results short by capping snippet/content at
+  // formatter time. title 200 chars covers ~99th percentile real titles;
+  // snippet 600 chars carries enough context to decide whether to scrape.
+  const TITLE_CAP = 200
+  const SNIPPET_CAP = 600
+  const clip = (text, cap) => text.length > cap ? `${text.slice(0, cap)}…` : text
   return results
     .map((r, i) => {
       const num = i + 1
-      const title = r.title || '(no title)'
+      const title = clip(r.title || '(no title)', TITLE_CAP)
       const url = r.url || ''
       const date = r.publishedDate || ''
-      const snippet = (r.snippet || '').trim()
+      const snippet = clip((r.snippet || '').trim(), SNIPPET_CAP)
 
       const urlPart = [url, date].filter(Boolean).join(' — ')
       const lines = [`${num}. ${title}`]

@@ -1215,10 +1215,15 @@ function _formatCallerReferences(graph, symbol, referenceText, { limit = 40 } = 
     return ['# call sites', ...head, ...overflow].join('\n');
   }
 
+  const NON_CALL_FILE_CAP = 40;
   const nonCallFiles = [...new Set(detailed.map((entry) => entry.file))].sort();
+  const head = nonCallFiles.slice(0, NON_CALL_FILE_CAP);
+  const overflow = nonCallFiles.length > head.length
+    ? `\n... +${nonCallFiles.length - head.length} more files`
+    : '';
   return [
     '(no call sites)',
-    nonCallFiles.length ? `# non-call references\n${nonCallFiles.join('\n')}` : '',
+    nonCallFiles.length ? `# non-call references\n${head.join('\n')}${overflow}` : '',
   ].filter(Boolean).join('\n');
 }
 
