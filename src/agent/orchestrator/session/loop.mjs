@@ -50,17 +50,34 @@ const ROLE_ITERATION_CAPS = Object.freeze({
 // so provider.send sees a valid transcript instead of leaking the 400 to
 // the user. Repair runs every iteration but is a no-op on healthy paths.
 function _ensureTranscriptPairing(msgs, sessionId) {
+    // Walk backwards to find the last assistant message that emitted
+    // tool_use, then validate that EVERY id has a matching tool result
+    // strictly after it. Three failure shapes to catch:
+    //   (a) assistant{a,b} — tail is the assistant itself, no tools yet.
+    //   (b) assistant{a,b} → tool{a} — partial: b never got a result.
+    //   (c) assistant{a} → tool{a} → assistant{b} — chained dangle.
+    // Earlier shape (last !== 'assistant' → break) only caught (a).
+    // When validation fails, drop the offending assistant + every message
+    // after it: those tail messages are an orphaned suffix that cannot
+    // form a valid request body.
     let popped = 0;
     while (msgs.length > 0) {
-        const last = msgs[msgs.length - 1];
-        if (last?.role !== 'assistant'
-            || !Array.isArray(last.toolCalls)
-            || last.toolCalls.length === 0) break;
-        const ids = last.toolCalls.map(c => c.id);
-        const matched = ids.every(id => msgs.some(m => m.role === 'tool' && m.toolCallId === id));
+        let lastAssistantIdx = -1;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+            const m = msgs[i];
+            if (m?.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length > 0) {
+                lastAssistantIdx = i;
+                break;
+            }
+        }
+        if (lastAssistantIdx === -1) break;
+        const ids = msgs[lastAssistantIdx].toolCalls.map(c => c.id);
+        const tail = msgs.slice(lastAssistantIdx + 1);
+        const matched = ids.every(id => tail.some(m => m.role === 'tool' && m.toolCallId === id));
         if (matched) break;
-        msgs.pop();
-        popped += 1;
+        const removed = msgs.length - lastAssistantIdx;
+        msgs.splice(lastAssistantIdx);
+        popped += removed;
     }
     if (popped > 0 && sessionId) {
         try { process.stderr.write(`[transcript-repair] sess=${sessionId} popped=${popped} dangling assistant tool_use\n`); } catch {}
