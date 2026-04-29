@@ -486,19 +486,22 @@ async function apply_patch(args, cwd, options = {}) {
   };
 
   const rollbackOne = async (p) => {
-    // Best-effort reversal. For modify/delete we have `preContent`; for
-    // create we unlink the newly-written file. Rollback failures are
-    // surfaced in the output so the operator knows which files are in a
-    // transient bad state.
+    // Best-effort reversal. For modify/delete we restore the captured
+    // pre-patch bytes; for create we unlink the newly-written file.
+    // Rollback failures are surfaced in the output so the operator
+    // knows which files are in a transient bad state.
     if (p.kind === 'create') {
       try { unlinkSync(p.fullPath); } catch (err) {
         if (err?.code !== 'ENOENT') throw err;
       }
     } else {
-      // modify / delete — restore original bytes. For delete, this
-      // recreates the file; for modify, it rewrites with the pre-patch
-      // content. atomicWrite is crash-safe here too.
-      await atomicWrite(p.fullPath, p.preContent ?? '', { sessionId: options?.sessionId });
+      // modify / delete — restore original bytes via the raw Buffer
+      // when available so invalid-UTF-8 content survives a rollback
+      // intact. utf-8 string fallback only kicks in for legacy plan
+      // rows that lack preBytes (no real path in current phase 1
+      // since both branches now cache the Buffer).
+      const restoreData = p.preBytes ?? p.preContent ?? '';
+      await atomicWrite(p.fullPath, restoreData, { sessionId: options?.sessionId });
     }
   };
 
