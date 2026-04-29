@@ -1560,9 +1560,9 @@ export const CODE_GRAPH_TOOL_DEFS = [
       type: 'object',
       properties: {
         mode: { type: 'string', enum: ['overview', 'imports', 'dependents', 'related', 'impact', 'symbols', 'find_symbol', 'references', 'callers'], description: 'Graph query mode.' },
-        file: { type: 'string', description: 'Path to the target file. Required for imports/dependents/related/impact/symbols. Optional for references/callers (narrows language/source file when ambiguous). Ignored by overview/find_symbol.' },
-        symbol: { type: 'string', description: 'Symbol name. Required for find_symbol/references/callers; optional for impact (limits analysis to that symbol).' },
-        language: { type: 'string', description: 'Optional language filter for find_symbol/references/callers only when known; omit if unsure.' },
+        file: { type: 'string', description: 'Target file path. Required for imports/dependents/related/impact/symbols. Optional for references/callers. Ignored by overview/find_symbol.' },
+        symbol: { type: 'string', description: 'Symbol name. Required for find_symbol/references/callers; optional for impact.' },
+        language: { type: 'string', description: 'Optional language filter for find_symbol/references/callers; omit if unsure.' },
         limit: { type: 'number', description: 'Optional result cap for find_symbol. Default 20, max 50.' },
       },
       required: ['mode'],

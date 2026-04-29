@@ -690,7 +690,7 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                path: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Single file path string (`"a.mjs"`) or array of paths for parallel multi-file read (`["a.mjs","b.mjs"]`).' },
+                path: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'File path string, or array of paths for parallel multi-file read.' },
                 mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'], description: 'full (default) | head | tail | count.' },
                 n: { type: 'number', description: 'Lines for head / tail mode. Default 20.' },
                 offset: { type: 'number', description: 'Start line for full mode (0-based).' },
@@ -725,7 +725,7 @@ export const BUILTIN_TOOLS = [
                         required: ['old_string', 'new_string'],
                     },
                     minItems: 1,
-                    description: 'Array of edits to apply. Each item may specify its own `path`; if omitted, falls back to the top-level `path`. Same-file edits apply sequentially; different-file edits run in parallel.',
+                    description: 'Array of edits. Each may specify its own `path`; otherwise reuses top-level `path`. Same-file edits sequential, cross-file parallel.',
                 },
             },
             required: [],
@@ -752,7 +752,7 @@ export const BUILTIN_TOOLS = [
                         required: ['path', 'content'],
                     },
                     minItems: 1,
-                    description: 'Batch whole-file writes. Each item writes one file. Use this when you need to create/replace several files in one call.',
+                    description: 'Batch whole-file writes. Use when creating/replacing several files in one call.',
                 },
             },
             required: [],
@@ -768,10 +768,10 @@ export const BUILTIN_TOOLS = [
             properties: {
                 command: { type: 'string', description: 'Shell command.' },
                 timeout: { type: 'number', description: 'ms, default 30000, max 600000.' },
-                merge_stderr: { type: 'boolean', description: 'Merge stderr into stdout (legacy 2>&1 behaviour). Default false: stderr is surfaced as a separate `[stderr]` block.' },
+                merge_stderr: { type: 'boolean', description: 'Merge stderr into stdout (2>&1). Default false: stderr surfaced as separate `[stderr]` block.' },
                 run_in_background: { type: 'boolean', description: 'Run command in the background and return a job id immediately. Use for long builds/tests/servers.' },
-                persistent: { type: 'boolean', description: 'Keep shell state (cwd, env, venv, functions) across calls. The bridge reuses one shell per session for all `persistent:true` calls.' },
-                session_id: { type: 'string', description: 'Explicit persistent shell session id to reuse. Prefer `persistent:true` unless you need to target a specific shell.' },
+                persistent: { type: 'boolean', description: 'Keep shell state (cwd, env, venv, functions) across calls. One shared shell per session.' },
+                session_id: { type: 'string', description: 'Explicit persistent shell session id to reuse. Prefer `persistent:true` unless targeting a specific shell.' },
             },
             required: ['command'],
         },
@@ -799,9 +799,9 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Single regex string (use `|` for alternation: `"foo|bar"`) or array of patterns (OR-joined: `["foo","bar"]`).' },
+                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Regex string (use `|` for alternation) or array of patterns (OR-joined).' },
                 path: { type: 'string', description: 'Search root. Default: cwd.' },
-                glob: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Single glob filter (use `{a,b}` brace expansion: `"**/*.{mjs,json}"`) or array of glob filters.' },
+                glob: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob filter (`{a,b}` brace expansion supported) or array of filters.' },
                 output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'] },
                 head_limit: { type: 'number', description: 'Default 250; 0 = unlimited.' },
                 offset: { type: 'number', description: 'Skip N entries before head_limit.' },
@@ -824,8 +824,8 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Single glob string (`"**/*.mjs"` or with brace expansion `"**/*.{mjs,json}"`) or array of glob patterns (`["**/*route*.mjs","**/*policy*.json"]`).' },
-                path: { type: 'string', description: 'Base dir. Default: cwd. Capped at 100. All result rows are emitted as absolute paths.' },
+                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob string (`{a,b}` brace expansion supported) or array of glob patterns.' },
+                path: { type: 'string', description: 'Base dir. Default: cwd. Result rows emitted as absolute paths.' },
                 head_limit: { type: 'number', description: 'Max file paths to return. Default 100; 0 = unlimited.' },
                 offset: { type: 'number', description: 'Skip N file paths before applying head_limit.' },
             },
@@ -840,7 +840,7 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Root directory. Defaults to cwd. Supports `~` expansion. All result rows (list/tree/find, every depth) are emitted as absolute paths.' },
+                path: { type: 'string', description: 'Root directory. Default cwd. Supports `~`. All result rows emitted as absolute paths.' },
                 mode: { type: 'string', enum: ['list', 'tree', 'find'], description: 'list (default) | tree | find.' },
                 depth: { type: 'number', description: 'Recursion depth. list: 1 default, max 10. tree: 3 default, max 6.' },
                 hidden: { type: 'boolean', description: 'Include dotfiles (`.foo`). Default false.' },

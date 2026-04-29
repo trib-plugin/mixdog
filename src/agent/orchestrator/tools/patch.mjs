@@ -550,10 +550,10 @@ export const PATCH_TOOL_DEFS = [
     inputSchema: {
       type: 'object',
       properties: {
-        patch: { type: 'string', description: 'Unified diff content. Single-file or multi-file. Supports git-style `a/` / `b/` header prefixes and `/dev/null` for create/delete entries.' },
-        base_path: { type: 'string', description: 'Directory to resolve relative paths from the diff headers against. Default: current working directory.' },
-        dry_run: { type: 'boolean', description: 'Preview which files would change without writing. Shows first failed hunk per failing file. Default false.' },
-        reject_partial: { type: 'boolean', description: 'If any file\'s hunk fails, reject the whole patch and write nothing (atomic). Default true. Set false to apply every successful file even when others failed.' },
+        patch: { type: 'string', description: 'Unified diff. Single or multi-file. Git-style `a/`/`b/` headers; `/dev/null` for create/delete.' },
+        base_path: { type: 'string', description: 'Directory to resolve diff-header paths against. Default cwd.' },
+        dry_run: { type: 'boolean', description: 'Preview without writing. Shows first failed hunk per file. Default false.' },
+        reject_partial: { type: 'boolean', description: 'If any hunk fails, reject the whole patch (atomic). Default true; false to apply each successful file independently.' },
       },
       required: ['patch'],
     },

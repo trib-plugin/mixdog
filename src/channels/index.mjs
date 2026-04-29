@@ -1664,7 +1664,7 @@ const TOOL_DEFS = [
     name: "reply",
     title: "Discord Reply",
     annotations: { title: "Discord Reply", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    description: "Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).",
+    description: "Reply on the messaging channel. Pass chat_id from the inbound message. Optional: reply_to, files, embeds, components.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1697,7 +1697,7 @@ const TOOL_DEFS = [
     name: "react",
     title: "Reaction",
     annotations: { title: "Reaction", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: "Add an emoji reaction to a message. Unicode emoji work directly; custom emoji need the <:name:id> form.",
+    description: "Add an emoji reaction to a message. Unicode direct; custom emoji as <:name:id>.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1737,7 +1737,7 @@ const TOOL_DEFS = [
     name: "download_attachment",
     title: "Download Attachment",
     annotations: { title: "Download Attachment", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: "Download attachments from a message to the local inbox. Use after fetch shows a message has attachments (marked with +Natt). Returns file paths ready to Read.",
+    description: "Download attachments from a message to the local inbox. Returns file paths ready to Read.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1751,7 +1751,7 @@ const TOOL_DEFS = [
     name: "fetch",
     title: "Fetch",
     annotations: { title: "Fetch", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
+    description: "Fetch recent messages from a channel. Returns oldest-first with message IDs.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1791,7 +1791,7 @@ const TOOL_DEFS = [
     name: "schedule_control",
     title: "Schedule Control",
     annotations: { title: "Schedule Control", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Defer or skip a schedule. Use "defer" to suppress for N minutes (default 30), or "skip_today" to suppress for the rest of the day.',
+    description: 'Defer or skip a schedule. action: "defer" suppresses for N minutes (default 30) or "skip_today" for the rest of the day.',
     inputSchema: {
       type: "object",
       properties: {
@@ -1806,7 +1806,7 @@ const TOOL_DEFS = [
     name: "activate_channel_bridge",
     title: "Activate Channel Bridge",
     annotations: { title: "Activate Channel Bridge", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: "Activate or deactivate the channel bridge. When active, inbound messages trigger typing indicators, emoji reactions, and auto-forwarding of transcript output to Discord. When inactive, only direct MCP tool calls (reply, fetch) work.",
+    description: "Activate or deactivate the channel bridge. Active: inbound messages trigger typing/reactions and auto-forward transcript to Discord. Inactive: only direct MCP tool calls work.",
     inputSchema: {
       type: "object",
       properties: {

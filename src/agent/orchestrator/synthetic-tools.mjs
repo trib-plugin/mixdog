@@ -18,7 +18,7 @@
 export const SYNTHETIC_TOOL_DEFS = Object.freeze([
     {
         name: 'memory_search',
-        description: 'Search long-term memory. Returns ranked root entries matching the query. Supports exact time filtering via `period`, pagination via `offset`, alternate sort order, and child-member expansion. Pass `query` as an array to fan out across multiple angles in a single tool call — output groups results per query with `### Query: <text>` headers. Do not repeat an identical memory_search call; if the first result is not useful, change query/period/limit or synthesize.',
+        description: 'Search long-term memory. Returns ranked root entries. `period` for time filter, `offset` for paging, `sort` for order, `includeMembers` for chunk children. Pass `query` as array to fan out (results grouped per query).',
         inputSchema: {
             type: 'object',
             properties: {
@@ -27,7 +27,7 @@ export const SYNTHETIC_TOOL_DEFS = Object.freeze([
                         { type: 'string', minLength: 1 },
                         { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
                     ],
-                    description: 'Natural-language query, or an array of queries to fan out in one tool call. Hybrid text + vector search per entry.',
+                    description: 'NL query, or array of queries to fan out in one call. Hybrid text + vector search.',
                 },
                 limit: {
                     type: 'number',
@@ -57,7 +57,7 @@ export const SYNTHETIC_TOOL_DEFS = Object.freeze([
     },
     {
         name: 'web_search',
-        description: 'Search the web, GitHub, or restricted domains. Supports plain web search, site filters, search type (web/news/images), and GitHub search/read (repositories, code, issues, files). For official/domain web searches, pass only `keywords`, optional `site`, optional `type`; never include GitHub fields. For GitHub read ops (file/repo/issue/pulls), omit `keywords` and pass `owner`+`repo` (+ `path`/`number` as needed). Omit unused optional fields entirely; empty strings and zero placeholders are invalid.',
+        description: 'Search web / GitHub / restricted domains. Web search: pass `keywords` (+ optional `site`, `type`). GitHub read ops (file/repo/issue/pulls): omit keywords and pass `owner`+`repo` (+ path/number). Omit unused optional fields entirely.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -66,7 +66,7 @@ export const SYNTHETIC_TOOL_DEFS = Object.freeze([
                         { type: 'string', minLength: 1 },
                         { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
                     ],
-                    description: 'Search query, or an array of queries to fan out in ONE call (parallel backend, results grouped with `### Query: <text>` headers). Required unless running a GitHub read op (file/repo/issue/pulls). For GitHub read ops, omit this field entirely instead of sending an empty string. Use array form only for genuinely distinct angles — do NOT split one intent into reworded variants.',
+                    description: 'Query string, or array for parallel fan-out. Required unless running a GitHub read op (file/repo/issue/pulls); for those, omit entirely.'
                 },
                 site: {
                     type: 'string',
