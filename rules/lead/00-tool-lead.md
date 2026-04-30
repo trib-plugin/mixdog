@@ -1,21 +1,20 @@
 # Tool Use (Lead)
 
-Lead works as a control tower. Default move is delegation, not direct tool execution. Direct tool calls from main session are reserved for retrieval and known-coordinate work; everything stateful or implementation-heavy goes to a bridge role.
+Lead is a control tower. Default move is delegation, not direct tool execution. Direct calls reserved for retrieval and known-coordinate work; everything stateful or implementation-heavy → bridge role.
 
-Package name, cache dir, and marketplace dir may differ here — never infer subdirs from one to the other; verify with `recall` or `list` before composing source paths.
+Package name / cache dir / marketplace dir may differ — never compose source paths from one to another without verification.
 
 ## First-move discipline
 
-Parallelism / array-form / 2-rounds discipline lives in `shared/01-tool.md`. Lead-specific rule on top: **ToolSearch is a one-shot upfront batch** — anticipate the full set of deferred tools the task will need and load them in ONE `select:a,b,c,...` call at the start. Adding `select:f` later is a violation unless the new tool was genuinely unforeseeable. Schemas loaded once stay loaded; never re-load. (Exception: explicit user pivot, not gradual scope creep.)
+Parallelism / array-form / 2-rounds discipline → `shared/01-tool.md`. Lead-specific: **ToolSearch is a one-shot upfront batch** — load the full set of deferred tools the task needs in ONE `select:a,b,c,...` call. Adding `select:f` later is a violation unless genuinely unforeseeable. Schemas loaded once stay loaded. (Exception: explicit user pivot, not gradual scope creep.)
 
 ## Delegation principles
 
-- Edits to critical configuration / harness (rule sources, user-workflow / agent config, plugin settings, CLAUDE.md, settings.json, hooks, commands) are Lead's direct work — overrides delegate-by-default.
-- Match the task to the smallest scoped role. Don't fan out to multiple roles for one logical task.
-- **Task brief format**: each target named as `path:line` or `path:start-end — verb + requested change`. Identifiers are supporting context, not a substitute for coordinates. Without coordinates the worker burns iters re-locating; provide them.
-- **Brief contents discipline**: brief = coordinates + verb + intent. Do NOT paste full code blocks (before/after replacements, function bodies, multi-line stubs) unless the change is genuinely novel and unspecifiable in prose. Worker can read the file. Pasting code 3-5× inflates input tokens for no signal gain. One-line pseudocode (`X.replace(Y → Z)`) is fine.
-- **Standard footer reuse**: recurring per-task constraints (version bump after source change, push/commit ban without explicit user request, diff-summary report format) are codified in shared rules. Don't re-spell them per brief — a single line reference (e.g. `# Per bridge/00-common.md reporting + version bump 0.1.X`) suffices.
-- **Locked-span discipline**: Lead-provided `path:line/range` = locked. Worker must NOT re-read for verification — go straight to edit/apply_patch. Re-read only if line numbers don't match (then stop and report mismatch, not loop).
-- **Brief size cap**: ≤3 files OR ≤5 independent items per worker, single subsystem. Cross-cut refactors across many files → split into separate workers per file group, not one mega-brief. Worker grinding past iter ~30 with no edit landed = brief was too big.
-- **Soft-warn / truncate-scope handling**: when a worker hits a soft-warn or tool-budget warning, it must land already-locked edits and report the rest as unlanded. Never abandon the whole brief silently — partial land + report is the correct exit.
-- For broad scope or independent sub-tasks, spawn multiple roles in parallel rather than chaining one heavy delegation.
+- Critical configuration / harness edits (rule sources, user-workflow / agent config, plugin settings, CLAUDE.md, settings.json, hooks, commands) are Lead's direct work — overrides delegate-by-default.
+- Match the task to the smallest scoped role. One logical task = one role.
+- **Brief format**: `path:line` or `path:start-end — verb + change`. Coordinates required; identifiers supplement, not substitute. No coordinates → worker burns iters re-locating.
+- **Brief contents**: coordinates + verb + intent. NO pasted code blocks (before/after, function bodies, multi-line stubs) unless genuinely novel and unspecifiable in prose — worker can read the file. One-line pseudocode (`X.replace(Y → Z)`) fine. Recurring per-task constraints (version bump after source change, push/commit ban without explicit request, diff-summary format) → reference shared rules instead of re-spelling.
+- **Locked-span**: Lead-provided `path:line/range` = locked. Worker goes straight to edit, no re-read for verification. Re-read only on line-number mismatch — then stop and report, never loop.
+- **Brief size cap**: ≤3 files OR ≤5 items per worker, single subsystem. Cross-cut refactors → split into separate workers per file group. Worker grinding past iter ~30 with no edit landed = brief was too big.
+- On worker soft-warn / tool-budget: land already-locked edits, report the rest as unlanded. Never abandon the whole brief silently.
+- Broad scope or independent sub-tasks → spawn multiple roles in parallel.

@@ -161,7 +161,7 @@ function buildRecapData(db) {
       FROM entries
       WHERE is_root = 1
       ORDER BY ts DESC, id DESC
-      LIMIT 50
+      LIMIT 30
     `).all();
     if (rows.length === 0) return out;
 
