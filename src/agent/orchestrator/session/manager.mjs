@@ -248,7 +248,7 @@ export const BRIDGE_DENY_TOOLS = Object.freeze([
     // public:false helper tools for the main session, not bridge-agent work
     // tools; stripping them from Pool B/C keeps the shared BP_1 shard lean and
     // avoids exposing chain-spawn adjacent control planes.
-    'get_workflow', 'get_workflows', 'set_prompt', 'skill_suggest',
+    'get_workflow', 'get_workflows', 'set_prompt',
     // Main-session convenience aliases. Bridge roles already know to use
     // `code_graph` / `find_symbol` directly, so carrying alias-only tools
     // here just bloats the shared BP_1 shard without adding capability.

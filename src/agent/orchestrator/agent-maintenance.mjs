@@ -1,6 +1,5 @@
 import { loadConfig, saveConfig } from './config.mjs';
 import { getTrajectoryDb, getTrajectoryStats, findRepeatingPatterns } from './trajectory.mjs';
-import { getSkillSuggestionReport } from './skill-suggest.mjs';
 import { recommendToolLoopGuardFromTrace, saveToolLoopGuardRecommendation } from './tool-loop-guard-recommend.mjs';
 
 let _timer = null;
@@ -79,9 +78,4 @@ export async function runAgentMaintenance() {
     process.stderr.write(`[agent-maintenance] ${patterns.length} repeating pattern(s) detected\n`);
   }
 
-  // 3. Skill suggestion report (logged, not auto-created)
-  if (config.skillSuggest?.autoDetect && patterns.length > 0) {
-    const report = getSkillSuggestionReport(db);
-    process.stderr.write(`[agent-maintenance] skill report: ${report}\n`);
-  }
 }

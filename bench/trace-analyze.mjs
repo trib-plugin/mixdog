@@ -57,7 +57,7 @@ const KNOWN_TOOLS = new Set([
   'create_session', 'close_session', 'list_sessions', 'list_models',
   'reload_config', 'activate_channel_bridge', 'bridge', 'bridge_send', 'bridge_spawn',
   'schedule_status', 'trigger_schedule', 'schedule_control',
-  'skills_list', 'skill_view', 'skill_execute', 'skill_suggest',
+  'skills_list', 'skill_view', 'skill_execute',
   'web_search', 'set_prompt', 'get_workflow', 'get_workflows',
 ])
 

@@ -277,12 +277,6 @@ const TOOLS = [
     },
   },
   {
-    name: 'skill_suggest',
-    public: false,
-    description: 'Analyze trajectory data and suggest skills from repeating patterns.',
-    inputSchema: { type: 'object', properties: {} },
-  },
-  {
     name: 'bridge_spawn',
     title: 'Spawn Bridge Agent',
     public: false,
@@ -669,17 +663,6 @@ export async function handleToolCall(name, args, opts = {}) {
         const key = args.key || `p${++_promptSeq}`;
         _promptStore.set(key, content);
         return ok(`Stored as '${key}' (${content.length} chars)`);
-      }
-
-      case 'skill_suggest': {
-        let db = null;
-        try {
-          const { getTrajectoryDb } = await import('./orchestrator/trajectory.mjs');
-          db = getTrajectoryDb();
-        } catch { /* trajectory module not available yet */ }
-        const { getSkillSuggestionReport } = await import('./orchestrator/skill-suggest.mjs');
-        const report = db ? getSkillSuggestionReport(db) : 'Trajectory store not initialized.';
-        return ok(report);
       }
 
       case 'bridge': {

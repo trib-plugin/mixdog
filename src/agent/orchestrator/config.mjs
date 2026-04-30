@@ -241,7 +241,6 @@ export function loadConfig() {
                 maintenance: { ...DEFAULT_MAINTENANCE, ...rawMaint },
                 agentMaintenance: { enabled: true, interval: '1h', ...raw.agentMaintenance },
                 trajectory: { enabled: true, ...raw.trajectory },
-                skillSuggest: { autoDetect: true, ...raw.skillSuggest },
                 // Top-level extension blocks preserved through save/load so
                 // future keys round-trip without schema updates here.
                 bridge: raw.bridge && typeof raw.bridge === 'object' ? raw.bridge : {},
@@ -258,7 +257,6 @@ export function loadConfig() {
         maintenance: { ...DEFAULT_MAINTENANCE },
         agentMaintenance: { enabled: true, interval: '1h' },
         trajectory: { enabled: true },
-        skillSuggest: { autoDetect: true },
         bridge: {},
     };
 }
@@ -303,7 +301,6 @@ export function saveConfig(config) {
         maintenance: config.maintenance || {},
         agentMaintenance: config.agentMaintenance || {},
         trajectory: config.trajectory || {},
-        skillSuggest: config.skillSuggest || {},
         bridge: config.bridge || {},
     };
     persistAgentConfig(payload);

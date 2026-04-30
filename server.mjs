@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
-// Thin entry. node: built-in 모듈만 쓰는 prelude로 active-instance.json을
-// 가능한 가장 이른 시점에 등록한 뒤, server-main.mjs를 동적 import한다.
+// Thin entry. A node:-builtin-only prelude registers active-instance.json
+// as early as possible, then dynamically imports server-main.mjs.
 //
-// ES module import hoisting 때문에, heavy module을 같은 파일에 정적으로
-// import하면 prelude가 그 뒤로 밀린다. 동적 import로만 분리 가능.
+// ES module import hoisting causes statically-imported heavy modules to
+// push the prelude back. Dynamic import is the only way to isolate it.
 import { createServer } from 'node:http'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -11,12 +11,12 @@ import * as os from 'node:os'
 
 process.stderr.write(`[boot-time] tag=server-prelude-entry tMs=${Date.now()}\n`)
 
-// ── PLUGIN_DATA 해석 (lib/plugin-paths.cjs와 동일 규칙: env 우선) ─────
+// ── Resolve PLUGIN_DATA (same rule as lib/plugin-paths.cjs: env wins) ─
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin')
 fs.mkdirSync(PLUGIN_DATA, { recursive: true })
 
-// ── Singleton lock (server.mjs:46~74에서 hoist) ─────────────────────
+// ── Singleton lock (hoisted from server.mjs:46~74) ──────────────────
 const LOCK_PATH = path.join(PLUGIN_DATA, 'server.lock')
 function _isPidAlive(pid) {
   if (!pid || pid === process.pid) return false
@@ -39,8 +39,8 @@ const _releaseLock = () => {
     const raw = fs.readFileSync(LOCK_PATH, 'utf-8').trim()
     if (Number.parseInt(raw, 10) === process.pid) fs.unlinkSync(LOCK_PATH)
   } catch {}
-  // active-instance.json도 우리 소유면 정리 (graceful shutdown은 channels의
-  // clearActiveInstance가 먼저 처리하지만, 충돌/early-exit 케이스 방어).
+  // Clean up active-instance.json if we own it (graceful shutdown is
+  // normally handled by channels' clearActiveInstance; this guards crash / early-exit cases).
   try {
     const __af = path.join(os.tmpdir(), 'mixdog', 'active-instance.json')
     const cur = JSON.parse(fs.readFileSync(__af, 'utf-8'))
@@ -53,8 +53,8 @@ for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGBREAK']) {
 }
 
 // ── Beacon HTTP server ───────────────────────────────────────────────
-// startOwnerHttpServer가 이 서버를 그대로 입양해서 본 핸들러를 attach한다.
-// 그 전까지는 503 stub만 응답. probeTcpPort는 TCP connect만 검사하므로 충분.
+// startOwnerHttpServer adopts this server as-is and attaches the real handler.
+// Until then we respond with a 503 stub. probeTcpPort only checks TCP connect, so that suffices.
 const __beacon = createServer((req, res) => {
   const real = globalThis.__mixdogBeaconRealHandler
   if (typeof real === 'function') return real(req, res)
@@ -77,7 +77,7 @@ async function bindBeacon() {
     })
     if (ok) return port
   }
-  // 모두 점유 시 OS 할당 fallback
+  // All ports busy — fall back to OS allocation
   return await new Promise((resolve, reject) => {
     __beacon.once('error', reject)
     __beacon.listen(0, '127.0.0.1', () => resolve(__beacon.address().port))
@@ -85,17 +85,17 @@ async function bindBeacon() {
 }
 const __beaconPort = await bindBeacon()
 
-// ── active-instance.json 즉시 기록 ───────────────────────────────────
-// channels 모듈의 buildActiveInstanceState와 동일 schema. instanceId는
-// makeInstanceId() = String(pid) 규약을 따름. (sanitize 정규식
-// /[^a-zA-Z0-9._-]/g 기준 numeric PID는 no-op.)
+// ── Write active-instance.json immediately ──────────────────────────
+// Same schema as channels' buildActiveInstanceState. instanceId follows
+// makeInstanceId() = String(pid). (Sanitize regex /[^a-zA-Z0-9._-]/g
+// is a no-op for numeric PIDs.)
 const __activeDir = path.join(os.tmpdir(), 'mixdog')
 fs.mkdirSync(__activeDir, { recursive: true })
 const __activeFile = path.join(__activeDir, 'active-instance.json')
 const __instanceId = String(process.pid)
 
-// Fix B — split-brain 가드: 기존 파일이 살아있는 다른 PID를 가리키면 경고.
-// (server.lock을 통과한 시점이므로 우리가 정당한 owner. 덮어쓰되 흔적 남김.)
+// Fix B — split-brain guard: warn if the existing file points to a different live PID.
+// (Having passed server.lock means we are the legitimate owner. Overwrite but log a trace.)
 try {
   if (fs.existsSync(__activeFile)) {
     const prev = JSON.parse(fs.readFileSync(__activeFile, 'utf-8'))
@@ -127,5 +127,5 @@ fs.writeFileSync(__activeFile, JSON.stringify({
 globalThis.__mixdogBeacon = { server: __beacon, httpPort: __beaconPort }
 process.stderr.write(`[boot-time] tag=beacon-up port=${__beaconPort} tMs=${Date.now()}\n`)
 
-// ── 본 서버 진입 ─────────────────────────────────────────────────────
+// ── Enter the main server ───────────────────────────────────────────
 await import('./server-main.mjs')

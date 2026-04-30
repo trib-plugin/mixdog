@@ -207,20 +207,11 @@ import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.m
 const SERVER_INSTRUCTIONS = [
   `mixdog MCP server v${PLUGIN_VERSION}.`,
   '',
-  'Agent delegation:',
-  '- Hand off implementation / review / research / debug / test work to external agents via `bridge` with a `role` argument.',
-  '- Role names are user-defined in `user-workflow.json`; the currently-active role set is injected into the Lead session as the `# Roles` rule — consult that rather than hard-coding role names.',
-  '- Built-in `Agent` / `TaskCreate` / `TeamCreate` are NOT used for agent spawning in this ecosystem; `bridge` is the single entry point.',
+  'Agents: delegate via `bridge` with a `role` argument (roles defined in `user-workflow.json`; active set injected as the `# Roles` rule). `Agent` / `TaskCreate` / `TeamCreate` are NOT used — `bridge` is the single entry point.',
   '',
-  'Information retrieval (HIGHEST PRIORITY — always prefer these; never reach for `bash` to list / read / find files):',
-  '- `recall` — past context from the memory store.',
-  '- `search` — external web / URL scrape.',
-  '- `explore` — internal codebase search. `cwd` is authoritative.',
-  '- Order when unsure: recall → search → explore → grep+read. This order is mandatory, not a suggestion.',
-  '- `bash` is for shell-only work (git, build, test, run). Using `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup is a violation — use `read` / `glob` / `list` / `grep` / `explore` instead.',
+  'Retrieval (HIGHEST PRIORITY): `recall` (past) → `search` (web) → `explore` (codebase, `cwd` authoritative) → `grep` + `read`. Order is mandatory. `bash` is shell-only (git, build, test, run); using it for file/code lookup is a violation — use `read` / `glob` / `list` / `grep` / `explore`.',
   '',
-  'Channels:',
-  '- Schedule / webhook / queue / proactive events are delivered into the Lead session through the built-in channel mechanism; each carries its own event-class marker.',
+  'Channels: schedule / webhook / queue / proactive events arrive in the Lead session via the built-in channel mechanism.',
 ].join('\n')
 
 const server = new Server(
