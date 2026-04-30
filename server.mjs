@@ -60,7 +60,7 @@ const __beacon = createServer((req, res) => {
   if (typeof real === 'function') return real(req, res)
   res.statusCode = 503
   res.setHeader('Content-Type', 'application/json')
-  res.end(JSON.stringify({ ok: false, reason: 'booting' }))
+  res.end(JSON.stringify({ ok: false, reason: 'beacon-booting' }))
 })
 
 const PROXY_PORT_MIN = 3460

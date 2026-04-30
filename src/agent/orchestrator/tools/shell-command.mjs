@@ -22,6 +22,7 @@ import {
   openSync,
   closeSync,
   readFileSync,
+  readSync,
   writeSync,
   fsyncSync,
   unlinkSync,
@@ -48,7 +49,7 @@ export const SHELL_OUTPUT_DISK_CAP = 100 * 1024 * 1024;
 // combined size exceeds SHELL_OUTPUT_DISK_CAP. 5 s matches Claude Code's
 // upstream cadence — short enough that a runaway loop is caught within a
 // few seconds, long enough that the stat overhead is negligible.
-export const SIZE_WATCHDOG_INTERVAL_MS = 5_000;
+export const SIZE_WATCHDOG_INTERVAL_MS = 1_000;
 
 // ANSI / VT control sequence stripper. Falls back to a regex sweep when
 // node:util's stripVTControlCharacters isn't available (older Node).
@@ -105,6 +106,25 @@ export function treeKill(child) {
     }
   } catch {
     /* swallow */
+  }
+}
+
+// Tail-read helper: avoid pulling a 100 MB spill back into memory when
+// the caller only needs the most recent output. Past INLINE_CAP*4 bytes
+// we read only the trailing INLINE_CAP and prepend a marker; below that
+// the full body is returned as-is.
+function _readTail(filePath, fileSize) {
+  if (fileSize <= SHELL_OUTPUT_INLINE_CAP * 4) {
+    return readFileSync(filePath, 'utf-8');
+  }
+  const fd = openSync(filePath, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(SHELL_OUTPUT_INLINE_CAP);
+    const start = Math.max(0, fileSize - SHELL_OUTPUT_INLINE_CAP);
+    readSync(fd, buf, 0, SHELL_OUTPUT_INLINE_CAP, start);
+    return `[truncated head: ${start} bytes]\n` + buf.toString('utf-8');
+  } finally {
+    try { closeSync(fd); } catch {}
   }
 }
 
@@ -196,7 +216,7 @@ class TaskOutput {
         fsyncSync(this.stdoutFd);
       } catch {}
       try {
-        return readFileSync(this.stdoutPath, 'utf-8');
+        return _readTail(this.stdoutPath, this.stdoutFileSize);
       } catch {
         return '';
       }
@@ -210,7 +230,7 @@ class TaskOutput {
         fsyncSync(this.stderrFd);
       } catch {}
       try {
-        return readFileSync(this.stderrPath, 'utf-8');
+        return _readTail(this.stderrPath, this.stderrFileSize);
       } catch {
         return '';
       }
@@ -326,6 +346,14 @@ export function execShellCommand({
       return;
     }
 
+    // Pre-aborted signal: kill immediately if the abort already fired
+    // before spawn returned (synchronous reentry from a parent abort), so
+    // the child doesn't run for the full timeoutMs window.
+    if (abortSignal && abortSignal.aborted) {
+      killed = true;
+      treeKill(child);
+    }
+
     child.stdout.setEncoding('utf-8');
     child.stderr.setEncoding('utf-8');
     child.stdout.on('data', (chunk) => taskOutput.writeStdout(chunk));
@@ -386,6 +414,15 @@ export function execShellCommand({
     // complete capture.
     child.once('close', (code, signal) => settle(code, signal));
     child.once('error', () => settle(1, null));
+    // 'close' only fires after stdio drains; a forked grandchild that
+    // inherited stdout/stderr fds can hold them open past direct-child
+    // exit and stall settle() until timeoutMs. 'exit' fires on direct
+    // child termination regardless — give 'close' a 2 s grace then
+    // settle anyway.
+    child.once('exit', (code, signal) => {
+      const grace = setTimeout(() => settle(code == null ? 1 : code, signal), 2000);
+      if (grace.unref) grace.unref();
+    });
 
     if (timeoutMs > 0) {
       timer = setTimeout(() => {

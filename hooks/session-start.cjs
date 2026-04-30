@@ -569,7 +569,7 @@ async function requestCycle1(timeoutMs, opts = {}) {
     'ipc-error',
     'memory-timeout',
     'backend-not-ready',
-    'booting',
+    'beacon-booting',
   ]);
   const TRANSIENT_TOP_REASONS = new Set([
     'connect-refused',
@@ -579,6 +579,8 @@ async function requestCycle1(timeoutMs, opts = {}) {
     if (!r || r.ok) return false;
     if (r.bodyReason && TRANSIENT_BOOT_BODY_REASONS.has(r.bodyReason)) return true;
     if (TRANSIENT_TOP_REASONS.has(r.reason)) return true;
+    // 503 + missing body — boot-race before stub JSON; treat as transient.
+    if (r.statusCode === 503 && !r.bodyReason) return true;
     return false;
   };
   const TRANSIENT_RETRY_DELAY_MS = 250;

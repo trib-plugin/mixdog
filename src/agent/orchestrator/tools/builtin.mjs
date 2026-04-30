@@ -1638,6 +1638,10 @@ export function isSafePath(filePath, cwd, { allowHome = false, allowPluginData =
     // (no escape is possible since the path never resolves).
     try {
         const real = normalize(realpathSync(normalized));
+        // Symlink/junction inside cwd can resolve to \\server\share —
+        // re-check for UNC after realpath so an in-sandbox link can't
+        // trigger SMB / NTLM lookup downstream.
+        if (isUncPath(real)) return false;
         if (real !== normalized && !isInsideAllowedRoot(real)) {
             return false;
         }

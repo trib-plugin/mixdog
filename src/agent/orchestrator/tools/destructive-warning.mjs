@@ -56,10 +56,29 @@ function _stripQuotedSpans(s) {
     .replace(/#[^\n]*/g, '');
 }
 
+// Pull payload strings out of `bash -c '…'` / `sh -c "…"` etc so the
+// pattern set can match destructive commands hidden inside a quoted
+// span (which _stripQuotedSpans erases above as a single empty token).
+function _extractShellCInner(s) {
+  const out = [];
+  const re = /\b(?:bash|sh|zsh|dash|ksh|ash)\s+(?:-[a-zA-Z]*c|--command)\s+(['"])([\s\S]*?)\1/g;
+  let m;
+  while ((m = re.exec(String(s || ''))) !== null) {
+    out.push(m[2]);
+  }
+  return out;
+}
+
 export function getDestructiveCommandWarning(command) {
   const cleaned = _stripQuotedSpans(command);
   for (const [re, warning] of _PATTERNS) {
     if (re.test(cleaned)) return warning;
+  }
+  for (const inner of _extractShellCInner(command)) {
+    const innerCleaned = _stripQuotedSpans(inner);
+    for (const [re, warning] of _PATTERNS) {
+      if (re.test(innerCleaned)) return warning;
+    }
   }
   return null;
 }

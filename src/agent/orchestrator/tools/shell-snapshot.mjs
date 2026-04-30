@@ -181,8 +181,23 @@ function _runSnapshot(shellPath, snapshotPath, configFileExists) {
 // first call. Returns null if generation failed (caller falls through to
 // running the command without snapshot prelude).
 export async function getOrCreateSnapshot(shellPath) {
-  if (_failedShells.has(shellPath)) return null;
-  const cached = _cache.get(shellPath);
+  // Cache key includes rc-file mtime/size so editing .bashrc/.zshrc
+  // mid-session forces a fresh snapshot on the next call instead of
+  // reusing the stale one for the rest of the process lifetime.
+  const configFile = getConfigFile(shellPath);
+  const configExists = existsSync(configFile);
+  let _rcMtime = 0;
+  let _rcSize = 0;
+  if (configExists) {
+    try {
+      const _st = statSync(configFile);
+      _rcMtime = _st.mtimeMs;
+      _rcSize = _st.size;
+    } catch {}
+  }
+  const cacheKey = `${shellPath}|${_rcMtime}|${_rcSize}`;
+  if (_failedShells.has(cacheKey)) return null;
+  const cached = _cache.get(cacheKey);
   if (cached && existsSync(cached)) return cached;
   const dir = join(getPluginData(), 'shell-snapshots');
   try {
@@ -197,11 +212,9 @@ export async function getOrCreateSnapshot(shellPath) {
     dir,
     `snapshot-${shellTag}-${Date.now()}-${randomUUID().slice(0, 6)}.sh`,
   );
-  const configFile = getConfigFile(shellPath);
-  const configExists = existsSync(configFile);
   const result = await _runSnapshot(shellPath, snapshotPath, configExists);
-  if (result) _cache.set(shellPath, result);
-  else _failedShells.add(shellPath);
+  if (result) _cache.set(cacheKey, result);
+  else _failedShells.add(cacheKey);
   return result;
 }
 

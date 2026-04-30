@@ -30,9 +30,9 @@ const _SEMANTICS = new Map([
   ['bfs', (c) => ({ isError: c >= 2, note: c === 1 ? 'some directories were inaccessible' : null })],
   // diff: 0=identical, 1=differences, 2+=error
   ['diff', (c) => ({ isError: c >= 2, note: c === 1 ? 'files differ' : null })],
-  // test / [: 0=true, 1=false, 2+=error
-  ['test', (c) => ({ isError: c >= 2, note: c === 1 ? 'condition is false' : null })],
-  ['[', (c) => ({ isError: c >= 2, note: c === 1 ? 'condition is false' : null })],
+  // test / [ deliberately excluded — exit 1 there is the assertion
+  // signal, not informational. Downgrading would silence real failures
+  // in `test x = y && do_thing` style scripts.
   // cmp: 0=identical, 1=differ, 2+=error
   ['cmp', (c) => ({ isError: c >= 2, note: c === 1 ? 'files differ' : null })],
 ]);
