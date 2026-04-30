@@ -310,10 +310,33 @@ function appendCacheControl(content, ttl = CACHE_TTL_VOLATILE) {
 function collectRecentCacheableIndexes(messages, availableSlots = 2) {
     // Anthropic enforces a 4-breakpoint max per request. Callers reserve slots
     // for tools[-1] and system breakpoints (typically 2); whatever remains is
-    // spread across the most-recent messages as 5m sliding breakpoints.
-    // Default 2 assumes both tools and system have breakpoints (worst case).
+    // spread across messages as 5m breakpoints.
+    //
+    // Anchor strategy when only ONE message slot is available — pin the
+    // single marker to the FIRST chat message (typically the locked task
+    // brief) instead of the sliding tail. Reason: a tail marker shifts
+    // position every iter (messages.length grows as tool turns accumulate),
+    // and Anthropic caches by prefix-bytes-up-to-marker, so a moving tail
+    // creates a NEW prefix every iter — which means cache_creation fires
+    // every loop on first-time-seen prefixes (no prior 1h slot warmed up,
+    // 1h indexing latency blocks intra-call read). Pinning the marker to
+    // a stable position keeps the prefix bytes identical across iters so
+    // 5m cache can read on the second iter onward, dramatically cutting
+    // first-call cost when the loop runs N>1 turns.
+    //
+    // Multi-slot path (slots>=2) still uses the sliding tail for the
+    // remaining slots so the most-recent message also gets cached for the
+    // benefit of cross-call hits within the 5m window.
     const slots = Math.max(0, Math.min(4, availableSlots));
+    if (slots === 0) return new Set();
     const marked = new Set();
+    let firstChat = -1;
+    for (let i = 0; i < messages.length; i++) {
+        if (messages[i]?.role !== 'system') { firstChat = i; break; }
+    }
+    if (firstChat < 0) return marked;
+    marked.add(firstChat);
+    if (slots === 1) return marked;
     for (let i = messages.length - 1; i >= 0 && marked.size < slots; i--) {
         if (messages[i]?.role !== 'system') marked.add(i);
     }
