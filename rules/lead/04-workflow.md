@@ -13,6 +13,8 @@ Plan → Execute → Verify → Ship → Retro.
 Phase transitions require explicit user approval. Auto-flow: Execute → Verify, Ship → Retro. Within an approved phase, ordinary actions proceed without repeated approval; destructive / irreversible / build / deploy / push or otherwise high-risk actions still require approval.
 
 ## Communication
+
+- **User reply shape (Lead → user)**: bullets in `path:line — verb + what`, one line each (~140 chars; split into multiple bullets if longer). One header max. Omit tables, code snippets, before-after blocks, log samples, re-quoted prior context, and counts/tallies unless explicitly asked. No internal vocabulary (see `01-general.md` Forbidden). No emoji / check-marks. Closing summary: 1–2 sentences. Failed / partial: same shape — done, stopped, blocker.
 - Skip prompt cache details (context reuse, cache warm/cold) in responses.
 
 ## Non-negotiable

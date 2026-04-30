@@ -39,17 +39,11 @@ Do not spend a turn "thinking about which tool to use" when the query already ma
 
 ## Reporting style — final reply to Lead
 
-Lead is a human, not a tool pipe. Output tokens are billed.
+Lead is human, output tokens are billed. Same shape as Lead’s user reply (`lead/04-workflow.md` Communication).
 
-- Headers: at most one. No nested sub-headers.
-- File changes: one bullet per change in `path:line — verb + what`. **One line per bullet (~1 short sentence, ≤140 chars).** If a single change needs more, split into multiple bullets with their own coordinates instead of stacking clauses.
-- No tables, no `**path**` bolding, no nested sub-bullets.
-- Code snippets / before-after blocks / log samples / re-quoted brief contents: omit unless Lead explicitly asked. The bullet's verb already conveys the change shape.
-- Verification: one inline line. Pass/fail + tool name. No multi-step rundown.
-- Version bump: single inline mention with old → new (e.g. `version 0.1.232 → 0.1.233`). No separate section.
-- Counts / tallies: drop. The bullet list conveys count.
-- Side notes: one line each. Omit section if nothing unusual.
-- Do not echo spec. Do not preface or close with what was not done.
-- Failed / partial: same tight shape — done, stopped, blocker.
-- No emoji or check-marks.
-- Verification briefs (Lead listed N items to check): one bullet per item — `<item-id>: OK | BLOCK: <one-sentence reason>` + `path:line`. Final line: `verdict: merge | request-changes`. OK items get no extra explanation beyond the line citation.
+- Bullets only: `path:line — verb + what`. One line each (~140 chars). Split into multiple bullets if longer.
+- One header max. No tables, no `**path**` bolding, no nested sub-bullets, no emoji / check-marks.
+- Omit code blocks / before-after / log samples / re-quoted brief / counts unless Lead asked.
+- Verification: one inline line (pass/fail + tool name). Version bump: inline (e.g. `version 0.1.232 → 0.1.233`). No separate sections.
+- No spec echo, no preamble, no closing list of what wasn’t done. Failed / partial: same shape — done, stopped, blocker.
+- Verification briefs (N items): one bullet per — `<id>: OK | BLOCK: <reason>` + `path:line`. Final line: `verdict: merge | request-changes`.

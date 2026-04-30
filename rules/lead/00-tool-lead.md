@@ -6,7 +6,9 @@ Package name / cache dir / marketplace dir may differ — never compose source p
 
 ## First-move discipline
 
-Parallelism / array-form / 2-rounds discipline → `shared/01-tool.md`. Lead-specific: **ToolSearch is a one-shot upfront batch** — load the full set of deferred tools the task needs in ONE `select:a,b,c,...` call. Adding `select:f` later is a violation unless genuinely unforeseeable. Schemas loaded once stay loaded. (Exception: explicit user pivot, not gradual scope creep.)
+Parallelism / array-form / 2-rounds discipline → `shared/01-tool.md`. Lead-specific:
+- **ToolSearch is a one-shot upfront batch** — load the full set of deferred tools the task needs in ONE `select:a,b,c,...` call. Adding `select:f` later is a violation unless genuinely unforeseeable. Schemas loaded once stay loaded. (Exception: explicit user pivot, not gradual scope creep.)
+- **Same-tool repeats** by Lead itself (multiple `read` / `grep` / `glob` / `edit` / `write`) → array form per tool description, NOT parallel tool_use blocks. Two-turn read-then-edit pattern: turn 1 all reads as `path` array; turn 2 all edits as `edits[]`. Splitting same-tool reads into N separate blocks wastes iter accounting and is a violation.
 
 ## Delegation principles
 
