@@ -35,17 +35,6 @@ When you plan edits across N files: turn 1 — issue all `read` calls in paralle
 
 - Work in **2 rounds max per sub-problem** (locate → confirm). Repeated retrieval → ask what NEW information the next call adds; enough evidence → stop probing and move to the edit / answer.
 
-## Edit Ordering
-
-Applies when the next move is `edit` or `apply_patch` AND the target span is not yet locked. **Locked = exact file path AND one or more uniquely-identified line ranges (multi-hunk edits in one file are fine, as long as each range is individually pinned) you can edit without re-reading.** (`write` for whole-file create/replace is exempt — no line range to lock.) Edit Ordering overrides the Decision Table for edits with unknown target spans.
-
-- Identifier / function / class name known → `find_symbol` immediately. Do not start with a `grep`→`read` pair when an identifier is in hand. For specific structural questions, use the direct alias instead: `find_callers`, `find_references`, `find_imports`, `find_dependents`.
-- Cross-file refactor, multi-symbol change, or mixed structural impact → `code_graph`.
-- After two `grep`→`read` pairs **on the same target** — same intended edit area, or the same requirement pointing at that area, even if the keywords differ (e.g. `grep "fooHandler"` → `grep "handle_foo"` on the same goal still counts) — without the target span being **Locked** (definition above: exact file path AND one or more uniquely-identified line ranges you can edit without re-reading), a third pair is the violation. Switch tool family (`find_symbol` / `code_graph`) or commit to the edit only if the span now meets the **Locked** definition — that exact file path and every line range are pinned by explicit file+line evidence already in hand (`grep -n` hits, `find_symbol` line numbers, prior `read` output covering those lines), not inferred from grep matches without line numbers or from naming conventions. Same threshold as the corresponding Anti-pattern.
-  - Tiny example: `grep X → read A`, then `grep X-variant → read A` (or A+B) = two pairs; the next move must be `find_symbol` / `code_graph` / `edit`, not a third `grep`→`read`.
-- Once the span is locked, edit. Do not re-read the same file again.
-- For 2+ files or 2+ hunks in one file, prefer `apply_patch` in one combined turn over looping `read` → `edit`.
-
 ## Preflight
 
 Before any tool call, scan the query for known scope and collapse multiple rounds into one targeted call:
@@ -75,17 +64,9 @@ Before any tool call, scan the query for known scope and collapse multiple round
 - Imports, dependents, callers, references → use the direct alias (`find_imports` / `find_dependents` / `find_callers` / `find_references`). Generic `code_graph(mode=...)` is for mixed structural impact only.
 - 2+ files or 2+ hunks: `apply_patch` over looping `read` → `edit`.
 
-### `bash` specifics
-
-- Shell work across turns: pass `persistent:true` to reuse state — don't replay setup in repeated one-shot calls.
-- Long background command launched: `job_wait`, then `read` the stdout/stderr path for logs.
-- Large tool outputs may be saved to a path with a preview; only `read` that path if the preview is insufficient.
-
 ## Decision Table
 
 Use these rules regardless of the current role name. Role-specific prompts may add nuance, but the first tool choice should follow this table unless the user explicitly asks otherwise.
-
-> **Edit precedence:** when the next move is `edit` / `apply_patch` and the target span is not yet locked, the **Edit Ordering** section above takes precedence over this table. The table applies once the span is locked or for non-edit lookups.
 
 | Query shape                                       | First tool                                          |
 |---------------------------------------------------|-----------------------------------------------------|
@@ -116,7 +97,7 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 - Do not serially `read` files one by one when the candidate list is already known.
 - Do not serially `write` several whole files when one call with a `writes` array can do it.
 - Do not `read` a whole large file when `find_symbol`, `code_graph`, or `grep` can narrow the line window first.
-- `grep`→`read` past two pairs on same target — see Edit Ordering above for the formal rule (third same-target pair is the violation; switch tool family or commit).
+- `grep`→`read` past two pairs on same target without locking a file+line span — switch tool family (`find_symbol` / `code_graph`) or commit to the edit; a third same-target pair is the violation.
 - Do not chain 10+ `grep` + `read` calls in one session without a `find_symbol` / `code_graph` call. Identifier-aware tools should appear within the first 2 rounds when the work involves an `edit`.
 - Do not use `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup — that is a rule violation. `bash` is shell-only work (git, build, test, run).
 

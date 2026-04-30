@@ -499,13 +499,13 @@ async function runExploreLiteralFastPath(query, cwd) {
 
 async function runExploreFastPath(query, cwd) {
   if (!cwd) return null
+  if (!_isSimpleExploreLookup(query)) return null
   const filenamePatternResult = await runExploreFilenamePatternFastPath(query, cwd)
   if (filenamePatternResult) return filenamePatternResult
   const callerResult = await runExploreCallerFastPath(query, cwd)
   if (callerResult) return callerResult
   const literalResult = await runExploreLiteralFastPath(query, cwd)
   if (literalResult) return literalResult
-  if (!_isSimpleExploreLookup(query)) return null
   const identifier = extractIdentifierCandidate(query)
   if (!identifier) return null
   let symbolResult

@@ -152,30 +152,28 @@ for (const p of SEQUENTIAL_PRESETS) {
 const results = [...parallelResults, ...sequentialResults]
 
 // Per-call sessionId already resolved inside runOne(), so each cold/hot
-// has its own usage[] populated. Hit% = cached_tokens / prompt_tokens
-// because bridge-trace.mjs:357-368 makes prompt_tokens the
-// provider-normalized total (Anthropic: input + cache_read + cache_write,
-// OpenAI/Gemini: input_tokens with cached as subset).
+// has its own usage[] populated. Hit% = (cached_tokens + cache_write_tokens)
+// / prompt_tokens — both read and write count toward cache utilization.
+// bridge-trace.mjs:357-368 makes prompt_tokens the provider-normalized
+// total (Anthropic: input + cache_read + cache_write, OpenAI/Gemini:
+// input_tokens with cached as subset; cache_write_tokens is 0 for
+// providers without explicit write tokens).
 function summary(usage) {
-  if (!usage?.length) return { iters: 0, i1: '-', sumI: 0, sumC: 0, sumHit: '-' }
-  const i1 = usage[0]
-  const i1Total = i1.prompt_tokens || i1.input_tokens || 0
-  const i1Cached = i1.cached_tokens || 0
-  const i1Hit = i1Total ? (i1Cached/i1Total*100).toFixed(1)+'%' : '-'
+  if (!usage?.length) return { iters: 0, sumI: 0, sumC: 0, sumHit: '-' }
   const sumI = usage.reduce((a,u)=>a+(u.prompt_tokens||u.input_tokens||0),0)
-  const sumC = usage.reduce((a,u)=>a+(u.cached_tokens||0),0)
+  const sumC = usage.reduce((a,u)=>a+(u.cached_tokens||0)+(u.cache_write_tokens||0),0)
   const sumHit = sumI ? (sumC/sumI*100).toFixed(1)+'%' : '-'
-  return { iters: usage.length, i1: i1Hit, sumI, sumC, sumHit }
+  return { iters: usage.length, sumI, sumC, sumHit }
 }
 
 console.log('\n========== summary (per-session matched) ==========')
-console.log('| preset | provider | cold iters | cold iter1 | cold sum-hit | hot iters | hot iter1 | hot sum-hit | err |')
-console.log('|---|---|---|---|---|---|---|---|---|')
+console.log('| preset | provider | cold iters | cold sum-hit | hot iters | hot sum-hit | err |')
+console.log('|---|---|---|---|---|---|---|')
 for (const r of results) {
   const c = summary(r.cold.usage)
   const h = summary(r.hot.usage)
   const errFlag = (r.cold.err || r.hot.err) ? `Y (${(r.cold.err||r.hot.err).slice(0,40)})` : ''
-  console.log(`| ${r.preset} | ${r.provider} | ${c.iters} | ${c.i1} | ${c.sumHit} | ${h.iters} | ${h.i1} | ${h.sumHit} | ${errFlag} |`)
+  console.log(`| ${r.preset} | ${r.provider} | ${c.iters} | ${c.sumHit} | ${h.iters} | ${h.sumHit} | ${errFlag} |`)
 }
 
 writeFileSync(RESULT_JSON, JSON.stringify({ ts: new Date().toISOString(), presets: PRESETS, results }, null, 2))
