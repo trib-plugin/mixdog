@@ -28,13 +28,11 @@ export const DEFAULT_MAINTENANCE = Object.freeze({
     search: 'HAIKU',
     recall: 'HAIKU',
     explore: 'HAIKU',
-    recap: 'HAIKU',
     // Slots backing the maintenance hidden roles registered in
     // BUILTIN_HIDDEN_ROLES (scheduler-task / proactive-decision /
-    // webhook-handler / memory-classification). Without these, a fresh
-    // install fails resolvePresetName() and throws "preset unresolved"
-    // the first time the scheduler tick / webhook ingress / memory-cycle
-    // classification step dispatches its hidden role.
+    // webhook-handler). Without these, a fresh install fails
+    // resolvePresetName() and throws "preset unresolved" the first
+    // time the scheduler tick / webhook ingress dispatches its hidden role.
     scheduler: 'HAIKU',
     proactive: 'HAIKU',
     webhook: 'HAIKU',

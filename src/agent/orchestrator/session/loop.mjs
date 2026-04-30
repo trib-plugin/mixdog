@@ -19,9 +19,9 @@ const EMERGENCY_ITERATION_FUSE = 100;
 // Iteration caps for system-spawned hidden roles only. Soft = warn threshold
 // (last in the warn ladder), hard = emergency fuse. Tuned from observed
 // p95/max in the 24h trace: recall p95=9 max=19, search max=20, explorer ~5
-// typical. Hidden non-retrieval roles (cycle*, scheduler, webhook, recap,
-// proactive, memory-classification) are single-shot or near so (cycle1 p95=1,
-// cycle2 max=2, proactive max=3); a tight cap catches runaway loops early.
+// typical. Hidden non-retrieval roles (cycle*, scheduler, webhook, proactive)
+// are single-shot or near so (cycle1 p95=1, cycle2 max=2, proactive max=3);
+// a tight cap catches runaway loops early.
 //
 // User-defined roles from user-workflow.json are NOT listed here — their
 // names are configurable per install, so they fall to `default` unless

@@ -60,7 +60,7 @@
     "explore": "HAIKU"
   },
   "bridge": {
-    "__comment": "Per-role iteration caps for user-defined roles in user-workflow.json. Hidden system roles (recall-agent, search-agent, explorer, cycle*-agent, scheduler-task, webhook-handler, recap-agent, proactive-decision, memory-classification) have built-in caps in code. Rename / remove the keys below to match your active role set; unlisted user roles fall back to `default`.",
+    "__comment": "Per-role iteration caps for user-defined roles in user-workflow.json. Hidden system roles (recall-agent, search-agent, explorer, cycle*-agent, scheduler-task, webhook-handler, proactive-decision) have built-in caps in code. Rename / remove the keys below to match your active role set; unlisted user roles fall back to `default`.",
     "iterationCaps": {
       "default": { "soft": 30, "hard": 100 },
       "reviewer": { "soft": 18, "hard": 50 },

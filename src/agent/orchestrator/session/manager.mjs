@@ -623,7 +623,7 @@ function _firstListedPath(listText) {
 async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     if (session?.owner !== 'bridge') return null;
     // Hidden roles (recall-agent / search-agent / explorer / cycle1-agent /
-    // cycle2-agent / recap-agent) own their retrieval tools — memory_search,
+    // cycle2-agent) own their retrieval tools — memory_search,
     // web_search, glob/grep/read fan-out — and must not be intercepted by the
     // generic bridge classifier. Without this guard, an identifier in the
     // recall prompt routes to code_graph(references) and returns the graph's

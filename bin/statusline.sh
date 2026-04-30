@@ -6,9 +6,9 @@
 #                   (↻ explorer/recall/search).
 # Line 2 (incoming, from mixdog /bridge/status): user-facing work sessions only —
 #                   "● N Running (roles)". Suppressed when no work sessions are active.
-#                   ALL internal hidden roles (cycle*/recap-agent/scheduler-task/
-#                   proactive-decision/webhook-handler/memory-classification/explorer/
-#                   recall-agent/search-agent) are surfaced as L1 ↻ badges only and never
+#                   ALL internal hidden roles (cycle*-agent/scheduler-task/
+#                   proactive-decision/webhook-handler/explorer/recall-agent/
+#                   search-agent) are surfaced as L1 ↻ badges only and never
 #                   contribute to the L2 count. The legacy B_SESS_ACTIVE fallback is gone:
 #                   if the role list has no work entries, L2 is empty regardless of count.
 #
@@ -322,16 +322,15 @@ add_l2() {
 #               token in encounter order. No dedupe: parallel fan-out of the
 #               same role must remain visible (e.g. two workers → "worker,
 #               worker").
-#   maint   = cycle1-agent | cycle2-agent | recap-agent
-#             → L1 "↻ cycle1 ↻ cycle2 ↻ recap" — one badge per maint type that
+#   maint   = cycle1-agent | cycle2-agent
+#             → L1 "↻ cycle1 ↻ cycle2" — one badge per maint type that
 #               has ANY session running. Counts are intentionally hidden: the
 #               bridge commonly spawns ten cycle1 chunks at once and the count
 #               adds noise.
-#   system  = scheduler-task | proactive-decision | webhook-handler |
-#             memory-classification
-#             → L1 "↻ scheduler ↻ proactive ↻ webhook ↻ classification" —
-#               internal hidden roles spawned by scheduler / webhook / memory
-#               cycle. Same one-badge-per-type rule as maint.
+#   system  = scheduler-task | proactive-decision | webhook-handler
+#             → L1 "↻ scheduler ↻ proactive ↻ webhook" —
+#               internal hidden roles spawned by scheduler / webhook /
+#               proactive tick. Same one-badge-per-type rule as maint.
 #   retrieval = explorer | recall-agent | search-agent
 #             → L1 "↻ explorer ↻ recall ↻ search" — short-lived hidden
 #               retrieval agents. One badge per type while any session of that
@@ -343,11 +342,9 @@ _WORK_COUNT=0
 _WORK_ORDER=""        # comma-separated, encounter order, no dedupe
 _MAINT_HAS_CYCLE1=0
 _MAINT_HAS_CYCLE2=0
-_MAINT_HAS_RECAP=0
 _SYS_HAS_SCHED=0
 _SYS_HAS_PROACTIVE=0
 _SYS_HAS_WEBHOOK=0
-_SYS_HAS_CLASSIFY=0
 _RET_HAS_EXPLORER=0
 _RET_HAS_RECALL=0
 _RET_HAS_SEARCH=0
@@ -360,11 +357,9 @@ if [ -n "$B_SESS_ROLES" ]; then
     case "$_role" in
       cycle1-agent)         _MAINT_HAS_CYCLE1=1 ;;
       cycle2-agent)         _MAINT_HAS_CYCLE2=1 ;;
-      recap-agent)          _MAINT_HAS_RECAP=1 ;;
       scheduler-task)       _SYS_HAS_SCHED=1 ;;
       proactive-decision)   _SYS_HAS_PROACTIVE=1 ;;
       webhook-handler)      _SYS_HAS_WEBHOOK=1 ;;
-      memory-classification) _SYS_HAS_CLASSIFY=1 ;;
       explorer)             _RET_HAS_EXPLORER=1 ;;
       recall-agent)         _RET_HAS_RECALL=1 ;;
       search-agent)         _RET_HAS_SEARCH=1 ;;
@@ -399,10 +394,6 @@ if [ "$_MAINT_HAS_CYCLE2" -eq 1 ]; then
   if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
   _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}cycle2${_ANSI_RESET}"
 fi
-if [ "$_MAINT_HAS_RECAP" -eq 1 ]; then
-  if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
-  _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}recap${_ANSI_RESET}"
-fi
 if [ "$_SYS_HAS_SCHED" -eq 1 ]; then
   if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
   _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}scheduler${_ANSI_RESET}"
@@ -414,10 +405,6 @@ fi
 if [ "$_SYS_HAS_WEBHOOK" -eq 1 ]; then
   if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
   _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}webhook${_ANSI_RESET}"
-fi
-if [ "$_SYS_HAS_CLASSIFY" -eq 1 ]; then
-  if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
-  _MAINT_SEG="${_MAINT_SEG}${_ANSI_GREEN}↻${_ANSI_RESET} ${_ANSI_BOLD}classification${_ANSI_RESET}"
 fi
 if [ "$_RET_HAS_EXPLORER" -eq 1 ]; then
   if [ -n "$_MAINT_SEG" ]; then _MAINT_SEG="$_MAINT_SEG "; fi
@@ -433,8 +420,8 @@ if [ "$_RET_HAS_SEARCH" -eq 1 ]; then
 fi
 [ -n "$_MAINT_SEG" ] && add_l1 "$_MAINT_SEG"
 unset _MAINT_SEG
-unset _WORK_COUNT _WORK_ORDER _MAINT_HAS_CYCLE1 _MAINT_HAS_CYCLE2 _MAINT_HAS_RECAP
-unset _SYS_HAS_SCHED _SYS_HAS_PROACTIVE _SYS_HAS_WEBHOOK _SYS_HAS_CLASSIFY
+unset _WORK_COUNT _WORK_ORDER _MAINT_HAS_CYCLE1 _MAINT_HAS_CYCLE2
+unset _SYS_HAS_SCHED _SYS_HAS_PROACTIVE _SYS_HAS_WEBHOOK
 unset _RET_HAS_EXPLORER _RET_HAS_RECALL _RET_HAS_SEARCH
 
 # Jobs / Schedule / Roster / Discord / Recall segments remain removed.

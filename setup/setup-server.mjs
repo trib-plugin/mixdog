@@ -606,9 +606,6 @@ function mergeSearchConfig(existing, data) {
     config.rawSearch.credentials[id].apiKey = key;
   }
   if (data.mode) config.defaultMode = data.mode;
-  if (data.maxResults) config.rawSearch.maxResults = data.maxResults;
-  if (data.requestTimeoutMs) config.requestTimeoutMs = data.requestTimeoutMs;
-  if (data.crawl) config.crawl = { ...config.crawl, ...data.crawl };
   if (data.siteRules) config.siteRules = data.siteRules;
   return config;
 }
