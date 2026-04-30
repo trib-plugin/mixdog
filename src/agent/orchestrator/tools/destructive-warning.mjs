@@ -41,6 +41,18 @@ const _PATTERNS = [
 // with empty quotes (preserving structure but emptying content) instead
 // of dropping them so positional separators (semicolon / pipe) downstream
 // of a quoted span still anchor the patterns.
+// Public alias — builtin.mjs imports this for quote/heredoc-aware
+// BLOCKED_PATTERNS testing.
+export function stripQuotedAndHeredoc(s) {
+  return _stripQuotedSpans(s);
+}
+
+// Public alias for builtin.mjs to scan `bash -c '…'` payloads alongside
+// the outer command when applying BLOCKED_PATTERNS.
+export function extractShellCInner(s) {
+  return _extractShellCInner(s);
+}
+
 function _stripQuotedSpans(s) {
   return String(s || '')
     // Heredocs first (their bodies can contain unescaped quotes that

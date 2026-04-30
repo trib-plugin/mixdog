@@ -727,6 +727,8 @@ export function _classifyHandshakeError(err) {
  *   'ws_1011'            — server unexpected condition
  *   'ws_1012'            — service restart
  *   'ws_4000'            — our armPreStreamWatchdog close with idle_timeout
+ *   'ws_1000'            — server-side normal close fired after response.created
+ *                          but before response.completed (truncated stream)
  *   'response_failed_network'       — response.failed with network_error
  *   'response_failed_disconnected'  — response.failed with stream_disconnected
  *
@@ -779,6 +781,11 @@ export function _classifyMidstreamError(err, state) {
     if (closeCode === 1011) return 'ws_1011';
     if (closeCode === 1012) return 'ws_1012';
     if (closeCode === 4000) return 'ws_4000';
+    // Server-side normal close (1000) AFTER response.created but BEFORE
+    // response.completed = truncated stream; legitimate transient. The
+    // pre-stream gate above already rejects 1000 before sawResponseCreated
+    // (handshake retry layer owns that window).
+    if (closeCode === 1000 && state.sawResponseCreated && !state.sawCompleted) return 'ws_1000';
 
     // response.failed payload mentioning network_error / stream_disconnected.
     const failed = err?.responseFailed || state.responseFailedPayload;

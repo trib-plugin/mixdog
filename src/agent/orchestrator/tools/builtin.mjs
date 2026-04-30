@@ -481,11 +481,11 @@ const READ_MAX_OUTPUT_BYTES = 100 * 1024;
 // first 4 KB and look for a null byte — the canonical signal that the file
 // is not plain text. The sampling is synchronous (small) and only runs on
 // files that have already passed the size cap and safe-path checks.
-function isBinaryFile(fullPath, bytesToSample = 4096) {
+function isBinaryFile(fullPath, bytesToSample = 8192) {
     let fd = null;
     try {
         fd = openSync(fullPath, 'r');
-        const buf = Buffer.alloc(Math.min(bytesToSample, 4096));
+        const buf = Buffer.alloc(Math.min(bytesToSample, 8192));
         const n = readSync(fd, buf, 0, buf.length, 0);
         if (n === 0) return false;
         for (let i = 0; i < n; i++) {
@@ -608,12 +608,15 @@ function isUncPath(p) {
     return typeof p === 'string' && (p.startsWith('\\\\') || p.startsWith('//'));
 }
 
-const READ_MAX_RENDERED_LINE_CHARS = 520;
+// CC parity: 2000-char threshold (was 520). Long lines that fit in 2K are
+// passed through untouched; over 2K we keep ~1500 head + ~300 tail with a
+// truncation marker between.
+const READ_MAX_RENDERED_LINE_CHARS = 2_000;
 function renderReadLine(lineNo, line, { truncateLongLine = true } = {}) {
     let text = String(line ?? '');
     if (truncateLongLine && text.length > READ_MAX_RENDERED_LINE_CHARS) {
-        const head = text.slice(0, 360);
-        const tail = text.slice(-80);
+        const head = text.slice(0, 1_500);
+        const tail = text.slice(-300);
         text = `${head} ... [line truncated: ${text.length} chars total] ... ${tail}`;
     }
     return `${lineNo}\t${text}`;
@@ -1180,7 +1183,12 @@ function _getReadSnapshot(fullPath, scope = null) {
 }
 
 function _isSnapshotStale(stat, snapshot) {
-    return stat.mtimeMs > snapshot.mtimeMs + 1;
+    if (stat.mtimeMs > snapshot.mtimeMs + 1) return true;
+    // CC parity: same-mtime size drift counts as stale. NTFS / exFAT
+    // 1 s mtime resolution lets a fast rewrite preserve mtimeMs while
+    // the byte length changes; size check catches that case.
+    if (typeof snapshot.size === 'number' && stat.size !== snapshot.size) return true;
+    return false;
 }
 
 function _readContentIfSnapshotHashMatches(fullPath, snapshot) {
@@ -1520,6 +1528,23 @@ function refreshShellJob(jobId) {
     return detail;
 }
 function startBackgroundShellJob({ command, timeoutMs, workDir, mergeStderr, spawnEnv, shell, shellArg }) {
+    // POSIX-shell guard: the wrapper below uses `command -v timeout`,
+    // `if ... fi`, single-quote escape, and POSIX exit-code propagation.
+    // Windows-native cmd.exe / pwsh.exe parses none of that; refuse early
+    // with an actionable error. Git Bash / MSYS / WSL bash all qualify.
+    const _shellLower = String(shell || '').toLowerCase();
+    if (process.platform === 'win32'
+        && !(_shellLower.includes('bash') || _shellLower.endsWith('/sh') || _shellLower.endsWith('\\sh.exe'))) {
+        const jobId = `job_${Date.now()}_unsupported`;
+        return {
+            jobId,
+            kind: 'bash',
+            status: 'failed',
+            error: `background bash jobs require a POSIX-compatible shell on Windows (resolved=${shell}); install Git Bash or use WSL`,
+            startedAt: new Date().toISOString(),
+            finishedAt: new Date().toISOString(),
+        };
+    }
     const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const stdoutPath = shellJobStdoutPath(jobId);
     const stderrPath = shellJobStderrPath(jobId);
@@ -1581,7 +1606,9 @@ function startBackgroundShellJob({ command, timeoutMs, workDir, mergeStderr, spa
 // Anchor for "command start": line start, after ; && || | (with optional whitespace)
 const _CMD_START = '(?:^|[;&|\\n(){}]\\s*|\\$[\\({]\\s*|[<>]\\(\\s*|`\\s*)';
 const BLOCKED_PATTERNS = [
-    /\brm\s+-rf\s+[/~]/i,
+    // rm — catch -rf, -fr, split flags (-r -f / -f -r), and `--` separator;
+    // target restricted to / or ~ so legitimate `rm -rf .build` still passes.
+    /\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|-[rR]\s+-[fF]|-[fF]\s+-[rR])(?:\s+--)?\s+[\/~]/i,
     /\bgit\s+push\s+--force/i,
     /\bgit\s+reset\s+--hard/i,
     /\bformat\s+[a-z]:/i,
@@ -1645,7 +1672,17 @@ export function isSafePath(filePath, cwd, { allowHome = false, allowPluginData =
         if (real !== normalized && !isInsideAllowedRoot(real)) {
             return false;
         }
-    } catch { /* path doesn't resolve — let caller fail naturally */ }
+    } catch {
+        // Path doesn't resolve — typically a Write target that doesn't
+        // exist yet. Realpath the parent so an in-scope symlink dir that
+        // targets out-of-scope (or UNC) can't be used to create a file
+        // outside the sandbox.
+        try {
+            const parent = normalize(realpathSync(dirname(normalized)));
+            if (isUncPath(parent)) return false;
+            if (!isInsideAllowedRoot(parent)) return false;
+        } catch { /* parent also doesn't resolve — let caller fail naturally */ }
+    }
     return true;
 }
 function resolveAgainstCwd(filePath, cwd) {
@@ -2697,13 +2734,25 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // command/close validation — builtin.mjs should not pre-empt it.
             if (args.persistent === true || typeof args.session_id === 'string') {
                 const { executeBashSessionTool } = await import('./bash-session.mjs');
-                return executeBashSessionTool('bash_session', args, workDir);
+                // Plumb session-scoped AbortSignal so ESC / new-prompt cancels
+                // a long-running persistent command (matches the one-shot
+                // path's getAbortSignalForSession hookup in execShellCommand).
+                const _persistAbort = (() => {
+                    try { return getAbortSignalForSession(options) || null; }
+                    catch { return null; }
+                })();
+                return executeBashSessionTool('bash_session', args, workDir, { abortSignal: _persistAbort });
             }
             const command = args.command;
             if (!command)
                 return 'Error: command is required';
+            // Quote/heredoc-aware block matching: strip quoted spans + heredoc
+            // bodies before testing patterns so a destructive token inside a
+            // string literal (`echo "rm -rf /"`) doesn't false-positive,
+            // while `bash -c 'rm -rf /'` payloads are extracted and re-tested.
+            const _blockTargets = [stripQuotedAndHeredoc(command), ...extractShellCInner(command).map(stripQuotedAndHeredoc)];
             for (const pattern of BLOCKED_PATTERNS) {
-                if (pattern.test(command)) {
+                if (_blockTargets.some((t) => pattern.test(t))) {
                     return `Error: blocked command pattern — "${command}" matches safety rule`;
                 }
             }
@@ -2715,13 +2764,15 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 return `Error: ${largeProbe.message}`;
             }
             const shellEffects = analyzeShellCommandEffects(command, workDir);
-            // Default timeout aligned with Claude Code upstream: 30 minutes
-            // (was 30 s). Real-world build / test / sync commands rarely
-            // finish in 30 s and were forced to set timeout: explicitly to
-            // avoid spurious SIGTERMs. The hard cap is still SHELL_OUTPUT_DISK_CAP
-            // for runaway output and the abortSignal hookup for session-scoped
-            // cancel; the timeout is the upper bound for legitimate work.
-            const timeout = args.timeout || 1800000;
+            // Timeout: CC parity default 120 s, mixdog max 1800 s (CC max
+            // is 600 s but build/test workloads regularly exceed it). User
+            // explicit timeout up to 1800 s honored; missing/0/non-numeric
+            // → default. Hard cap on output remains SHELL_OUTPUT_DISK_CAP.
+            const _DEFAULT_BASH_TIMEOUT_MS = 120_000;
+            const _MAX_BASH_TIMEOUT_MS = 1_800_000;
+            const _rawTimeout = (typeof args.timeout === 'number' && args.timeout > 0)
+                ? args.timeout : _DEFAULT_BASH_TIMEOUT_MS;
+            const timeout = Math.min(_rawTimeout, _MAX_BASH_TIMEOUT_MS);
             const mergeStderr = args.merge_stderr === true;
             try {
                 const { shell, shellArg } = resolveShell();
@@ -2772,6 +2823,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         shell,
                         shellArg,
                     });
+                    if (job && job.error) return `Error: ${job.error}`;
                     return [
                         `[job: ${job.jobId}]`,
                         `[pid: ${job.pid}]`,
@@ -2886,6 +2938,10 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             return JSON.stringify(job, null, 2);
         }
         case 'read': {
+            // CC `file_path` alias — official SDK schema uses `file_path`;
+            // mixdog has historically used `path`. Honor `file_path` so a
+            // CC-trained agent's call shape works without translation.
+            if (typeof args.file_path === 'string' && !args.path) args.path = args.file_path;
             // Unified-read dispatch (v0.6.283+):
             //   reads: [{path, mode?, n?, offset?, limit?, full?}]
             //                               → per-file batch (different
@@ -3003,21 +3059,49 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }
             const wantFull = args.full === true;
             const cacheKey = `read|${fullPath}|${st.mtimeMs}|${st.size}|${hasOffsetArg ? offset : 'd'}|${hasLimitArg ? limit : 'd'}|${wantFull ? 'f' : 's'}`;
+            // Race-guard helper: same-mtime same-size rapid rewrite (NTFS / exFAT 1 s
+            // resolution) can pass mtimeMs+size yet differ in content. When the cache
+            // entry stores a contentPrefixHash, recompute the current prefix and bail
+            // to a fresh read on mismatch. Helper kept local (not hoisted) so it can
+            // close over fullPath and st without an extra arg.
+            const _readPrefixHashForCacheGuard = () => {
+                try {
+                    if (st.size <= 65536) {
+                        return _hashText(readFileSync(fullPath, 'utf-8'));
+                    }
+                    const _fd = openSync(fullPath, 'r');
+                    try {
+                        const _buf = Buffer.allocUnsafe(65536);
+                        const _n = readSync(_fd, _buf, 0, 65536, 0);
+                        return _hashText(_buf.slice(0, _n).toString('utf-8'));
+                    } finally { try { closeSync(_fd); } catch {} }
+                } catch { return ''; }
+            };
             const cachedEntry = _cacheGetEntry(cacheKey);
             if (cachedEntry !== null) {
-                _recordReadSnapshot(fullPath, st, readStateScope, cachedEntry.readSnapshotMeta || { source: 'read_cached' });
-                // G6: file_unchanged stub. The full body is already in the
-                // prior tool_result; resending it wastes cache_creation
-                // tokens (Claude Code upstream measured ~18% on Read calls).
-                // The stub keeps the snapshot tracking intact (Edit
-                // validation still works) while collapsing the response
-                // payload. Falls back to the full body when the cached
-                // value is itself a stub-incompatible error string.
-                const _cachedVal = cachedEntry.value;
-                if (typeof _cachedVal === 'string' && !_cachedVal.startsWith('Error:')) {
-                    return `[file unchanged: ${normalizeOutputPath(filePath)} — same content as previous read; scroll up for the body]`;
+                let _entryStillValid = true;
+                if (cachedEntry.contentPrefixHash) {
+                    const _curHash = _readPrefixHashForCacheGuard();
+                    if (!_curHash || _curHash !== cachedEntry.contentPrefixHash) {
+                        _entryStillValid = false;
+                    }
                 }
-                return _cachedVal;
+                if (_entryStillValid) {
+                    _recordReadSnapshot(fullPath, st, readStateScope, cachedEntry.readSnapshotMeta || { source: 'read_cached' });
+                    // G6: file_unchanged stub. The full body is already in the
+                    // prior tool_result; resending it wastes cache_creation
+                    // tokens (Claude Code upstream measured ~18% on Read calls).
+                    // The stub keeps the snapshot tracking intact (Edit
+                    // validation still works) while collapsing the response
+                    // payload. Falls back to the full body when the cached
+                    // value is itself a stub-incompatible error string.
+                    const _cachedVal = cachedEntry.value;
+                    if (typeof _cachedVal === 'string' && !_cachedVal.startsWith('Error:')) {
+                        return `[file unchanged: ${normalizeOutputPath(filePath)} — same content as previous read; scroll up for the body]`;
+                    }
+                    return _cachedVal;
+                }
+                // Race detected — fall through to fresh read below.
             }
             if (st.size > READ_MAX_SIZE_BYTES) {
                 if (!hasRangeArgs) {
@@ -3032,7 +3116,19 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         source: 'read',
                         ranges: [{ startLine: offset + 1, endLine: offset + limit }],
                     };
-                    _cacheSet(cacheKey, out, { paths: [fullPath], readSnapshotMeta: snapshotMeta });
+                    // Compute prefix hash for race-guard on next cache hit.
+                    const _streamPrefixHash = (() => {
+                        try {
+                            if (st.size <= 65536) return _hashText(readFileSync(fullPath, 'utf-8'));
+                            const _fd = openSync(fullPath, 'r');
+                            try {
+                                const _buf = Buffer.allocUnsafe(65536);
+                                const _n = readSync(_fd, _buf, 0, 65536, 0);
+                                return _hashText(_buf.slice(0, _n).toString('utf-8'));
+                            } finally { try { closeSync(_fd); } catch {} }
+                        } catch { return ''; }
+                    })();
+                    _cacheSet(cacheKey, out, { paths: [fullPath], readSnapshotMeta: snapshotMeta, contentPrefixHash: _streamPrefixHash });
                     _recordReadSnapshot(fullPath, st, readStateScope, snapshotMeta);
                     return out;
                 } catch (err) {
@@ -3079,6 +3175,12 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     const { text } = smartReadTruncate(out, lines.length, st.size);
                     out = text;
                 }
+                // CC parity: empty file gets a system-reminder instead of a
+                // bare `1\t` line. The reminder makes the empty-state
+                // explicit so the agent doesn't assume content was elided.
+                if (content.length === 0) {
+                    out = `<system-reminder>File exists but has empty contents: ${normalizeOutputPath(filePath)}</system-reminder>`;
+                }
                 const isFullFileView = offset === 0 && offset + limit >= lines.length;
                 const snapshotMeta = {
                     source: 'read',
@@ -3087,7 +3189,14 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         : [{ startLine: offset + 1, endLine: Math.min(lines.length, offset + limit) }],
                     ...(isFullFileView ? { contentHash: _hashText(content) } : {}),
                 };
-                _cacheSet(cacheKey, out, { paths: [fullPath], readSnapshotMeta: snapshotMeta });
+                // Race-guard prefix hash. content variable is the full file body
+                // here (regular branch, st.size <= READ_MAX_SIZE_BYTES) so the
+                // hash equals the in-memory content; for files <= 64KiB this is
+                // a content-equivalent fingerprint, otherwise a head-only one
+                // (sufficient to detect a same-mtime / same-size rewrite of any
+                // bytes within the first 64KiB — the common case).
+                const _regPrefixHash = _hashText(content.length <= 65536 ? content : content.slice(0, 65536));
+                _cacheSet(cacheKey, out, { paths: [fullPath], readSnapshotMeta: snapshotMeta, contentPrefixHash: _regPrefixHash });
                 _recordReadSnapshot(fullPath, st, readStateScope, snapshotMeta);
                 return out;
             }
@@ -3096,6 +3205,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }
         }
         case 'write': {
+            // CC `file_path` alias.
+            if (typeof args.file_path === 'string' && !args.path) args.path = args.file_path;
             if (Array.isArray(args.writes) && args.writes.length > 0) {
                 const items = args.writes.map((entry) => ({
                     path: normalizeInputPath(entry?.path),
@@ -3146,6 +3257,16 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             try {
                 const fullPath = resolveAgainstCwd(filePath, workDir);
+                // Read-before-overwrite gate (CC parity). Refuse to clobber an
+                // existing file the model has not Read in this session. New
+                // file creation (no statSync) is allowed. Prior Edits/Writes
+                // by us count as "read" since they recordReadSnapshot below.
+                try {
+                    const _existing = statSync(fullPath);
+                    if (_existing.isFile() && !_getReadSnapshot(fullPath, readStateScope)) {
+                        return `Error [code 6]: file exists but has not been read yet — read before overwriting: ${filePath}`;
+                    }
+                } catch { /* doesn't exist — new file write OK */ }
                 // Auto-create missing parent directories so deep new paths
                 // like `.v0610_test/deep/nested/file.txt` succeed in one
                 // shot, matching Claude Code's Write tool behaviour.
@@ -3175,6 +3296,13 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }
         }
         case 'edit': {
+            // CC `file_path` alias — also normalize per-edit `file_path`.
+            if (typeof args.file_path === 'string' && !args.path) args.path = args.file_path;
+            if (Array.isArray(args.edits)) {
+                for (const _e of args.edits) {
+                    if (_e && typeof _e.file_path === 'string' && !_e.path) _e.path = _e.file_path;
+                }
+            }
             // Unified-edit dispatch:
             //   edits array present → single-file (same path across items) or
             //     cross-file fan-out, inferred from per-item path homogeneity.
@@ -3207,8 +3335,18 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const oldStr = args.old_string;
             const newStr = args.new_string;
             const replaceAll = args.replace_all === true;
-            if (!filePath || !oldStr)
-                return 'Error: path and old_string are required';
+            if (!filePath || typeof oldStr !== 'string' || oldStr.length === 0)
+                return 'Error: path and non-empty old_string are required';
+            if (typeof newStr !== 'string')
+                return 'Error: new_string must be a string';
+            if (newStr === oldStr)
+                return 'Error: new_string must differ from old_string';
+            // Line-prefix guard: Read returns `<n>\t<content>`. If the model
+            // pasted the prefix into old_string the on-disk content has no
+            // matching tab-prefixed line, so the match would silently fail.
+            // Surface a precise error instead.
+            if (/^\s*\d+\t/.test(oldStr))
+                return `Error: old_string starts with a Read line-number prefix (\"<n>\\t\") — strip the prefix before Edit: ${filePath}`;
             if (!isSafePath(filePath, workDir, pathOpts))
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);

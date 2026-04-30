@@ -42,8 +42,12 @@ import { randomUUID } from 'node:crypto';
 import { invalidateBuiltinResultCache, analyzeShellCommandEffects, preflightShellLargeFileProbe } from './builtin.mjs';
 import { markCodeGraphDirtyPaths } from './code-graph.mjs';
 
-const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_TIMEOUT_MS = 600_000;
+// CC parity: default 120 s, max 1800 s (matches the foreground `bash`
+// tool in builtin.mjs). 30 s default left interactive build/test workflows
+// timing out; the persistent shell carries longer-running pipelines than
+// one-shot calls, so a generous max is appropriate.
+const DEFAULT_TIMEOUT_MS = 120_000;
+const MAX_TIMEOUT_MS = 1_800_000;
 const IDLE_TIMEOUT_MS = 5 * 60_000;
 const MAX_SESSIONS = 10;
 const STDERR_DRAIN_MS = 25;
@@ -101,7 +105,9 @@ function smartMiddleTruncate(content) {
 // standalone). Any drift should be fixed in BOTH files.
 const _CMD_START = '(?:^|[;&|\\n(){}]\\s*|\\$[\\({]\\s*|[<>]\\(\\s*|`\\s*)';
 const BLOCKED_PATTERNS = [
-    /\brm\s+-rf\s+[/~]/i,
+    // Synced with builtin.mjs BLOCKED_PATTERNS rm rule — catch -rf, -fr,
+    // split flags, `--` separator. Target restricted to / or ~.
+    /\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|-[rR]\s+-[fF]|-[fF]\s+-[rR])(?:\s+--)?\s+[\/~]/i,
     /\bgit\s+push\s+--force/i,
     /\bgit\s+reset\s+--hard/i,
     /\bformat\s+[a-z]:/i,
@@ -300,7 +306,7 @@ function _getOrCreate(sessionId, initialCwd = process.cwd()) {
 
 // Core command-run: frame with sentinel, wait for marker on stdout, flush
 // stderr with a small drain window, return { stdout, stderr, exit_code }.
-function _runCommand(entry, command, timeoutMs) {
+function _runCommand(entry, command, timeoutMs, abortSignal = null) {
     return new Promise((resolve, reject) => {
         entry.busy = true;
         // Reset buffers for this command. Anything left from a prior run is
@@ -310,6 +316,7 @@ function _runCommand(entry, command, timeoutMs) {
 
         let finished = false;
         let timeoutHandle = null;
+        let abortHandler = null;
         const marker = `${MARKER_PREFIX}:${randomUUID()}`;
         const markerRe = new RegExp(`^${escapeRegex(marker)}:(-?\\d+)\\s*$`, 'm');
 
@@ -323,6 +330,9 @@ function _runCommand(entry, command, timeoutMs) {
             entry.busy = false;
             entry.lastUsed = Date.now();
             if (timeoutHandle) clearTimeout(timeoutHandle);
+            if (abortSignal && abortHandler) {
+                try { abortSignal.removeEventListener('abort', abortHandler); } catch {}
+            }
             entry.proc.stdout.removeListener('data', onStdout);
             entry.proc.removeListener('exit', onExit);
         };
@@ -356,6 +366,31 @@ function _runCommand(entry, command, timeoutMs) {
                 settle({ stdout: before, stderr, exit_code: exitCode });
             }, STDERR_DRAIN_MS);
         };
+
+        // Caller-driven abort (ESC / new prompt / session close). Kill the
+        // shell immediately and resolve with an aborted marker so the agent
+        // sees the cancellation rather than waiting for timeoutMs.
+        if (abortSignal) {
+            const fireAbort = () => {
+                if (finished) return;
+                const partialOut = entry.stdoutBuf || '';
+                const partialErr = entry.stderrBuf || '';
+                entry.stdoutBuf = '';
+                entry.stderrBuf = '';
+                _killProcessTree(entry.proc);
+                cleanup();
+                resolve({
+                    stdout: partialOut,
+                    stderr: partialErr,
+                    exit_code: null,
+                    signal: 'SIGTERM',
+                    aborted: true,
+                });
+            };
+            if (abortSignal.aborted) { fireAbort(); return; }
+            abortHandler = fireAbort;
+            abortSignal.addEventListener('abort', abortHandler, { once: true });
+        }
 
         entry.proc.stdout.on('data', onStdout);
         // Check the buffer in case the marker already arrived (tiny commands).
@@ -410,7 +445,8 @@ async function _syncSessionCwd(entry, timeoutMs) {
     }
 }
 
-async function bash_session(args, cwd = process.cwd()) {
+async function bash_session(args, cwd = process.cwd(), opts = {}) {
+    const abortSignal = opts && opts.abortSignal ? opts.abortSignal : null;
     const command = typeof args?.command === 'string' ? args.command : '';
     if (!command) return 'Error: command is required';
     if (isBlocked(command)) {
@@ -443,7 +479,7 @@ async function bash_session(args, cwd = process.cwd()) {
 
     let result;
     try {
-        result = await _runCommand(entry, command, effectiveTimeout);
+        result = await _runCommand(entry, command, effectiveTimeout, abortSignal);
     } catch (err) {
         return `Error: ${err?.message || String(err)}`;
     }
@@ -473,7 +509,9 @@ async function bash_session(args, cwd = process.cwd()) {
     // of the text response without bespoke JSON. Keeps parity with the
     // `bash` tool's free-form `[exit code: N]` marker but additive.
     const headerLines = [`[session: ${id}]`];
-    if (result.timed_out) {
+    if (result.aborted) {
+        headerLines.push(`[aborted: caller cancelled — session killed]`);
+    } else if (result.timed_out) {
         headerLines.push(`[timeout: ${result.timeout_ms} ms — session killed]`);
     } else if (result.exit_code !== 0 && result.exit_code !== null) {
         headerLines.push(`[exit code: ${result.exit_code}]`);
@@ -491,10 +529,10 @@ async function bash_session(args, cwd = process.cwd()) {
 // `bash_session` schema only added prompt bytes and triggered LLM
 // hallucinations of the legacy name. Implementation (executeBashSessionTool,
 // closeBashSession) stays — `bash` with persistent:true routes here.
-export async function executeBashSessionTool(name, args, _cwd) {
+export async function executeBashSessionTool(name, args, _cwd, opts = {}) {
     switch (name) {
         case 'bash_session':
-            return bash_session(args || {}, _cwd || process.cwd());
+            return bash_session(args || {}, _cwd || process.cwd(), opts);
         default:
             throw new Error(`Unknown bash-session tool: ${name}`);
     }
