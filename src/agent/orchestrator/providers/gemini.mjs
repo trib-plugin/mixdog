@@ -81,18 +81,14 @@ function toGeminiContent(message) {
         const parts = [];
         if (message.content) parts.push({ text: message.content });
         for (const tc of message.toolCalls) {
-            // Gemini 3 requires the original thought signature to be echoed
-            // back on every functionCall part so the cached thinking prefix
-            // stays valid. v1beta strictly enforces snake_case here:
-            // sending the camelCase alias OR sending both casings together
-            // makes generateContent return 400 "Unknown name 'thoughtSignature'".
-            // Older models (1.5/2.x) and the first turn of a session simply
-            // have no signature; emit the part without the field then.
-            const fc = { name: tc.name, args: tc.arguments };
-            if (tc.thoughtSignature) {
-                fc.thought_signature = tc.thoughtSignature;
-            }
-            parts.push({ functionCall: fc });
+            // Gemini 3 thinking models require the original thoughtSignature
+            // echoed back on every prior functionCall so the cached thinking
+            // prefix stays valid. v1beta places the field at the Part level
+            // (sibling of functionCall) — putting it inside functionCall returns
+            // 400 "Unknown name". Older models / first turn have no signature.
+            const part = { functionCall: { name: tc.name, args: tc.arguments } };
+            if (tc.thoughtSignature) part.thoughtSignature = tc.thoughtSignature;
+            parts.push(part);
         }
         return { role: 'model', parts };
     }
