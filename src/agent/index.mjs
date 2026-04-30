@@ -319,13 +319,19 @@ const TOOLS = [
     name: 'bridge',
     title: 'Bridge to External Model',
     annotations: { title: 'Bridge to External Model', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    description: 'Delegate one turn to an external agent by role (mapped via user-workflow.json). Detached: returns jobId + sessionId; agent runs in background. Pass exactly one of prompt / ref / file. Use close_session to stop early.',
+    description: 'Delegate one turn to an external agent by role (mapped via user-workflow.json). Detached: returns jobId + sessionId; agent runs in background. Pass exactly one of prompt / ref / file. Use close_session to stop early. Bench escape hatch: pass provider+model directly (with optional effort/fast/tools/systemPrompt) to bypass agent-config.json — role still drives BP2 catalog scoping.',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'The task instruction for the agent.' },
-        role: { type: 'string', description: 'Agent role from user-workflow.json.' },
+        role: { type: 'string', description: 'Agent role from user-workflow.json (or any string for ad-hoc bench dispatch).' },
         preset: { type: 'string', description: 'Advanced: explicit preset name (bypass role mapping).' },
+        provider: { type: 'string', description: 'Bench: provider id (e.g. anthropic-oauth, openai-oauth, gemini, deepseek, xai). Used together with model for ad-hoc dispatch — skips agent-config.json lookup.' },
+        model: { type: 'string', description: 'Bench: model id matching the provider (e.g. claude-opus-4-7, gpt-5.5, gemini-3-flash-preview). Required when provider is set.' },
+        effort: { type: 'string', description: 'Bench: reasoning effort (low / medium / high / xhigh). Used when provider+model are set.' },
+        fast: { type: 'boolean', description: 'Bench: priority service tier flag (provider-specific). Used when provider+model are set.' },
+        tools: { type: 'string', description: 'Bench: tool surface (full / readonly). Used when provider+model are set; default full.' },
+        systemPrompt: { type: 'string', description: 'Bench: extra system text injected at the head of the prompt for ad-hoc dispatch.' },
         context: { type: 'string', description: 'Extra context appended to the prompt.' },
         ref: { type: 'string', description: 'Prompt store key (populated by prompt_store).' },
         file: { type: 'string', description: 'Read prompt from a file path.' },
@@ -693,17 +699,43 @@ export async function handleToolCall(name, args, opts = {}) {
         if (!prompt) return fail('prompt, file, or ref is required');
         if (!args.role) return fail('role is required');
 
+        // Bench escape hatch — when both provider and model are supplied,
+        // build an ad-hoc preset on the fly and bypass agent-config.json.
+        // Role still drives BP2 catalog scoping (unknown role names fall back
+        // to the legacy all-in-one catalog inside loadScopedRoleCatalog).
+        // systemPrompt is appended as a prefix to prompt so the same dispatch
+        // path can carry caller-injected guidance without changing the
+        // session-builder schema.
         const config = loadConfig();
-        // Load role→preset mapping from user-workflow.json. Role primitives only —
-        // no suffix variants, exact match required.
-        const wfPath = join(getPluginData(), 'user-workflow.json');
-        let rolePresets = {};
-        try { const wf = JSON.parse(readFileSync(wfPath, 'utf-8')); if (Array.isArray(wf.roles)) for (const r of wf.roles) rolePresets[r.name] = r.preset; } catch {}
-        const presetName = args.preset || rolePresets[args.role];
-        if (!presetName) return fail(`role "${args.role}" not found in user-workflow.json (and no preset override given)`);
+        let preset;
+        let presetName;
+        if (args.provider && args.model) {
+          preset = {
+            id: '__bench__',
+            name: '__BENCH__',
+            type: 'bridge',
+            provider: String(args.provider),
+            model: String(args.model),
+            effort: args.effort ? String(args.effort) : undefined,
+            fast: args.fast === true,
+            tools: args.tools ? String(args.tools) : 'full',
+          };
+          presetName = preset.name;
+          if (args.systemPrompt) {
+            prompt = String(args.systemPrompt) + '\n\n' + prompt;
+          }
+        } else {
+          // Load role→preset mapping from user-workflow.json. Role primitives only —
+          // no suffix variants, exact match required.
+          const wfPath = join(getPluginData(), 'user-workflow.json');
+          let rolePresets = {};
+          try { const wf = JSON.parse(readFileSync(wfPath, 'utf-8')); if (Array.isArray(wf.roles)) for (const r of wf.roles) rolePresets[r.name] = r.preset; } catch {}
+          presetName = args.preset || rolePresets[args.role];
+          if (!presetName) return fail(`role "${args.role}" not found in user-workflow.json (and no preset override given)`);
 
-        const preset = config.presets?.find((x) => x.id === presetName || x.name === presetName);
-        if (!preset) return fail(`preset "${presetName}" (mapped from role "${args.role}") not found in agent-config.json`);
+          preset = config.presets?.find((x) => x.id === presetName || x.name === presetName);
+          if (!preset) return fail(`preset "${presetName}" (mapped from role "${args.role}") not found in agent-config.json`);
+        }
 
         const role = args.role;
         const effectiveLane = 'bridge';
