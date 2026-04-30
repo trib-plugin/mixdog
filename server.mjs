@@ -640,7 +640,17 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executeCodeGraphTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/code-graph.mjs')).href,
     )
-    const text = await executeCodeGraphTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
+    let resolvedName = name
+    const resolvedArgs = args ?? {}
+    if (name === 'find_symbol' && resolvedArgs.mode && resolvedArgs.mode !== 'symbol') {
+      const m = resolvedArgs.mode
+      if (m === 'callers') resolvedName = 'find_callers'
+      else if (m === 'references') resolvedName = 'find_references'
+      else if (m === 'imports') resolvedName = 'find_imports'
+      else if (m === 'dependents') resolvedName = 'find_dependents'
+      else resolvedName = 'code_graph'
+    }
+    const text = await executeCodeGraphTool(resolvedName, resolvedArgs, callerCtx.callerCwd || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -703,7 +713,18 @@ async function dispatchTool(name, args, callerCtx = {}) {
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
+const ALWAYS_LOAD_TOOLS = new Set([
+  'read', 'bash', 'grep', 'bridge', 'edit', 'list',
+  'glob', 'recall', 'find_symbol', 'explore', 'write', 'search',
+])
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: TOOL_DEFS.map((t) =>
+    ALWAYS_LOAD_TOOLS.has(t.name)
+      ? { ...t, _meta: { ...(t._meta || {}), 'anthropic/alwaysLoad': true } }
+      : t,
+  ),
+}))
 
 server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const { name, arguments: args } = req.params

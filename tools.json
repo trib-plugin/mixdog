@@ -9,7 +9,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).",
+    "description": "Reply on the messaging channel. Pass chat_id from the inbound message. Optional: reply_to, files, embeds, components.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -37,14 +37,14 @@
           "items": {
             "type": "object"
           },
-          "description": "Discord embed objects."
+          "description": "Discord embed objects. Fields: title, description, color (int), fields [{name, value, inline}], footer {text}, timestamp."
         },
         "components": {
           "type": "array",
           "items": {
             "type": "object"
           },
-          "description": "Discord message components (Action Rows + Buttons/Select Menus)."
+          "description": "Discord message components. Use Action Rows containing Buttons, Select Menus, etc. See Discord Components V2 docs."
         }
       },
       "required": [
@@ -64,7 +64,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Add an emoji reaction to a message. Unicode emoji work directly; custom emoji need the <:name:id> form.",
+    "description": "Add an emoji reaction to a message. Unicode direct; custom emoji as <:name:id>.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -99,7 +99,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Edit a message the bot previously sent. Supports text, embeds, and components.",
+    "description": "Edit a previously-sent bot message. Supports text, embeds, components.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -148,7 +148,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Download attachments from a message to the local inbox. Use after fetch shows a message has attachments (marked with +Natt). Returns file paths ready to Read.",
+    "description": "Download attachments from a message to the local inbox. Returns file paths ready to Read.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -178,7 +178,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
+    "description": "Fetch recent messages from a channel. Returns oldest-first with message IDs.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -207,7 +207,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Show all configured schedules, their next fire time, and whether they are currently running.",
+    "description": "Show configured schedules with next fire time and running state.",
     "inputSchema": {
       "type": "object",
       "properties": {}
@@ -249,7 +249,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Defer or skip a schedule. Use \"defer\" to suppress for N minutes (default 30), or \"skip_today\" to suppress for the rest of the day.",
+    "description": "Defer or skip a schedule. action: \"defer\" suppresses for N minutes (default 30) or \"skip_today\" for the rest of the day.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -287,7 +287,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Activate or deactivate the channel bridge. When active, inbound messages trigger typing indicators, emoji reactions, and auto-forwarding of transcript output to Discord. When inactive, only direct MCP tool calls (reply, fetch) work.",
+    "description": "Activate or deactivate the channel bridge. Active: inbound messages trigger typing/reactions and auto-forward transcript to Discord. Inactive: only direct MCP tool calls work.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -312,7 +312,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Reload config from disk and re-register all schedules, webhooks, and event rules without restarting.",
+    "description": "Reload config from disk; re-register schedules, webhooks, event rules without restart.",
     "inputSchema": {
       "type": "object",
       "properties": {}
@@ -329,7 +329,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild (requires confirm: \"REBUILD MEMORY\"), prune (requires confirm: \"PRUNE OLD ENTRIES\"), cycle1, backfill, status, remember (store fact), forget (archive a root), delete (requires confirm: \"DELETE ALL MEMORY\" — wipes all entries).",
+    "description": "Run memory operations: cycle1, cycle2/sleep (promote+dedup), flush, prune, status, remember (store fact), forget (archive a root), backfill, rebuild, delete. Destructive ops (rebuild, prune, delete) require matching `confirm` string.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -401,7 +401,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "FIRST CHOICE for past project / session memory — never start with grep / read / bash for memory questions. Past context from the memory store. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. External web → `search`, codebase → `explore`.",
+    "description": "Search past project / session memory. `query`: single NL string for one synthesized answer, or array of strings for unrelated multi-question (parallel mechanical merge). Codebase → explore, web → search.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -420,15 +420,15 @@
               "minItems": 1
             }
           ],
-          "description": "Single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks)."
+          "description": "Single NL string, or array of strings for unrelated multi-question."
         },
         "cwd": {
           "type": "string",
-          "description": "Optional workspace hint. Absolute path; `~` and forward slashes supported."
+          "description": "Optional workspace hint."
         },
         "background": {
           "type": "boolean",
-          "description": "Default: false (sync — merged answer returned in-turn). Set true for heavy multi-angle queries that risk exceeding the MCP request timeout; the merged answer is then pushed via the channel bridge."
+          "description": "Default false (sync). Set true for heavy queries to dispatch async and receive answer via channel."
         }
       },
       "required": [
@@ -449,7 +449,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "FIRST CHOICE for codebase / file / structure lookup when location is uncertain — never start with grep / read / bash / find_symbol on an unknown target. Internal codebase search. Local filesystem only — not web, not memory. `query`: single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Omit `cwd` for the current workspace; set `cwd` only when the user explicitly names that root/path. Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.",
+    "description": "Search internal codebase / filesystem. `query`: single NL string for one synthesized answer, or array of strings for unrelated multi-question. Omit `cwd` for the current workspace; set only when the user names a path. Past memory → recall, web → search.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -468,15 +468,15 @@
               "minItems": 1
             }
           ],
-          "description": "Single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks)."
+          "description": "Single NL string, or array of strings for unrelated multi-question."
         },
         "cwd": {
           "type": "string",
-          "description": "Optional search root. Omit for the current workspace. Use an absolute/`~` root only when the user explicitly names that path. No silent fan-out."
+          "description": "Optional search root. Omit for current workspace; pass only when the user names a path."
         },
         "background": {
           "type": "boolean",
-          "description": "Default: false (sync — merged answer returned in-turn). Set true for heavy multi-angle queries that risk exceeding the MCP request timeout; the merged answer is then pushed via the channel bridge."
+          "description": "Default false (sync). Set true for heavy queries to dispatch async and receive answer via channel."
         }
       },
       "required": [
@@ -490,7 +490,7 @@
     "name": "search",
     "title": "Search",
     "aiWrapped": true,
-    "description": "FIRST CHOICE for external web / URL questions — never start with bash / curl / WebFetch when the query targets the open web. External web search and URL scrape. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes; URL → scrape) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, codebase → `explore`.",
+    "description": "External web / URL scrape. `query`: single NL string for one synthesized answer, or array of strings for unrelated multi-question. URL → scrape. Past memory → recall, codebase → explore.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -509,7 +509,7 @@
               "minItems": 1
             }
           ],
-          "description": "Single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks)."
+          "description": "Single NL string, or array of strings for unrelated multi-question."
         },
         "cwd": {
           "type": "string",
@@ -517,7 +517,7 @@
         },
         "background": {
           "type": "boolean",
-          "description": "Default: false (sync — merged answer returned in-turn). Set true for heavy multi-angle queries that risk exceeding the MCP request timeout; the merged answer is then pushed via the channel bridge."
+          "description": "Default false (sync). Set true for heavy queries to dispatch async and receive answer via channel."
         }
       },
       "required": [
@@ -544,7 +544,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Create external AI session with tool access. Auto-injects context. Use preset: full/readonly/mcp. Use agent: Worker/Reviewer.",
+    "description": "Create external AI session with tool access. preset: full/readonly/mcp. agent: Worker/Reviewer.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -637,7 +637,7 @@
       "properties": {
         "sessionId": {
           "type": "string",
-          "description": "Id of the session to close (as returned by `create_session` or `list_sessions`). Plants a tombstone and aborts any in-flight work; re-closing the same id is a no-op."
+          "description": "Session id to close (from create_session / list_sessions). Plants a tombstone, aborts in-flight work; re-closing is a no-op."
         }
       },
       "required": [
@@ -673,7 +673,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.",
+    "description": "Delegate one turn to an external agent by role (mapped via user-workflow.json). Detached: returns jobId + sessionId; agent runs in background. Pass exactly one of prompt / ref / file. Use close_session to stop early. Bench escape hatch: pass provider+model directly (with optional effort/fast/tools/systemPrompt) to bypass agent-config.json — role still drives BP2 catalog scoping.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -683,11 +683,35 @@
         },
         "role": {
           "type": "string",
-          "description": "Agent role as defined in user-workflow.json. Check your workflow file for the active set."
+          "description": "Agent role from user-workflow.json (or any string for ad-hoc bench dispatch)."
         },
         "preset": {
           "type": "string",
           "description": "Advanced: explicit preset name (bypass role mapping)."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Bench: provider id (e.g. anthropic-oauth, openai-oauth, gemini, deepseek, xai). Used together with model for ad-hoc dispatch — skips agent-config.json lookup."
+        },
+        "model": {
+          "type": "string",
+          "description": "Bench: model id matching the provider (e.g. claude-opus-4-7, gpt-5.5, gemini-3-flash-preview). Required when provider is set."
+        },
+        "effort": {
+          "type": "string",
+          "description": "Bench: reasoning effort (low / medium / high / xhigh). Used when provider+model are set."
+        },
+        "fast": {
+          "type": "boolean",
+          "description": "Bench: priority service tier flag (provider-specific). Used when provider+model are set."
+        },
+        "tools": {
+          "type": "string",
+          "description": "Bench: tool surface (full / readonly). Used when provider+model are set; default full."
+        },
+        "systemPrompt": {
+          "type": "string",
+          "description": "Bench: extra system text injected at the head of the prompt for ad-hoc dispatch."
         },
         "context": {
           "type": "string",
@@ -723,7 +747,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read file(s). `path` accepts a single string or array (`[\"a.mjs\",\"b.mjs\"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. Do not repeat an identical read on the same file/range — open a wider window or different range instead.",
+    "description": "Read file(s). `path`: string or array for parallel multi-file. `mode`: full | head | tail | count. `n` sets head/tail lines; `offset`/`limit` set full-mode window. Files over byte cap require offset/limit, head, tail, count, or `grep`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -740,7 +764,7 @@
               "minItems": 1
             }
           ],
-          "description": "Single file path string (`\"a.mjs\"`) or array of paths for parallel multi-file read (`[\"a.mjs\",\"b.mjs\"]`)."
+          "description": "File path string, or array of paths for parallel multi-file read."
         },
         "mode": {
           "type": "string",
@@ -785,7 +809,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Replace text in file(s). For multiple edits prefer the `edits` array form — same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.",
+    "description": "Replace text in file(s). For 2+ edits use `edits` array (same file applies sequentially, different files in parallel). Single form is for one-off only. `replace_all:true` drops the uniqueness check.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -830,7 +854,7 @@
             ]
           },
           "minItems": 1,
-          "description": "Array of edits to apply. Each item may specify its own `path`; if omitted, falls back to the top-level `path`. Same-file edits apply sequentially; different-file edits run in parallel."
+          "description": "Array of edits. Each may specify its own `path`; otherwise reuses top-level `path`. Same-file edits sequential, cross-file parallel."
         }
       },
       "required": []
@@ -847,7 +871,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Create or overwrite a file. Prefer `apply_patch` for multi-file or context-heavy edits; use `write` when you are creating a new file or replacing the whole contents intentionally. For multiple whole-file writes in one turn, pass `writes` array.",
+    "description": "Create or overwrite a file. Prefer `apply_patch` for multi-file or context-heavy edits. For 2+ whole-file writes pass `writes` array.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -879,7 +903,7 @@
             ]
           },
           "minItems": 1,
-          "description": "Batch whole-file writes. Each item writes one file. Use this when you need to create/replace several files in one call."
+          "description": "Batch whole-file writes. Use when creating/replacing several files in one call."
         }
       },
       "required": []
@@ -896,7 +920,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Pass `persistent:true` to keep cwd/env/venv across calls in the same session (the bridge reuses one shell). Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.",
+    "description": "Execute a shell command. Batch related commands with `&&` or `;` in one call. `persistent:true` keeps cwd/env/venv across calls. `run_in_background:true` for long jobs, then `job_wait` + `read` stdout/stderr paths. Destructive patterns (rm -rf /, force-push, format) are blocked.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -910,7 +934,7 @@
         },
         "merge_stderr": {
           "type": "boolean",
-          "description": "Merge stderr into stdout (legacy 2>&1 behaviour). Default false: stderr is surfaced as a separate `[stderr]` block."
+          "description": "Merge stderr into stdout (2>&1). Default false: stderr surfaced as separate `[stderr]` block."
         },
         "run_in_background": {
           "type": "boolean",
@@ -918,11 +942,11 @@
         },
         "persistent": {
           "type": "boolean",
-          "description": "Keep shell state (cwd, env, venv, functions) across calls. The bridge reuses one shell per session for all `persistent:true` calls."
+          "description": "Keep shell state (cwd, env, venv, functions) across calls. One shared shell per session."
         },
         "session_id": {
           "type": "string",
-          "description": "Explicit persistent shell session id to reuse. Prefer `persistent:true` unless you need to target a specific shell."
+          "description": "Explicit persistent shell session id to reuse. Prefer `persistent:true` unless targeting a specific shell."
         }
       },
       "required": [
@@ -974,7 +998,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "ripgrep content search. `pattern` accepts a single regex string (use `|` for alternation: `pattern:\"foo|bar\"`) OR an array of patterns (`pattern:[\"foo\",\"bar\"]`, OR-joined). `glob` follows the same shape — single string or array. Prefer the array form when patterns are long or genuinely independent; serial greps are not allowed. For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.",
+    "description": "ripgrep content search. `pattern`: regex string (use `|` for alternation) or array (OR-joined). `glob`: same shape. For known identifier prefer `find_symbol`. Output modes: `files_with_matches` (default), `content`, `count`. `multiline:true` for cross-line patterns.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -991,7 +1015,7 @@
               "minItems": 1
             }
           ],
-          "description": "Single regex string (use `|` for alternation: `\"foo|bar\"`) or array of patterns (OR-joined: `[\"foo\",\"bar\"]`)."
+          "description": "Regex string (use `|` for alternation) or array of patterns (OR-joined)."
         },
         "path": {
           "type": "string",
@@ -1010,7 +1034,7 @@
               "minItems": 1
             }
           ],
-          "description": "Single glob filter (use `{a,b}` brace expansion: `\"**/*.{mjs,json}\"`) or array of glob filters."
+          "description": "Glob filter (`{a,b}` brace expansion supported) or array of filters."
         },
         "output_mode": {
           "type": "string",
@@ -1073,7 +1097,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "File path search via `rg --files`. `pattern` accepts a single glob string (use `{a,b}` brace expansion for compact alternation: `pattern:\"**/*.{mjs,json}\"`) OR an array of globs (`pattern:[\"**/*route*.mjs\",\"**/*policy*.json\"]`). Prefer the array form when categories are genuinely independent; do not emit two `glob` calls in the same assistant turn — merge them into one call with all requested categories. Use `grep` for in-file content search.",
+    "description": "File path search via `rg --files`. `pattern`: glob string (`{a,b}` brace expansion supported) or array (OR-joined). Prefer array for genuinely independent categories. For in-file content search use `grep`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1090,11 +1114,11 @@
               "minItems": 1
             }
           ],
-          "description": "Single glob string (`\"**/*.mjs\"` or with brace expansion `\"**/*.{mjs,json}\"`) or array of glob patterns (`[\"**/*route*.mjs\",\"**/*policy*.json\"]`)."
+          "description": "Glob string (`{a,b}` brace expansion supported) or array of glob patterns."
         },
         "path": {
           "type": "string",
-          "description": "Base dir. Default: cwd. Capped at 100. All result rows are emitted as absolute paths."
+          "description": "Base dir. Default: cwd. Result rows emitted as absolute paths."
         },
         "head_limit": {
           "type": "number",
@@ -1121,13 +1145,13 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). For newest-file tasks, use `list` with `sort:\"mtime\", type:\"file\"` or `find` and read the top hit directly; do not list the workspace root again just to verify. Use `find` mode to filter by filename pattern within a directory tree; for repository-wide filename pattern search use `glob` instead, and for in-file content search use `grep`. Use `find_symbol` for identifier lookup.",
+    "description": "Directory inspection. `mode`: list (metadata: name/type/size/mtime) | tree (ASCII) | find (filter by name/size/mtime). For newest files use `list sort:\"mtime\"` or `find`. For repo-wide filename pattern use `glob`; for in-file content use `grep`; for symbols use `find_symbol`.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "path": {
           "type": "string",
-          "description": "Root directory. Defaults to cwd. Supports `~` expansion. All result rows (list/tree/find, every depth) are emitted as absolute paths."
+          "description": "Root directory. Default cwd. Supports `~`. All result rows emitted as absolute paths."
         },
         "mode": {
           "type": "string",
@@ -1198,58 +1222,6 @@
     "module": "builtin"
   },
   {
-    "name": "code_graph",
-    "title": "Code Graph",
-    "annotations": {
-      "title": "Code Graph",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Repository graph / symbol navigation tool. Multi-language common graph for overview/imports/dependents/related/impact/symbols/find_symbol/references/callers. In bridge sessions, call the matching `mode` directly (for example `mode:\"callers\"`); alias tools may be absent. `callers` returns call-site lines and the enclosing caller symbol when possible, so answer from it before reading files. Prefer this over raw grep for imports, dependents, callers, references, or symbol-level impact. In main/public sessions where aliases exist, direct aliases (`find_imports`, `find_dependents`, `find_references`, `find_callers`, `find_symbol`) are fine for exact questions.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "mode": {
-          "type": "string",
-          "enum": [
-            "overview",
-            "imports",
-            "dependents",
-            "related",
-            "impact",
-            "symbols",
-            "find_symbol",
-            "references",
-            "callers"
-          ],
-          "description": "Graph query mode."
-        },
-        "file": {
-          "type": "string",
-          "description": "Path to the target file. Required for imports/dependents/related/impact/symbols. Optional for references/callers (narrows language/source file when ambiguous). Ignored by overview/find_symbol."
-        },
-        "symbol": {
-          "type": "string",
-          "description": "Symbol name. Required for find_symbol/references/callers; optional for impact (limits analysis to that symbol)."
-        },
-        "language": {
-          "type": "string",
-          "description": "Optional language filter for find_symbol/references/callers only when known; omit if unsure."
-        },
-        "limit": {
-          "type": "number",
-          "description": "Optional result cap for find_symbol. Default 20, max 50."
-        }
-      },
-      "required": [
-        "mode"
-      ]
-    },
-    "module": "code_graph"
-  },
-  {
     "name": "find_symbol",
     "title": "Find Symbol",
     "annotations": {
@@ -1259,13 +1231,32 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Find a symbol/identifier across the repository and return the best declaration/reference candidates with file:line and nearby code. Prefer this over grep when you know the symbol name but not the file. If a best declaration candidate is returned, read that file directly instead of running another grep on the same identifier. If the nearby declaration/import code already identifies the requested helper or caller name, answer from that evidence; do not read the helper implementation unless the task asks what the helper does.",
+    "description": "Symbol-level navigation across the repository. Default mode finds the declaration site for a known identifier (file:line + nearby code). Pass `mode` to switch into graph queries: `callers` (call sites for functions), `references` (all references — use for non-function symbols too), `imports` (what a file imports), `dependents` (who imports a file), or `overview`/`symbols`/`related`/`impact` for file-level analysis. Prefer over grep when the identifier is known but the file is not.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "symbol": {
           "type": "string",
-          "description": "Symbol or identifier to find."
+          "description": "Symbol or identifier. Required for default/callers/references modes; optional for impact."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "symbol",
+            "callers",
+            "references",
+            "imports",
+            "dependents",
+            "overview",
+            "symbols",
+            "related",
+            "impact"
+          ],
+          "description": "Query mode. Omit or use \"symbol\" for declaration lookup. \"callers\"/\"references\" for usage. \"imports\"/\"dependents\" for module graph. \"overview\"/\"symbols\"/\"related\"/\"impact\" for file-level analysis."
+        },
+        "file": {
+          "type": "string",
+          "description": "Target file path. Required for imports/dependents/related/impact/symbols. Optional for callers/references (narrows language)."
         },
         "language": {
           "type": "string",
@@ -1276,125 +1267,7 @@
           "description": "Optional result cap. Default 20, max 50."
         }
       },
-      "required": [
-        "symbol"
-      ]
-    },
-    "module": "code_graph"
-  },
-  {
-    "name": "find_imports",
-    "title": "Find Imports",
-    "annotations": {
-      "title": "Find Imports",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "What does this file import from others? Returns modules/files that the target file pulls in. Use this instead of `code_graph(mode:\"imports\")` when you already know the file path. Optimized alias for quicker tool selection in the main session.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "file": {
-          "type": "string",
-          "description": "Path to the target file."
-        }
-      },
-      "required": [
-        "file"
-      ]
-    },
-    "module": "code_graph"
-  },
-  {
-    "name": "find_dependents",
-    "title": "Find Dependents",
-    "annotations": {
-      "title": "Find Dependents",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Who imports from this file? Returns files that depend on or pull in the target file. Use this instead of `code_graph(mode:\"dependents\")` when you already know the file path. Optimized alias for quicker tool selection in the main session.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "file": {
-          "type": "string",
-          "description": "Path to the target file."
-        }
-      },
-      "required": [
-        "file"
-      ]
-    },
-    "module": "code_graph"
-  },
-  {
-    "name": "find_references",
-    "title": "Find References",
-    "annotations": {
-      "title": "Find References",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Find references for a symbol across the repository. Use this instead of `code_graph(mode:\"references\")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. For non-function symbols (constants, type aliases, variables), this is the correct tool — `find_callers` only matches call-site invocations.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "symbol": {
-          "type": "string",
-          "description": "Symbol name to resolve references for."
-        },
-        "file": {
-          "type": "string",
-          "description": "Optional file path to narrow the language/source file."
-        },
-        "language": {
-          "type": "string",
-          "description": "Optional language filter (e.g. javascript, typescript, python)."
-        }
-      },
-      "required": [
-        "symbol"
-      ]
-    },
-    "module": "code_graph"
-  },
-  {
-    "name": "find_callers",
-    "title": "Find Callers",
-    "annotations": {
-      "title": "Find Callers",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Find call sites for a symbol across the repository, including caller file, line, and enclosing caller symbol when possible. Use this instead of `code_graph(mode:\"callers\")` when you know the symbol and want the direct tool. Optional `file` can narrow the language/source file, but is no longer required. Only matches call-site invocations — for non-function symbols (constants, type aliases, variables), prefer `find_references` instead.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "symbol": {
-          "type": "string",
-          "description": "Symbol name to resolve callers for."
-        },
-        "file": {
-          "type": "string",
-          "description": "Optional file path to narrow the language/source file."
-        },
-        "language": {
-          "type": "string",
-          "description": "Optional language filter (e.g. javascript, typescript, python)."
-        }
-      },
-      "required": [
-        "symbol"
-      ]
+      "required": []
     },
     "module": "code_graph"
   },
@@ -1408,25 +1281,25 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Apply a unified-diff patch in ONE turn. Prefer this over repeated `read` → `edit` loops when 2+ files change or the exact edit is already clear. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Patch context lines self-verify, so it skips the normal read-before-edit round-trip. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.",
+    "description": "Apply a unified-diff patch in ONE turn. Prefer over repeated read→edit loops for 2+ files or 2+ hunks. Git-style headers; `/dev/null` for create/delete. Default atomic (`reject_partial:true`); `dry_run:true` to preview.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "patch": {
           "type": "string",
-          "description": "Unified diff content. Single-file or multi-file. Supports git-style `a/` / `b/` header prefixes and `/dev/null` for create/delete entries."
+          "description": "Unified diff. Single or multi-file. Git-style `a/`/`b/` headers; `/dev/null` for create/delete."
         },
         "base_path": {
           "type": "string",
-          "description": "Directory to resolve relative paths from the diff headers against. Default: current working directory."
+          "description": "Directory to resolve diff-header paths against. Default cwd."
         },
         "dry_run": {
           "type": "boolean",
-          "description": "Preview which files would change without writing. Shows first failed hunk per failing file. Default false."
+          "description": "Preview without writing. Shows first failed hunk per file. Default false."
         },
         "reject_partial": {
           "type": "boolean",
-          "description": "If any file's hunk fails, reject the whole patch and write nothing (atomic). Default true. Set false to apply every successful file even when others failed."
+          "description": "If any hunk fails, reject the whole patch (atomic). Default true; false to apply each successful file independently."
         }
       },
       "required": [
@@ -1437,7 +1310,7 @@
   },
   {
     "name": "inject_input",
-    "description": "Inject text into host terminal (parent console; powershell.exe/pwsh.exe on Windows). Always submits — appends a newline if absent.",
+    "description": "Inject text into host terminal (parent console). Always submits — appends newline if absent.",
     "inputSchema": {
       "type": "object",
       "properties": {

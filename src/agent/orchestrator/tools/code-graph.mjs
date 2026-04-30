@@ -1578,6 +1578,7 @@ async function findSymbolTool(args, cwd) {
 export const CODE_GRAPH_TOOL_DEFS = [
   {
     name: 'code_graph',
+    public: false,
     title: 'Code Graph',
     annotations: { title: 'Code Graph', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'Repository graph / symbol navigation. Modes: overview, imports, dependents, related, impact, symbols, find_symbol, references, callers. `callers` returns call-site lines + enclosing caller symbol — answer from it before reading files. Use direct aliases (find_*) when available.',
@@ -1597,19 +1598,22 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_symbol',
     title: 'Find Symbol',
     annotations: { title: 'Find Symbol', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Find a symbol/identifier across the repository — returns best declaration/reference candidates with file:line and nearby code. Prefer over grep when symbol is known but file is not. Read the declaration directly; do not re-grep the same identifier.',
+    description: 'Symbol-level navigation across the repository. Default mode finds the declaration site for a known identifier (file:line + nearby code). Pass `mode` to switch into graph queries: `callers` (call sites for functions), `references` (all references — use for non-function symbols too), `imports` (what a file imports), `dependents` (who imports a file), or `overview`/`symbols`/`related`/`impact` for file-level analysis. Prefer over grep when the identifier is known but the file is not.',
     inputSchema: {
       type: 'object',
       properties: {
-        symbol: { type: 'string', description: 'Symbol or identifier to find.' },
+        symbol: { type: 'string', description: 'Symbol or identifier. Required for default/callers/references modes; optional for impact.' },
+        mode: { type: 'string', enum: ['symbol', 'callers', 'references', 'imports', 'dependents', 'overview', 'symbols', 'related', 'impact'], description: 'Query mode. Omit or use "symbol" for declaration lookup. "callers"/"references" for usage. "imports"/"dependents" for module graph. "overview"/"symbols"/"related"/"impact" for file-level analysis.' },
+        file: { type: 'string', description: 'Target file path. Required for imports/dependents/related/impact/symbols. Optional for callers/references (narrows language).' },
         language: { type: 'string', description: 'Optional language filter (e.g. javascript, typescript, python).' },
         limit: { type: 'number', description: 'Optional result cap. Default 20, max 50.' },
       },
-      required: ['symbol'],
+      required: [],
     },
   },
   {
     name: 'find_imports',
+    public: false,
     title: 'Find Imports',
     annotations: { title: 'Find Imports', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'What does this file import? Returns modules/files the target pulls in. Prefer over `code_graph(mode:"imports")` when file path is known.',
@@ -1623,6 +1627,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
   },
   {
     name: 'find_dependents',
+    public: false,
     title: 'Find Dependents',
     annotations: { title: 'Find Dependents', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'Who imports this file? Returns files that depend on the target. Prefer over `code_graph(mode:"dependents")` when file path is known.',
@@ -1636,6 +1641,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
   },
   {
     name: 'find_references',
+    public: false,
     title: 'Find References',
     annotations: { title: 'Find References', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'Find references for a symbol across the repository. Prefer over `code_graph(mode:"references")` when symbol is known. For non-function symbols (constants, type aliases, variables), use this — `find_callers` only matches call-sites.',
@@ -1651,6 +1657,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
   },
   {
     name: 'find_callers',
+    public: false,
     title: 'Find Callers',
     annotations: { title: 'Find Callers', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'Find call sites for a symbol — caller file, line, and enclosing caller symbol. Only matches call-site invocations. For non-function symbols (constants, type aliases, variables), use `find_references` instead.',
