@@ -32,6 +32,22 @@ import { join } from 'path';
 
 const VALID_PERMISSIONS = new Set(['read', 'read-write', 'mcp', 'full']);
 
+// Sanitize cwd before passing it to a child-process spawn. On Windows,
+// node:child_process spawn() with a non-ASCII cwd often fails with ENOENT
+// because of code-page / UTF-8 mismatches in the inherited environment
+// (worker invocations with `OneDrive/바탕 화면/src` saw zero tool activity
+// before this guard). Falls back to process.cwd() when the cwd contains
+// non-ASCII; the caller (case 'bridge') is expected to surface the
+// originally-requested path inside the prompt body so absolute paths in
+// tool calls still hit the right tree.
+function _safeCwdForSpawn(rawCwd) {
+  if (!rawCwd) return rawCwd;
+  if (process.platform === 'win32' && /[^\x20-\x7e]/.test(String(rawCwd))) {
+    try { return process.cwd(); } catch { return rawCwd; }
+  }
+  return rawCwd;
+}
+
 function applyRoleDefaults(raw) {
   const permission = VALID_PERMISSIONS.has(raw.permission) ? raw.permission : 'full';
   const desc_path = typeof raw.desc_path === 'string' ? raw.desc_path : null;
@@ -424,7 +440,7 @@ export async function handleToolCall(name, args, opts = {}) {
     switch (name) {
       case 'create_session': {
         const sessionArgs = args.cwd
-          ? { ...args, cwd: normalizeInputPath(args.cwd) }
+          ? { ...args, cwd: _safeCwdForSpawn(normalizeInputPath(args.cwd)) }
           : args;
         const session = createSession(sessionArgs);
         return ok({
@@ -444,7 +460,7 @@ export async function handleToolCall(name, args, opts = {}) {
           role: args.role,
           taskType: args.taskType,
           profileId: args.profileId,
-          cwd: args.cwd ? normalizeInputPath(args.cwd) : (callerCwd || null),
+          cwd: _safeCwdForSpawn(args.cwd ? normalizeInputPath(args.cwd) : (callerCwd || null)),
           owner: 'bridge',
           lane: 'bridge',
           systemPrompt: args.systemPrompt,
@@ -731,12 +747,22 @@ export async function handleToolCall(name, args, opts = {}) {
         // hits because cache is content-keyed, not session-keyed. Shared
         // with the Smart Bridge path via session-builder so role/preset
         // telemetry stays bit-identical in bridge-trace.jsonl.
+        // P1 fix: cwd silent-swap surfacing. When _safeCwdForSpawn substitutes
+        // process.cwd() for a non-ASCII Windows cwd, the agent has no way to
+        // know the authoritative working directory and may resolve relative
+        // paths into the wrong tree. Inject a header into the prompt so the
+        // worker uses absolute paths under the originally-requested cwd.
+        const _rawBridgeCwd = args.cwd ? normalizeInputPath(args.cwd) : (callerCwd || null);
+        const _safeBridgeCwd = _safeCwdForSpawn(_rawBridgeCwd);
+        if (_rawBridgeCwd && _safeBridgeCwd !== _rawBridgeCwd) {
+          prompt = `# Working directory note\nThe authoritative working directory is \`${_rawBridgeCwd}\`. Use absolute paths starting with this prefix in every tool call. The host process is running from \`${_safeBridgeCwd}\` because the original cwd contains characters that node's child_process spawn cannot reliably handle on this platform.\n\n${prompt}`;
+        }
         const { session, effectiveCwd } = prepareBridgeSession({
           role,
           presetName,
           preset,
           runtimeSpec,
-          cwd: args.cwd ? normalizeInputPath(args.cwd) : (callerCwd || null),
+          cwd: _safeBridgeCwd,
           sourceType: 'lead',
           sourceName: role,
           parentSessionId: callerSessionId,

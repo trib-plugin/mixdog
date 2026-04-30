@@ -1372,7 +1372,7 @@ const server = http.createServer(async (req, res) => {
     const whisperInstalled = typeof voiceCfg.command === 'string' && voiceCfg.command.length > 0 && existsSync(voiceCfg.command);
     const ngrok = await checkCli('ngrok');
     const cliPayload = { whisper: { installed: whisperInstalled }, ngrok };
-    if (whisperInstalled) cliPayload.voice = { commandName: path.basename(voiceCfg.command), modelName: voiceCfg.model ? path.basename(voiceCfg.model) : '' };
+    if (whisperInstalled) cliPayload.voice = { commandName: basename(voiceCfg.command), modelName: voiceCfg.model ? basename(voiceCfg.model) : '' };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(cliPayload));
     return;

@@ -11,6 +11,10 @@ import { getPluginData } from '../config.mjs';
 import { markCodeGraphDirtyPaths } from './code-graph.mjs';
 import { getCapabilities } from '../../../shared/config.mjs';
 import { getAbortSignalForSession } from '../session/abort-lookup.mjs';
+import { execShellCommand, stripAnsi as _shellStripAnsi } from './shell-command.mjs';
+import { wrapCommandWithSnapshot } from './shell-snapshot.mjs';
+import { interpretCommandResult } from './command-semantics.mjs';
+import { getDestructiveCommandWarning } from './destructive-warning.mjs';
 const execAsync = promisify(exec);
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
@@ -578,6 +582,32 @@ function parseLineLimitArg(value, defaultValue) {
     return Number.isFinite(n) ? Math.max(1, Math.trunc(n)) : defaultValue;
 }
 
+// G6: device path block list (Claude Code parity). Reading these paths
+// would either hang (waiting for stdin / tty) or produce infinite output
+// (/dev/zero, /dev/random). isSafePath already restricts scope, but a
+// user-allowed path can still hit these pseudo-files on POSIX hosts.
+const BLOCKED_DEVICE_PATHS = new Set([
+    '/dev/zero', '/dev/random', '/dev/urandom', '/dev/full',
+    '/dev/stdin', '/dev/tty', '/dev/console',
+    '/dev/stdout', '/dev/stderr',
+    '/dev/fd/0', '/dev/fd/1', '/dev/fd/2',
+]);
+
+function isBlockedDevicePath(p) {
+    if (BLOCKED_DEVICE_PATHS.has(p)) return true;
+    // /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio.
+    if (typeof p === 'string' && p.startsWith('/proc/')
+        && (p.endsWith('/fd/0') || p.endsWith('/fd/1') || p.endsWith('/fd/2'))) return true;
+    return false;
+}
+
+function isUncPath(p) {
+    // Windows UNC (\\\\server\\share) or POSIX-style equivalent (//server).
+    // Reading a UNC path can leak NTLM credentials to a remote SMB share
+    // because Windows automatically authenticates outbound SMB requests.
+    return typeof p === 'string' && (p.startsWith('\\\\') || p.startsWith('//'));
+}
+
 const READ_MAX_RENDERED_LINE_CHARS = 520;
 function renderReadLine(lineNo, line, { truncateLongLine = true } = {}) {
     let text = String(line ?? '');
@@ -781,7 +811,7 @@ export const BUILTIN_TOOLS = [
             type: 'object',
             properties: {
                 command: { type: 'string', description: 'Shell command.' },
-                timeout: { type: 'number', description: 'ms, default 30000, max 600000.' },
+                timeout: { type: 'number', description: 'ms, default 1800000 (30 min). Set a smaller value for short commands.' },
                 merge_stderr: { type: 'boolean', description: 'Merge stderr into stdout (2>&1). Default false: stderr surfaced as separate `[stderr]` block.' },
                 run_in_background: { type: 'boolean', description: 'Run command in the background and return a job id immediately. Use for long builds/tests/servers.' },
                 persistent: { type: 'boolean', description: 'Keep shell state (cwd, env, venv, functions) across calls. One shared shell per session.' },
@@ -1496,7 +1526,16 @@ function startBackgroundShellJob({ command, timeoutMs, workDir, mergeStderr, spa
     const exitPath = shellJobExitPath(jobId);
     const donePath = shellJobDonePath(jobId);
     const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
-    const wrapped = `{ ${command}; rc=$?; printf '%s' \"$rc\" > ${shellQuoteSingle(exitPath)}; touch ${shellQuoteSingle(donePath)}; exit $rc; }`;
+    // P2 fix: wrap with POSIX `timeout` so the kernel terminates the
+    // process at deadline regardless of mixdog parent state. Previously
+    // only the setTimeout below enforced; a mixdog restart between spawn
+    // and deadline would orphan the runaway. --preserve-status keeps the
+    // user command's exit code on success; on timeout the wrapper exits 124.
+    // `timeout` ships with GNU coreutils (Linux + Git Bash on Windows) and
+    // brew coreutils on macOS; absent platforms fall through to the inner
+    // command (the parent setTimeout still calls refreshShellJob to clean up).
+    const _userCmdQuoted = shellQuoteSingle(command);
+    const wrapped = `{ if command -v timeout >/dev/null 2>&1; then timeout --preserve-status ${timeoutSeconds} bash -c ${_userCmdQuoted}; else bash -c ${_userCmdQuoted}; fi; rc=$?; printf '%s' \"$rc\" > ${shellQuoteSingle(exitPath)}; touch ${shellQuoteSingle(donePath)}; exit $rc; }`;
     const child = spawn(shell, [shellArg, wrapped], {
         cwd: workDir,
         env: spawnEnv,
@@ -2641,6 +2680,14 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
     const readPathOpts = { allowHome, allowPluginData: true };
     switch (name) {
         case 'bash': {
+            // P2 fix: route persistent / session_id BEFORE the command-required
+            // guard so {session_id, close:true} (close-only calls without a new
+            // command) can reach the session module. The session owns its own
+            // command/close validation — builtin.mjs should not pre-empt it.
+            if (args.persistent === true || typeof args.session_id === 'string') {
+                const { executeBashSessionTool } = await import('./bash-session.mjs');
+                return executeBashSessionTool('bash_session', args, workDir);
+            }
             const command = args.command;
             if (!command)
                 return 'Error: command is required';
@@ -2649,12 +2696,21 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     return `Error: blocked command pattern — "${command}" matches safety rule`;
                 }
             }
+            // G4: surface destructive-command warning inline (informational
+            // only; BLOCKED_PATTERNS above handles hard blocks).
+            const _destructiveWarning = getDestructiveCommandWarning(command);
             const largeProbe = preflightShellLargeFileProbe(command, workDir);
             if (largeProbe) {
                 return `Error: ${largeProbe.message}`;
             }
             const shellEffects = analyzeShellCommandEffects(command, workDir);
-            const timeout = args.timeout || 30000;
+            // Default timeout aligned with Claude Code upstream: 30 minutes
+            // (was 30 s). Real-world build / test / sync commands rarely
+            // finish in 30 s and were forced to set timeout: explicitly to
+            // avoid spurious SIGTERMs. The hard cap is still SHELL_OUTPUT_DISK_CAP
+            // for runaway output and the abortSignal hookup for session-scoped
+            // cancel; the timeout is the upper bound for legitimate work.
+            const timeout = args.timeout || 1800000;
             const mergeStderr = args.merge_stderr === true;
             try {
                 const { shell, shellArg } = resolveShell();
@@ -2686,9 +2742,18 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     const prefix = toolDirs.filter((p) => existsSync(p)).join(';');
                     if (prefix) spawnEnv.PATH = prefix + (existing ? ';' + existing : '');
                 }
+                // P2 fix: compute the snapshot-wrapped form ONCE so both the
+                // run_in_background path and the foreground execShellCommand
+                // path use it. Previously the background branch ran the raw
+                // command without alias / function support.
+                const _wrappedCommand = (process.platform === 'win32'
+                    ? shell.toLowerCase().endsWith('bash.exe')
+                    : (shell.includes('bash') || shell.includes('zsh')))
+                    ? await wrapCommandWithSnapshot(shell, command).catch(() => command)
+                    : command;
                 if (args.run_in_background === true) {
                     const job = startBackgroundShellJob({
-                        command,
+                        command: _wrappedCommand,
                         timeoutMs: timeout,
                         workDir,
                         mergeStderr,
@@ -2706,21 +2771,30 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         `Use job_wait to block until it finishes; read the stdout/stderr paths above for logs.`,
                     ].filter(Boolean).join('\n');
                 }
-                const result = spawnSync(shell, [shellArg, command], {
-                    encoding: 'utf-8',
-                    timeout,
-                    // spawnSync's 1MB default maxBuffer throws ENOBUFS on
-                    // large outputs (e.g. 200k-line dumps). capShellOutput
-                    // slices to SHELL_OUTPUT_MAX_CHARS anyway, so we just
-                    // need enough headroom for the raw capture. *4 keeps
-                    // the buffer proportional to the cap; cross-OS uniform.
-                    maxBuffer: SHELL_OUTPUT_MAX_CHARS * 4,
-                    stdio: ['pipe', 'pipe', 'pipe'],
-                    cwd: workDir,
+                // v0.1.252 (G1): spawnSync → execShellCommand (async).
+                // Improvements:
+                //   - tree-kill on timeout so forked grandchildren come down
+                //     with the parent (sleep & + node servers etc).
+                //   - external AbortSignal hookup so session-scoped cancel
+                //     (ESC, new prompt) interrupts the run cleanly.
+                //   - automatic disk spill past SHELL_OUTPUT_MAX_CHARS*4
+                //     bytes; the resulting stdoutPath is rendered as an
+                //     outputFilePath marker so the model can read the full
+                //     output via the read tool without losing the tail past
+                //     the inline cap.
+                const _bashAbortSignal = (() => {
+                    try { return getAbortSignalForSession(options) || null; }
+                    catch { return null; }
+                })();
+                // _wrappedCommand was computed above (after resolveShell) so
+                // run_in_background and the foreground path share one wrap.
+                const result = await execShellCommand({
+                    shell, shellArg, command: _wrappedCommand,
                     env: spawnEnv,
-                    windowsHide: true,
+                    cwd: workDir,
+                    timeoutMs: timeout,
+                    abortSignal: _bashAbortSignal,
                 });
-                if (result.error) return `Error: ${result.error.message}`;
                 // Strip ANSI / VT control sequences before the model sees
                 // them — progress bars, coloured diagnostics, cursor moves.
                 const stdout = stripAnsi(result.stdout || '');
@@ -2729,11 +2803,26 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // kill (timeout -> SIGTERM) prepends a marker line so the
                 // agent never has to guess at a silent failure. Zero exit
                 // + no signal stays quiet to avoid noise on the success path.
-                const signal = result.signal ? String(result.signal) : null;
-                const exitCode = signal ? null : result.status;
+                const signal = result.timedOut
+                    ? 'SIGTERM'
+                    : (result.killed ? 'SIGKILL' : (result.signal || null));
+                const exitCode = signal ? null : result.exitCode;
+                // G4: command-aware exit interpretation. grep / find /
+                // diff / test return non-zero for benign signals (no
+                // matches, files differ, false condition); render those
+                // as informational notes instead of [exit code: N] so the
+                // agent doesn't re-run the command thinking it failed.
+                const _semantic = interpretCommandResult(
+                    command,
+                    exitCode != null ? exitCode : -1,
+                );
+                const _isReallyErrored = !!signal
+                    || (exitCode !== 0 && exitCode !== null && _semantic.isError);
                 const statusMarker = signal
                     ? `[signal: ${signal}]`
-                    : (exitCode !== 0 && exitCode !== null ? `[exit code: ${exitCode}]` : '');
+                    : (_isReallyErrored
+                        ? `[exit code: ${exitCode}]`
+                        : (_semantic.note ? `[${_semantic.note}]` : ''));
                 if (mergeStderr) {
                     // Legacy back-compat path for callers that parsed the old
                     // merged form. Concatenate stdout + stderr; no separator
@@ -2750,9 +2839,23 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 const truncatedStderr = stderr ? smartMiddleTruncate(stderr) : '';
                 const body = truncatedStdout || (truncatedStderr ? '' : '(no output)');
                 const stderrBlock = truncatedStderr ? `\n\n[stderr]\n${truncatedStderr}` : '';
-                const payload = `${body}${stderrBlock}`;
-                if (statusMarker) return `${statusMarker}\n\n${payload}`;
-                return payload;
+                // Disk-spill marker: when execShellCommand wrote past the
+                // inline cap to $PLUGIN_DATA/shell-output, the body above
+                // only shows head/tail. Surface the path so the model can
+                // read the missing middle.
+                let spillBlock = '';
+                if (result.stdoutPath) {
+                    const sizeKb = Math.round((result.stdoutFileSize || 0) / 1024);
+                    spillBlock += `\n\n[stdout: ${normalizeOutputPath(result.stdoutPath)} (${sizeKb} KB) — read({path, offset, limit}) for the full output]`;
+                }
+                if (result.stderrPath && (result.stderrFileSize || 0) > 0) {
+                    const sizeKb = Math.round((result.stderrFileSize || 0) / 1024);
+                    spillBlock += `\n[stderr: ${normalizeOutputPath(result.stderrPath)} (${sizeKb} KB)]`;
+                }
+                const warningBlock = _destructiveWarning ? `[note: ${_destructiveWarning}]\n` : '';
+                const payload = `${body}${stderrBlock}${spillBlock}`;
+                if (statusMarker) return `${warningBlock}${statusMarker}\n\n${payload}`;
+                return warningBlock ? `${warningBlock}\n${payload}` : payload;
             }
             finally {
                 if (shellEffects.mutationMode === 'paths') {
@@ -2857,6 +2960,12 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const filePath = args.path;
             if (!filePath)
                 return 'Error: path is required';
+            // G6: block device pseudo-files (would hang / produce infinite
+            // output) and UNC paths (NTLM credential leak risk on Windows).
+            if (isBlockedDevicePath(filePath))
+                return `Error: cannot read device file (would block or produce infinite output): ${normalizeOutputPath(filePath)}`;
+            if (isUncPath(filePath))
+                return `Error: UNC paths are not supported (NTLM credential leak risk): ${normalizeOutputPath(filePath)}`;
             if (!isSafePath(filePath, workDir, readPathOpts))
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
@@ -2886,7 +2995,18 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const cachedEntry = _cacheGetEntry(cacheKey);
             if (cachedEntry !== null) {
                 _recordReadSnapshot(fullPath, st, readStateScope, cachedEntry.readSnapshotMeta || { source: 'read_cached' });
-                return cachedEntry.value;
+                // G6: file_unchanged stub. The full body is already in the
+                // prior tool_result; resending it wastes cache_creation
+                // tokens (Claude Code upstream measured ~18% on Read calls).
+                // The stub keeps the snapshot tracking intact (Edit
+                // validation still works) while collapsing the response
+                // payload. Falls back to the full body when the cached
+                // value is itself a stub-incompatible error string.
+                const _cachedVal = cachedEntry.value;
+                if (typeof _cachedVal === 'string' && !_cachedVal.startsWith('Error:')) {
+                    return `[file unchanged: ${normalizeOutputPath(filePath)} — same content as previous read; scroll up for the body]`;
+                }
+                return _cachedVal;
             }
             if (st.size > READ_MAX_SIZE_BYTES) {
                 if (!hasRangeArgs) {

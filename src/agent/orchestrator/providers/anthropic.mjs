@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { loadConfig } from '../config.mjs';
+import { sanitizeToolPairs } from '../session/trim.mjs';
 
 // 4-BP cache policy aligned with anthropic-oauth — tools + system + tier3
 // + messages-tail. 1h TTL requires the extended-cache-ttl beta header,
@@ -201,6 +202,12 @@ export class AnthropicProvider {
         } catch { /* best effort */ }
     }
     async send(messages, model, tools, sendOpts) {
+        // Defense-in-depth: enforce tool_use / tool_result pairing before
+        // the Anthropic API call. Mirror of the OAuth path; loop.mjs only
+        // runs sanitizeToolPairs when budget is exceeded, so an under-budget
+        // dispatch with an aborted-mid-flight tool_use would otherwise hit
+        // the provider as a hard 400 (`tool_use ids ... without tool_result`).
+        messages = sanitizeToolPairs(messages);
         try {
             return await this._doSend(messages, model, tools, sendOpts);
         } catch (err) {

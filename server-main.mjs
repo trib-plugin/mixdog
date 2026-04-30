@@ -430,16 +430,36 @@ function spawnWorker(name) {
 
 let _callIdSeq = 0
 const WORKER_CALL_TIMEOUT = 600000 // 10m per tool call
+// Window for awaiting a missing worker entry. Covers the 1s exit→spawn
+// timer plus typical memory boot (~2-3s). Long enough that the entry
+// reappears under normal restart flow, short enough that a permanently
+// dead worker still surfaces within bounds.
+const WORKER_NO_ENTRY_GRACE_MS = 8000
 
 async function callWorker(name, toolName, args) {
-  const entry = workers.get(name)
-  // worker-unavailable cases reject synchronously (no entry / ipc gone). The
-  // booting case used to also reject — callers now await the readyPromise so
-  // the call resolves on the worker's first 'ready' instead of bouncing 503.
-  // exit-before-ready rejects readyPromise, which surfaces here as a normal
-  // throw with the original 'exited before ready' message preserved.
+  let entry = workers.get(name)
+  // worker-unavailable: only restart-cap-exceeded and ipc-gone cases reject
+  // synchronously. The pre-ready and mid-restart cases hold under bounded
+  // waits so callers (e.g. SessionStart /cycle1) stop bouncing 503 across
+  // the exit→spawn gap. exit-before-ready rejects readyPromise, which
+  // surfaces here as a normal throw with the original 'exited before ready'
+  // message preserved.
   if (!entry) {
-    throw new Error(`worker ${name} not available (no entry)`)
+    if ((workerRestarts.get(name) || 0) > WORKER_MAX_RESTARTS) {
+      throw new Error(`worker ${name} not available (restart cap exceeded)`)
+    }
+    const deadline = Date.now() + WORKER_NO_ENTRY_GRACE_MS
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 100))
+      entry = workers.get(name)
+      if (entry) break
+      if ((workerRestarts.get(name) || 0) > WORKER_MAX_RESTARTS) {
+        throw new Error(`worker ${name} not available (restart cap exceeded)`)
+      }
+    }
+    if (!entry) {
+      throw new Error(`worker ${name} not available (no entry after ${WORKER_NO_ENTRY_GRACE_MS}ms)`)
+    }
   }
   if (!entry.proc.connected) {
     throw new Error(`worker ${name} not available (ipc disconnected)`)

@@ -17,6 +17,7 @@ import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { writeFileSync, existsSync as _existsSync } from 'fs';
 import { getPluginData } from '../config.mjs';
 import { enrichModels } from './model-catalog.mjs';
+import { sanitizeToolPairs } from '../session/trim.mjs';
 
 // --- Model catalog cache helpers ---
 // Disk-backed cache so repeated process starts (cron, tool calls) don't
@@ -846,6 +847,13 @@ export class AnthropicOAuthProvider {
     }
 
     async send(messages, model, tools, sendOpts) {
+        // Defense-in-depth: enforce tool_use / tool_result pairing before
+        // the Anthropic API call. The trim.mjs sanitize pass is normally
+        // invoked by the budget trimmer in loop.mjs, but dispatches under
+        // budget skip it — a tool that aborted mid-flight then leaves an
+        // unmatched tool_use in messages, which the provider rejects with
+        // a hard 400. Pairing here closes the gap regardless of caller.
+        messages = sanitizeToolPairs(messages);
         const opts = sendOpts || {};
         const onStageChange = typeof opts.onStageChange === 'function' ? opts.onStageChange : null;
         const onStreamDelta = typeof opts.onStreamDelta === 'function' ? opts.onStreamDelta : null;
