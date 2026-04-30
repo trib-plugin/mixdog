@@ -13,7 +13,6 @@ import { prepareBridgeSession } from './orchestrator/smart-bridge/session-builde
 import { normalizeInputPath } from './orchestrator/tools/builtin.mjs';
 import { traceBridgePreset } from './orchestrator/bridge-trace.mjs';
 import { ensureDataSeeds } from '../shared/seed.mjs';
-import { startAgentMaintenance, stopAgentMaintenance } from './orchestrator/agent-maintenance.mjs';
 import { writeFileSync, readFileSync, existsSync, watch } from 'fs';
 import { join } from 'path';
 
@@ -372,7 +371,6 @@ export async function init() {
   setImmediate(() => warmupCatalogs());
   seedDefaults();
   initTrajectoryStore(getPluginData());
-  startAgentMaintenance();
   startStreamWatchdog(forEachSessionRuntime);
   // Smart Bridge — unified router + cache strategy + profile system.
   // User-role preset mapping comes from user-workflow.json (existing source
@@ -997,4 +995,4 @@ export async function handleToolCall(name, args, opts = {}) {
 }
 
 export async function start() { /* noop — standalone mode uses main() */ }
-export async function stop() { stopAgentMaintenance(); await disconnectAll(); }
+export async function stop() { await disconnectAll(); }

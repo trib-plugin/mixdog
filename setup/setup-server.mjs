@@ -25,12 +25,7 @@ function isAllowedOrigin(req) {
   return /^http:\/\/(localhost|127\.0\.0\.1):3458(\/|$)/.test(o);
 }
 
-let DatabaseSync = null;
-try {
-  ({ DatabaseSync } = await import('../lib/sqlite-bridge.mjs'));
-} catch (e) {
-  console.error('[setup-server] sqlite-bridge unavailable, sqlite-backed endpoints will return 503:', e?.message || e);
-}
+import { DatabaseSync } from '../lib/sqlite-bridge.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isWin = process.platform === 'win32';
@@ -1513,37 +1508,6 @@ const server = http.createServer(async (req, res) => {
     await Promise.all(checks);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, validation }));
-    return;
-  }
-
-  // -- Agent learning config --
-
-  if (req.method === 'GET' && path === '/agent/learning') {
-    const cfg = readAgentConfig();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      trajectory: { enabled: true, ...cfg.trajectory },
-      skillSuggest: { autoDetect: true, ...cfg.skillSuggest },
-      agentMaintenance: { enabled: true, interval: '1h', ...cfg.agentMaintenance },
-    }));
-    return;
-  }
-
-  if (req.method === 'POST' && path === '/agent/learning') {
-    if (!isAllowedOrigin(req)) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
-      return;
-    }
-    const data = await readBody(req);
-    const existing = readAgentConfig();
-    if (data.trajectory) existing.trajectory = { ...(existing.trajectory || {}), ...data.trajectory };
-    if (data.skillSuggest) existing.skillSuggest = { ...(existing.skillSuggest || {}), ...data.skillSuggest };
-    if (data.agentMaintenance) existing.agentMaintenance = { ...(existing.agentMaintenance || {}), ...data.agentMaintenance };
-    writeAgentConfig(existing);
-    console.log('  Config saved: agent learning');
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
     return;
   }
 

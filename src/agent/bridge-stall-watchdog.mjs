@@ -53,8 +53,6 @@ const ROLE_THRESHOLDS_S = {
 const ROLE_TOOL_THRESHOLDS_S = {
     'cycle1-agent': 300,
     'cycle2-agent': 300,
-    'memory-classification': 300,
-    'recap-agent': 300,
 };
 
 function envThresholdSeconds() {

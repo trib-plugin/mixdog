@@ -35,11 +35,9 @@ const ROLE_ITERATION_CAPS = Object.freeze({
     'explorer': { soft: 9, hard: 25 },
     'cycle1-agent': { soft: 5, hard: 20 },
     'cycle2-agent': { soft: 5, hard: 20 },
-    'recap-agent': { soft: 5, hard: 20 },
     'proactive-decision': { soft: 5, hard: 20 },
     'scheduler-task': { soft: 5, hard: 20 },
     'webhook-handler': { soft: 5, hard: 20 },
-    'memory-classification': { soft: 5, hard: 20 },
     default: { soft: 30, hard: 100 },
 });
 // Transcript pairing guard. Anthropic 400-rejects when an assistant message

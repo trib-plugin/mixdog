@@ -773,7 +773,6 @@
     <div class="cat-item" data-panel="agent-presets" onclick="switchCat(this)">Presets</div>
     <div class="cat-item" data-panel="agent-status" onclick="switchCat(this)">Status</div>
     <div class="cat-item" data-panel="agent-maintenance" onclick="switchCat(this)">Maintenance</div>
-    <div class="cat-item" data-panel="agent-learning" onclick="switchCat(this)">Learning</div>
     <div class="cat-sep"></div>
     <div class="cat-label">Memory</div>
     <div class="cat-item" data-panel="mem-settings" onclick="switchCat(this)">Settings</div>
@@ -781,8 +780,6 @@
     <div class="cat-sep"></div>
     <div class="cat-label">Search</div>
     <div class="cat-item" data-panel="search-apikeys" onclick="switchCat(this)">API Keys</div>
-    <div class="cat-item" data-panel="search-behavior" onclick="switchCat(this)">Behavior</div>
-    <div class="cat-item" data-panel="search-crawl" onclick="switchCat(this)">Crawl</div>
   </div>
 
   <!-- Main -->
@@ -1124,64 +1121,6 @@
       </div>
     </div>
 
-    <!-- AGENT LEARNING -->
-    <div class="panel" id="panel-agent-learning">
-      <div class="hdr"><h1>Agent Learning</h1></div>
-
-      <div class="sec">
-        <div class="sec-title">Trajectory Recording</div>
-        <div class="sec-desc">Record execution metadata for every bridge call. Enables pattern analysis and skill suggestions.</div>
-        <div class="sec-body">
-          <div class="r toggle-row">
-            <span class="r-name-wide">Enabled</span>
-            <label class="toggle">
-              <input type="checkbox" id="traj-enabled" checked onchange="saveLearningConfig()">
-              <span class="toggle-track"></span>
-            </label>
-          </div>
-        </div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Agent Maintenance Cycle</div>
-        <div class="sec-desc">Periodic agent trajectory analysis and maintenance tasks.</div>
-        <div class="sec-body">
-          <div class="r toggle-row">
-            <span class="r-name-wide">Enabled</span>
-            <label class="toggle">
-              <input type="checkbox" id="am-enabled" onchange="saveLearningConfig()">
-              <span class="toggle-track"></span>
-            </label>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Interval</span>
-            <select class="r-select" id="am-interval" onchange="amIntervalChanged()">
-              <option value="15m">15 min</option>
-              <option value="30m">30 min</option>
-              <option value="1h" selected>1 hour</option>
-              <option value="2h">2 hour</option>
-              <option value="custom">Custom</option>
-            </select>
-            <input class="r-input" id="am-interval-custom" type="text" placeholder="e.g. 20m, 2h" style="flex:1;display:none;margin-left:8px" onchange="saveLearningConfig()">
-          </div>
-        </div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Auto Skill Detection</div>
-        <div class="sec-desc">Automatically detect repeating patterns and suggest skill creation.</div>
-        <div class="sec-body">
-          <div class="r toggle-row">
-            <span class="r-name-wide">Enabled</span>
-            <label class="toggle">
-              <input type="checkbox" id="skill-auto" onchange="saveLearningConfig()">
-              <span class="toggle-track"></span>
-            </label>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <!-- ============ MEMORY MODULE ============ -->
 
     <!-- MEMORY SETTINGS -->
@@ -1338,66 +1277,6 @@
 
       <div class="save-area">
         <div class="warn-msg" id="warn-search-apikeys"></div>
-        <button class="save" onclick="srSavePanel()">Save</button>
-      </div>
-    </div>
-
-    <!-- SEARCH PROVIDERS -->
-    <!-- SEARCH BEHAVIOR -->
-    <div class="panel" id="panel-search-behavior">
-      <div class="hdr">
-        <h1>Behavior</h1>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Limits</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Max results</span>
-            <input class="r-input" id="sr-beh-maxresults" type="number" placeholder="10">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Request timeout</span>
-            <div style="display:flex;align-items:center;flex:1;gap:6px">
-              <input class="r-input" id="sr-beh-timeout" type="number" placeholder="30000">
-              <span style="font-size:11px;color:var(--text-4);flex-shrink:0">ms</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="save-area">
-        <div class="warn-msg" id="warn-search-behavior"></div>
-        <button class="save" onclick="srSavePanel()">Save</button>
-      </div>
-    </div>
-
-    <!-- SEARCH CRAWL -->
-    <div class="panel" id="panel-search-crawl">
-      <div class="hdr">
-        <h1>Crawl</h1>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Crawl settings</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Max pages</span>
-            <input class="r-input" id="sr-crawl-maxpages" type="number" placeholder="10">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Max depth</span>
-            <input class="r-input" id="sr-crawl-maxdepth" type="number" placeholder="2">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Same domain only</span>
-            <div class="r-toggle on" id="sr-crawl-samedomain" onclick="this.classList.toggle('on')"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="save-area">
-        <div class="warn-msg" id="warn-search-crawl"></div>
         <button class="save" onclick="srSavePanel()">Save</button>
       </div>
     </div>
@@ -1977,7 +1856,6 @@ window.addEventListener('load', async () => {
     loadModulesConfig(),
     loadSecurityConfig(),
     wfLoadConfig(),
-    loadLearningConfig(),
   ]);
   results.forEach((r, i) => { if (r.status === 'rejected') console.error('[mixdog] loader', i, 'failed:', r.reason); });
 
@@ -3457,66 +3335,6 @@ async function srSavePanel() {
 }
 
 // ============================================================
-// AGENT LEARNING CONFIG
-// ============================================================
-async function loadLearningConfig() {
-  try {
-    const res = await fetch('/agent/learning');
-    const data = await res.json();
-    document.getElementById('traj-enabled').checked = data.trajectory?.enabled !== false;
-    document.getElementById('am-enabled').checked = data.agentMaintenance?.enabled === true;
-    const interval = data.agentMaintenance?.interval || '1h';
-    const sel = document.getElementById('am-interval');
-    const customInput = document.getElementById('am-interval-custom');
-    if ([...sel.options].some(o => o.value === interval)) {
-      sel.value = interval;
-      customInput.style.display = 'none';
-    } else {
-      sel.value = 'custom';
-      customInput.value = interval;
-      customInput.style.display = '';
-    }
-    document.getElementById('skill-auto').checked = data.skillSuggest?.autoDetect === true;
-  } catch {}
-}
-
-function amIntervalChanged() {
-  const sel = document.getElementById('am-interval');
-  const customInput = document.getElementById('am-interval-custom');
-  if (sel.value === 'custom') {
-    customInput.style.display = '';
-    customInput.focus();
-  } else {
-    customInput.style.display = 'none';
-    saveLearningConfig();
-  }
-}
-
-function getAmInterval() {
-  const sel = document.getElementById('am-interval');
-  if (sel.value === 'custom') {
-    return document.getElementById('am-interval-custom').value.trim() || '1h';
-  }
-  return sel.value;
-}
-
-async function saveLearningConfig() {
-  try {
-    await fetch('/agent/learning', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        trajectory: { enabled: document.getElementById('traj-enabled').checked },
-        agentMaintenance: {
-          enabled: document.getElementById('am-enabled').checked,
-          interval: getAmInterval(),
-        },
-        skillSuggest: { autoDetect: document.getElementById('skill-auto').checked },
-      }),
-    });
-  } catch {}
-}
-
 // -- Agent Maintenance --
 const AG_MAINT_TASKS = [
   { id: 'cycle1', label: 'Cycle 1', desc: 'Episode classification (every 10 min)' },
@@ -3524,11 +3342,9 @@ const AG_MAINT_TASKS = [
   { id: 'search', label: 'Search', desc: 'External lookup synthesis' },
   { id: 'recall', label: 'Recall', desc: 'Memory recall synthesis' },
   { id: 'explore', label: 'Explore', desc: 'Combined recall+search fan-out synthesis' },
-  { id: 'recap', label: 'Recap', desc: 'Session-start handoff summary' },
   { id: 'scheduler', label: 'Scheduler', desc: 'Scheduled task dispatch' },
   { id: 'proactive', label: 'Proactive', desc: 'Proactive decision agent' },
   { id: 'webhook', label: 'Webhook', desc: 'Webhook event handler' },
-  { id: 'classification', label: 'Classification', desc: 'Memory classification agent' },
 ];
 let agMaintenance = {};
 let agMaintenanceDefaults = {};

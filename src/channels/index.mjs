@@ -679,41 +679,6 @@ async function ownerRequestHandler(req, res) {
           }
           return;
         }
-        case "/recap": {
-          if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
-          const recapPrompt = String(body?.prompt || "");
-          if (!recapPrompt) { res.writeHead(400); res.end(JSON.stringify({ error: "prompt required" })); return; }
-          recapState.state = 'running';
-          recapState.running = true;
-          recapState.startedAt = Date.now();
-          recapState.updatedAt = recapState.startedAt;
-          recapState.errorMessage = null;
-          sendRecapStateToParent();
-          try {
-            const recapLlm = makeBridgeLlm({ role: "recap-agent", taskType: "maintenance" });
-            const userMessage = [
-              `Run recap: write a handoff note for these entries per the recap-agent spec.`,
-              ``,
-              recapPrompt,
-            ].join('\n');
-            const summary = await recapLlm({ prompt: userMessage });
-            const trimmed = String(summary || "").trim();
-            recapState.state = trimmed ? 'injected' : 'empty';
-            res.writeHead(200);
-            res.end(JSON.stringify({ summary: trimmed }));
-          } catch (e) {
-            recapState.state = 'error';
-            recapState.errorMessage = String(e && e.message || e || '').slice(0, 200);
-            res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
-          } finally {
-            recapState.running = false;
-            recapState.startedAt = null;
-            recapState.lastCompletedAt = Date.now();
-            recapState.updatedAt = recapState.lastCompletedAt;
-            sendRecapStateToParent();
-          }
-          return;
-        }
         case "/recap/reset": {
           if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
           // Called by hooks/session-start.cjs on `/clear` (matcher startup|clear).

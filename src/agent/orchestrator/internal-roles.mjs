@@ -83,14 +83,6 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     kind: 'maintenance',
     permission: 'read',
   }),
-  'recap-agent': Object.freeze({
-    slot: 'recap',
-    systemFile: 'rules/bridge/50-recap-agent.md',
-    description: 'Session-start handoff summarizer invoked by session-start hook',
-    invokedBy: 'recap',
-    kind: 'maintenance',
-    permission: 'read',
-  }),
   'proactive-decision': Object.freeze({
     slot: 'proactive',
     systemFile: 'rules/bridge/50-proactive-decision.md',
@@ -114,14 +106,6 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     invokedBy: 'webhook',
     kind: 'maintenance',
     permission: 'read-write',
-  }),
-  'memory-classification': Object.freeze({
-    slot: 'classification',
-    systemFile: 'agents/memory-classification.md',
-    description: 'Memory entry classifier invoked by memory-cycle classification step',
-    invokedBy: 'memory-cycle',
-    kind: 'maintenance',
-    permission: 'read',
   }),
 })
 
