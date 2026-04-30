@@ -13,7 +13,7 @@
 // search-tool injection (mixdog ships its own grep/glob helpers).
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -107,11 +107,21 @@ function _runSnapshot(shellPath, snapshotPath, configFileExists) {
     // `[[ $- == *i* ]] && return` guard runs to completion. Plain -c skips
     // the user-config body and produces a header-only snapshot.
     const child = spawn(shellPath, ['-ic', script], {
+      // P3 fix: blank prompts so an interactive sourcing in -ic does not
+      // print PS1 / PS2 / RPROMPT / PROMPT noise to stderr (which our
+      // failure log truncates to 200 chars and tags as "snapshot failed"
+      // even when the snapshot itself is fine).
       env: {
         ...process.env,
         SHELL: shellPath,
         GIT_EDITOR: 'true',
         CLAUDECODE: '1',
+        PS1: '',
+        PS2: '',
+        PS3: '',
+        PS4: '',
+        PROMPT: '',
+        RPROMPT: '',
       },
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -129,16 +139,22 @@ function _runSnapshot(shellPath, snapshotPath, configFileExists) {
     child.once('exit', (code) => {
       clearTimeout(timer);
       if (code === 0 && existsSync(snapshotPath)) {
-        // P1 sentinel: even with -ic, certain shells / config files yield
-        // a snapshot containing only the header lines (functions / aliases /
-        // options sections were skipped). Reject sizes below the threshold
-        // so the negative cache kicks in instead of binding a useless path.
-        let snapSize = 0;
-        try { snapSize = statSync(snapshotPath).size; } catch {}
-        if (snapSize < 200) {
+        // P3 fix: payload-aware sentinel. Header bytes alone (~80) plus
+        // PATH export and `unalias -a` boilerplate can exceed 200 even
+        // when no user state was captured. Require at least one of:
+        // alias declaration, function definition, or shell-option line.
+        let snapContent = '';
+        try { snapContent = readFileSync(snapshotPath, 'utf-8'); } catch {}
+        const _hasAlias = /^\s*alias\s+--\s/m.test(snapContent);
+        const _hasFn = /^\s*[A-Za-z_][\w-]*\s*\(\s*\)\s*\{/m.test(snapContent)
+          || /^\s*function\s+[A-Za-z_]/m.test(snapContent);
+        const _hasOpt = /^\s*setopt\b/m.test(snapContent)
+          || /^\s*shopt\s+-s/m.test(snapContent)
+          || /^\s*set\s+-o\s/m.test(snapContent);
+        if (!_hasAlias && !_hasFn && !_hasOpt) {
           try {
             process.stderr.write(
-              `[shell-snapshot] empty snapshot rejected size=${snapSize}\n`,
+              `[shell-snapshot] empty snapshot rejected (no aliases / functions / options captured, size=${snapContent.length})\n`,
             );
           } catch {}
           resolve(null);

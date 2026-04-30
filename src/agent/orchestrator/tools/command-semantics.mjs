@@ -66,10 +66,21 @@ function extractBaseCommand(command) {
   while (i < tokens.length) {
     const t = tokens[i];
     if (t.includes('=')) { i++; continue; }
-    if (_WRAPPER_COMMANDS.has(t)) { i++; continue; }
-    // After timeout/sudo, the next token is often a flag or duration
-    // value (e.g. `timeout 30 grep`); skip those too if they look like
-    // a number or short flag.
+    if (_WRAPPER_COMMANDS.has(t)) {
+      i++;
+      // After a wrapper, eat its flags and duration arguments so
+      // `timeout 30 grep`, `nice -n 10 grep`, `sudo -E grep` all reduce
+      // to the underlying program. Tokens that look like a flag (-...)
+      // or a duration (`30`, `1m`, `2h30m`) are consumed.
+      while (i < tokens.length && (
+        /^-/.test(tokens[i])
+        || /^\d+[smhd]?$/.test(tokens[i])
+        || /^\d+m\d+s?$/.test(tokens[i])
+      )) {
+        i++;
+      }
+      continue;
+    }
     return t.replace(/^['"]|['"]$/g, '');
   }
   return '';

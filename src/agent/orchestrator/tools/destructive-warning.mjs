@@ -43,8 +43,16 @@ const _PATTERNS = [
 // of a quoted span still anchor the patterns.
 function _stripQuotedSpans(s) {
   return String(s || '')
-    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    // Heredocs first (their bodies can contain unescaped quotes that
+    // would confuse the simpler quote scanners below). Match both
+    // `<<TAG`, `<<-TAG`, `<<'TAG'`, `<<"TAG"`.
+    .replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*?\n\1\b/g, '<<HEREDOC>>')
+    // POSIX single-quoted: everything literal up to the next single
+    // quote (no backslash escapes inside per POSIX).
+    .replace(/'[^']*'/g, "''")
+    // Double-quoted: backslash escapes are honoured.
     .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    // Line comments.
     .replace(/#[^\n]*/g, '');
 }
 

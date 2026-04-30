@@ -1535,7 +1535,14 @@ function startBackgroundShellJob({ command, timeoutMs, workDir, mergeStderr, spa
     // brew coreutils on macOS; absent platforms fall through to the inner
     // command (the parent setTimeout still calls refreshShellJob to clean up).
     const _userCmdQuoted = shellQuoteSingle(command);
-    const wrapped = `{ if command -v timeout >/dev/null 2>&1; then timeout --preserve-status ${timeoutSeconds} bash -c ${_userCmdQuoted}; else bash -c ${_userCmdQuoted}; fi; rc=$?; printf '%s' \"$rc\" > ${shellQuoteSingle(exitPath)}; touch ${shellQuoteSingle(donePath)}; exit $rc; }`;
+    // P2 fix: invoke the resolved shell (not bash -c) so zsh / dash /
+    // alternate shells run snapshot-aware commands correctly. Drop
+    // --preserve-status so timeout returns 124 unambiguously, making
+    // it trivial to distinguish a timeout (124) from a user-side
+    // SIGTERM exit (143).
+    const _innerShellQ = shellQuoteSingle(shell);
+    const _innerArgQ = shellQuoteSingle(shellArg);
+    const wrapped = `{ if command -v timeout >/dev/null 2>&1; then timeout ${timeoutSeconds} ${_innerShellQ} ${_innerArgQ} ${_userCmdQuoted}; else ${_innerShellQ} ${_innerArgQ} ${_userCmdQuoted}; fi; rc=$?; printf '%s' \"$rc\" > ${shellQuoteSingle(exitPath)}; touch ${shellQuoteSingle(donePath)}; exit $rc; }`;
     const child = spawn(shell, [shellArg, wrapped], {
         cwd: workDir,
         env: spawnEnv,
