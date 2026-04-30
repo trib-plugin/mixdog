@@ -490,9 +490,7 @@ function tryListenPort(server, port) {
     server.listen(port, "127.0.0.1", () => resolve(true));
   });
 }
-async function startOwnerHttpServer() {
-  if (ownerHttpServer) return ownerHttpServer.address().port;
-  const server = http.createServer(async (req, res) => {
+async function ownerRequestHandler(req, res) {
     res.setHeader("Content-Type", "application/json");
     let body = {};
     if (req.method === "POST") {
@@ -827,7 +825,19 @@ async function startOwnerHttpServer() {
       res.writeHead(500);
       res.end(JSON.stringify({ error: msg }));
     }
-  });
+}
+async function startOwnerHttpServer() {
+  if (ownerHttpServer) return ownerHttpServer.address().port;
+  // Adopt the prelude beacon when present — it's already bound to a port
+  // and listed in active-instance.json. We just attach the real handler.
+  if (globalThis.__mixdogBeacon) {
+    const beacon = globalThis.__mixdogBeacon;
+    globalThis.__mixdogBeaconRealHandler = ownerRequestHandler;
+    ownerHttpServer = beacon.server;
+    process.stderr.write(`mixdog: owner HTTP server adopted beacon on 127.0.0.1:${beacon.httpPort}\n`);
+    return beacon.httpPort;
+  }
+  const server = http.createServer(ownerRequestHandler);
   for (let port = PROXY_PORT_MIN; port <= PROXY_PORT_MAX; port++) {
     if (await tryListenPort(server, port)) {
       ownerHttpServer = server;
@@ -843,6 +853,8 @@ function stopOwnerHttpServer() {
   if (!ownerHttpServer) return;
   ownerHttpServer.close();
   ownerHttpServer = null;
+  globalThis.__mixdogBeaconRealHandler = null;
+  globalThis.__mixdogBeacon = null;
 }
 function logOwnership(note) {
   if (lastOwnershipNote === note) return;
