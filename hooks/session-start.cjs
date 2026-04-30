@@ -569,6 +569,7 @@ async function requestCycle1(timeoutMs, opts = {}) {
     'ipc-error',
     'memory-timeout',
     'backend-not-ready',
+    'booting',
   ]);
   const TRANSIENT_TOP_REASONS = new Set([
     'connect-refused',
