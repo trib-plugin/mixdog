@@ -70,7 +70,7 @@ async function main() {
     const cSet = new Set(cNames);
     console.log(`required missing in Pool B: ${JSON.stringify(required.filter((name) => !bSet.has(name)))}`);
     console.log(`required missing in Pool C: ${JSON.stringify(required.filter((name) => !cSet.has(name)))}`);
-    const leadOnly = ['get_workflow', 'get_workflows', 'set_prompt', 'skill_suggest'];
+    const leadOnly = ['get_workflow', 'get_workflows', 'set_prompt'];
     console.log(`lead-only helper tools included: ${JSON.stringify(leadOnly.filter((name) => bSet.has(name) || cSet.has(name)))}`);
   } finally {
     closeSession(poolB.id);

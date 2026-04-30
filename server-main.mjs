@@ -211,7 +211,7 @@ const SERVER_INSTRUCTIONS = [
   '',
   'Retrieval (HIGHEST PRIORITY): `recall` (past) → `search` (web) → `explore` (codebase, `cwd` authoritative) → `grep` + `read`. Order is mandatory. `bash` is shell-only (git, build, test, run); using it for file/code lookup is a violation — use `read` / `glob` / `list` / `grep` / `explore`.',
   '',
-  'Channels: schedule / webhook / queue / proactive events arrive in the Lead session via the built-in channel mechanism.',
+  'Channels: schedule / webhook / queue / proactive events arrive in the Lead session via the built-in channel mechanism, each with its own event-class marker.',
 ].join('\n')
 
 const server = new Server(
