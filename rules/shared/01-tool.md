@@ -2,7 +2,7 @@
 
 **HARD RULE — file/code/memory/web lookup MUST start with `recall` (past) / `search` (web) / `explore` (codebase). Reaching for `bash` / `grep` / `glob` / `read` / `find_symbol` as the very first move on an unknown target is a violation. Shell and low-level file tools are reserved for known-coordinate work — exact path + line range or a precise literal pattern. `bash` is shell-only (git, build, test, run); using it with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file/code lookup is a violation.**
 
-First move — NARROW THE SCOPE before calling. A tool aimed at "the module responsible for X" finds it; a tool aimed at "X" returns noise.
+Recap-visible coordinates count as past context — use them or `recall` before any probing. Never compose source paths from package, cache, or marketplace directory names without verification; package name / cache dir / marketplace dir may differ.
 
 ## Parallelism — #1 iter saver
 
@@ -16,15 +16,9 @@ Independent tool calls go in ONE message as multiple tool_use blocks — never s
 
 - Work in **2 rounds max per sub-problem** (locate → confirm). Repeated retrieval → ask what NEW information the next call adds; enough evidence → stop probing and move to the edit / answer.
 
-## Preflight
-
-Before any tool call, scan the query for known scope and collapse multiple rounds into one targeted call:
-
-- code lookup → known identifier, file path, or regex pattern → ONE call to `find_symbol` / `read` / `grep`.
-- past memory → known entry id (`#NNNN`), date, or named decision → ONE `recall` anchored on that.
-- external → explicit URL, owner/repo, or domain → ONE `search` scoped to that source.
-
 ## Decision Table
+
+Before calling, scan the query for known scope and collapse rounds into ONE targeted call: known identifier / file path / regex → `find_symbol` / `read` / `grep`; known entry id / date / decision → `recall`; explicit URL / repo / domain → `search`.
 
 | Query shape                                       | First tool                                          |
 |---------------------------------------------------|-----------------------------------------------------|

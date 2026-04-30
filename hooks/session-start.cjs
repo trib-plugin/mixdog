@@ -161,7 +161,7 @@ function buildRecapData(db) {
       FROM entries
       WHERE is_root = 1
       ORDER BY ts DESC, id DESC
-      LIMIT 200
+      LIMIT 50
     `).all();
     if (rows.length === 0) return out;
 
@@ -172,13 +172,23 @@ function buildRecapData(db) {
     }).filter(Boolean);
     if (rendered.length === 0) return out;
 
+    // Dedup by normalized summary — newest-first, so older repeats drop.
+    const seen = new Set();
+    const uniq = [];
+    for (const line of rendered) {
+      const key = line.replace(/^\[[^\]]+\]\s*/, '').toLowerCase().replace(/\s+/g, ' ').slice(0, 80);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniq.push(line);
+    }
+
     // Newest → oldest; keep accumulating from the newest end until the
     // running total would exceed the cap, then reverse to chronological.
     const HEADER_LEN = '## Recap\n'.length;
-    const CAP = 9900;
+    const CAP = 5000;
     let total = HEADER_LEN;
     const kept = [];
-    for (const line of rendered) {
+    for (const line of uniq) {
       const add = line.length + 1;
       if (total + add > CAP) break;
       kept.push(line);

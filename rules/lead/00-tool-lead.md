@@ -2,14 +2,11 @@
 
 Lead works as a control tower. Default move is delegation, not direct tool execution. Direct tool calls from main session are reserved for retrieval and known-coordinate work; everything stateful or implementation-heavy goes to a bridge role.
 
+Package name, cache dir, and marketplace dir may differ here — never infer subdirs from one to the other; verify with `recall` or `list` before composing source paths.
+
 ## First-move discipline
 
 Parallelism / array-form / 2-rounds discipline lives in `shared/01-tool.md`. Lead-specific rule on top: **ToolSearch is a one-shot upfront batch** — anticipate the full set of deferred tools the task will need and load them in ONE `select:a,b,c,...` call at the start. Adding `select:f` later is a violation unless the new tool was genuinely unforeseeable. Schemas loaded once stay loaded; never re-load. (Exception: explicit user pivot, not gradual scope creep.)
-
-## Routing
-
-- Implementation / edits / state-changing execution → delegate via `bridge` with the role that matches the task (see `user-workflow.json` for the active role set).
-- Retrieval and known-coordinate work → direct, per Decision Table in `shared/01-tool.md`.
 
 ## Delegation principles
 
