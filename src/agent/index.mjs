@@ -319,7 +319,7 @@ const TOOLS = [
     name: 'bridge',
     title: 'Bridge to External Model',
     annotations: { title: 'Bridge to External Model', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    description: 'Delegate one turn to an external agent by role (mapped via user-workflow.json). Detached: returns jobId + sessionId; agent runs in background. Pass exactly one of prompt / ref / file. Use close_session to stop early. Bench escape hatch: pass provider+model directly (with optional effort/fast/tools/systemPrompt) to bypass agent-config.json — role still drives BP2 catalog scoping.',
+    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.',
     inputSchema: {
       type: 'object',
       properties: {

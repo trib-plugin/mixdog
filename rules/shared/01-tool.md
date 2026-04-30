@@ -4,32 +4,13 @@
 
 First move — NARROW THE SCOPE before calling. A tool aimed at "the module responsible for X" finds it; a tool aimed at "X" returns noise.
 
-## Batching — #1 iter saver
+## Parallelism — #1 iter saver
 
-> **Parallelism is your superpower.** Independent tool calls go in ONE message as multiple tool_use blocks — never serialize what can run together. This is the single highest-leverage habit; one missed batch is one wasted turn.
+> **Independent tool calls go in ONE message as multiple tool_use blocks — never serialize what can run together.** One missed batch is one wasted turn. Each tool's description carries its own array / multi-form rules; this section is the meta principle.
 
-Every serial repeat of the same tool — or sequential single-tool turns — wastes a full turn. Use array / multi form AND multi-block messages FIRST:
-
-- `recall` / `search` / `explore` — single rich NL query = ONE internal agent judges multi-angle probes & synthesizes. Array = N INDEPENDENT agents, mechanical merge, NO cross-synthesis. Default: single query. Array only for genuinely unrelated questions.
-- `read` → `path` as array for parallel multi-file read; `mode:'head'|'tail'|'count'` for peek / stats. NEVER serial `read`.
-- `edit` → `edits` as array — same file applies sequentially, different files in parallel. NEVER serial `edit`.
-- `apply_patch` → prefer for **2+ files**, **2+ hunks in one file**, or whenever a `read` → `edit` loop would otherwise repeat 2+ times. One patch turn beats repeated `read` → `edit` loops.
-- `grep` → `pattern` and/or `glob` as array (OR-joined).
-- `glob` → `pattern` as array (OR-joined).
-- `bash` → chain dependent commands with `&&` / `;` in ONE call. NEVER split dependent work.
-- `list` → single call; switch `mode:'list'|'tree'|'find'` for the view.
 - Independent calls on DIFFERENT tools with no data dependency — send in ONE message, not sequential turns.
-
-### IO array triggers
-
-- `read` / `glob` / `grep` candidates 2+ → array form, never serial.
-- Never `read` the same file twice in one session — pass any needed range in one call. Never `grep` the same pattern twice — broaden once or switch tool family.
-- `write` whole files 2+ → `writes` array. `edit` 2+ files → `edits` array (per-file groups).
-- `grep` / `glob` auto-skip standard ignore dirs (node_modules, .git, dist, build, .cache, etc.). Pass an explicit `path` into one of those dirs if you need to search inside.
-
-### Two-turn read-then-edit pattern
-
-When you plan edits across N files: turn 1 — issue all `read` calls in parallel (one `read` with `path` array, OR multiple `read` tool_use blocks in the same message); turn 2 — issue all `edit` / `apply_patch` / `write` calls in parallel. **Do NOT interleave reads and writes across turns.** Mixing N reads and N writes over 2N turns costs N turns more than the disciplined 2-turn pattern.
+- Same-tool repeats: use the array form documented in the tool description; serial repeats are violations.
+- Two-turn read-then-edit pattern: turn 1 — all `read` calls in parallel; turn 2 — all `edit` / `apply_patch` / `write` calls in parallel. Do not interleave reads and writes across turns.
 
 ## General Iter Budget
 
@@ -46,23 +27,9 @@ Before any tool call, scan the query for known scope and collapse multiple round
 
 ## Routing
 
-**Information-retrieval tools are top priority. Prefer `recall` / `search` / `explore` (and `read` / `glob` / `list` / `grep` for known-path / pattern work) over `bash` for any lookup. Using `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup is a rule violation — `bash` is shell-only work (git, build, test, run).**
+**Choose by scope, not hunch.** Past context → `recall`. External web / URL → `search`. Local filesystem → `explore`. The Decision Table below is the full first-tool mapping; tool descriptions carry the calling discipline (array form, dup-call avoidance, mode selection).
 
-**Choose by scope, not hunch.** Past context → `recall`. External web / URL → `search`. Local filesystem → `explore`. The Decision Table below is the full first-tool mapping; this section covers the calling discipline.
-
-### High-level retrieval (`recall` / `search` / `explore`)
-
-- A single rich NL query — one internal agent fans out and synthesizes. **One call per question is the default; 2 absolute max.** A second call only earns its iter when the first explicitly returned "not found" or covers a genuinely different angle. Paraphrasing the same question is not a different angle.
-- One `explore` call replaces a `grep`→`read`→`grep`→`read` loop — three rounds collapsed into one fan-out. Catch yourself in that loop, switch to `explore`.
-- Result returned → commit to the edit / answer. Do not re-call to "double-check."
-- Array form: only for genuinely unrelated questions. Same question reworded does not count.
-
-### Lower-level / structural
-
-- Known file path → `read` directly. Unknown location → `grep` / `glob` first, then targeted `read`.
-- Identifier / constant / function / class name known: `find_symbol` answers **where is it declared** (one decisive declaration line); `grep` answers **where is it used / mentioned** (all hits, includes comments and strings). Two different questions — pick the one matching your need, or call both in parallel if both are genuinely needed. Do not run them serially as fallback for each other.
-- Imports, dependents, callers, references → use the direct alias (`find_imports` / `find_dependents` / `find_callers` / `find_references`). Generic `code_graph(mode=...)` is for mixed structural impact only.
-- 2+ files or 2+ hunks: `apply_patch` over looping `read` → `edit`.
+`bash` is shell-only work (git, build, test, run). Using `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup is a rule violation.
 
 ## Decision Table
 
@@ -71,12 +38,8 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 | Query shape                                       | First tool                                          |
 |---------------------------------------------------|-----------------------------------------------------|
 | identifier name known, file unknown               | `find_symbol`                                       |
-| imports of a file                                 | `find_imports`                                      |
-| dependents of a file                              | `find_dependents`                                   |
-| callers of a symbol                               | `find_callers`                                      |
-| references of a symbol                            | `find_references`                                   |
-| main/public session, question is exactly imports / dependents / callers / references | direct alias above (NOT generic `code_graph`) |
-| broader structural graph / impact / mixed graph   | `code_graph`                                        |
+| callers / references / imports / dependents       | `find_symbol` with `mode:"callers"` / `"references"` / `"imports"` / `"dependents"` |
+| broader structural graph / file overview / impact | `find_symbol` with `mode:"overview"` / `"symbols"` / `"impact"` / `"related"` |
 | file path known                                   | `read`                                              |
 | 2+ known file paths                               | one `read` with `path` as array                     |
 | 2+ whole files to create/replace                  | `write` with `writes` array                         |
@@ -93,13 +56,10 @@ Use these rules regardless of the current role name. Role-specific prompts may a
 
 ## Anti-patterns
 
-- Do not call `find_symbol` then `grep` (or vice versa) serially as fallback for the same identifier — they answer different questions (declaration vs usage). If both are genuinely needed, call them in parallel and synthesize.
-- Do not serially `read` files one by one when the candidate list is already known.
-- Do not serially `write` several whole files when one call with a `writes` array can do it.
-- Do not `read` a whole large file when `find_symbol`, `code_graph`, or `grep` can narrow the line window first.
-- `grep`→`read` past two pairs on same target without locking a file+line span — switch tool family (`find_symbol` / `code_graph`) or commit to the edit; a third same-target pair is the violation.
-- Do not chain 10+ `grep` + `read` calls in one session without a `find_symbol` / `code_graph` call. Identifier-aware tools should appear within the first 2 rounds when the work involves an `edit`.
-- Do not use `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup — that is a rule violation. `bash` is shell-only work (git, build, test, run).
+- Do not call `find_symbol` then `grep` (or vice versa) serially as fallback for the same identifier — they answer different questions (declaration vs usage). If both are genuinely needed, call them in parallel.
+- Do not `read` a whole large file when `find_symbol` or `grep` can narrow the line window first.
+- `grep`→`read` past two pairs on same target without locking a file+line span — switch tool family (`find_symbol` / `explore`) or commit to the edit; a third same-target pair is the violation.
+- Do not use `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup.
 
 ## Scope boundaries
 
@@ -123,9 +83,9 @@ When a tool result begins with a `⚠ … soft-warn` marker, treat it as a self-
 - `⚠ Tool-loop soft-warn` — same call returned the same result/error 4× in a row.
   → **Stop the exact retry.** The signature (tool + args + error class) won't change by repeating. Change inputs *semantically* (different scope or different question, not just reworded) or switch tools.
 - `⚠ Repeated-tool soft-warn` — the same tool has been called many times in this session.
-  → **Batch or switch family.** Combine outstanding queries into one array-form call, or hand off to a *different family*. Three families: low-level file (`read` / `grep` / `glob` / `list`), structural (`find_symbol` / `code_graph` / `find_callers` / `find_references`), synthesized retrieval (`explore` / `recall` / `search`). Switching within one family does not count.
+  → **Batch or switch family.** Combine outstanding queries into one array-form call, or hand off to a *different family*. Three families: low-level file (`read` / `grep` / `glob` / `list`), structural (`find_symbol`), synthesized retrieval (`explore` / `recall` / `search`). Switching within one family does not count.
 - `⚠ Mixed-tool soft-warn` — many consecutive low-level lookups across `read` / `grep` / `glob` / `list` without a productive call. ("Productive" = the call narrowed the scope — locked a file+line range, identified a symbol, or eliminated candidates. Mere hits without progress don't count.)
-  → **Jump up.** `find_symbol` / `code_graph` / `explore` for one decisive pass; or commit to the edit if the target is already locked.
+  → **Jump up.** `find_symbol` / `explore` for one decisive pass; or commit to the edit if the target is already locked.
 - `⚠ Tool-budget soft-warn` — total tool calls in this session are getting high.
   → **Truncate scope.** Synthesize what you have, report partial findings honestly, and stop *new investigation threads*. Wrap up the current edit / answer; do not expand into adjacent questions or open a new probe.
 

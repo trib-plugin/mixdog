@@ -605,7 +605,7 @@ export const PATCH_TOOL_DEFS = [
     name: 'apply_patch',
     title: 'Apply Unified Diff',
     annotations: { title: 'Apply Unified Diff', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    description: 'Apply a unified-diff patch in ONE turn. Prefer over repeated read→edit loops for 2+ files or 2+ hunks. Git-style headers; `/dev/null` for create/delete. Default atomic (`reject_partial:true`); `dry_run:true` to preview.',
+    description: 'Apply a unified-diff patch in ONE turn. Prefer this over repeated `read` → `edit` loops when 2+ files change or the exact edit is already clear. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Patch context lines self-verify, so it skips the normal read-before-edit round-trip. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.',
     inputSchema: {
       type: 'object',
       properties: {

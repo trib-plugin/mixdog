@@ -1,20 +1,6 @@
-# Explore
+# Explore root control
 
-- `explore` — internal codebase navigation. A single natural-language query lets ONE internal agent fan out glob + grep probes and return a synthesized answer covering several angles at once. Same single-agent-judges-multi-angle principle applies to `recall` (memory) and `search` (external web).
-- Array form on any of the three = N INDEPENDENT agents, mechanical merge, no cross-synthesis. Default to a single rich query; use array only for genuinely unrelated questions.
-
-## Explore-first (default move)
-
-Start with `explore` for any local-filesystem question where one of these is true:
-- the file location is uncertain,
-- the answer needs structure + surrounding context ("how does X work AND where is it configured?"),
-- the question spans multiple files or multiple angles.
-
-`read` directly ONLY when both the exact absolute path AND the line range are already known. A single `grep` for a precise literal symbol is also fine. But if you catch yourself in a `grep` → `read` → `grep` → `read` loop, **stop immediately and switch to `explore`** — one fan-out call replaces three rounds and wastes no iters on location-finding.
-
-If you know the identifier / constant / function / class name but not the file, prefer `find_symbol` before `grep`.
-
-This rule applies equally to Lead and to every delegated role. Grep+read loops on a known topic are the single biggest source of wasted iters in this workflow; `explore` is the cure.
+`explore` description carries the call rules (single rich query, fan-out, array only for genuinely unrelated questions, scope boundaries vs `recall` / `search`). This file covers root selection only — the part not in the description.
 
 ## Root control
 

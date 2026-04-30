@@ -722,7 +722,7 @@ const toolDefinitions = [
     name: 'search',
     title: 'Search',
     aiWrapped: true,
-    description: 'External web / URL scrape. `query`: single NL string for one synthesized answer, or array of strings for unrelated multi-question. URL → scrape. Past memory → recall, codebase → explore.',
+    description: 'FIRST CHOICE for external web / URL questions — never start with bash / curl / WebFetch when the query targets the open web. External web search and URL scrape. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes; URL → scrape) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, codebase → `explore`.',
     inputSchema: {
       type: 'object',
       properties: {
