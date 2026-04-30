@@ -25,7 +25,12 @@ function isAllowedOrigin(req) {
   return /^http:\/\/(localhost|127\.0\.0\.1):3458(\/|$)/.test(o);
 }
 
-import { DatabaseSync } from '../lib/sqlite-bridge.mjs';
+let DatabaseSync = null;
+try {
+  ({ DatabaseSync } = await import('../lib/sqlite-bridge.mjs'));
+} catch (e) {
+  console.error('[setup-server] sqlite-bridge unavailable, sqlite-backed endpoints will return 503:', e?.message || e);
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isWin = process.platform === 'win32';
