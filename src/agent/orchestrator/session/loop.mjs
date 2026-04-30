@@ -375,6 +375,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     let iterations = 0;
     let toolCallsTotal = 0;
     let lastUsage;
+    let firstTurnUsage;
     let response;
     const opts = sendOpts || {};
     const sessionId = opts.sessionId || null;
@@ -547,6 +548,11 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                     promptTokens: response.usage.promptTokens || 0,
                     raw: response.usage.raw,
                 };
+                // Snapshot the first turn separately so callers can show
+                // iter1 vs final cache-hit ratios — first iter is the
+                // warm-prefix signal, final iter is the steady-state
+                // efficiency signal after tool-result accumulation.
+                firstTurnUsage = { ...lastUsage };
             }
         }
         // Provider may have returned despite an abort (SDKs that don't honour
@@ -731,6 +737,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         ...response,
         usage: lastUsage || response.usage,
         lastTurnUsage: response.usage,
+        firstTurnUsage: firstTurnUsage || response.usage,
         iterations,
         toolCallsTotal,
         providerState,

@@ -23,10 +23,10 @@
  * found" error rather than silently mis-dispatching.
  *
  * Kind classification:
- *   - 'retrieval'  : short-lived MCP-invoked retrieval agents (explore/recall/search).
- *                    Receive `retrieval-role-principles` shared rules in BP2.
- *   - 'standalone' : long-running internal agents (memory cycle, recap).
- *                    Receive only their own self section in BP2.
+ *   - 'retrieval'   : short-lived MCP-invoked retrieval agents (explore/recall/search).
+ *                     Receive `retrieval-role-principles` shared rules in BP2.
+ *   - 'maintenance' : background-trigger agents (memory cycle, recap, scheduler,
+ *                     webhook). Receive only their own self section in BP2.
  *
  * Permission classification:
  *   - 'read'       : read-only — write/edit/bash blocked at loop.mjs runtime
@@ -72,7 +72,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     systemFile: 'rules/bridge/40-cycle1-agent.md',
     description: 'Chunker/classifier invoked by memory-cycle runCycle1',
     invokedBy: 'cycle1',
-    kind: 'standalone',
+    kind: 'maintenance',
     permission: 'read',
   }),
   'cycle2-agent': Object.freeze({
@@ -80,7 +80,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     systemFile: 'rules/bridge/41-cycle2-agent.md',
     description: 'Root re-scorer invoked by memory-cycle runCycle2',
     invokedBy: 'cycle2',
-    kind: 'standalone',
+    kind: 'maintenance',
     permission: 'read',
   }),
   'recap-agent': Object.freeze({
@@ -88,7 +88,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     systemFile: 'rules/bridge/50-recap-agent.md',
     description: 'Session-start handoff summarizer invoked by session-start hook',
     invokedBy: 'recap',
-    kind: 'standalone',
+    kind: 'maintenance',
     permission: 'read',
   }),
   'proactive-decision': Object.freeze({
@@ -96,7 +96,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     systemFile: 'rules/bridge/50-proactive-decision.md',
     description: 'Decision agent invoked by scheduler proactive evaluator',
     invokedBy: 'scheduler',
-    kind: 'standalone',
+    kind: 'maintenance',
     permission: 'read',
   }),
   'scheduler-task': Object.freeze({
@@ -104,7 +104,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     systemFile: 'agents/scheduler-task.md',
     description: 'Scheduled-task executor invoked by scheduler tick',
     invokedBy: 'scheduler',
-    kind: 'standalone',
+    kind: 'maintenance',
     permission: 'read-write',
   }),
   'webhook-handler': Object.freeze({
@@ -112,7 +112,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     systemFile: 'agents/webhook-handler.md',
     description: 'Webhook payload handler invoked by inbound webhook events',
     invokedBy: 'webhook',
-    kind: 'standalone',
+    kind: 'maintenance',
     permission: 'read-write',
   }),
   'memory-classification': Object.freeze({
@@ -120,7 +120,7 @@ export const BUILTIN_HIDDEN_ROLES = Object.freeze({
     systemFile: 'agents/memory-classification.md',
     description: 'Memory entry classifier invoked by memory-cycle classification step',
     invokedBy: 'memory-cycle',
-    kind: 'standalone',
+    kind: 'maintenance',
     permission: 'read',
   }),
 })
@@ -150,7 +150,7 @@ export function listHiddenRoleNames() {
 }
 
 /**
- * List hidden role names matching a given kind ('retrieval' | 'standalone').
+ * List hidden role names matching a given kind ('retrieval' | 'maintenance').
  * Consumed by collect.mjs to drive BP2 cache shard classification dynamically
  * instead of hard-coding role-name sets.
  */

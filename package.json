@@ -1,6 +1,6 @@
 {
   "name": "mixdog",
-  "version": "0.1.224",
+  "version": "0.1.225",
   "description": "Claude Code all-in-one agent plugin — autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing.",
   "author": "jyp8877 <dev@tribgames.com>",
   "license": "MIT",

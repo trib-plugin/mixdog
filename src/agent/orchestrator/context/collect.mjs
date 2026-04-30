@@ -270,23 +270,23 @@ export function loadRoleTemplate(role, dataDir) {
 //   - Public roles (any role with a matching agents/<name>.md file that is
 //     not a built-in hidden role): Agent Role Catalog only; Hidden Role
 //     Catalog is dropped entirely — public roles never dispatch into hidden
-//     retrieval/standalone backends.
+//     retrieval/maintenance backends.
 //   - Retrieval hidden roles: Agent Role Catalog + Hidden block containing
 //     `retrieval-role-principles` (shared common rules) and the self
 //     section only.
-//   - Standalone hidden roles: Agent Role Catalog + Hidden block with the
+//   - Maintenance hidden roles: Agent Role Catalog + Hidden block with the
 //     self section only.
 //   - Unknown/null role: falls back to the legacy all-in-one block so
 //     callers that don't supply role stay backward-compatible.
 //
 // BP2 is no longer bit-identical cross-role — the provider cache shards by
-// role group (public / each retrieval hidden / each standalone hidden),
+// role group (public / each retrieval hidden / each maintenance hidden),
 // trading a small number of additional shards for ~68% fewer prefix bytes
 // on the public-role hot path. Role identity still rides the sessionMarker
 // user message separately (see composeSystemPrompt).
 //
 // Classification is dynamic — the public set is derived from agents/*.md
-// minus hidden-role names, and retrieval/standalone sets come from the
+// minus hidden-role names, and retrieval/maintenance sets come from the
 // `kind` field in internal-roles.mjs. No role names are hard-coded here.
 import { listHiddenRoleNames, listHiddenRolesByKind } from '../internal-roles.mjs';
 
@@ -316,7 +316,7 @@ function loadRoleClassification(pluginRoot) {
     const value = {
         public: publicSet,
         retrieval: new Set(listHiddenRolesByKind('retrieval')),
-        standalone: new Set(listHiddenRolesByKind('standalone')),
+        maintenance: new Set(listHiddenRolesByKind('maintenance')),
     };
     _roleClassificationCache = value;
     _roleClassificationCacheTime = now;
@@ -366,19 +366,18 @@ function loadAgentSections(pluginRoot) {
     return agentSections;
 }
 
-// Providers with explicit cache breakpoints (anthropic cache_control,
-// openai prompt_cache_key, gemini cachedContents) tolerate the larger
-// unified BP2 — first registration is paid once, then 1h cache makes
-// cross-role hot paths free. Implicit-prefix-hash providers (deepseek,
-// xai, lmstudio, ollama) match by raw prefix bytes and react badly to
-// the +83% size jump, so they keep the self-only emit. Codex is in the
-// explicit set because its conversation_id slot still benefits from a
-// shared catalog when the same role recurs in a turn chain.
-const EXPLICIT_CACHE_PROVIDERS = new Set([
-    'anthropic', 'anthropic-oauth',
-    'openai', 'openai-oauth',
-    'gemini',
-]);
+// Empty by design — measurement (dev/role-shard-probe.mjs +
+// dev/prefix-bytes-probe.mjs, 2026-04-29 trace) showed that even on
+// providers with explicit cache breakpoints, BP2 hit-cost dominates
+// cold-load cost at >10 calls/hr. Per-role scoped catalogs cut the
+// average BP2 prefix from 33 KB to <1 KB (~95% reduction), at the
+// price of ~5x more cold loads — a clear net win at observed call
+// volumes (~791 calls/hr, distinct 5 roles/hr). Implicit-prefix-hash
+// providers (deepseek, xai, lmstudio, ollama) prefer the smaller
+// scoped prefix anyway. Leaving the set in place (rather than deleting
+// the branch) so a future provider with different cache economics can
+// be added back without re-introducing the dead code.
+const EXPLICIT_CACHE_PROVIDERS = new Set();
 
 export function loadScopedRoleCatalog(role, provider = null) {
     const useUnified = !!(provider && EXPLICIT_CACHE_PROVIDERS.has(provider));
@@ -416,13 +415,13 @@ export function loadScopedRoleCatalog(role, provider = null) {
             if (self) hiddenSectionsToEmit.push(`## ${self.name}\n\n${self.body}`);
             // Hidden retrieval roles — drop the public agents catalog entirely.
             agentSectionsToEmit = [];
-        } else if (role && classification.standalone.has(role)) {
+        } else if (role && classification.maintenance.has(role)) {
             const self = hiddenPairs.find(p => p.name === role);
             hiddenSectionsToEmit = [];
             if (self) {
                 hiddenSectionsToEmit.push(`## ${self.name}\n\n${self.body}`);
             } else {
-                // Fallback: standalone role without rules/bridge/*.md entry —
+                // Fallback: maintenance role without rules/bridge/*.md entry —
                 // pull self body from agents/<role>.md instead so newly-added
                 // hidden roles work without needing a duplicate bridge file.
                 const fromAgent = agentSections.find(s => s.startsWith(`## ${role}\n`));

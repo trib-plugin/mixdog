@@ -196,26 +196,60 @@ if (!fs.existsSync(probe)) {
 }
 
 const isWin = process.platform === 'win32';
-process.stderr.write(`[boot-time] tag=run-mcp-spawn-server tMs=${Date.now()}\n`);
-const proc = spawn('bun', [serverPath], {
-  cwd: pluginRoot,
-  stdio: 'inherit',
-  env: {
-    ...process.env,
-    UV_THREADPOOL_SIZE: '2',
-    CLAUDE_PLUGIN_ROOT: pluginRoot,
-    CLAUDE_PLUGIN_DATA: dataDir,
-  },
-  ...(isWin ? { windowsHide: true } : {}),
-});
 
-if (isWin && proc.pid) {
-  try {
-    execSync(`wmic process where processid=${proc.pid} call setpriority "below normal"`, { stdio: 'ignore', windowsHide: true });
-  } catch {}
+// Supervisor: keep the wrapper alive across child crashes / dev-restart kills
+// so Claude Code's MCP stdio stays connected. The wrapper exits only when the
+// parent closes stdin (Claude Code shutting us down) or the child enters a
+// crash loop (CRASH_WINDOW_MS / CRASH_MAX_RESTARTS).
+const CRASH_WINDOW_MS = 10_000;
+const CRASH_MAX_RESTARTS = 5;
+let proc = null;
+let shuttingDown = false;
+const recentRestarts = [];
+
+function spawnChild() {
+  process.stderr.write(`[boot-time] tag=run-mcp-spawn-server tMs=${Date.now()}\n`);
+  proc = spawn('bun', [serverPath], {
+    cwd: pluginRoot,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      UV_THREADPOOL_SIZE: '2',
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      CLAUDE_PLUGIN_DATA: dataDir,
+    },
+    ...(isWin ? { windowsHide: true } : {}),
+  });
+
+  if (isWin && proc.pid) {
+    try {
+      execSync(`wmic process where processid=${proc.pid} call setpriority "below normal"`, { stdio: 'ignore', windowsHide: true });
+    } catch {}
+  }
+
+  proc.on('exit', (code, signal) => {
+    if (shuttingDown) {
+      process.exit(code || 0);
+      return;
+    }
+    const now = Date.now();
+    recentRestarts.push(now);
+    while (recentRestarts.length && now - recentRestarts[0] > CRASH_WINDOW_MS) {
+      recentRestarts.shift();
+    }
+    if (recentRestarts.length > CRASH_MAX_RESTARTS) {
+      process.stderr.write(`[run-mcp] child crash loop (${recentRestarts.length} restarts in ${CRASH_WINDOW_MS}ms) — giving up\n`);
+      process.exit(code || 1);
+      return;
+    }
+    process.stderr.write(`[run-mcp] child exit code=${code} signal=${signal} — respawning (#${recentRestarts.length})\n`);
+    spawnChild();
+  });
 }
 
 function killChild() {
+  shuttingDown = true;
+  if (!proc) return;
   if (isWin && proc.pid) {
     try {
       execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: 'ignore', windowsHide: true, timeout: 5000 });
@@ -230,6 +264,4 @@ process.on('SIGINT', killChild);
 process.stdin.on('end', killChild);
 process.stdin.on('close', killChild);
 
-proc.on('exit', (code) => {
-  process.exit(code || 0);
-});
+spawnChild();

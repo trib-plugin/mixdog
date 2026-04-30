@@ -843,14 +843,21 @@ export async function handleToolCall(name, args, opts = {}) {
             // Fallback math handles providers that didn't ship promptTokens.
             const u = result.usage || {};               // cumulative
             const lastU = result.lastTurnUsage || u;    // last turn (fallback to cumulative)
-            const inputTokens = u.inputTokens || 0;
-            const cacheRead = u.cachedTokens || 0;
-            const cacheWrite = u.cacheWriteTokens || 0;
-            const promptTokens = typeof u.promptTokens === 'number'
-                ? u.promptTokens
-                : (inputTokens + cacheRead + cacheWrite);
-            const cacheTotal = cacheRead + cacheWrite;
-            const cachePct = promptTokens > 0 ? Math.round(cacheTotal / promptTokens * 100) : 0;
+            const firstU = result.firstTurnUsage || lastU; // first turn (fallback)
+
+            // cache % per turn — cache_read only (cache_write is paid input,
+            // not a hit). Without this, anthropic's cache_write inflates the
+            // ratio to 100% even on cold writes; cache_read alone gives a
+            // provider-comparable signal for both anthropic and openai.
+            function turnCachePct(turnUsage) {
+                const p = typeof turnUsage.promptTokens === 'number'
+                    ? turnUsage.promptTokens
+                    : (turnUsage.inputTokens || 0) + (turnUsage.cachedTokens || 0) + (turnUsage.cacheWriteTokens || 0);
+                const c = turnUsage.cachedTokens || 0;
+                return p > 0 ? Math.round(c / p * 100) : 0;
+            }
+            const firstPct = turnCachePct(firstU);
+            const lastPct = turnCachePct(lastU);
 
             const lastInput = lastU.inputTokens || 0;
             const lastCacheRead = lastU.cachedTokens || 0;
@@ -880,7 +887,7 @@ export async function handleToolCall(name, args, opts = {}) {
               try { process.stderr.write(`[bridge] empty-content fallback for sessionId=${session?.id ?? 'unknown'} shape=${JSON.stringify(shape)}\n`); } catch {}
               content = '(empty response)';
             }
-            const footer = `${modelLabel} · ${ctxTok} ctx · cache ${cachePct}% · ${outTok} out · ${loopNote} · ${elapsed}s`;
+            const footer = `${modelLabel} · ${ctxTok} ctx · cache ${lastPct}% · ${outTok} out · ${loopNote} · ${elapsed}s`;
             emit(`${modelTag}[${role}] ${content}\n\n${footer}`);
             updateSessionStatus(session.id, 'idle');
           } catch (err) {

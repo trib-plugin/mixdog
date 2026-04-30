@@ -29,7 +29,7 @@ export const DEFAULT_MAINTENANCE = Object.freeze({
     recall: 'HAIKU',
     explore: 'HAIKU',
     recap: 'HAIKU',
-    // Slots backing the standalone hidden roles registered in
+    // Slots backing the maintenance hidden roles registered in
     // BUILTIN_HIDDEN_ROLES (scheduler-task / proactive-decision /
     // webhook-handler / memory-classification). Without these, a fresh
     // install fails resolvePresetName() and throws "preset unresolved"

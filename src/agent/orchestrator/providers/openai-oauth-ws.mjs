@@ -350,11 +350,15 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
     const toolCalls = [];
     const pendingCalls = new Map();
     // Reasoning items collected from response.output_item.done (or salvaged
-    // from response.completed.response.output). When include:['reasoning.
-    // encrypted_content'] is set on the request, each reasoning item carries
-    // an `encrypted_content` blob the model must see again on the NEXT
-    // input to keep the server prompt cache prefix warm. Replay path lives
-    // in convertMessagesToResponsesInput in openai-oauth.mjs.
+    // from response.completed.response.output). The request still includes
+    // `reasoning.encrypted_content` so the server keeps emitting the blobs,
+    // but explicit input-side replay is INTENTIONALLY OMITTED in
+    // convertMessagesToResponsesInput (openai-oauth.mjs:233-238) — Codex
+    // rejects the same `rs_*` id twice in one handshake session_id with a
+    // "Duplicate item" error. Server-side conversation state already carries
+    // the prefix forward across the WS_IDLE_MS window. The collected
+    // reasoningItems below are surfaced for trace/debugging only; they do
+    // not feed back into the next request body.
     const reasoningItems = [];
     const pushReasoningItem = (item) => {
         if (!item || item.type !== 'reasoning') return;
