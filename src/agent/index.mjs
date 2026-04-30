@@ -6,7 +6,7 @@ import { startBridgeStallWatchdog } from './bridge-stall-watchdog.mjs';
 import { attachBridgeAbort } from './bridge-abort.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
-import { setInternalToolsProvider } from './orchestrator/internal-tools.mjs';
+import { setInternalToolsProvider, awaitBootReady } from './orchestrator/internal-tools.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
 import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory.mjs';
 import { prepareBridgeSession } from './orchestrator/smart-bridge/session-builder.mjs';
@@ -410,6 +410,7 @@ export async function handleToolCall(name, args, opts = {}) {
   const requestSignal = opts.requestSignal instanceof AbortSignal ? opts.requestSignal : null;
   const callerSessionId = typeof opts.callerSessionId === 'string' && opts.callerSessionId ? opts.callerSessionId : null;
   const callerCwd = typeof opts.callerCwd === 'string' && opts.callerCwd ? opts.callerCwd : null;
+  await awaitBootReady(2000);
   // Idempotent fallback — server.mjs populates the registry at boot via
   // loadModule('agent').then(...), but if eager init failed (missing deps,
   // file error), the first tool call still restores it here. Re-registration

@@ -551,7 +551,7 @@ async function requestCycle1(timeoutMs, opts = {}) {
   // it sooner), which means /cycle1 can race ahead of memory worker ready.
   // Channels surfaces that as 503 (reason: memory-not-ready); treat it as
   // retryable within the deadline.
-  const READY_POLL_MS = 500;
+  const READY_POLL_MS = 200;
   const isMemoryNotReady = (r) => r && r.ok === false && r.statusCode === 503;
 
   try {

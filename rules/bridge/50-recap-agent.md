@@ -10,7 +10,7 @@ Handoff note for the next session of the same user. Input: up to 20 mixed entrie
 ## Rules
 
 - Match input language. If mixed, use the dominant language.
-- Concrete: keep paths, version numbers, identifiers verbatim. Anchor with 1–3 key file paths (e.g. `hooks/session-start.cjs`) when changes touched specific files. Prefer repo-relative paths.
+- Concrete: keep paths, version numbers, identifiers verbatim. Anchor with 1–3 key file paths when changes touched specific files. **Always repo-rooted** (`src/agent/orchestrator/intent-classifier.mjs`, `hooks/session-start.cjs`) — never basename-only (`manager.mjs`, `providers.mjs`); the next session's Lead cannot recompose a directory it didn't see, and a fabricated path becomes an ENOENT brief.
 - 100–250 tokens. Tighter is better. Scale with work volume — 3 or fewer changes = one paragraph; larger sessions may use a short bullet list.
 - Recent entries win on conflict.
 - `Open / Next:` discipline:

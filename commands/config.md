@@ -1,7 +1,7 @@
 ---
 description: Open the mixdog settings UI (Providers + Presets)
 disable-model-invocation: true
-allowed-tools: Bash(node:*)
+allowed-tools: Bash(bun:*)
 ---
 
-!`node "${CLAUDE_PLUGIN_ROOT}/setup/launch.mjs"`
+!`bun "${CLAUDE_PLUGIN_ROOT}/setup/launch.mjs"`

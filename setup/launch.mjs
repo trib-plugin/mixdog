@@ -8,6 +8,7 @@ import { tmpdir } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const server = join(__dirname, 'setup-server.mjs');
+const CHILD_INTERPRETER = 'bun';
 const PORT = 3458;
 
 // Slash-command shells expand ${CLAUDE_PLUGIN_ROOT} into argv but do not
@@ -138,6 +139,7 @@ function openLaunchLog() {
     `[${new Date().toISOString()}] setup-server launch`,
     `launcherPid=${process.pid}`,
     `execPath=${process.execPath}`,
+    `interpreter=${CHILD_INTERPRETER}`,
     `server=${server}`,
     `cwd=${dirname(__dirname)}`,
     '--- child stdout/stderr ---',
@@ -179,7 +181,7 @@ if (!alive) {
   let child;
 
   try {
-    child = spawn(process.execPath, [server], {
+    child = spawn(CHILD_INTERPRETER, [server], {
       detached: true,
       // Use a real file descriptor, not parent pipes/stdio. This keeps the
       // detached child independent after unref() while preserving first-start
@@ -194,7 +196,7 @@ if (!alive) {
         MIXDOG_SETUP_PARENT_PID: String(findAncestorPid() || ''),
       },
       windowsHide: true,
-      shell: false,
+      shell: process.platform === 'win32',
     });
   } catch (error) {
     closeLog(launchLog.fd);

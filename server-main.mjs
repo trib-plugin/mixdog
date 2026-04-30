@@ -732,7 +732,7 @@ try {
   if (!isModuleEnabled('agent')) {
     log(`module 'agent' disabled — skipping eager init, bridge and synthetic tools will not register`)
   } else {
-  await loadModule('agent').then(async () => {
+  loadModule('agent').then(async () => {
     // Populate the in-process tool registry at boot so ALL session entry
     // points (direct createSession / resumeSession, not just handleToolCall)
     // see the bridge from the first call. handleToolCall still calls
@@ -742,7 +742,7 @@ try {
       const internalToolsMod = await import(
         pathToFileURL(join(PLUGIN_ROOT, 'src', 'agent', 'orchestrator', 'internal-tools.mjs')).href
       )
-      const { setInternalToolsProvider, addInternalTools } = internalToolsMod
+      const { setInternalToolsProvider, addInternalTools, markBootReady } = internalToolsMod
       const ctx = agentContext()
       setInternalToolsProvider({ executor: ctx.toolExecutor, tools: ctx.internalTools })
 
@@ -777,6 +777,7 @@ try {
         executor: SYNTHETIC_EXECUTORS[def.name],
       })).filter(entry => typeof entry.executor === 'function')
       addInternalTools(syntheticEntries)
+      markBootReady()
       log(`internal-tools registry populated tools=${ctx.internalTools.length}+${syntheticEntries.length} (synthetic defs=${SYNTHETIC_TOOL_DEFS.length})`)
     } catch (e) {
       log(`internal-tools registry populate failed: ${e.message}`)

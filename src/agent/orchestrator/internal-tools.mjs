@@ -14,6 +14,12 @@ let _executor = null;
 let _tools = [];
 let _names = new Set();
 
+let _bootReady = false;
+let _bootResolver = null;
+const _bootPromise = new Promise((r) => { _bootResolver = r; });
+export function markBootReady() { if (_bootReady) return; _bootReady = true; _bootResolver(); }
+export async function awaitBootReady(timeoutMs = 2000) { if (_bootReady) return; await Promise.race([_bootPromise, new Promise((r) => setTimeout(r, timeoutMs))]); }
+
 // Per-tool executor overrides. Populated by addInternalTools() for synthetic
 // Pool C tools (memory_search / web_search) that bypass the main dispatch
 // (tools.json + dispatchTool) and route directly to a native handler.
