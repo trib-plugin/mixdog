@@ -8,7 +8,11 @@ import { tmpdir } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const server = join(__dirname, 'setup-server.mjs');
-const CHILD_INTERPRETER = 'bun';
+// Reuse the launcher's own runtime (bun.exe, since the slash command and the
+// shebang both invoke bun). Spawning by absolute path lets us drop shell:true
+// on Windows; the cmd.exe wrapper was swallowing the child's stderr and
+// turning real bun startup errors into an empty launch log.
+const CHILD_INTERPRETER = process.execPath;
 const PORT = 3458;
 
 // Slash-command shells expand ${CLAUDE_PLUGIN_ROOT} into argv but do not
@@ -185,7 +189,8 @@ if (!alive) {
       detached: true,
       // Use a real file descriptor, not parent pipes/stdio. This keeps the
       // detached child independent after unref() while preserving first-start
-      // stdout/stderr for diagnostics.
+      // stdout/stderr for diagnostics. shell:false (default) on every
+      // platform — cmd.exe wrapping was eating the child's stderr.
       stdio: ['ignore', launchLog.fd, launchLog.fd],
       cwd: PLUGIN_ROOT,
       env: {
@@ -196,7 +201,6 @@ if (!alive) {
         MIXDOG_SETUP_PARENT_PID: String(findAncestorPid() || ''),
       },
       windowsHide: true,
-      shell: process.platform === 'win32',
     });
   } catch (error) {
     closeLog(launchLog.fd);

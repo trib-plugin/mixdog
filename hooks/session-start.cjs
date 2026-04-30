@@ -531,12 +531,14 @@ async function requestCycle1Once(deadline, opts) {
   }
 }
 
-// Public entry point. Wraps requestCycle1Once with a single follow-up retry
-// when the first pass returned ok but processed=0 — that combination means
-// either an in-flight dedup hit (server returned the prior run's empty
-// result) or a pre-ingest race (transcript-watch had not yet ingested the
-// pending raw entries when cycle1 ran). A short sleep + second call covers
-// both. If the second pass also returns 0, treat as genuinely empty.
+// Public entry point. Single in-flight call — server-main.callWorker now
+// awaits the worker's first 'ready' IPC, so a pre-ready /cycle1 holds until
+// memory is up instead of bouncing 503. Keep one follow-up retry for the
+// processed=0 case: that means either an in-flight dedup hit (server
+// returned the prior run's empty result) or a pre-ingest race
+// (transcript-watch had not yet ingested pending raw entries). A short sleep
+// + second call covers both. If the second pass also returns 0, genuinely
+// empty.
 async function requestCycle1(timeoutMs, opts = {}) {
   const slot = opts.slot || 'unknown';
   const graceMs = Number.isFinite(opts.graceMs) ? opts.graceMs : 5000;
@@ -545,26 +547,8 @@ async function requestCycle1(timeoutMs, opts = {}) {
   teeStderr(`[session-start] cycle1 slot=${slot} start graceMs=${graceMs} timeoutMs=${timeoutMs}\n`);
   teeStderr(`[boot-time] tag=cycle1-entry slot=${slot} tMs=${start}\n`);
 
-  // Memory worker is brought up by the parent independently of the channels
-  // owner HTTP server. Since v0.1.118 the channels owner publishes
-  // active-instance.json before its backend connect (so peers can discover
-  // it sooner), which means /cycle1 can race ahead of memory worker ready.
-  // Channels surfaces that as 503 (reason: memory-not-ready); treat it as
-  // retryable within the deadline.
-  const READY_POLL_MS = 200;
-  const isMemoryNotReady = (r) => r && r.ok === false && r.statusCode === 503;
-
   try {
-    let r1 = await requestCycle1Once(deadline, opts);
-    let retry503 = 0;
-    while (isMemoryNotReady(r1)) {
-      const remaining = deadline - Date.now();
-      if (remaining <= READY_POLL_MS + 50) return r1;
-      retry503 += 1;
-      teeStderr(`[boot-time] tag=cycle1-503-retry slot=${slot} attempt=${retry503} tMs=${Date.now()}\n`);
-      await new Promise((r) => setTimeout(r, READY_POLL_MS));
-      r1 = await requestCycle1Once(deadline, { ...opts, slot: `${slot}:w` });
-    }
+    const r1 = await requestCycle1Once(deadline, opts);
     if (!r1.ok) return r1;
     if (r1.processed != null && r1.processed > 0) return r1;
     // Genuine empty (no pending raw rows AND no in-flight dedup hit) — retry

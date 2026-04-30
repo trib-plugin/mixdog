@@ -327,12 +327,22 @@ function spawnWorker(name) {
   }
 
   const entry = { proc, ready: false, pending: [] }
+  // readyPromise lets callWorker await the worker's first 'ready' IPC instead
+  // of rejecting immediately on entry.ready===false. Pre-ready callers (e.g.
+  // SessionStart /cycle1) used to bounce off a 503 and rely on the hook's
+  // 200ms retry loop; now they hold a single in-flight call until the worker
+  // signals ready or the proc exits before that.
+  entry.readyPromise = new Promise((resolve, reject) => {
+    entry._resolveReady = resolve
+    entry._rejectReady = reject
+  })
   workers.set(name, entry)
 
   proc.on('message', msg => {
     if (msg.type === 'ready') {
       process.stderr.write(`[boot-time] tag=worker-ready name=${name} tMs=${Date.now()}\n`)
       entry.ready = true
+      try { entry._resolveReady() } catch {}
       log(`worker ${name} ready (pid=${proc.pid})`)
       return
     }
@@ -395,6 +405,9 @@ function spawnWorker(name) {
   proc.on('exit', (code) => {
     log(`worker ${name} exited (code=${code})`)
     workers.delete(name)
+    if (!entry.ready) {
+      try { entry._rejectReady(new Error(`worker ${name} exited before ready (code=${code})`)) } catch {}
+    }
     for (const p of entry.pending) {
       p.reject(new Error(`worker ${name} exited unexpectedly`))
     }
@@ -418,21 +431,26 @@ function spawnWorker(name) {
 let _callIdSeq = 0
 const WORKER_CALL_TIMEOUT = 600000 // 10m per tool call
 
-function callWorker(name, toolName, args) {
-  return new Promise((resolve, reject) => {
-    const entry = workers.get(name)
-    // Split the three transient/unavailable states so downstream callers
-    // (channels /cycle1) can classify worker-unavailable vs memory-not-ready
-    // (still booting) instead of collapsing both into a single bucket.
-    if (!entry) {
-      return reject(new Error(`worker ${name} not available (no entry)`))
-    }
+async function callWorker(name, toolName, args) {
+  const entry = workers.get(name)
+  // worker-unavailable cases reject synchronously (no entry / ipc gone). The
+  // booting case used to also reject — callers now await the readyPromise so
+  // the call resolves on the worker's first 'ready' instead of bouncing 503.
+  // exit-before-ready rejects readyPromise, which surfaces here as a normal
+  // throw with the original 'exited before ready' message preserved.
+  if (!entry) {
+    throw new Error(`worker ${name} not available (no entry)`)
+  }
+  if (!entry.proc.connected) {
+    throw new Error(`worker ${name} not available (ipc disconnected)`)
+  }
+  if (!entry.ready) {
+    await entry.readyPromise
     if (!entry.proc.connected) {
-      return reject(new Error(`worker ${name} not available (ipc disconnected)`))
+      throw new Error(`worker ${name} not available (ipc disconnected)`)
     }
-    if (!entry.ready) {
-      return reject(new Error(`worker ${name} not ready (still booting)`))
-    }
+  }
+  return new Promise((resolve, reject) => {
     const callId = String(++_callIdSeq)
     const timer = setTimeout(() => {
       entry.pending = entry.pending.filter(p => p.callId !== callId)

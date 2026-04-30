@@ -6,7 +6,7 @@ import { homedir, arch, platform } from 'os';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import https from 'https';
-import { DEFAULT_MAINTENANCE, getPluginData } from '../src/agent/orchestrator/config.mjs';
+import { DEFAULT_MAINTENANCE, DEFAULT_PRESETS, getPluginData } from '../src/agent/orchestrator/config.mjs';
 import { resolvePluginData } from '../src/shared/plugin-paths.mjs';
 import { ensureDataSeeds } from '../src/shared/seed.mjs';
 import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memory-cycle.mjs';
@@ -506,7 +506,13 @@ function normalizePreset(input) {
 
 function readAgentPresets() {
   const cfg = readAgentConfig();
-  return Array.isArray(cfg.presets) ? cfg.presets : [];
+  // Migrated/unified configs may have no agent.presets key (vs an explicit
+  // empty array, which the user may have intentionally cleared). Fall back
+  // to the seeded defaults only when the key is absent so the Custom
+  // Workflow dropdowns render real options on first load. An explicit
+  // empty array stays empty — matches the "No presets yet" UI path.
+  if (Array.isArray(cfg.presets)) return cfg.presets;
+  return DEFAULT_PRESETS.map((p) => ({ ...p }));
 }
 
 function writeAgentPresets(list) {
