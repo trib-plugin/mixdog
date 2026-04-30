@@ -472,7 +472,7 @@ async function requestCycle1Once(deadline, opts) {
     }
     const sc = payload.statusCode != null ? ` statusCode=${payload.statusCode}` : '';
     teeStderr(`[session-start] cycle1 slot=${slot} route=channels reason=${payload.reason}${sc} elapsed=${elapsedMs}ms\n`);
-    return { ok: false, reason: payload.reason, statusCode: payload.statusCode, elapsedMs, route: 'channels' };
+    return { ok: false, reason: payload.reason, statusCode: payload.statusCode, bodyReason: payload.bodyReason || null, elapsedMs, route: 'channels' };
   };
 
   const classifyError = (e) => {
@@ -509,7 +509,16 @@ async function requestCycle1Once(deadline, opts) {
     });
     teeStderr(`[session-start] cycle1 slot=${slot} timing pollMs=${tPollEnd - start} postMs=${Date.now() - tPostStart}\n`);
     if (res.statusCode !== 200) {
-      return finish({ ok: false, reason: 'non-200', statusCode: res.statusCode });
+      // Surface the channels endpoint's body `reason` (memory-not-ready,
+      // worker-unavailable, ipc-error, memory-timeout, ...) so downstream
+      // retry logic and operators can see the precise transient class.
+      let bodyReason = null;
+      try {
+        const parsed = JSON.parse(res.body);
+        if (parsed && typeof parsed.reason === 'string') bodyReason = parsed.reason;
+      } catch {}
+      const reason = bodyReason ? `non-200/${bodyReason}` : 'non-200';
+      return finish({ ok: false, reason, statusCode: res.statusCode, bodyReason });
     }
     try {
       const parsed = JSON.parse(res.body);
@@ -547,8 +556,47 @@ async function requestCycle1(timeoutMs, opts = {}) {
   teeStderr(`[session-start] cycle1 slot=${slot} start graceMs=${graceMs} timeoutMs=${timeoutMs}\n`);
   teeStderr(`[boot-time] tag=cycle1-entry slot=${slot} tMs=${start}\n`);
 
+  // Boot-race transient classifier: a fresh session can fire cycle1 while the
+  // new owner's channels worker is still binding 3462 (connect-refused), the
+  // active-instance.json is briefly empty (no-active-instance), or channels is
+  // up but the parent's memory worker hasn't sent its first 'ready' IPC yet
+  // (503 with bodyReason in {memory-not-ready, worker-unavailable, ipc-error,
+  // memory-timeout}). All of these resolve within 1–3s of boot, so retry with
+  // a short backoff up to a small budget rather than skipping recap entirely.
+  const TRANSIENT_BOOT_BODY_REASONS = new Set([
+    'memory-not-ready',
+    'worker-unavailable',
+    'ipc-error',
+    'memory-timeout',
+    'backend-not-ready',
+  ]);
+  const TRANSIENT_TOP_REASONS = new Set([
+    'connect-refused',
+    'no-active-instance',
+  ]);
+  const isTransientBootFailure = (r) => {
+    if (!r || r.ok) return false;
+    if (r.bodyReason && TRANSIENT_BOOT_BODY_REASONS.has(r.bodyReason)) return true;
+    if (TRANSIENT_TOP_REASONS.has(r.reason)) return true;
+    return false;
+  };
+  const TRANSIENT_RETRY_DELAY_MS = 250;
+  const TRANSIENT_RETRY_BUDGET_MS = 8000;
+  const transientDeadline = start + TRANSIENT_RETRY_BUDGET_MS;
+
   try {
-    const r1 = await requestCycle1Once(deadline, opts);
+    let r1 = await requestCycle1Once(deadline, opts);
+    let transientAttempt = 0;
+    while (
+      isTransientBootFailure(r1)
+      && Date.now() < transientDeadline
+      && (deadline - Date.now()) > TRANSIENT_RETRY_DELAY_MS + 500
+    ) {
+      transientAttempt++;
+      teeStderr(`[session-start] cycle1 slot=${slot} transient-retry attempt=${transientAttempt} reason=${r1.reason}\n`);
+      await new Promise((r) => setTimeout(r, TRANSIENT_RETRY_DELAY_MS));
+      r1 = await requestCycle1Once(deadline, { ...opts, slot: `${slot}:t${transientAttempt}` });
+    }
     if (!r1.ok) return r1;
     if (r1.processed != null && r1.processed > 0) return r1;
     // Genuine empty (no pending raw rows AND no in-flight dedup hit) — retry
