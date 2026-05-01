@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * MCP server launcher for mixdog (bun-only).
+ * MCP server launcher for mixdog (bun-only) — proxy supervisor.
  *
  * Boot sequence:
  *   1. Resolve the shared data directory via plugin-paths.cjs.
@@ -8,7 +8,10 @@
  *      into <dataDir>/node_modules/ (only when the lockfile / dep-keys change).
  *   3. Symlink pluginRoot/node_modules → dataDir/node_modules so all plugin
  *      code resolves deps from the shared install.
- *   4. Spawn server.mjs with bun.
+ *   4. Spawn server.mjs with bun and proxy MCP stdio between Claude Code and
+ *      the child. The proxy caches the client's initialize/initialized so a
+ *      child kill (dev-sync --restart, crash) can be silently re-handshaken
+ *      against a fresh child without forcing the client to reconnect.
  *
  * Single-runtime path: any failure throws — no node fallback.
  */
@@ -197,21 +200,130 @@ if (!fs.existsSync(probe)) {
 
 const isWin = process.platform === 'win32';
 
-// Supervisor: keep the wrapper alive across child crashes / dev-restart kills
-// so Claude Code's MCP stdio stays connected. The wrapper exits only when the
-// parent closes stdin (Claude Code shutting us down) or the child enters a
-// crash loop (CRASH_WINDOW_MS / CRASH_MAX_RESTARTS).
-const CRASH_WINDOW_MS = 10_000;
+// ─── Proxy supervisor ──────────────────────────────────────────────────────
+//
+// Goal: child kills (dev-sync --restart, crash) MUST NOT force the MCP client
+// (Claude Code) to reconnect. The proxy parses NDJSON JSON-RPC from both
+// sides, caches the client's initialize/initialized so any fresh child can be
+// silently re-handshaken, and answers in-flight requests with a retry-able
+// error when the child they were sent to disappears.
+//
+// Boundaries: child stderr is inherited (logs flow through unchanged). Only
+// stdin (client → child) and stdout (child → client) carry JSON-RPC.
+
+const CRASH_WINDOW_MS    = 10_000;
 const CRASH_MAX_RESTARTS = 5;
+const CRASH_BACKOFF_MS   = 500;
+
 let proc = null;
 let shuttingDown = false;
 const recentRestarts = [];
+
+let cachedInitRequest    = null; // { id, params } from client's first initialize
+let cachedInitDone       = false; // initialized notification observed from client
+let internalIdSeq        = -1;    // negative ids reserved for supervisor-internal requests
+const pendingFromClient  = new Map(); // request id (from client) → { method }
+const pendingInternal    = new Set(); // internal ids (init replay) — drop responses
+let stdinBuf  = '';
+let stdoutBuf = '';
+
+function writeToClient(line) {
+  // Client transport is line-delimited JSON.
+  try { process.stdout.write(line + '\n'); } catch {}
+}
+
+function writeToChild(line) {
+  if (!proc || !proc.stdin || !proc.stdin.writable) return false;
+  try { proc.stdin.write(line + '\n'); return true; } catch { return false; }
+}
+
+function sendErrorToClient(id, code, message) {
+  if (id === undefined || id === null) return;
+  writeToClient(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }));
+}
+
+function replayInitToChild() {
+  if (!cachedInitRequest) return;
+  const internalId = internalIdSeq--;
+  pendingInternal.add(internalId);
+  writeToChild(JSON.stringify({
+    jsonrpc: '2.0',
+    id: internalId,
+    method: 'initialize',
+    params: cachedInitRequest.params,
+  }));
+  if (cachedInitDone) {
+    // Notification — no id, no response expected.
+    writeToChild(JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+    }));
+  }
+}
+
+function handleClientLine(line) {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch {
+    // Forward unparseable bytes verbatim — let the child reject if malformed.
+    writeToChild(line);
+    return;
+  }
+  if (msg && typeof msg === 'object') {
+    if (msg.method === 'initialize') {
+      cachedInitRequest = { id: msg.id, params: msg.params };
+    } else if (msg.method === 'notifications/initialized' || msg.method === 'initialized') {
+      cachedInitDone = true;
+    }
+    if (msg.id !== undefined && msg.method) {
+      pendingFromClient.set(msg.id, { method: msg.method });
+    }
+  }
+  if (!writeToChild(line)) {
+    // Child not yet ready (e.g. mid-respawn). For requests with an id, surface
+    // a retry-able error; notifications are dropped (clients re-emit on
+    // demand — list_changed will re-trigger).
+    if (msg && msg.id !== undefined && msg.method) {
+      sendErrorToClient(msg.id, -32603, '[run-mcp] mcp child unavailable; retry');
+      pendingFromClient.delete(msg.id);
+    }
+  }
+}
+
+function handleChildLine(line) {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch {
+    // Forward verbatim.
+    writeToClient(line);
+    return;
+  }
+  if (msg && typeof msg === 'object' && msg.id !== undefined) {
+    if (pendingInternal.has(msg.id)) {
+      // Supervisor-internal initialize replay — swallow the reply.
+      pendingInternal.delete(msg.id);
+      return;
+    }
+    pendingFromClient.delete(msg.id);
+  }
+  writeToClient(line);
+}
+
+function drainBuffer(buf, onLine) {
+  let idx;
+  while ((idx = buf.indexOf('\n')) !== -1) {
+    const line = buf.slice(0, idx).replace(/\r$/, '');
+    buf = buf.slice(idx + 1);
+    onLine(line);
+  }
+  return buf;
+}
 
 function spawnChild() {
   process.stderr.write(`[boot-time] tag=run-mcp-spawn-server tMs=${Date.now()}\n`);
   proc = spawn('bun', [serverPath], {
     cwd: pluginRoot,
-    stdio: 'inherit',
+    stdio: ['pipe', 'pipe', 'inherit'],
     env: {
       ...process.env,
       UV_THREADPOOL_SIZE: '2',
@@ -227,23 +339,56 @@ function spawnChild() {
     } catch {}
   }
 
+  proc.stdout.setEncoding('utf8');
+  proc.stdout.on('data', (chunk) => {
+    stdoutBuf += chunk;
+    stdoutBuf = drainBuffer(stdoutBuf, handleChildLine);
+  });
+
+  proc.on('error', (err) => {
+    process.stderr.write(`[run-mcp] child spawn error: ${err && err.message}\n`);
+  });
+
   proc.on('exit', (code, signal) => {
     if (shuttingDown) {
       process.exit(code || 0);
       return;
     }
+    // Surface retry-able errors for any request the dead child still owed us.
+    for (const [id] of pendingFromClient) {
+      sendErrorToClient(id, -32603, '[run-mcp] mcp child restarted; retry');
+    }
+    pendingFromClient.clear();
+    pendingInternal.clear();
+
     const now = Date.now();
     recentRestarts.push(now);
     while (recentRestarts.length && now - recentRestarts[0] > CRASH_WINDOW_MS) {
       recentRestarts.shift();
     }
     if (recentRestarts.length > CRASH_MAX_RESTARTS) {
-      process.stderr.write(`[run-mcp] child crash loop (${recentRestarts.length} restarts in ${CRASH_WINDOW_MS}ms) — giving up\n`);
-      process.exit(code || 1);
+      // Don't tear down the supervisor — staying alive lets a follow-up
+      // dev-sync replace the broken child without losing the MCP stdio
+      // session. Surface the diagnostic and back off; new client requests
+      // will get a retry-able error until a clean child boots.
+      process.stderr.write(
+        `[run-mcp] child crash loop (${recentRestarts.length} restarts in ${CRASH_WINDOW_MS}ms) — backing off ${CRASH_BACKOFF_MS}ms; supervisor stays up\n`,
+      );
+      setTimeout(spawnChild, CRASH_BACKOFF_MS * 4);
       return;
     }
     process.stderr.write(`[run-mcp] child exit code=${code} signal=${signal} — respawning (#${recentRestarts.length})\n`);
-    spawnChild();
+    setTimeout(() => {
+      spawnChild();
+      // Silent re-handshake against the fresh child.
+      replayInitToChild();
+      // Tell the client tools may have changed — rebuilds the schema cache
+      // without forcing initialize to repeat.
+      writeToClient(JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'notifications/tools/list_changed',
+      }));
+    }, CRASH_BACKOFF_MS);
   });
 }
 
@@ -261,6 +406,12 @@ function killChild() {
 
 process.on('SIGTERM', killChild);
 process.on('SIGINT', killChild);
+
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  stdinBuf += chunk;
+  stdinBuf = drainBuffer(stdinBuf, handleClientLine);
+});
 process.stdin.on('end', killChild);
 process.stdin.on('close', killChild);
 
