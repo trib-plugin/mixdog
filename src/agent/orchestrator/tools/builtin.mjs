@@ -14,7 +14,7 @@ import { getAbortSignalForSession } from '../session/abort-lookup.mjs';
 import { execShellCommand, stripAnsi as _shellStripAnsi } from './shell-command.mjs';
 import { wrapCommandWithSnapshot } from './shell-snapshot.mjs';
 import { interpretCommandResult } from './command-semantics.mjs';
-import { getDestructiveCommandWarning } from './destructive-warning.mjs';
+import { getDestructiveCommandWarning, stripQuotedAndHeredoc, extractShellCInner } from './destructive-warning.mjs';
 const execAsync = promisify(exec);
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
