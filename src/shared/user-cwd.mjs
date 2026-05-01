@@ -1,4 +1,12 @@
 /**
+ * IMPORTANT — cwd model role:
+ * pwd() resolves the user's working directory for RELATIVE PATH RESOLUTION only.
+ * It is NOT a sandbox boundary. Sandbox decisions are governed by Claude Code's
+ * settings.json permissions; mcp's isSafePath only hard-blocks dangerous patterns
+ * (UNC paths, parent escapes, known system paths).
+ */
+
+/**
  * user-cwd.mjs — shared helper to resolve the user's working directory
  * from the persisted user-cwd.txt sentinel file.
  *
@@ -16,10 +24,21 @@
 
 import { AsyncLocalStorage } from 'async_hooks'
 import { readFileSync } from 'fs'
-import { join } from 'path'
+import { join, resolve } from 'path'
 
 let _originalUserCwd = null  // null = not yet captured
 const _cwdOverride = new AsyncLocalStorage()
+
+// Hook payloads can deliver POSIX paths on Windows (e.g. `/c/Project`); Node's
+// path.resolve does not map MSYS-style drive prefixes, so the value must be
+// rewritten to the platform-native shape before isSafePath compares it.
+function _normalizePlatformCwd(p) {
+  if (!p || typeof p !== 'string') return p
+  if (process.platform !== 'win32') return resolve(p)
+  const m = p.match(/^[\/\\]([a-zA-Z])[\/\\](.*)$/)
+  const native = m ? `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}` : p
+  return resolve(native)
+}
 
 /**
  * Idempotent: reads user-cwd.txt once and freezes _originalUserCwd.
@@ -29,7 +48,7 @@ export function captureOriginalUserCwd() {
   if (_originalUserCwd !== null) return _originalUserCwd
   try {
     const txt = readFileSync(join(process.env.CLAUDE_PLUGIN_DATA || '', 'user-cwd.txt'), 'utf8').trim()
-    _originalUserCwd = txt || process.cwd()
+    _originalUserCwd = _normalizePlatformCwd(txt) || process.cwd()
   } catch { _originalUserCwd = process.cwd() }
   return _originalUserCwd
 }

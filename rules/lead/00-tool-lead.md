@@ -20,4 +20,4 @@ Parallelism / array-form / 2-rounds discipline → `shared/01-tool.md`. Lead-spe
 - **Brief size cap**: ≤3 files OR ≤5 items per worker, single subsystem. Cross-cut refactors → split into separate workers per file group. Worker grinding past iter ~30 with no edit landed = brief was too big.
 - On worker soft-warn / tool-budget: land already-locked edits, report the rest as unlanded. Never abandon the whole brief silently.
 - Broad scope or independent sub-tasks → spawn multiple roles in parallel.
-- When reading or editing mixdog plugin source itself, pass `cwd: '~/.claude/plugins/marketplaces/trib-plugin'` explicitly. Default sandbox is the user project cwd.
+- When reading or editing mixdog plugin source itself, pass `cwd: '~/.claude/plugins/marketplaces/trib-plugin'` explicitly. Path access is governed by Claude Code's `settings.json` permissions. mcp tools accept any path the user permission allows; mcp server only hard-blocks dangerous patterns (UNC, parent escape, system paths).

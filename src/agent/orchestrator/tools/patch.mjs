@@ -18,8 +18,8 @@
 //     before reading and stat again immediately before writing; if the
 //     mtime advanced between those two points another writer touched the
 //     file and we abort that entry (errorCode 7 parity).
-//   - isSafePath scope-checked per file so a malicious patch can't escape
-//     cwd (or $HOME) via `../..` in the header path.
+//   - isSafePath hard-block checked per file so a malicious patch can't
+//     inject UNC, parent-escape, or system-path entries via the diff header.
 //
 // With `reject_partial: true` (the default) the whole batch is two-phase:
 // we build every file's new content in memory first; only if all files
@@ -34,13 +34,13 @@ import {
   normalizeInputPath,
   normalizeOutputPath,
   isSafePath,
+  _isSafePathReason as _isSafePathBlockReason,
   atomicWrite,
   invalidateBuiltinResultCache,
   recordReadSnapshotForPath,
   clearReadSnapshotForPath,
 } from './builtin.mjs';
 import { markCodeGraphDirtyPaths } from './code-graph.mjs';
-import { getCapabilities } from '../../../shared/config.mjs';
 
 const DEV_NULL = /^\/dev\/null$/;
 
@@ -175,16 +175,10 @@ async function apply_patch(args, cwd, options = {}) {
   const readStateScope = options?.readStateScope ?? options?.sessionId ?? null;
   const basePath = resolveBasePath(cwd, args?.base_path);
   const dryRun = args?.dry_run === true;
-  // B2: capability-gated HOME access. Scope check below honours the same
-  // `allowHome` flag the builtin tools read, so patches can't escape cwd
-  // unless `capabilities.homeAccess` is explicitly enabled.
-  let allowHome = false;
-  try { allowHome = getCapabilities().homeAccess === true; } catch { allowHome = false; }
-  const pathOpts = { allowHome };
   // Default true — atomic batch semantics.
   const rejectPartial = args?.reject_partial !== false;
-  if (!isSafePath(basePath, cwd, pathOpts)) {
-    return `Error: base_path outside allowed scope — ${normalizeOutputPath(basePath)}`;
+  if (!isSafePath(basePath)) {
+    return `Error: ${_isSafePathBlockReason(basePath)} — ${normalizeOutputPath(basePath)}`;
   }
 
   // Strict parse first. Fall back to lenient repair whenever a hunk
@@ -237,12 +231,12 @@ async function apply_patch(args, cwd, options = {}) {
     // Scope-check the resolved absolute path, not the raw header, so
     // `a/../../escape.txt` is caught after path resolution.
     const fullPath = resolveEntryPath(basePath, headerName);
-    if (!isSafePath(fullPath, basePath, pathOpts) && !isSafePath(fullPath, cwd, pathOpts)) {
+    if (!isSafePath(fullPath)) {
       plan.push({
         ok: false,
         index: i,
         displayPath,
-        error: `path outside allowed scope — ${displayPath}`,
+        error: `${_isSafePathBlockReason(fullPath)} — ${displayPath}`,
       });
       continue;
     }

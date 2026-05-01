@@ -23,7 +23,7 @@ const execAsync = promisify(exec);
 // Helper extracted to src/shared/user-cwd.mjs so server-main.mjs can import
 // the same primitive without circular-import risk.
 // ---------------------------------------------------------------------------
-import { resolveDefaultUserCwd as _resolveDefaultUserCwd, invalidateUserCwdCache as _invalidateUserCwdCache, pwd } from '../../shared/user-cwd.mjs';
+import { resolveDefaultUserCwd as _resolveDefaultUserCwd, invalidateUserCwdCache as _invalidateUserCwdCache, pwd } from '../../../shared/user-cwd.mjs';
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
 // implementation that handles CSI + OSC + DCS edge cases; older runtimes
@@ -776,11 +776,9 @@ async function openForRead(filePath, workDir, opts = {}) {
         throw Object.assign(new Error('path is required'), { code: 'EARG' });
     }
     const norm = normalizeInputPath(filePath);
-    const allowHome = opts.allowHome === true;
-    const allowPluginData = opts.allowPluginData === true;
-    if (!isSafePath(norm, workDir, { allowHome, allowPluginData })) {
+    if (!isSafePath(norm)) {
         throw Object.assign(
-            new Error(`path outside allowed scope — ${normalizeOutputPath(norm)}`),
+            new Error(_isSafePathReason(norm)),
             { code: 'EOUTSIDE' });
     }
     const fullPath = resolveAgainstCwd(norm, workDir);
@@ -1848,89 +1846,73 @@ const BLOCKED_PATTERNS = [
 const SHELL_MUTATION_PATTERN = /(?:^|[;&|\n]\s*)(?:touch|mkdir|mktemp|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+-i|perl\s+-pi|npm\s+(?:install|i|ci|uninstall)|pnpm\s+(?:install|i|add|remove|update|up)|yarn\s+(?:install|add|remove|up)|bun\s+(?:install|add|remove|update|up)|pip(?:3)?\s+install|python(?:3)?\s+-m\s+pip\s+install|git\s+(?:checkout|switch|restore|clean|apply|am|cherry-pick|merge|rebase|stash|pull|reset)|cargo\s+(?:build|install|clean)|go\s+(?:build|install|generate)|make|cmake)\b/i;
 const SHELL_READ_ONLY_SEGMENT_RE = /^(?:cd|pwd|echo|printf|env|printenv|set|unset|export|alias|unalias|source|\.|type|which|whereis|ls|dir|cat|head|tail|wc|grep|rg|find|git\s+(?:status|diff|show|log|rev-parse|branch|remote|ls-files)|stat|readlink|realpath|basename|dirname|sort|uniq|cut|sed\s+-n|awk|ps|whoami|uname|date|true|false|test|\[)\b/i;
 const SHELL_GLOBAL_MUTATORS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip3', 'python', 'python3', 'git', 'cargo', 'go', 'make', 'cmake', 'dd']);
-export function isSafePath(filePath, cwd, { allowHome = false, allowPluginData = false, allowPluginTree = false } = {}) {
-    const baseCwd = normalize(resolve(cwd));
-    const normalized = normalize(resolve(baseCwd, filePath));
-    // Boundary-aware containment check: a path is "inside" baseCwd iff
-    // it equals baseCwd or starts with baseCwd + separator. Without the
-    // trailing-separator guard, `/home/u` would falsely contain
-    // `/home/u2`. Windows uses case-insensitive compare (NTFS default).
-    const isInside = (child, parent) => {
-        if (!parent) return false;
-        const c = process.platform === 'win32' ? child.toLowerCase() : child;
-        const p = process.platform === 'win32' ? parent.toLowerCase() : parent;
-        if (c === p) return true;
-        return c.startsWith(p.endsWith(sep) ? p : p + sep);
-    };
-    const allowedRoots = [baseCwd];
-    // HOME fallback is now an explicit opt-in capability (B2). When
-    // `allowHome=false` (the default), paths outside cwd are rejected
-    // outright — no silent widening to $HOME. The main-agent path
-    // gate passes `allowHome` from `capabilities.homeAccess`.
-    if (allowHome) {
-        const home = process.env.HOME || process.env.USERPROFILE || '';
-        if (home) allowedRoots.push(normalize(home));
+// Dangerous absolute path prefixes that are hard-blocked regardless of
+// Claude Code permissions. Keep this list tight — only genuinely dangerous
+// system roots, not workspace-boundary decisions (those are CC's concern).
+const DANGEROUS_ABS_ROOTS = process.platform === 'win32'
+    ? [
+        normalize('C:\\Windows\\System32'),
+        normalize('C:\\Windows\\SysWOW64'),
+        normalize('C:\\Windows\\System'),
+      ]
+    : [
+        '/etc/shadow',
+        '/etc/passwd',
+        '/proc/sys',
+        '/sys',
+      ];
+
+// Returns a human-readable reason string when a path is hard-blocked,
+// or null when the path is safe. Used by _isSafePathReason and isSafePath.
+function _isSafePathCheck(filePath) {
+    if (typeof filePath !== 'string' || !filePath) return null;
+    // UNC path: \\server\share or //server/share
+    if (isUncPath(filePath)) return 'UNC path blocked';
+    const normalized = normalize(resolve(filePath));
+    // Parent escape: resolved path escapes via `..` segments
+    // (normalize collapses them; if input had `..` that crossed a root,
+    // the resolved path will start with a different prefix than expected).
+    if (filePath.includes('..')) {
+        const inputNorm = normalize(filePath);
+        if (inputNorm !== normalized) return 'parent escape blocked';
     }
-    // Tool-result offload files live under the plugin data directory, which
-    // is often outside the workspace and sometimes outside HOME in tests.
-    // Read-like tools may opt into this root so the advertised "read saved
-    // output" recovery path actually works without widening write tools.
-    if (allowPluginData) {
-        try { allowedRoots.push(normalize(resolve(getPluginData()))); } catch { /* plugin data unavailable in standalone tests */ }
+    // Dangerous absolute roots
+    const cmp = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    for (const root of DANGEROUS_ABS_ROOTS) {
+        const r = process.platform === 'win32' ? root.toLowerCase() : root;
+        if (cmp === r || cmp.startsWith(r.endsWith(sep) ? r : r + sep)) {
+            return `system path blocked: ${normalized}`;
+        }
     }
-    // Plugin tree opt-in: ~/.claude/plugins/marketplaces and ~/.claude/plugins/cache.
-    // Never granted by default; callers must pass allowPluginTree: true explicitly.
-    // WRITE tools must never pass this flag.
-    if (allowPluginTree) {
-        const pluginBase = join(homedir(), '.claude', 'plugins');
-        allowedRoots.push(normalize(join(pluginBase, 'marketplaces')));
-        allowedRoots.push(normalize(join(pluginBase, 'cache')));
-    }
-    const isInsideAllowedRoot = (candidate) => allowedRoots.some((root) => isInside(candidate, root));
-    if (!isInsideAllowedRoot(normalized)) {
-        return false;
-    }
-    // Symlink scope re-check. A symlink inside cwd (or any intermediate
-    // symlink in the path) can point outside cwd; without this resolve step
-    // the containment check above passes on the link path while the
-    // downstream readFile / writeFile follows the link to the outside
-    // target, bypassing the sandbox. realpathSync throws on nonexistent
-    // paths — in that case we defer to the natural failure of the caller
-    // (no escape is possible since the path never resolves).
+    // Symlink escape: if realpath exists and resolves to a UNC or dangerous root
     try {
         const real = normalize(realpathSync(normalized));
-        // Symlink/junction inside cwd can resolve to \\server\share —
-        // re-check for UNC after realpath so an in-sandbox link can't
-        // trigger SMB / NTLM lookup downstream.
-        if (isUncPath(real)) return false;
-        if (real !== normalized && !isInsideAllowedRoot(real)) {
-            return false;
-        }
-    } catch {
-        // Path doesn't resolve — typically a Write target that doesn't
-        // exist yet. Realpath the parent so an in-scope symlink dir that
-        // targets out-of-scope (or UNC) can't be used to create a file
-        // outside the sandbox.
-        try {
-            // W1 H: walk up to nearest existing ancestor and realpath that.
-            // Single-level parent realpath let an in-scope symlink ancestor
-            // (e.g. /cwd/links/dir → /etc/) escape the sandbox when the
-            // immediate parent didn't exist yet but a grand-ancestor did.
-            let cur = dirname(normalized);
-            let prev = '';
-            // Bound the walk so a pathological path can't loop forever.
-            for (let i = 0; i < 64 && cur && cur !== prev; i++) {
-                let real;
-                try { real = realpathSync(cur); }
-                catch { prev = cur; cur = dirname(cur); continue; }
-                const realNorm = normalize(real);
-                if (isUncPath(realNorm)) return false;
-                if (!isInsideAllowedRoot(realNorm)) return false;
-                break;
+        if (isUncPath(real)) return 'symlink escape blocked (UNC)';
+        const realCmp = process.platform === 'win32' ? real.toLowerCase() : real;
+        for (const root of DANGEROUS_ABS_ROOTS) {
+            const r = process.platform === 'win32' ? root.toLowerCase() : root;
+            if (realCmp === r || realCmp.startsWith(r.endsWith(sep) ? r : r + sep)) {
+                return `symlink escape blocked (system path: ${real})`;
             }
-        } catch { /* nothing resolved — let caller fail naturally */ }
-    }
-    return true;
+        }
+    } catch { /* path does not exist yet — no escape possible */ }
+    return null;
+}
+
+// Returns a human-readable block reason string (for error messages).
+// Returns a generic safe message when not blocked.
+export function _isSafePathReason(filePath) {
+    return _isSafePathCheck(filePath) ?? `path blocked: ${filePath}`;
+}
+
+// isSafePath — hard-block dangerous patterns only.
+// Sandbox / workspace boundary decisions are governed by Claude Code's
+// settings.json permissions (mcp__* allow). This function only blocks
+// UNC paths, parent escapes, known dangerous system roots, and symlink
+// escapes into those roots.
+// Returns: true = safe to proceed, false = hard-blocked.
+export function isSafePath(filePath) {
+    return _isSafePathCheck(filePath) === null;
 }
 function resolveAgainstCwd(filePath, cwd) {
     return resolve(cwd, filePath);
@@ -2858,13 +2840,13 @@ function _findEditHint(content, oldStr, snapshot = null) {
     return '';
 }
 
-async function _runMultiEdit(args, workDir, readStateScope, pathOpts, options = {}) {
+async function _runMultiEdit(args, workDir, readStateScope, _pathOpts, options = {}) {
     args.path = normalizeInputPath(args.path);
     const filePath = args.path;
     const edits = Array.isArray(args.edits) ? args.edits : [];
     if (!filePath) return 'Error: path is required';
     if (edits.length === 0) return 'Error: edits array is required';
-    if (!isSafePath(filePath, workDir, pathOpts)) return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
+    if (!isSafePath(filePath)) return `Error: ${_isSafePathReason(filePath)} — ${normalizeOutputPath(filePath)}`;
     const fullPath = resolveAgainstCwd(filePath, workDir);
     let mEditStat;
     try { mEditStat = statSync(fullPath); }
@@ -2948,7 +2930,7 @@ async function _runMultiEdit(args, workDir, readStateScope, pathOpts, options = 
     }
 }
 
-async function _runBatchEdit(args, workDir, readStateScope, pathOpts, executeChildBuiltinTool, options = {}) {
+async function _runBatchEdit(args, workDir, readStateScope, _pathOpts, executeChildBuiltinTool, options = {}) {
     const edits = Array.isArray(args.edits) ? args.edits : [];
     if (edits.length === 0) return 'Error: edits array is required';
     for (const e of edits) { if (e && typeof e === 'object') e.path = normalizeInputPath(e.path); }
@@ -2980,7 +2962,7 @@ async function _runBatchEdit(args, workDir, readStateScope, pathOpts, executeChi
         const body = await _runMultiEdit({
             path,
             edits: items.map(({ path: _p, ...rest }) => rest),
-        }, workDir, readStateScope, pathOpts, options);
+        }, workDir, readStateScope, null, options);
         const errMsg = parseLeadError(body);
         return errMsg
             ? `FAIL ${normalizeOutputPath(path)}: ${errMsg}`
@@ -2996,16 +2978,9 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
     const readStateScope = options?.readStateScope ?? options?.sessionId ?? null;
     const executeChildBuiltinTool = (childName, childArgs, childCwd = workDir) =>
         executeBuiltinTool(childName, childArgs, childCwd, options);
-    // B2 path policy: capability-gated HOME access. When
-    // `capabilities.homeAccess` is false (default), all path-validation
-    // helpers below reject any path outside `workDir`; when true, the
-    // old HOME fallback is re-enabled. Read once per tool invocation so
-    // config changes apply immediately on the next call without a
-    // process restart.
-    let allowHome = false;
-    try { allowHome = getCapabilities().homeAccess === true; } catch { allowHome = false; }
-    const pathOpts = { allowHome };
-    const readPathOpts = { allowHome, allowPluginData: true };
+    // Path policy: Claude Code's settings.json permissions (mcp__* allow) are the
+    // sole arbiter for workspace-boundary decisions. isSafePath only hard-blocks
+    // dangerous patterns (UNC, parent escape, system paths). No pathOpts needed.
     switch (name) {
         case 'bash': {
             // P2 fix: route persistent / session_id BEFORE the command-required
@@ -3350,8 +3325,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 return `Error: cannot read device file (would block or produce infinite output): ${normalizeOutputPath(filePath)}`;
             if (isUncPath(filePath))
                 return `Error: UNC paths are not supported (NTLM credential leak risk): ${normalizeOutputPath(filePath)}`;
-            if (!isSafePath(filePath, workDir, readPathOpts))
-                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
+            if (!isSafePath(filePath))
+                return `Error: ${_isSafePathReason(filePath)} — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             // Pre-read size cap (Anthropic FileReadTool/limits.ts pattern):
             // throw a small error response when the file is too big rather
@@ -3600,8 +3575,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 for (const entry of items) {
                     const filePath = entry.path;
                     const content = entry.content;
-                    if (!isSafePath(filePath, workDir, pathOpts)) {
-                        results.push(`FAIL ${normalizeOutputPath(filePath)}: path outside allowed scope`);
+                    if (!isSafePath(filePath)) {
+                        results.push(`FAIL ${normalizeOutputPath(filePath)}: ${_isSafePathReason(filePath)}`);
                         continue;
                     }
                     {
@@ -3660,8 +3635,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 return 'Error: path is required';
             if (content === undefined)
                 return 'Error: content is required';
-            if (!isSafePath(filePath, workDir, pathOpts))
-                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
+            if (!isSafePath(filePath))
+                return `Error: ${_isSafePathReason(filePath)} — ${normalizeOutputPath(filePath)}`;
             {
                 const fullPath = resolveAgainstCwd(filePath, workDir);
                 return _withPathLock(fullPath, async () => {
@@ -3752,13 +3727,13 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     return _runMultiEdit({
                         path: onePath,
                         edits: items.map(({ path: _p, ...rest }) => rest),
-                    }, workDir, readStateScope, pathOpts, options);
+                    }, workDir, readStateScope, null, options);
                 }
                 return _runBatchEdit({
                     edits: items.map((x) => ({
                         path: x.path, old_string: x.old_string, new_string: x.new_string, replace_all: x.replace_all,
                     })),
-                }, workDir, readStateScope, pathOpts, executeChildBuiltinTool, options);
+                }, workDir, readStateScope, null, executeChildBuiltinTool, options);
             }
             args.path = normalizeInputPath(args.path);
             const filePath = args.path;
@@ -3777,8 +3752,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // Surface a precise error instead.
             if (/^\s*\d+\t/.test(oldStr))
                 return `Error: old_string starts with a Read line-number prefix (\"<n>\\t\") — strip the prefix before Edit: ${filePath}`;
-            if (!isSafePath(filePath, workDir, pathOpts))
-                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
+            if (!isSafePath(filePath))
+                return `Error: ${_isSafePathReason(filePath)} — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             // F2 fix: single stat syscall replaces existsSync + statSync pair.
             // ENOENT -> Error [code 4] with similar-file hint; mtime drift ->
@@ -3965,8 +3940,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             if (patterns.length === 0)
                 return 'Error: pattern is required';
             const searchPath = args.path || '.';
-            if (!isSafePath(searchPath, workDir, pathOpts)) {
-                return `Error: path outside allowed scope — ${normalizeOutputPath(searchPath)}`;
+            if (!isSafePath(searchPath)) {
+                return `Error: ${_isSafePathReason(searchPath)} — ${normalizeOutputPath(searchPath)}`;
             }
             const rawGlob = args.glob;
             const rawGlobs = (Array.isArray(rawGlob)
@@ -4112,8 +4087,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 }
             }
             for (const root of groups.keys()) {
-                if (!isSafePath(root, workDir, pathOpts)) {
-                    return `Error: path outside allowed scope — ${normalizeOutputPath(root)}`;
+                if (!isSafePath(root)) {
+                    return `Error: ${_isSafePathReason(root)} — ${normalizeOutputPath(root)}`;
                 }
             }
             const cacheKey = buildGlobCacheKey({ patterns, basePath, headLimit, offset });
@@ -4204,8 +4179,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 headLimit,
                 offset,
             });
-            if (!isSafePath(inputPath, workDir, pathOpts)) {
-                return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
+            if (!isSafePath(inputPath)) {
+                return `Error: ${_isSafePathReason(inputPath)} — ${normalizeOutputPath(inputPath)}`;
             }
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
@@ -4289,8 +4264,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 headLimit,
                 offset,
             });
-            if (!isSafePath(inputPath, workDir, pathOpts)) {
-                return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
+            if (!isSafePath(inputPath)) {
+                return `Error: ${_isSafePathReason(inputPath)} — ${normalizeOutputPath(inputPath)}`;
             }
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
@@ -4399,8 +4374,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 modifiedAfter: args.modified_after || '',
                 modifiedBefore: args.modified_before || '',
             });
-            if (!isSafePath(inputPath, workDir, pathOpts)) {
-                return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
+            if (!isSafePath(inputPath)) {
+                return `Error: ${_isSafePathReason(inputPath)} — ${normalizeOutputPath(inputPath)}`;
             }
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
@@ -4480,7 +4455,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
         case 'head': {
             const n = Math.max(1, Math.min(parseInt(args.n ?? 20, 10) || 20, 2000));
             let opened;
-            try { opened = await openForRead(args.path, workDir, readPathOpts); }
+            try { opened = await openForRead(args.path, workDir, {}); }
             catch (err) {
                 if (err && err.code === 'ETOOBIG') {
                     // W1 M: re-run binary check before streaming. openForRead
@@ -4519,7 +4494,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // via openForRead. ETOOBIG escapes to the large-file fallback
             // so behaviour is unchanged for files past READ_MAX_SIZE_BYTES.
             let opened;
-            try { opened = await openForRead(args.path, workDir, readPathOpts); }
+            try { opened = await openForRead(args.path, workDir, {}); }
             catch (err) {
                 if (err && err.code === 'ETOOBIG') {
                     try {
@@ -4567,7 +4542,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // via openForRead. ETOOBIG escapes to the streaming fallback so
             // files past READ_MAX_SIZE_BYTES still report lines + bytes.
             let opened;
-            try { opened = await openForRead(args.path, workDir, readPathOpts); }
+            try { opened = await openForRead(args.path, workDir, {}); }
             catch (err) {
                 if (err && err.code === 'ETOOBIG') {
                     // F11: words are skipped for files past the cap because
