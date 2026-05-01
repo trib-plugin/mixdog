@@ -346,6 +346,15 @@ const TOOLS = [
         ref: { type: 'string', description: 'Prompt store key (populated by prompt_store).' },
         file: { type: 'string', description: 'Read prompt from a file path.' },
         cwd: { type: 'string', description: 'Working directory for bridge agent tool execution.' },
+        prefetch: {
+          type: 'object',
+          description: 'Explicit prefetch coordinates. Manager fetches and prepends as <prefetch> block before worker runs. All failures are silent.',
+          properties: {
+            files: { type: 'array', items: { type: 'string' }, description: 'Paths to prepend as head excerpts (≤120 lines each).' },
+            callers: { type: 'array', items: { type: 'object', properties: { symbol: { type: 'string' }, file: { type: 'string' } }, required: ['symbol'] }, description: 'Symbols to fetch caller sites for via code_graph mode=callers.' },
+            references: { type: 'array', items: { type: 'object', properties: { symbol: { type: 'string' }, file: { type: 'string' } }, required: ['symbol'] }, description: 'Symbols to fetch reference sites for via code_graph mode=references.' },
+          },
+        },
       },
       required: ['role'],
     },
@@ -927,7 +936,7 @@ export async function handleToolCall(name, args, opts = {}) {
                 return askSession(activeSession.id, prompt, args.context || null, (iteration, calls) => {
                   if (typeof iteration === 'number' && iteration > lastIteration) lastIteration = iteration;
                   for (const c of calls) toolCallLog.push({ name: c.name, iteration });
-                }, workerCwd);
+                }, workerCwd, (args.prefetch && typeof args.prefetch === 'object') ? args.prefetch : undefined);
               },
             }));
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);

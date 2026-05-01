@@ -19,6 +19,8 @@ import { classifyPromptIntent } from '../intent-classifier.mjs';
 import { resolvePluginData, DEFAULT_PLUGIN, DEFAULT_MARKETPLACE } from '../../../shared/plugin-paths.mjs';
 import { traceBridgeTool } from '../bridge-trace.mjs';
 import { isHiddenRole } from '../internal-roles.mjs';
+// Mutable seam: harnesses (MIXDOG_TEST_EXPORTS=1) can override via _internals._setClassifyPromptIntentForTest.
+let _classifyPromptIntentImpl = classifyPromptIntent;
 
 // Phase B: Pool B Tier 2 content builder (common rules only).
 // Loaded once per process via createRequire so the CJS module reaches us.
@@ -638,7 +640,7 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     const intentCandidates = [];
     if (identifier) intentCandidates.push('definition_lookup', 'usage_lookup', 'callers', 'references');
     if (knownFiles.length >= 1) intentCandidates.push('dependents', 'imports');
-    const intent = await classifyPromptIntent(prompt, [...new Set(intentCandidates)]).catch(() => null);
+    const intent = await _classifyPromptIntentImpl(prompt, [...new Set(intentCandidates)]).catch(() => null);
 
     const resolveIdentifierCandidate = async () => {
         if (!identifier) return null;
@@ -753,6 +755,51 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     }
 
     return null;
+}
+
+async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
+    if (!explicitPrefetch || typeof explicitPrefetch !== 'object') return null;
+    if (session?.owner !== 'bridge') return null;
+    const parts = [];
+    // files[]
+    const files = Array.isArray(explicitPrefetch.files) ? explicitPrefetch.files.filter(f => typeof f === 'string' && f) : [];
+    if (files.length > 0) {
+        const readOut = await executeInternalTool('read', { path: files, mode: 'head', n: 120 }).catch((e) => {
+            process.stderr.write(`[bridge-prefetch] files read failed: ${e && e.message || e}\n`);
+            return null;
+        });
+        if (readOut && !String(readOut).startsWith('Error:')) {
+            parts.push(`### prefetch files\n${readOut}`);
+        }
+    }
+    // callers[]
+    const callers = Array.isArray(explicitPrefetch.callers) ? explicitPrefetch.callers.filter(c => c && typeof c.symbol === 'string') : [];
+    for (const { symbol, file } of callers) {
+        const cgArgs = { mode: 'callers', symbol };
+        if (file) cgArgs.file = file;
+        const out = await executeInternalTool('code_graph', cgArgs).catch((e) => {
+            process.stderr.write(`[bridge-prefetch] callers(${symbol}) failed: ${e && e.message || e}\n`);
+            return null;
+        });
+        if (out && !String(out).startsWith('Error:')) {
+            parts.push(`### prefetch callers ${symbol}\n${out}`);
+        }
+    }
+    // references[]
+    const references = Array.isArray(explicitPrefetch.references) ? explicitPrefetch.references.filter(r => r && typeof r.symbol === 'string') : [];
+    for (const { symbol, file } of references) {
+        const cgArgs = { mode: 'references', symbol };
+        if (file) cgArgs.file = file;
+        const out = await executeInternalTool('code_graph', cgArgs).catch((e) => {
+            process.stderr.write(`[bridge-prefetch] references(${symbol}) failed: ${e && e.message || e}\n`);
+            return null;
+        });
+        if (out && !String(out).startsWith('Error:')) {
+            parts.push(`### prefetch references ${symbol}\n${out}`);
+        }
+    }
+    if (parts.length === 0) return null;
+    return `<prefetch>\n${parts.join('\n\n')}\n</prefetch>`;
 }
 
 async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCall) {
@@ -1273,7 +1320,7 @@ function acquireSessionLock(sessionId) {
     });
 }
 
-export async function askSession(sessionId, prompt, context, onToolCall, cwdOverride) {
+export async function askSession(sessionId, prompt, context, onToolCall, cwdOverride, explicitPrefetch) {
     const _askStartedAt = Date.now();
     const unlock = await acquireSessionLock(sessionId);
     // ── Synchronous pre-await setup (must happen before any await so
@@ -1319,7 +1366,12 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 session.messages.push({ role: 'user', content: `Additional context:\n\n${_capCtx(context)}` });
                 session.messages.push({ role: 'assistant', content: 'Noted.' });
             }
-            const prefetchedContext = await _tryBridgePrefetchContext(session, prompt, cwdOverride || session.cwd, onToolCall);
+            const explicitPrefetchResult = await _tryBridgeExplicitPrefetch(session, explicitPrefetch);
+            if (explicitPrefetchResult) {
+                session.messages.push({ role: 'user', content: `Additional context:\n\n${_capCtx(explicitPrefetchResult)}` });
+                session.messages.push({ role: 'assistant', content: 'Noted.' });
+            }
+            const prefetchedContext = explicitPrefetchResult ? null : await _tryBridgePrefetchContext(session, prompt, cwdOverride || session.cwd, onToolCall);
             if (prefetchedContext) {
                 session.messages.push({ role: 'user', content: `Additional context:\n\n${_capCtx(prefetchedContext)}` });
                 session.messages.push({ role: 'assistant', content: 'Noted.' });
@@ -1719,6 +1771,14 @@ export function stopIdleCleanup() {
 // Test-only exports for local smoke harnesses.
 export const _internals = {
     _extractBridgeIdentifier,
+    _isSimpleIdentifierLookup,
     _tryBridgeFastPath,
     _tryBridgePrefetchContext,
+    // Allows harnesses to inject a deterministic classifyPromptIntent mock
+    // so fast-path branch tests don't depend on live embedding calls.
+    // Only active when MIXDOG_TEST_EXPORTS=1.
+    ...(process.env.MIXDOG_TEST_EXPORTS === '1' ? {
+        _setClassifyPromptIntentForTest(fn) { _classifyPromptIntentImpl = fn; },
+        _resetClassifyPromptIntentForTest() { _classifyPromptIntentImpl = classifyPromptIntent; },
+    } : {}),
 };

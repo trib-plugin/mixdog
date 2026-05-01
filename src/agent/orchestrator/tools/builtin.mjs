@@ -562,18 +562,35 @@ function _extractIpynbText(fullPath) {
 
 // Binary detection: reading a PNG / ELF / zip / compressed blob as utf-8
 // pollutes the context with U+FFFD characters and wastes tokens. Sample the
-// first 4 KB and look for a null byte — the canonical signal that the file
-// is not plain text. The sampling is synchronous (small) and only runs on
-// files that have already passed the size cap and safe-path checks.
-function isBinaryFile(fullPath, bytesToSample = 8192) {
+// head and tail of the file and look for a null byte — the canonical signal
+// that the file is not plain text. Head window scales with file size:
+// min(fileSize, 64KB) head + 4KB tail, so a 250KB file with a null byte at
+// 9KB or 249KB is caught equally. The sampling is synchronous and cheap
+// relative to the 256KB read budget it guards.
+// Callers inside the ≤READ_MAX_SIZE_BYTES branch should pass st.size so the
+// tail probe fires; callers above the cap pass the real size from err.size.
+function isBinaryFile(fullPath, fileSize = 0) {
+    const HEAD_CAP = 64 * 1024;   // 64 KB max head window
+    const TAIL_SIZE = 4 * 1024;   // 4 KB tail probe
+    const headBytes = fileSize > 0 ? Math.min(fileSize, HEAD_CAP) : HEAD_CAP;
     let fd = null;
     try {
         fd = openSync(fullPath, 'r');
-        const buf = Buffer.alloc(Math.min(bytesToSample, 8192));
-        const n = readSync(fd, buf, 0, buf.length, 0);
-        if (n === 0) return false;
-        for (let i = 0; i < n; i++) {
-            if (buf[i] === 0) return true;
+        // Head probe
+        const headBuf = Buffer.allocUnsafe(headBytes);
+        const nHead = readSync(fd, headBuf, 0, headBytes, 0);
+        if (nHead === 0) return false;
+        for (let i = 0; i < nHead; i++) {
+            if (headBuf[i] === 0) return true;
+        }
+        // Tail probe (only when file is larger than head window)
+        if (fileSize > headBytes && fileSize > TAIL_SIZE) {
+            const tailOffset = fileSize - TAIL_SIZE;
+            const tailBuf = Buffer.allocUnsafe(TAIL_SIZE);
+            const nTail = readSync(fd, tailBuf, 0, TAIL_SIZE, tailOffset);
+            for (let i = 0; i < nTail; i++) {
+                if (tailBuf[i] === 0) return true;
+            }
         }
         return false;
     } catch {
@@ -713,6 +730,7 @@ function renderReadLine(lineNo, line, { truncateLongLine = true } = {}) {
     }
     return `${lineNo}\t${text}`;
 }
+// TODO: truncated-line edit-validation needs hint
 
 // Shared file-open prologue for read-flavoured tools (tail / wc / diff).
 // Consolidates the normalize → isSafePath → stat → findSimilarFile-hint →
@@ -750,7 +768,7 @@ async function openForRead(filePath, workDir, opts = {}) {
             new Error(`file size ${st.size} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap`),
             { code: 'ETOOBIG', size: st.size, fullPath, st });
     }
-    if (isBinaryFile(fullPath)) {
+    if (isBinaryFile(fullPath, st.size)) {
         throw Object.assign(
             new Error(`file appears to be binary (contains null bytes): ${normalizeOutputPath(norm)}`),
             { code: 'EBINARY' });
@@ -825,7 +843,7 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read file(s). `path` accepts a single string or array (`["a.mjs","b.mjs"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead.',
+        description: 'Read file(s). `path` accepts a single string or array (`["a.mjs","b.mjs"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead. For per-file differing offset/limit/mode, use `reads:[{path,offset,limit,mode?,n?},…]` instead of separate `path` array calls.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -1408,7 +1426,7 @@ function _lineForIndex(content, index) {
 }
 
 function _primeReadSnapshotForEdit({ fullPath, filePath, st, scope, oldStrings = [], lineRange = null }) {
-    if (!st || st.size > READ_MAX_SIZE_BYTES || isBinaryFile(fullPath)) return null;
+    if (!st || st.size > READ_MAX_SIZE_BYTES || isBinaryFile(fullPath, st.size)) return null;
     let content;
     try { content = readFileSync(fullPath, 'utf-8'); }
     catch { return null; }
@@ -3356,7 +3374,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 if (!hasRangeArgs) {
                     return `Error: file size ${st.size} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap. Use offset+limit to read a range.`;
                 }
-                if (isBinaryFile(fullPath)) {
+                if (isBinaryFile(fullPath, st.size)) {
                     return `Error: file appears to be binary (contains null bytes): ${normalizeOutputPath(filePath)}`;
                 }
                 try {
@@ -3394,7 +3412,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const _ext = extname(fullPath).toLowerCase();
             if (_ext === '.pdf') return _extractPdfText(fullPath, args.pages);
             if (_ext === '.ipynb') return _extractIpynbText(fullPath);
-            if (isBinaryFile(fullPath)) {
+            if (isBinaryFile(fullPath, st.size)) {
                 return `Error: file appears to be binary (contains null bytes): ${normalizeOutputPath(filePath)}`;
             }
             try {
@@ -4340,7 +4358,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     // W1 M: re-run binary check before streaming. openForRead
                     // throws ETOOBIG before isBinaryFile, so the fallback
                     // would happily stream a 300KB PNG as utf-8.
-                    if (err.fullPath && isBinaryFile(err.fullPath)) {
+                    if (err.fullPath && isBinaryFile(err.fullPath, err.size ?? 0)) {
                         return `Error: file appears to be binary (contains null bytes): ${normalizeOutputPath(err.fullPath)}`;
                     }
                     try {
