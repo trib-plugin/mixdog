@@ -23,7 +23,7 @@ const execAsync = promisify(exec);
 // Helper extracted to src/shared/user-cwd.mjs so server-main.mjs can import
 // the same primitive without circular-import risk.
 // ---------------------------------------------------------------------------
-import { resolveDefaultUserCwd as _resolveDefaultUserCwd, invalidateUserCwdCache as _invalidateUserCwdCache } from '../../shared/user-cwd.mjs';
+import { resolveDefaultUserCwd as _resolveDefaultUserCwd, invalidateUserCwdCache as _invalidateUserCwdCache, pwd } from '../../shared/user-cwd.mjs';
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
 // implementation that handles CSI + OSC + DCS edge cases; older runtimes
@@ -2992,7 +2992,7 @@ async function _runBatchEdit(args, workDir, readStateScope, pathOpts, executeChi
 
 // --- Tool execution ---
 export async function executeBuiltinTool(name, args, cwd, options = {}) {
-    const workDir = cwd || _resolveDefaultUserCwd() || process.cwd();
+    const workDir = cwd || pwd();
     const readStateScope = options?.readStateScope ?? options?.sessionId ?? null;
     const executeChildBuiltinTool = (childName, childArgs, childCwd = workDir) =>
         executeBuiltinTool(childName, childArgs, childCwd, options);

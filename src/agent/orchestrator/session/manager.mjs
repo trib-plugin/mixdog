@@ -19,6 +19,7 @@ import { classifyPromptIntent } from '../intent-classifier.mjs';
 import { resolvePluginData, DEFAULT_PLUGIN, DEFAULT_MARKETPLACE } from '../../../shared/plugin-paths.mjs';
 import { traceBridgeTool } from '../bridge-trace.mjs';
 import { isHiddenRole } from '../internal-roles.mjs';
+import { runWithCwdOverride, pwd } from '../../../shared/user-cwd.mjs';
 // Mutable seam: harnesses (MIXDOG_TEST_EXPORTS=1) can override via _internals._setClassifyPromptIntentForTest.
 let _classifyPromptIntentImpl = classifyPromptIntent;
 

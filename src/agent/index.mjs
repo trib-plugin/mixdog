@@ -1,4 +1,5 @@
 import { initProviders, warmupCatalogs } from './orchestrator/providers/registry.mjs';
+import { runWithCwdOverride, pwd } from '../shared/user-cwd.mjs';
 import { createSession, askSession, listSessions, closeSession, findSessionByScopeKey, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge, forEachSessionRuntime } from './orchestrator/session/manager.mjs';
 import { ToolLoopAbortError } from './orchestrator/tool-loop-guard.mjs';
 import { StreamStalledAbortError, startWatchdog as startStreamWatchdog } from './orchestrator/session/stream-watchdog.mjs';
@@ -805,7 +806,8 @@ export async function handleToolCall(name, args, opts = {}) {
           cacheKeyOverride: args.cacheKey || undefined,
         });
 
-        const workerCwd = effectiveCwd;
+        // workerCwd: explicit Lead intent > inherited AsyncLocalStorage override > original user cwd.
+        const workerCwd = effectiveCwd || pwd();
 
         const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const modelLabel = preset.model || preset.name;
@@ -881,7 +883,10 @@ export async function handleToolCall(name, args, opts = {}) {
         // the first attempt; activeSession is updated per attempt and hoisted
         // outside the IIFE so the .catch() handler can reference it).
         let activeSession = session;
-        (async () => {
+        // Wrap the detached async IIFE in runWithCwdOverride so all builtin tool
+        // calls inside this worker's async context resolve paths against workerCwd
+        // via pwd() — no manual callerCwd propagation through nested calls needed.
+        (async () => runWithCwdOverride(workerCwd, async () => {
           const t0 = Date.now();
           let completed = true;
           let errorMessage = null;
@@ -1067,7 +1072,7 @@ export async function handleToolCall(name, args, opts = {}) {
               }
             } catch {}
           }
-        })().catch((err) => {
+        }))().catch((err) => {
           try { removePending(process.env.CLAUDE_PLUGIN_DATA, jobId); } catch {}
           const msg = err instanceof Error ? (err.stack || err.message) : String(err);
           try {
