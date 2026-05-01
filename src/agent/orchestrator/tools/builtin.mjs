@@ -1249,6 +1249,16 @@ function _recordReadSnapshot(fullPath, st, scope = null, meta = {}) {
     if (!next.contentHash && sameFile && existing.contentHash) {
         next.contentHash = existing.contentHash;
     }
+    // Full-coverage snapshots without a contentHash are stale-blind: same-mtime
+    // (≤1ms FS resolution on Windows NTFS) + same-size external rewrites slip
+    // past _isSnapshotStale. Compute the hash here so write-side CAS detects
+    // the rewrite even when timestamp/size invariants hold.
+    if (!next.contentHash && _snapshotCoversFullFile(next)) {
+        try {
+            const content = readFileSync(fullPath, 'utf-8');
+            next.contentHash = _hashText(content);
+        } catch { /* unreadable — leave hashless */ }
+    }
     readFiles.set(fullPath, next);
 }
 
@@ -1300,7 +1310,9 @@ function _isSnapshotStale(stat, snapshot, fullPath = '') {
         if (!fullPath) return false;
         try {
             const cur = readFileSync(fullPath, 'utf-8');
-            if (cur && _hashText(cur) !== snapshot.contentHash) return true;
+            // No `cur &&` guard — empty-file rewrite must still hash-mismatch
+            // against a non-empty snapshot hash.
+            if (_hashText(cur) !== snapshot.contentHash) return true;
         } catch { /* stat race or unreadable — skip hash check */ }
     }
     // CC parity: same-mtime size drift counts as stale. NTFS / exFAT
