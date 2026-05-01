@@ -348,11 +348,6 @@ const TOOLS = [
         cwd: { type: 'string', description: 'Working directory for bridge agent tool execution.' },
       },
       required: ['role'],
-      oneOf: [
-        { required: ['prompt'] },
-        { required: ['file'] },
-        { required: ['ref'] },
-      ],
     },
   },
 ];

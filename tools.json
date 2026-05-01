@@ -732,23 +732,6 @@
       },
       "required": [
         "role"
-      ],
-      "oneOf": [
-        {
-          "required": [
-            "prompt"
-          ]
-        },
-        {
-          "required": [
-            "file"
-          ]
-        },
-        {
-          "required": [
-            "ref"
-          ]
-        }
       ]
     },
     "module": "agent"
@@ -798,7 +781,7 @@
         },
         "offset": {
           "type": "number",
-          "description": "Start line for full mode (0-based)."
+          "description": "Start line for full mode (0-based; mixdog convention)."
         },
         "limit": {
           "type": "number",
@@ -876,21 +859,7 @@
           "minItems": 1,
           "description": "Array of edits. Each may specify its own `path`; otherwise reuses top-level `path`. Same-file edits sequential, cross-file parallel."
         }
-      },
-      "anyOf": [
-        {
-          "required": [
-            "path",
-            "old_string",
-            "new_string"
-          ]
-        },
-        {
-          "required": [
-            "edits"
-          ]
-        }
-      ]
+      }
     },
     "module": "builtin"
   },
@@ -938,20 +907,7 @@
           "minItems": 1,
           "description": "Batch whole-file writes. Use when creating/replacing several files in one call."
         }
-      },
-      "anyOf": [
-        {
-          "required": [
-            "path",
-            "content"
-          ]
-        },
-        {
-          "required": [
-            "writes"
-          ]
-        }
-      ]
+      }
     },
     "module": "builtin"
   },

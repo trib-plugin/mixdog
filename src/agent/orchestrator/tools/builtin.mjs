@@ -825,7 +825,6 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read file(s). `path` accepts a single string or array (`["a.mjs","b.mjs"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. Do not repeat an identical read on the same file/range — open a wider window or different range instead.',
         description: 'Read file(s). `path` accepts a single string or array (`["a.mjs","b.mjs"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead.',
         inputSchema: {
             type: 'object',
@@ -869,7 +868,6 @@ export const BUILTIN_TOOLS = [
                     description: 'Array of edits. Each may specify its own `path`; otherwise reuses top-level `path`. Same-file edits sequential, cross-file parallel.',
                 },
             },
-            anyOf: [{ required: ['path', 'old_string', 'new_string'] }, { required: ['edits'] }],
         },
     },
     {
@@ -896,7 +894,6 @@ export const BUILTIN_TOOLS = [
                     description: 'Batch whole-file writes. Use when creating/replacing several files in one call.',
                 },
             },
-            anyOf: [{ required: ['path', 'content'] }, { required: ['writes'] }],
         },
     },
     {
