@@ -26,6 +26,7 @@ import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import { resolvePluginData } from './src/shared/plugin-paths.mjs'
 import { ensureDataSeeds } from './src/shared/seed.mjs'
+import { resolveDefaultUserCwd as _resolveDefaultUserCwd } from './src/shared/user-cwd.mjs'
 
 // ── Environment ──────────────────────────────────────────────────────
 // Claude Code normally injects CLAUDE_PLUGIN_ROOT / CLAUDE_PLUGIN_DATA
@@ -617,7 +618,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executeBuiltinTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/builtin.mjs')).href,
     )
-    const text = await executeBuiltinTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
+    const text = await executeBuiltinTool(name, args ?? {}, callerCtx.callerCwd || _resolveDefaultUserCwd() || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -628,7 +629,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executeLspTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/lsp.mjs')).href,
     )
-    const text = await executeLspTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
+    const text = await executeLspTool(name, args ?? {}, callerCtx.callerCwd || _resolveDefaultUserCwd() || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -646,7 +647,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
       else if (m === 'dependents') resolvedName = 'find_dependents'
       else resolvedName = 'code_graph'
     }
-    const text = await executeCodeGraphTool(resolvedName, resolvedArgs, callerCtx.callerCwd || process.cwd())
+    const text = await executeCodeGraphTool(resolvedName, resolvedArgs, callerCtx.callerCwd || _resolveDefaultUserCwd() || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -658,7 +659,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executePatchTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/patch.mjs')).href,
     )
-    const text = await executePatchTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
+    const text = await executePatchTool(name, args ?? {}, callerCtx.callerCwd || _resolveDefaultUserCwd() || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -672,7 +673,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executeBashSessionTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/bash-session.mjs')).href,
     )
-    const text = await executeBashSessionTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
+    const text = await executeBashSessionTool(name, args ?? {}, callerCtx.callerCwd || _resolveDefaultUserCwd() || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -686,7 +687,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
     const { executeHostInputTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/host-input.mjs')).href,
     )
-    const text = await executeHostInputTool(name, args ?? {}, callerCtx.callerCwd || process.cwd())
+    const text = await executeHostInputTool(name, args ?? {}, callerCtx.callerCwd || _resolveDefaultUserCwd() || process.cwd())
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
@@ -736,7 +737,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   // one. Callers can still override with an explicit `cwd` argument.
   return dispatchTool(name, args, {
     requestSignal: extra?.signal,
-    callerCwd: process.cwd(),
+    callerCwd: _resolveDefaultUserCwd() || process.cwd(),
   })
 })
 

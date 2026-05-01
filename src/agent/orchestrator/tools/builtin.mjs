@@ -20,18 +20,10 @@ const execAsync = promisify(exec);
 // ---------------------------------------------------------------------------
 // User-cwd persistence bridge: hook writes user-cwd.txt on SessionStart so
 // the MCP server (spawned from cache dir) resolves the correct sandbox root.
+// Helper extracted to src/shared/user-cwd.mjs so server-main.mjs can import
+// the same primitive without circular-import risk.
 // ---------------------------------------------------------------------------
-let _cachedUserCwd = undefined; // undefined = not yet resolved; null = absent
-function _resolveDefaultUserCwd() {
-    if (_cachedUserCwd !== undefined) return _cachedUserCwd;
-    try {
-        const txt = readFileSync(join(process.env.CLAUDE_PLUGIN_DATA || '', 'user-cwd.txt'), 'utf8').trim();
-        _cachedUserCwd = txt || null;
-    } catch {
-        _cachedUserCwd = null;
-    }
-    return _cachedUserCwd;
-}
+import { resolveDefaultUserCwd as _resolveDefaultUserCwd, invalidateUserCwdCache as _invalidateUserCwdCache } from '../../shared/user-cwd.mjs';
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
 // implementation that handles CSI + OSC + DCS edge cases; older runtimes
