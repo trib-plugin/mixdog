@@ -655,10 +655,11 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
             symbol: identifier,
         };
         const graphOut = await executeInternalTool('code_graph', graphArgs).catch(() => null);
-        if (graphOut && !String(graphOut).startsWith('Error:')) {
+        const _gs658 = String(graphOut ?? '');
+        if (graphOut && !_gs658.startsWith('Error:') && !/file not found in graph/i.test(_gs658) && !/^\(no [^)]+\)$/m.test(_gs658)) {
             onToolCall?.(1, [{ name: 'code_graph', arguments: graphArgs }]);
             return {
-                content: String(graphOut),
+                content: _gs658,
                 iterations: 2,
                 toolCallsTotal: 1,
                 usage: null,
@@ -675,10 +676,11 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
                 symbol: identifier,
             };
             const graphOut = await executeInternalTool('code_graph', graphArgs).catch(() => null);
-            if (graphOut && !String(graphOut).startsWith('Error:')) {
+            const _gs678 = String(graphOut ?? '');
+            if (graphOut && !_gs678.startsWith('Error:') && !/file not found in graph/i.test(_gs678) && !/^\(no [^)]+\)$/m.test(_gs678)) {
                 onToolCall?.(2, [{ name: 'code_graph', arguments: graphArgs }]);
                 return {
-                    content: String(graphOut),
+                    content: _gs678,
                     iterations: 3,
                     toolCallsTotal: 2,
                     usage: null,
@@ -1192,6 +1194,28 @@ export function forEachSessionRuntime() {
 }
 export function getSessionAbortSignal(sessionId) {
     return _runtimeState.get(sessionId)?.controller?.signal ?? null;
+}
+
+/**
+ * Link a parent AbortSignal to a sub-session's controller so that aborting
+ * the parent (fan-out deadline or caller ESC) tears down the sub-agent's
+ * provider call promptly. Safe to call after prepareBridgeSession but before
+ * askSession completes. No-op if the session runtime isn't found.
+ *
+ * @param {string} sessionId — the sub-session to abort
+ * @param {AbortSignal} parentSignal — upstream signal (from fan-out coordinator)
+ */
+export function linkParentSignalToSession(sessionId, parentSignal) {
+    if (!(parentSignal instanceof AbortSignal)) return;
+    const entry = _touchRuntime(sessionId);
+    if (!entry.controller) entry.controller = createAbortController();
+    if (parentSignal.aborted) {
+        try { entry.controller.abort(new Error('parent signal aborted')); } catch { /* ignore */ }
+        return;
+    }
+    parentSignal.addEventListener('abort', () => {
+        try { entry.controller?.abort(new Error('parent signal aborted')); } catch { /* ignore */ }
+    }, { once: true });
 }
 function _clearSessionRuntime(id) {
     if (id) _runtimeState.delete(id);

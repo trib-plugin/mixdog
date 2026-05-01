@@ -1496,7 +1496,7 @@ async function codeGraph(args, cwd) {
   const node = rel ? graph.nodes.get(rel) : null;
 
   if (mode === 'imports') {
-    if (!node) return `code_graph imports: file not found in graph: ${normFile || '(missing file)'}`;
+    if (!node) return `Error: code_graph imports: file not found in graph: ${normFile || '(missing file)'}`;
     const resolved = node.resolvedImports.map((p) => _graphRel(p, cwd));
     const parts = [];
     if (resolved.length) parts.push(resolved.join('\n'));
@@ -1511,24 +1511,24 @@ async function codeGraph(args, cwd) {
     // "(no dependents)" — indistinguishable from a real zero-dependent
     // file and a frequent source of "graph says nothing depends on X"
     // false negatives.
-    if (!node) return `code_graph dependents: file not found in graph: ${normFile || '(missing file)'}`;
+    if (!node) return `Error: code_graph dependents: file not found in graph: ${normFile || '(missing file)'}`;
     const deps = [...(graph.reverse.get(rel) || [])].sort();
     return deps.length ? deps.join('\n') : '(no dependents)';
   }
 
   if (mode === 'related') {
-    if (!node) return `code_graph related: file not found in graph: ${normFile || '(missing file)'}`;
+    if (!node) return `Error: code_graph related: file not found in graph: ${normFile || '(missing file)'}`;
     return _formatRelated(node, graph, cwd);
   }
 
   if (mode === 'impact') {
-    if (!node) return `code_graph impact: file not found in graph: ${normFile || '(missing file)'}`;
+    if (!node) return `Error: code_graph impact: file not found in graph: ${normFile || '(missing file)'}`;
     const targetSymbol = String(args?.symbol || '').trim();
     return _formatImpact(node, graph, cwd, targetSymbol);
   }
 
   if (mode === 'symbols') {
-    if (!node) return `code_graph symbols: file not found in graph: ${normFile || '(missing file)'}`;
+    if (!node) return `Error: code_graph symbols: file not found in graph: ${normFile || '(missing file)'}`;
     let text = '';
     try { text = readFileSync(node.abs, 'utf8'); } catch { return '(no symbols)'; }
     return _extractSymbolsCheap(text, node.lang);
@@ -1552,7 +1552,7 @@ async function codeGraph(args, cwd) {
     // and that file isn't in the graph. When rel is falsy (no file narrowing),
     // resolvedNode=null just means the symbol has no declaration hit — proceed
     // with a broad language-agnostic search instead of failing.
-    if (!resolvedNode && rel) return `code_graph references: file not found in graph: ${normFile || '(missing file)'}`;
+    if (!resolvedNode && rel) return `Error: code_graph references: file not found in graph: ${normFile || '(missing file)'}`;
     // Bare references (no file/language narrow) → search every language so
     // a symbol with the same name in TS+PY isn't quietly truncated to
     // whichever language the first hit happened to land in.
@@ -1566,7 +1566,7 @@ async function codeGraph(args, cwd) {
     const explicitLanguage = String(args?.language || '').trim() || null;
     const narrowedByCaller = Boolean(rel || explicitLanguage);
     const resolvedNode = _resolveReferenceLanguageNode(graph, symbol, rel, cwd, explicitLanguage);
-    if (!resolvedNode && rel) return `code_graph callers: file not found in graph: ${normFile || '(missing file)'}`;
+    if (!resolvedNode && rel) return `Error: code_graph callers: file not found in graph: ${normFile || '(missing file)'}`;
     const lang = (narrowedByCaller && resolvedNode) ? resolvedNode.lang : null;
     const refs = _cheapReferenceSearch(graph, symbol, cwd, { language: lang });
     return _formatCallerReferences(graph, symbol, refs);

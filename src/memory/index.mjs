@@ -745,10 +745,39 @@ async function handleSearch(args) {
     const dropped = dedup.length - queries.length
     const rest = { ...args }
     delete rest.query
-    const parts = await Promise.all(queries.map(async (q) => {
-      const sub = await handleSearch({ ...rest, query: q })
-      return `[${q}]\n${sub.text || '(no results)'}`
-    }))
+    const deadlineSec = Math.max(1, Number(process.env.MEMORY_FANOUT_DEADLINE_S) || 180)
+    const deadlineMs = deadlineSec * 1000
+    const fanOutAbort = new AbortController()
+    let deadlineTimer
+    const deadlineRace = new Promise((_res, rej) => {
+      deadlineTimer = setTimeout(() => {
+        fanOutAbort.abort(new Error(`memory fan-out deadline exceeded (${deadlineSec}s)`))
+        rej(Object.assign(new Error(`memory fan-out deadline exceeded (${deadlineSec}s)`), { _deadline: true }))
+      }, deadlineMs)
+    })
+    let settled
+    try {
+      settled = await Promise.race([
+        Promise.allSettled(queries.map(async (q) => {
+          if (fanOutAbort.signal.aborted) throw fanOutAbort.signal.reason
+          const sub = await handleSearch({ ...rest, query: q })
+          return `[${q}]\n${sub.text || '(no results)'}`
+        })),
+        deadlineRace,
+      ])
+    } catch (err) {
+      if (!err._deadline) throw err
+      settled = queries.map((_q, i) =>
+        settled?.[i] ?? { status: 'rejected', reason: fanOutAbort.signal.reason }
+      )
+    } finally {
+      clearTimeout(deadlineTimer)
+    }
+    const parts = settled.map((r, i) =>
+      r.status === 'fulfilled'
+        ? r.value
+        : `[${queries[i]}]\n(error: ${r.reason?.message || r.reason})`
+    )
     const header = dropped > 0
       ? `note: ${dedup.length} queries received, ${queries.length} processed, ${dropped} dropped (cap ${QUERIES_CAP})\n\n`
       : ''

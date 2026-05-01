@@ -114,6 +114,9 @@ export function resolvePresetName({ preset, optsPreset, role, config: cfgIn = nu
  * @param {string} [opts.taskType]  — optional internal classification stamped on the session
  * @param {string} [opts.preset]    — explicit preset override (bypasses role → preset lookup)
  * @param {string} [opts.parentSessionId] — parent bridge session for trace aggregation
+ * @param {AbortSignal} [opts.parentSignal] — optional AbortSignal from the fan-out coordinator;
+ *   when aborted the sub-agent session's own controller is also aborted so the
+ *   provider call tears down promptly (parent→child cascade).
  * @returns {(args: { prompt, preset?, sourceName? }) => Promise<string>}
  */
 export function makeBridgeLlm(opts = {}) {
@@ -206,6 +209,18 @@ export function makeBridgeLlm(opts = {}) {
         });
 
         updateSessionStatus(session.id, 'running');
+        // Parent→child abort cascade: when opts.parentSignal fires, abort the
+        // sub-session's own controller so the provider call tears down promptly.
+        // Best-effort: if the session/manager import or linkAbortSignalToSession
+        // is unavailable we fall back silently.
+        if (opts.parentSignal instanceof AbortSignal) {
+            try {
+                const { linkParentSignalToSession } = await import('../session/manager.mjs');
+                if (typeof linkParentSignalToSession === 'function') {
+                    linkParentSignalToSession(session.id, opts.parentSignal);
+                }
+            } catch { /* best-effort; non-critical */ }
+        }
         let terminalStatus = 'idle';
         process.stderr.write(`[bridge-llm] role=${role} preset=${presetName} model=${preset.model} provider=${preset.provider} session=${session.id}\n`);
         const _bridgeT0 = Date.now();

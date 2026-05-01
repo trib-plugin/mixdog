@@ -22,7 +22,7 @@ const RECOVERABLE_MSG_PATTERNS = [
 
 const RECOVERABLE_WS_CODES   = new Set([1006, 1011, 1012, 4000]);
 const RECOVERABLE_HTTP_STATUS = new Set([502, 503, 504]);
-const RECOVERABLE_ERR_CODES   = new Set(['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'EAI_NODATA', 'ESOCKETTIMEDOUT', 'ENETUNREACH', 'EHOSTUNREACH']);
+const RECOVERABLE_ERR_CODES   = new Set(['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'ESOCKETTIMEDOUT']);
 
 /**
  * Returns true when the error looks like a transient provider fault that is
@@ -32,6 +32,11 @@ const RECOVERABLE_ERR_CODES   = new Set(['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND',
  */
 export function isRecoverableError(err) {
   if (!err) return false;
+  return _isRecoverableError(err, 0);
+}
+
+function _isRecoverableError(err, depth) {
+  if (!err || depth > 3) return false;
   const msg = (err instanceof Error ? err.message : String(err)) || '';
   if (RECOVERABLE_MSG_PATTERNS.some((re) => re.test(msg))) return true;
   if (err.wsCloseCode != null && RECOVERABLE_WS_CODES.has(err.wsCloseCode)) return true;
@@ -39,6 +44,7 @@ export function isRecoverableError(err) {
   if (err.wsCloseCode === 1000 && /before response\.completed/i.test(msg)) return true;
   if (err.httpStatus  != null && RECOVERABLE_HTTP_STATUS.has(err.httpStatus)) return true;
   if (err.code        != null && RECOVERABLE_ERR_CODES.has(err.code)) return true;
+  if (err.cause != null) return _isRecoverableError(err.cause, depth + 1);
   return false;
 }
 

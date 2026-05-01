@@ -401,7 +401,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Past context from the memory store. `query`: single NL string (one agent multi-angle synthesis) or array of strings (N independent agents, mechanical merge — only for genuinely unrelated asks). Lead: async via channel. Role sessions: sync. `background` overrides. External web → `search`, codebase → `explore`.",
+    "description": "Past project/session memory store — try this first; never grep/read/bash for memory questions. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. External web → `search`, codebase → `explore`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -449,7 +449,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Internal codebase search (local fs). `query`: single NL string (one agent fans glob+grep & synthesizes) or array (N independent agents, mechanical merge — for unrelated asks only). `cwd`: search root, omit for workspace. Lead: async via channel. Role sessions: sync. `background` overrides. Past context → `recall`, web → `search`.",
+    "description": "Internal codebase/file/structure search — try this first when location uncertain; never grep/read/bash/find_symbol blind. Local filesystem only — not web, not memory. `query`: single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Omit `cwd` for the current workspace; set `cwd` only when the user explicitly names that root/path. Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -490,7 +490,7 @@
     "name": "search",
     "title": "Search",
     "aiWrapped": true,
-    "description": "External web search and URL scrape. `query`: single NL string (one agent multi-angle synthesis; URLs scraped) or array (N independent agents, mechanical merge — for unrelated asks only). Lead: async via channel. Role sessions: sync. `background` overrides. Past context → `recall`, codebase → `explore`.",
+    "description": "FIRST CHOICE for external web / URL questions — never start with bash / curl / WebFetch when the query targets the open web. External web search and URL scrape. `query`: single rich NL query (default — one internal agent judges multi-angle probes & synthesizes; URL → scrape) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, codebase → `explore`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -673,7 +673,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Delegate one turn to an external agent by `role` (mapped via user-workflow.json). Detached: returns jobId + sessionId immediately; agent continues in background. `close_session(sessionId)` to stop early. Provide exactly one of `prompt`, `ref`, `file`.",
+    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -731,8 +731,24 @@
         }
       },
       "required": [
-        "prompt",
         "role"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "prompt"
+          ]
+        },
+        {
+          "required": [
+            "file"
+          ]
+        },
+        {
+          "required": [
+            "ref"
+          ]
+        }
       ]
     },
     "module": "agent"
@@ -747,7 +763,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read file(s). Multi-chunk / multi-file in a SINGLE call: `reads:[{path,offset,limit,mode?,n?,full?}, ...]` for per-file ranges (different chunks of one file or many files in one tool_use), or `path: string[]` for parallel multi-file with shared opts. Splitting same-file chunks across N separate `read` tool_use blocks is a violation — use `reads`. `mode`: full (default) | head | tail | count. `n` = head/tail lines; `offset`/`limit` = line window. Big files require offset/limit, head, tail, count, or `grep`. Don't repeat identical reads — widen window or shift range.",
+    "description": "Read file(s). `path` accepts a single string or array (`[\"a.mjs\",\"b.mjs\"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -792,24 +808,14 @@
           "type": "boolean",
           "description": "Opt out of the big-file head/tail cap. Default false."
         },
-        "reads": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "path": { "type": "string" },
-              "offset": { "type": "number" },
-              "limit": { "type": "number" },
-              "mode": { "type": "string", "enum": ["full", "head", "tail", "count"] },
-              "n": { "type": "number" },
-              "full": { "type": "boolean" }
-            },
-            "required": ["path"]
-          },
-          "description": "Per-file batch read in a SINGLE tool_use — each entry carries its own path/offset/limit/mode/n/full. Required form when reading multiple files OR multiple chunks of the same file in one turn; splitting into separate tool_use blocks is a violation."
+        "pages": {
+          "type": "string",
+          "description": "PDF only: page range to extract, e.g. \"1-5\", \"3\", \"10-20\". Max 20 pages."
         }
       },
-      "description": "Provide either `path` (or `path` array) or `reads` array — the latter wins when both are present."
+      "required": [
+        "path"
+      ]
     },
     "module": "builtin"
   },
@@ -823,7 +829,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Replace text in file(s). For 2+ edits use `edits` array (same-file sequential, cross-file parallel). Single form (`path`+`old_string`+`new_string`) for one-offs only. `replace_all:true` skips uniqueness check.",
+    "description": "Replace text in file(s). For multiple edits prefer the `edits` array form — same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -871,7 +877,20 @@
           "description": "Array of edits. Each may specify its own `path`; otherwise reuses top-level `path`. Same-file edits sequential, cross-file parallel."
         }
       },
-      "required": []
+      "anyOf": [
+        {
+          "required": [
+            "path",
+            "old_string",
+            "new_string"
+          ]
+        },
+        {
+          "required": [
+            "edits"
+          ]
+        }
+      ]
     },
     "module": "builtin"
   },
@@ -885,7 +904,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Create or overwrite a file. Prefer `apply_patch` for multi-file or context-heavy edits. For 2+ whole-file writes in one turn use `writes` array.",
+    "description": "Create or overwrite a file. Prefer `apply_patch` for multi-file or context-heavy edits; use `write` when you are creating a new file or replacing the whole contents intentionally. For multiple whole-file writes in one turn, pass `writes` array.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -920,7 +939,19 @@
           "description": "Batch whole-file writes. Use when creating/replacing several files in one call."
         }
       },
-      "required": []
+      "anyOf": [
+        {
+          "required": [
+            "path",
+            "content"
+          ]
+        },
+        {
+          "required": [
+            "writes"
+          ]
+        }
+      ]
     },
     "module": "builtin"
   },
@@ -934,7 +965,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Shell command. Batch related commands with `&&` / `;` in one call. `persistent:true` keeps cwd/env/venv across calls. `run_in_background:true` for long jobs, then `job_wait` and `read` the stdout/stderr paths. Destructive patterns (rm -rf /, force-push, format) blocked.",
+    "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Pass `persistent:true` to keep cwd/env/venv across calls in the same session (the bridge reuses one shell). Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -944,7 +975,7 @@
         },
         "timeout": {
           "type": "number",
-          "description": "ms, default 30000, max 600000."
+          "description": "ms, default 120000 (2 min). Set a larger value for long-running commands."
         },
         "merge_stderr": {
           "type": "boolean",
@@ -1012,7 +1043,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "ripgrep content search. `pattern`: regex string (use `|` for alternation) or array (OR-joined). `glob`: same shape. Prefer array for independent patterns; serial greps prohibited. For identifier with unknown file, prefer `find_symbol`. Output modes: `files_with_matches` (default), `content`, `count`. `multiline:true` for cross-line patterns.",
+    "description": "ripgrep content search. `pattern` accepts a single regex string (use `|` for alternation: `pattern:\"foo|bar\"`) OR an array of patterns (`pattern:[\"foo\",\"bar\"]`, OR-joined). `glob` follows the same shape — single string or array. Prefer the array form when patterns are long or genuinely independent; serial greps are not allowed. For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1093,6 +1124,10 @@
         "multiline": {
           "type": "boolean",
           "description": "Allow patterns to span lines (rg -U --multiline-dotall)."
+        },
+        "type": {
+          "type": "string",
+          "description": "File type filter (e.g. js, py, rust, go)."
         }
       },
       "required": [
@@ -1111,7 +1146,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "File path search via `rg --files`. `pattern`: single glob (use `{a,b}` brace expansion) or array of globs. Prefer array for independent categories; never two `glob` calls in one turn — merge. Use `grep` for in-file content.",
+    "description": "File path search via `rg --files`. Returns paths sorted by modification time (newest first). `pattern` accepts a single glob string (use `{a,b}` brace expansion for compact alternation: `pattern:\"**/*.{mjs,json}\"`) OR an array of globs (`pattern:[\"**/*route*.mjs\",\"**/*policy*.json\"]`). Prefer the array form when categories are genuinely independent; do not emit two `glob` calls in the same assistant turn — merge them into one call with all requested categories. Use `grep` for in-file content search.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1159,7 +1194,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Directory inspection. `mode`: list (default, metadata) | tree (ASCII) | find (filter by name/size/mtime). Quick shape checks: recent files, candidate dirs. Newest-file: `sort:\"mtime\", type:\"file\"` or `find`. For repo-wide filename use `glob`; in-file content use `grep`; identifier use `find_symbol`.",
+    "description": "Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use this for quick local shape checks (recent files, candidate directories, size/mtime clues). For newest-file tasks, use `list` with `sort:\"mtime\", type:\"file\"` or `find` and read the top hit directly; do not list the workspace root again just to verify. Use `find` mode to filter by filename pattern within a directory tree; for repository-wide filename pattern search use `glob` instead, and for in-file content search use `grep`. Use `find_symbol` for identifier lookup.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1245,7 +1280,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Symbol-level navigation. Default: declaration site (file:line + nearby code). `mode` for graph queries: `callers`, `references` (also non-function symbols), `imports`, `dependents`, `overview`/`symbols`/`related`/`impact` (file-level). Prefer over `grep` when identifier known but file unknown.",
+    "description": "Symbol-level navigation across the repository. Default mode finds the declaration site for a known identifier (file:line + nearby code). Pass `mode` to switch into graph queries: `callers` (call sites for functions), `references` (all references — use for non-function symbols too), `imports` (what a file imports), `dependents` (who imports a file), or `overview`/`symbols`/`related`/`impact` for file-level analysis. Prefer over grep when the identifier is known but the file is not.",
     "inputSchema": {
       "type": "object",
       "properties": {

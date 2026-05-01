@@ -1009,7 +1009,7 @@ export async function handleToolCall(name, args, opts = {}) {
                 const m = err.message.match(/reason=([\w-]+)/);
                 if (m) reason = m[1];
               }
-              emit(`${role} cancelled (reason=${reason || 'unknown'})`);
+              emit(reason ? `${role} cancelled (reason=${reason})` : `${role} cancelled`);
               // Cancellation isn't an error; flip to idle so the next sweep
               // pass can reclaim the file instead of leaving a 'running'
               // zombie until the 24h tombstone window expires.

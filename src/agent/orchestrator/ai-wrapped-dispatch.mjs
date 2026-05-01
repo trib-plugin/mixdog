@@ -27,6 +27,23 @@ import { addPending, removePending } from './dispatch-persist.mjs'
 import { notifyActivity } from './activity-bus.mjs'
 import { stripLeadingSoftWarns } from './tool-loop-guard.mjs'
 
+// Fan-out deadline: default 240 s. Override via env FANOUT_DEADLINE_S.
+// Applied to both sync and background fan-out paths. After expiry, settled
+// subs are merged as partial; pending subs are aborted.
+const _FANOUT_DEADLINE_MS = (() => {
+  const v = parseInt(process.env.FANOUT_DEADLINE_S, 10)
+  return Number.isFinite(v) && v > 0 ? v * 1000 : 240_000
+})()
+
+// Hard errors that should trigger sibling abort + partial-error escalation.
+// SessionClosedError is excluded — it means the parent itself aborted, not
+// a sub failure.
+function isHardSubError(reason) {
+  if (!reason) return false
+  if (reason?.name === 'SessionClosedError') return false
+  return true
+}
+
 const ROLE_BY_TOOL = Object.freeze({
   recall:  { role: 'recall-agent',  build: (q, cwd) => _internals.builders.recall(q, cwd),   label: 'recall-agent' },
   search:  { role: 'search-agent',  build: (q, cwd) => _internals.builders.search(q, cwd),   label: 'search-agent' },
@@ -64,7 +81,8 @@ function clampPiece(raw) {
 // cap, then emits a single inline marker. Each piece is also pre-clamped
 // to EXPLORE_PER_PIECE_CHAR_CAP so a single oversized response can't
 // blow up before the running-total check fires.
-function mergeExploreSettled(settled, queries, label) {
+// partialInfo: { completed, total, deadlineSecs } | null — appends footer when set.
+function mergeExploreSettled(settled, queries, label, partialInfo) {
   const isSingle = queries.length === 1
   if (isSingle) {
     const r = settled[0]
@@ -77,7 +95,7 @@ function mergeExploreSettled(settled, queries, label) {
     if (typeof clamped === 'string' && clamped.length > EXPLORE_OUTPUT_CHAR_CAP) {
       return clamped.slice(0, EXPLORE_OUTPUT_CHAR_CAP) + EXPLORE_TRUNCATION_MARKER
     }
-    return clamped
+    return _appendPartialFooter(clamped, partialInfo)
   }
   const parts = []
   let total = 0
@@ -116,7 +134,28 @@ function mergeExploreSettled(settled, queries, label) {
   const note = truncatedAtPiece > 0
     ? `\n\n[explore: merge truncated at piece ${truncatedAtPiece}/${settled.length}]`
     : ''
-  return merged + EXPLORE_TRUNCATION_MARKER + note
+  return _appendPartialFooter(merged + EXPLORE_TRUNCATION_MARKER + note, partialInfo)
+}
+
+// Append "(M/N ok, dl=Xs)" footer when partialInfo is truthy.
+function _appendPartialFooter(text, partialInfo) {
+  if (!partialInfo) return text
+  const { completed, total, deadlineSecs } = partialInfo
+  return `${text}\n\n(${completed}/${total} ok, dl=${deadlineSecs}s)`
+}
+
+// Same footer for recall/search merged strings.
+function _mergeRecallSearchSettled(settled, queries, label, partialInfo) {
+  const merged = queries.length === 1
+    ? (settled[0].status === 'fulfilled'
+        ? (settled[0].value || '(no response)')
+        : `[${label} error] ${settled[0].reason?.message || String(settled[0].reason)}`)
+    : settled.map((r, i) => {
+        const header = `### Query ${i + 1}: ${queries[i]}`
+        if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
+        return `${header}\n[${label} error] ${r.reason?.message || String(r.reason)}`
+      }).join('\n\n---\n\n')
+  return _appendPartialFooter(merged, partialInfo)
 }
 
 // Detect "very broad" cwds — user home, ~/.claude, or filesystem root.
@@ -767,31 +806,102 @@ export async function dispatchAiWrapped(name, args, ctx) {
     : false
 
   if (!background) {
-    const settled = await Promise.allSettled(
-      queries.map((q) => {
-        const key = buildQueryCacheKey(name, q, resolvedCwd, brief)
-        return runCachedQuery(name, key, async () => {
-          const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief, parentSessionId: ctx?.callerSessionId || null })
-          return llm({ prompt: spec.build(q, resolvedCwd) })
+    // Deadline race: allSettled vs a timer. Controllers keyed by query index
+    // so we can abort only the pending subs when the deadline fires.
+    // Use globalThis.AbortController (Node 15+).
+    const makeAC = () => { try { return new AbortController() } catch { return null } }
+    const syncSubControllers = queries.map(() => makeAC())
+
+    // Parent abort → sub controllers link.
+    let _parentSig = null
+    try {
+      if (ctx?.callerSessionId) {
+        const { getAbortSignalForSession } = await import('./session/abort-lookup.mjs')
+        _parentSig = await getAbortSignalForSession(ctx.callerSessionId)
+      }
+    } catch { /* best-effort */ }
+
+    if (_parentSig) {
+      if (_parentSig.aborted) {
+        syncSubControllers.forEach(ac => { try { ac?.abort() } catch {} })
+      } else {
+        _parentSig.addEventListener('abort', () => {
+          syncSubControllers.forEach(ac => { try { ac?.abort() } catch {} })
+        }, { once: true })
+      }
+    }
+
+    // Hard-error escalation tracking.
+    let _hardErrorEscalated = false
+    const _escapedSettled = []
+
+    const promises = queries.map((q, i) => {
+      const key = buildQueryCacheKey(name, q, resolvedCwd, brief)
+      const subSignal = syncSubControllers[i]?.signal ?? null
+      const p = runCachedQuery(name, key, async () => {
+        const llm = makeBridgeLlm({
+          role: spec.role, cwd: resolvedCwd, brief,
+          parentSessionId: ctx?.callerSessionId || null,
+          parentSignal: subSignal,
         })
-      }),
+        return llm({ prompt: spec.build(q, resolvedCwd) })
+      })
+      p.then(
+        (val) => { _escapedSettled[i] = { status: 'fulfilled', value: val } },
+        (err) => {
+          _escapedSettled[i] = { status: 'rejected', reason: err }
+          if (!_hardErrorEscalated && isHardSubError(err)) {
+            _hardErrorEscalated = true
+            // Abort siblings.
+            syncSubControllers.forEach((ac, j) => { if (j !== i) try { ac?.abort() } catch {} })
+          }
+        },
+      )
+      return p
+    })
+
+    // Deadline timer.
+    let _deadlineTimer = null
+    let _deadlineFired = false
+    const _deadlineMs = _FANOUT_DEADLINE_MS
+    const _deadlinePromise = new Promise((resolve) => {
+      _deadlineTimer = setTimeout(() => {
+        _deadlineFired = true
+        syncSubControllers.forEach(ac => { try { ac?.abort() } catch {} })
+        resolve('__deadline__')
+      }, _deadlineMs)
+      if (typeof _deadlineTimer?.unref === 'function') _deadlineTimer.unref()
+    })
+
+    // Race: all subs settle vs deadline.
+    await Promise.race([Promise.allSettled(promises), _deadlinePromise])
+    clearTimeout(_deadlineTimer)
+
+    // Build settled from what resolved so far.
+    const settled = await Promise.allSettled(
+      promises.map((p, i) =>
+        _escapedSettled[i] !== undefined
+          ? Promise.resolve(_escapedSettled[i].status === 'fulfilled'
+              ? _escapedSettled[i].value
+              : Promise.reject(_escapedSettled[i].reason))
+          : Promise.race([p, Promise.resolve(undefined).then(() => Promise.reject(new Error('sub-agent timed out (deadline)')))])
+      ),
     )
+
+    const completedCount = settled.filter(r => r.status === 'fulfilled' || (r.status === 'rejected' && !String(r.reason?.message || '').includes('timed out'))).length
+    const partialInfo = _deadlineFired
+      ? { completed: completedCount, total: queries.length, deadlineSecs: Math.round(_deadlineMs / 1000) }
+      : null
+
     let merged
     if (name === 'explore') {
-      merged = mergeExploreSettled(settled, queries, spec.label)
+      merged = mergeExploreSettled(settled, queries, spec.label, partialInfo)
       const warn = buildBroadCwdWarning(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
       if (warn) merged = warn + merged
     } else {
-      merged = queries.length === 1
-        ? (settled[0].status === 'fulfilled'
-            ? (settled[0].value || '(no response)')
-            : `[${spec.label} error] ${settled[0].reason?.message || String(settled[0].reason)}`)
-        : settled.map((r, i) => {
-            const header = `### Query ${i + 1}: ${queries[i]}`
-            if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
-            return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
-          }).join('\n\n---\n\n')
+      merged = _mergeRecallSearchSettled(settled, queries, spec.label, partialInfo)
     }
+
     // All-failed detection: every entry rejected, OR every fulfilled value is
     // a config-error marker. Surface as MCP isError so caller doesn't merge
     // the failures back into context as if they were normal results.
@@ -799,6 +909,14 @@ export async function dispatchAiWrapped(name, args, ctx) {
       r.status === 'rejected'
       || (typeof r.value === 'string' && /\[search-config-error[^\]]*\]/.test(r.value))
     )
+    // Hard-error escalation: any hard sub error and not all already covered.
+    if (_hardErrorEscalated && !allFailed) {
+      const hardFailed = settled.filter(r => r.status === 'rejected' && isHardSubError(r.reason)).length
+      const okCount = settled.filter(r => r.status === 'fulfilled').length
+      if (okCount === 0) return fail(merged)
+      // Partial-error: some completed, annotate but don't fail the whole call.
+      process.stderr.write(`[ai-wrapped-dispatch] partial-error: ${hardFailed} hard errors, ${okCount} ok — escalated\n`)
+    }
     if (allFailed) return fail(merged)
     return ok(appendRetrievalCompleteHint(name, merged, queries.length))
   }
@@ -853,38 +971,103 @@ export async function dispatchAiWrapped(name, args, ctx) {
       }).catch(() => {});
     }
   } catch {}
-  Promise.allSettled(
-    queries.map((q) => {
+  // Background fan-out with parent abort cascade + deadline.
+  ;(async () => {
+    // Parent signal for background path — caller abort wires into sub controllers.
+    let _bgParentSig = null
+    try {
+      if (ctx?.callerSessionId) {
+        const { getAbortSignalForSession } = await import('./session/abort-lookup.mjs')
+        _bgParentSig = await getAbortSignalForSession(ctx.callerSessionId)
+      }
+    } catch { /* best-effort */ }
+
+    const bgSubControllers = queries.map(() => { try { return new AbortController() } catch { return null } })
+
+    if (_bgParentSig) {
+      if (_bgParentSig.aborted) {
+        bgSubControllers.forEach(ac => { try { ac?.abort() } catch {} })
+      } else {
+        _bgParentSig.addEventListener('abort', () => {
+          bgSubControllers.forEach(ac => { try { ac?.abort() } catch {} })
+        }, { once: true })
+      }
+    }
+
+    let _bgHardErrorEscalated = false
+    const _bgEscapedSettled = []
+
+    const bgPromises = queries.map((q, i) => {
       const key = buildQueryCacheKey(name, q, resolvedCwd, brief)
-      return runCachedQuery(name, key, async () => {
-        const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief, parentSessionId: ctx?.callerSessionId || null })
+      const subSig = bgSubControllers[i]?.signal ?? null
+      const p = runCachedQuery(name, key, async () => {
+        const llm = makeBridgeLlm({
+          role: spec.role, cwd: resolvedCwd, brief,
+          parentSessionId: ctx?.callerSessionId || null,
+          parentSignal: subSig,
+        })
         return llm({ prompt: spec.build(q, resolvedCwd) })
       })
-    }),
-  ).then((settled) => {
+      p.then(
+        (val) => { _bgEscapedSettled[i] = { status: 'fulfilled', value: val } },
+        (err) => {
+          _bgEscapedSettled[i] = { status: 'rejected', reason: err }
+          if (!_bgHardErrorEscalated && isHardSubError(err)) {
+            _bgHardErrorEscalated = true
+            bgSubControllers.forEach((ac, j) => { if (j !== i) try { ac?.abort() } catch {} })
+            const bgEntry = _dispatchResults.get(id)
+            if (bgEntry && bgEntry.status === 'running') bgEntry.status = 'partial-error'
+          }
+        },
+      )
+      return p
+    })
+
+    let _bgDeadlineTimer = null
+    let _bgDeadlineFired = false
+    const _bgDeadlineMs = _FANOUT_DEADLINE_MS
+    const _bgDeadlinePromise = new Promise((resolve) => {
+      _bgDeadlineTimer = setTimeout(() => {
+        _bgDeadlineFired = true
+        bgSubControllers.forEach(ac => { try { ac?.abort() } catch {} })
+        resolve('__deadline__')
+      }, _bgDeadlineMs)
+      if (typeof _bgDeadlineTimer?.unref === 'function') _bgDeadlineTimer.unref()
+    })
+
+    await Promise.race([Promise.allSettled(bgPromises), _bgDeadlinePromise])
+    clearTimeout(_bgDeadlineTimer)
+
+    const settled = await Promise.allSettled(
+      bgPromises.map((p, i) =>
+        _bgEscapedSettled[i] !== undefined
+          ? (_bgEscapedSettled[i].status === 'fulfilled'
+              ? Promise.resolve(_bgEscapedSettled[i].value)
+              : Promise.reject(_bgEscapedSettled[i].reason))
+          : Promise.resolve(undefined).then(() => Promise.reject(new Error('sub-agent timed out (deadline)'))),
+      ),
+    )
+
+    const bgCompletedCount = settled.filter(r => r.status === 'fulfilled' || (r.status === 'rejected' && !String(r.reason?.message || '').includes('timed out'))).length
+    const bgPartialInfo = _bgDeadlineFired
+      ? { completed: bgCompletedCount, total: queries.length, deadlineSecs: Math.round(_bgDeadlineMs / 1000) }
+      : null
+
     let merged
     if (name === 'explore') {
-      merged = mergeExploreSettled(settled, queries, spec.label)
+      merged = mergeExploreSettled(settled, queries, spec.label, bgPartialInfo)
       const warn = buildBroadCwdWarning(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
       if (warn) merged = warn + merged
     } else {
-      merged = queries.length === 1
-        ? (settled[0].status === 'fulfilled'
-            ? (settled[0].value || '(no response)')
-            : `[${spec.label} error] ${settled[0].reason?.message || String(settled[0].reason)}`)
-        : settled.map((r, i) => {
-            const header = `### Query ${i + 1}: ${queries[i]}`
-            if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
-            return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
-          }).join('\n\n---\n\n')
+      merged = _mergeRecallSearchSettled(settled, queries, spec.label, bgPartialInfo)
     }
     _pruneDispatchResults()
     const entry = _dispatchResults.get(id)
+    const allFailed = settled.every(r =>
+      r.status === 'rejected'
+      || (typeof r.value === 'string' && /\[search-config-error[^\]]*\]/.test(r.value))
+    )
     if (entry) {
-      const allFailed = settled.every(r =>
-        r.status === 'rejected'
-        || (typeof r.value === 'string' && /\[search-config-error[^\]]*\]/.test(r.value))
-      )
       entry.status = allFailed ? 'error' : 'done'
       entry.isError = allFailed
       entry.content = merged
@@ -897,7 +1080,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
       return
     }
     pushDispatchResult(ctx, id, name, queries, merged, { error: allFailed })
-  }).catch((err) => {
+  })().catch((err) => {
     const msg = err?.message || String(err)
     _pruneDispatchResults()
     const entry = _dispatchResults.get(id)

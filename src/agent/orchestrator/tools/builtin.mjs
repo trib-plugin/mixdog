@@ -476,6 +476,90 @@ function capShellOutput(content) {
 const READ_MAX_SIZE_BYTES = 256 * 1024;
 const READ_MAX_OUTPUT_BYTES = 100 * 1024;
 
+// --- PDF text extraction (pdf-parse CJS via createRequire) ---
+import { createRequire as _createRequire } from 'module';
+const _require = _createRequire(import.meta.url);
+async function _extractPdfText(fullPath, pagesArg) {
+    try {
+        const pdfParse = _require('pdf-parse');
+        const buf = readFileSync(fullPath);
+        // Parse page range: "1-5", "3", "10-20" (1-based, max 20 pages)
+        let pageFilter = null;
+        if (pagesArg && typeof pagesArg === 'string') {
+            const m = pagesArg.trim().match(/^(\d+)(?:-(\d+))?$/);
+            if (m) {
+                const from = parseInt(m[1], 10);
+                const to = m[2] ? Math.min(parseInt(m[2], 10), from + 19) : from;
+                pageFilter = { from, to };
+            }
+        }
+        let pageTexts = [];
+        const data = await pdfParse(buf, {
+            pagerender: (pageData) => {
+                const pageNum = pageData.pageIndex + 1;
+                if (pageFilter && (pageNum < pageFilter.from || pageNum > pageFilter.to)) return Promise.resolve('');
+                return pageData.getTextContent().then(tc => {
+                    const text = tc.items.map(i => i.str).join(' ');
+                    pageTexts.push({ page: pageNum, text });
+                    return text;
+                });
+            },
+        });
+        let out;
+        if (pageFilter) {
+            out = pageTexts.map(p => `--- Page ${p.page} ---\n${p.text}`).join('\n\n');
+        } else {
+            out = data.text || '';
+        }
+        // Trim to output cap with a continuation hint
+        if (out.length > READ_MAX_OUTPUT_BYTES) {
+            out = out.slice(0, READ_MAX_OUTPUT_BYTES) + `\n\n... [PDF output truncated at ${Math.round(READ_MAX_OUTPUT_BYTES/1024)} KB; use pages param to narrow]`;
+        }
+        return out || '(no text content extracted from PDF)';
+    } catch (err) {
+        return `Error: pdf-parse failed — ${err instanceof Error ? err.message : String(err)}`;
+    }
+}
+
+// --- .ipynb notebook text extraction (no external deps) ---
+function _extractIpynbText(fullPath) {
+    try {
+        const raw = readFileSync(fullPath, 'utf-8');
+        const nb = JSON.parse(raw);
+        const cells = Array.isArray(nb.cells) ? nb.cells : [];
+        const parts = [];
+        for (const cell of cells) {
+            const src = Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');
+            if (cell.cell_type === 'markdown') {
+                parts.push(src);
+            } else if (cell.cell_type === 'code') {
+                let block = src;
+                const outputs = Array.isArray(cell.outputs) ? cell.outputs : [];
+                for (const out of outputs) {
+                    const data = out.data || {};
+                    if (data['text/plain']) {
+                        const txt = Array.isArray(data['text/plain']) ? data['text/plain'].join('') : data['text/plain'];
+                        block += '\n# Output:\n' + txt;
+                    } else if (out.text) {
+                        const txt = Array.isArray(out.text) ? out.text.join('') : out.text;
+                        block += '\n# Output:\n' + txt;
+                    } else if (data['image/png'] || data['image/jpeg']) {
+                        block += '\n# Output: [image output omitted]';
+                    }
+                }
+                parts.push('```python\n' + block + '\n```');
+            }
+        }
+        let out = parts.join('\n\n');
+        if (out.length > READ_MAX_OUTPUT_BYTES) {
+            out = out.slice(0, READ_MAX_OUTPUT_BYTES) + `\n\n... [notebook output truncated at ${Math.round(READ_MAX_OUTPUT_BYTES/1024)} KB]`;
+        }
+        return out || '(empty notebook)';
+    } catch (err) {
+        return `Error: ipynb parse failed — ${err instanceof Error ? err.message : String(err)}`;
+    }
+}
+
 // Binary detection: reading a PNG / ELF / zip / compressed blob as utf-8
 // pollutes the context with U+FFFD characters and wastes tokens. Sample the
 // first 4 KB and look for a null byte — the canonical signal that the file
@@ -742,15 +826,17 @@ export const BUILTIN_TOOLS = [
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         description: 'Read file(s). `path` accepts a single string or array (`["a.mjs","b.mjs"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. Do not repeat an identical read on the same file/range — open a wider window or different range instead.',
+        description: 'Read file(s). `path` accepts a single string or array (`["a.mjs","b.mjs"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead.',
         inputSchema: {
             type: 'object',
             properties: {
                 path: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'File path string, or array of paths for parallel multi-file read.' },
                 mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'], description: 'full (default) | head | tail | count.' },
                 n: { type: 'number', description: 'Lines for head / tail mode. Default 20.' },
-                offset: { type: 'number', description: 'Start line for full mode (0-based).' },
+                offset: { type: 'number', description: 'Start line for full mode (0-based; mixdog convention).' },
                 limit: { type: 'number', description: 'Max lines for full mode (default 2000).' },
                 full: { type: 'boolean', description: 'Opt out of the big-file head/tail cap. Default false.' },
+                pages: { type: 'string', description: 'PDF only: page range to extract, e.g. "1-5", "3", "10-20". Max 20 pages.' },
             },
             required: ['path'],
         },
@@ -783,7 +869,7 @@ export const BUILTIN_TOOLS = [
                     description: 'Array of edits. Each may specify its own `path`; otherwise reuses top-level `path`. Same-file edits sequential, cross-file parallel.',
                 },
             },
-            required: [],
+            anyOf: [{ required: ['path', 'old_string', 'new_string'] }, { required: ['edits'] }],
         },
     },
     {
@@ -810,7 +896,7 @@ export const BUILTIN_TOOLS = [
                     description: 'Batch whole-file writes. Use when creating/replacing several files in one call.',
                 },
             },
-            required: [],
+            anyOf: [{ required: ['path', 'content'] }, { required: ['writes'] }],
         },
     },
     {
@@ -822,7 +908,7 @@ export const BUILTIN_TOOLS = [
             type: 'object',
             properties: {
                 command: { type: 'string', description: 'Shell command.' },
-                timeout: { type: 'number', description: 'ms, default 1800000 (30 min). Set a smaller value for short commands.' },
+                timeout: { type: 'number', description: 'ms, default 120000 (2 min). Set a larger value for long-running commands.' },
                 merge_stderr: { type: 'boolean', description: 'Merge stderr into stdout (2>&1). Default false: stderr surfaced as separate `[stderr]` block.' },
                 run_in_background: { type: 'boolean', description: 'Run command in the background and return a job id immediately. Use for long builds/tests/servers.' },
                 persistent: { type: 'boolean', description: 'Keep shell state (cwd, env, venv, functions) across calls. One shared shell per session.' },
@@ -876,7 +962,7 @@ export const BUILTIN_TOOLS = [
         name: 'glob',
         title: 'Glob',
         annotations: { title: 'Glob', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'File path search via `rg --files`. `pattern` accepts a single glob string (use `{a,b}` brace expansion for compact alternation: `pattern:"**/*.{mjs,json}"`) OR an array of globs (`pattern:["**/*route*.mjs","**/*policy*.json"]`). Prefer the array form when categories are genuinely independent; do not emit two `glob` calls in the same assistant turn — merge them into one call with all requested categories. Use `grep` for in-file content search.',
+        description: 'File path search via `rg --files`. Returns paths sorted by modification time (newest first). `pattern` accepts a single glob string (use `{a,b}` brace expansion for compact alternation: `pattern:"**/*.{mjs,json}"`) OR an array of globs (`pattern:["**/*route*.mjs","**/*policy*.json"]`). Prefer the array form when categories are genuinely independent; do not emit two `glob` calls in the same assistant turn — merge them into one call with all requested categories. Use `grep` for in-file content search.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -1213,11 +1299,12 @@ function _isSnapshotStale(stat, snapshot, fullPath = '') {
     if (Math.abs(stat.mtimeMs - snapshot.mtimeMs) > 1) return true;
     // Same-mtime contentHash mismatch on full snapshots: in-place rewrite
     // with identical length within FS timestamp resolution.
-    if (snapshot.contentHash && _snapshotCoversFullFile(snapshot)) {
+    if (snapshot.contentHash) {
+        if (!fullPath) return false;
         try {
-            const cur = readFileSync(fullPath || '', 'utf-8');
+            const cur = readFileSync(fullPath, 'utf-8');
             if (cur && _hashText(cur) !== snapshot.contentHash) return true;
-        } catch { /* fullPath not threaded through stat — caller falls back to _readContentIfSnapshotHashMatches */ }
+        } catch { /* stat race or unreadable — skip hash check */ }
     }
     // CC parity: same-mtime size drift counts as stale. NTFS / exFAT
     // 1 s mtime resolution lets a fast rewrite preserve mtimeMs while
@@ -2462,6 +2549,7 @@ export function buildGrepRgArgs(parts) {
         if (beforeN !== null) rgArgs.push('-B', String(beforeN));
         if (afterN !== null) rgArgs.push('-A', String(afterN));
         if (contextN !== null) rgArgs.push('-C', String(contextN));
+        rgArgs.push('--max-columns=500', '--max-columns-preview');
     }
     if (caseInsensitive) rgArgs.push('-i');
     if (multilineMode) rgArgs.push('-U', '--multiline-dotall');
@@ -3252,6 +3340,10 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // Race detected — fall through to fresh read below.
             }
             if (st.size > READ_MAX_SIZE_BYTES) {
+                // Large PDF/ipynb: extract text regardless of range args
+                const _extLarge = extname(fullPath).toLowerCase();
+                if (_extLarge === '.pdf') return _extractPdfText(fullPath, args.pages);
+                if (_extLarge === '.ipynb') return _extractIpynbText(fullPath);
                 if (!hasRangeArgs) {
                     return `Error: file size ${st.size} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap. Use offset+limit to read a range.`;
                 }
@@ -3289,6 +3381,10 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
                 }
             }
+            // Non-text special formats: intercept before binary check
+            const _ext = extname(fullPath).toLowerCase();
+            if (_ext === '.pdf') return _extractPdfText(fullPath, args.pages);
+            if (_ext === '.ipynb') return _extractIpynbText(fullPath);
             if (isBinaryFile(fullPath)) {
                 return `Error: file appears to be binary (contains null bytes): ${normalizeOutputPath(filePath)}`;
             }
@@ -3410,6 +3506,18 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                                 const _existing = statSync(fullPath);
                                 if (_existing.isFile() && !_getReadSnapshot(fullPath, readStateScope)) {
                                     return `FAIL ${normalizeOutputPath(filePath)}: file exists but has not been read yet — read before overwriting`;
+                                }
+                                if (_existing.isFile()) {
+                                    const _bsnap = _getReadSnapshot(fullPath, readStateScope);
+                                    if (_bsnap && !_snapshotCoversFullFile(_bsnap)) {
+                                        return `FAIL ${normalizeOutputPath(filePath)}: partial-read snapshot — read full file before overwriting`;
+                                    }
+                                    if (_bsnap && _isSnapshotStale(_existing, _bsnap, fullPath)) {
+                                        const _bhashOk = _readContentIfSnapshotHashMatches(fullPath, _bsnap);
+                                        if (_bhashOk === null) {
+                                            return `FAIL ${normalizeOutputPath(filePath)}: file modified since read — read it again before overwriting`;
+                                        }
+                                    }
                                 }
                             } catch { /* doesn't exist — new-file write OK */ }
                             try {
@@ -3623,6 +3731,12 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     }
                 }
                 try {
+                    try {
+                        const _editSz = statSync(fullPath).size;
+                        if (_editSz > 1073741824) {
+                            return `Error: edit refused: file too large (size: ${_editSz}B, cap: 1GiB)`;
+                        }
+                    } catch { /* statSync failed — fall through to readFileSync error */ }
                     let content = editPreloadedContent === null
                         ? readFileSync(fullPath, 'utf-8')
                         : editPreloadedContent;

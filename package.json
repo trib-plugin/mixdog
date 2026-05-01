@@ -1,6 +1,6 @@
 {
   "name": "mixdog",
-  "version": "0.1.269",
+  "version": "0.1.270",
   "description": "Claude Code all-in-one agent plugin — autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing.",
   "author": "jyp8877 <dev@tribgames.com>",
   "license": "MIT",
@@ -45,15 +45,16 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
-    "@huggingface/transformers": "^3.5.0",
     "@ast-grep/cli": "^0.42.1",
     "@google/generative-ai": "^0.24.0",
+    "@huggingface/transformers": "^3.5.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@mozilla/readability": "^0.6.0",
     "diff": "^9.0.0",
     "discord.js": "^14.14.0",
     "jsdom": "^26.0.0",
     "openai": "^5.8.0",
+    "pdf-parse": "^2.4.5",
     "puppeteer-core": "^24.9.0",
     "zod": "^3.23.8",
     "zod-to-json-schema": "^3.25.2"

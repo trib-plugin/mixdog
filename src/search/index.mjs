@@ -517,7 +517,7 @@ async function writeStartupSnapshot() {
 
 const _searchInFlight = new Map()
 
-async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) {
+async function _searchCore(args, { config, usageState, cacheState, timeoutMs, signal }) {
   // Apply config-derived API keys to process.env for this call only; delete
   // keys that did not exist before so they don't survive across requests.
   const runtimeEnv = buildRuntimeEnv(config)
@@ -537,6 +537,7 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) 
         site: args.site,
         type: 'web',
         maxResults: args.maxResults || getRawSearchMaxResults(config),
+        signal,
       })
       noteProviderSuccess(usageState, 'xai', {
         lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
@@ -593,6 +594,7 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) 
       ...args,
       providers,
       maxResults: args.maxResults || getRawSearchMaxResults(config),
+      signal,
     })
 
     noteProviderSuccess(usageState, response.usedProvider, {
@@ -845,7 +847,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: toolDefinitions.filter(t => t.public !== false),
 }))
 
-async function handleToolCall(name, rawArgs) {
+async function handleToolCall(name, rawArgs, { signal } = {}) {
   const config = loadConfig()
   const usageState = loadUsageState()
   const cacheState = loadCacheState()
@@ -867,22 +869,50 @@ async function handleToolCall(name, rawArgs) {
       if (Array.isArray(args.keywords) && args.keywords.length > 1) {
         const dedupedKeywords = [...new Set(args.keywords.map(kw => String(kw || '').trim()).filter(Boolean))]
         const fanOutAbort = new AbortController()
-        const settled = await Promise.allSettled(
-          dedupedKeywords.map(async (kw) => {
-            const sub = await handleToolCall('search', { ...rawArgs, keywords: kw, _abortSignal: fanOutAbort.signal })
-            const text = (sub.content || []).filter(p => p.type === 'text').map(p => p.text).join('\n')
-            return `### Query: ${kw}\n\n${text}`
-          })
-        )
+        const deadlineSec = Math.max(1, Number(process.env.SEARCH_FANOUT_DEADLINE_S) || 180)
+        const deadlineMs = deadlineSec * 1000
+        let deadlineTimer
+        const deadlineRace = new Promise((_res, rej) => {
+          deadlineTimer = setTimeout(() => {
+            fanOutAbort.abort(new Error(`fan-out deadline exceeded (${deadlineSec}s)`))
+            rej(Object.assign(new Error(`fan-out deadline exceeded (${deadlineSec}s)`), { _deadline: true }))
+          }, deadlineMs)
+        })
+        let settled
+        try {
+          settled = await Promise.race([
+            Promise.allSettled(
+              dedupedKeywords.map(async (kw) => {
+                const sub = await handleToolCall('search', { ...rawArgs, keywords: kw }, { signal: fanOutAbort.signal })
+                if (fanOutAbort.signal.aborted) throw fanOutAbort.signal.reason
+                const text = (sub.content || []).filter(p => p.type === 'text').map(p => p.text).join('\n')
+                return `### Query: ${kw}\n\n${text}`
+              })
+            ),
+            deadlineRace,
+          ])
+        } catch (err) {
+          if (!err._deadline) throw err
+          // Deadline hit — partial: mark all still-pending as rejected
+          settled = dedupedKeywords.map((_kw, i) =>
+            settled?.[i] ?? { status: 'rejected', reason: fanOutAbort.signal.reason }
+          )
+        } finally {
+          clearTimeout(deadlineTimer)
+        }
+        const anyFulfilled = settled.some(r => r.status === 'fulfilled')
         const sections = settled.map((r, i) =>
           r.status === 'fulfilled'
             ? r.value
             : `### Query: ${dedupedKeywords[i]}\n\n[error] ${r.reason?.message || r.reason}`
         )
-        return { content: [{ type: 'text', text: sections.join('\n\n---\n\n') }] }
+        return {
+          content: [{ type: 'text', text: sections.join('\n\n---\n\n') }],
+          ...(anyFulfilled ? {} : { isError: true }),
+        }
       }
       try {
-        const result = await _searchCore(args, { config, usageState, cacheState, timeoutMs })
+        const result = await _searchCore(args, { config, usageState, cacheState, timeoutMs, signal })
         saveUsageState(usageState)
         return formattedText('search', result)
       } catch (error) {

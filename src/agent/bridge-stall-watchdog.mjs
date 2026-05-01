@@ -39,11 +39,11 @@ const ROLE_THRESHOLDS_S = {
     debugger: 600,
     tester: 600,
     worker: 600,
-    explorer: 600,
-    'recall-agent': 600,
-    'search-agent': 600,
-    'cycle1-agent': 600,
-    'cycle2-agent': 600,
+    explorer: 240,
+    'recall-agent': 240,
+    'search-agent': 240,
+    'cycle1-agent': 300,
+    'cycle2-agent': 300,
 };
 
 // Per-role override for the tool_running window. Without an entry the default
@@ -52,6 +52,9 @@ const ROLE_THRESHOLDS_S = {
 // tightening these caps recovers a stuck fan-out shard inside ~5 min instead
 // of waiting out the full 20 min default and starving the rest of the cycle.
 const ROLE_TOOL_THRESHOLDS_S = {
+    explorer: 180,
+    'recall-agent': 180,
+    'search-agent': 180,
     'cycle1-agent': 300,
     'cycle2-agent': 300,
 };
