@@ -522,6 +522,10 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs, si
   // keys that did not exist before so they don't survive across requests.
   const runtimeEnv = buildRuntimeEnv(config)
   const _envAdded = []
+  // Hoisted so the outer `finally` can safely reference it even when an early
+  // throw/return (e.g. xai.x_search route, no-providers guard) fires before
+  // the cache key is built.
+  let searchCacheKey
   for (const [k, v] of Object.entries(runtimeEnv)) {
     if (k in process.env) continue
     process.env[k] = v
@@ -565,7 +569,7 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs, si
     throw err
   }
 
-  const searchCacheKey = buildCacheKey('search', {
+  searchCacheKey = buildCacheKey('search', {
     keywords: Array.isArray(args.keywords) ? [...args.keywords] : args.keywords,
     providers,
     site: args.site || null,
