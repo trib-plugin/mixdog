@@ -90,6 +90,11 @@ function assertPublicUrl(url) {
 
   const hostname = parsed.hostname.toLowerCase()
 
+  // Reject userinfo (user:pass@host) — credential-injection / SSRF vector
+  if (parsed.username || parsed.password) {
+    throw new Error(`Blocked URL with userinfo credentials: ${hostname}`)
+  }
+
   // Localhost
   if (hostname === 'localhost') {
     throw new Error(`Blocked request to private address: ${hostname}`)
@@ -246,6 +251,19 @@ const MAX_REDIRECTS = 5
 const MAX_BODY_BYTES = 10 * 1024 * 1024
 
 async function readBodyWithCap(response, maxBytes) {
+  // Reject non-text content-types early; decode by content-type charset.
+  const contentType = (response.headers.get('content-type') || '').toLowerCase()
+  if (contentType) {
+    const isText = contentType.includes('text/') || contentType.includes('/html') ||
+      contentType.includes('/xml') || contentType.includes('/json') ||
+      contentType.includes('javascript') || contentType.includes('application/x-www-form-urlencoded')
+    if (!isText) {
+      throw new Error(`Blocked non-text content-type: ${contentType.split(';')[0].trim()}`)
+    }
+  }
+  const charsetMatch = contentType.match(/charset=([\w-]+)/i)
+  const charset = charsetMatch ? charsetMatch[1] : 'utf-8'
+
   const contentLength = Number(response.headers.get('content-length') || 0)
   if (contentLength > maxBytes) {
     throw new Error(`response body too large: Content-Length=${contentLength} > cap=${maxBytes}`)
@@ -275,7 +293,7 @@ async function readBodyWithCap(response, maxBytes) {
   } finally {
     try { reader.releaseLock() } catch {}
   }
-  const decoder = new TextDecoder('utf-8', { fatal: false })
+  const decoder = new TextDecoder(charset, { fatal: false })
   let text = ''
   for (const chunk of chunks) text += decoder.decode(chunk, { stream: true })
   text += decoder.decode()
@@ -285,6 +303,7 @@ async function readBodyWithCap(response, maxBytes) {
 async function fetchHtml(url, timeoutMs) {
   const controller = new AbortController()
   const timer = withTimeout(controller, timeoutMs)
+  const originalHost = new URL(url).hostname.replace(/^www\./, '')
   try {
     let currentUrl = url
     for (let hops = 0; ; hops++) {
@@ -302,8 +321,13 @@ async function fetchHtml(url, timeoutMs) {
         if (!location) {
           throw new Error(`Redirect ${response.status} without Location header`)
         }
-        currentUrl = new URL(location, currentUrl).toString()
-        assertPublicUrl(currentUrl)
+        const nextUrl = new URL(location, currentUrl).toString()
+        assertPublicUrl(nextUrl)
+        const nextHost = new URL(nextUrl).hostname.replace(/^www\./, '')
+        if (nextHost !== originalHost) {
+          throw new Error(`cross-host redirect blocked (redirected_to: ${nextUrl})`)
+        }
+        currentUrl = nextUrl
         continue
       }
       if (!response.ok) {
@@ -335,9 +359,11 @@ function resolveBrowserLaunchOptions() {
   return { channel: 'chrome' }
 }
 
-// SSRF note: Puppeteer manages its own network stack so redirect interception
-// is not practical here. The primary defense is assertPublicUrl() called on
-// the original URL before scrapeWithPuppeteer is invoked (via scrapeUrl).
+// SSRF: Puppeteer follows redirects through its own network stack, so the
+// initial assertPublicUrl() check is insufficient — a redirect to a private
+// address (10.x, 169.254.169.254 metadata IMDS, etc.) would land before we
+// re-validated finalUrl. Use request interception to validate every nav
+// request URL up-front and abort before the browser issues the connection.
 async function scrapeWithPuppeteer(url, timeoutMs) {
   let browser
   try {
@@ -352,6 +378,28 @@ async function scrapeWithPuppeteer(url, timeoutMs) {
 
   try {
     const page = await browser.newPage()
+    // Per-request SSRF gate: validate every navigation/sub-resource URL
+    // before the network call goes out. assertPublicUrl throws on private
+    // / blocked protocols; we abort the request on throw so the browser
+    // never opens a socket to the private address.
+    try {
+      await page.setRequestInterception(true)
+      page.on('request', async (req) => {
+        try {
+          const reqUrl = req.url()
+          assertPublicUrl(reqUrl)
+          if (req.isNavigationRequest()) {
+            await assertResolvedIps(new URL(reqUrl).hostname)
+          }
+          req.continue()
+        } catch {
+          try { req.abort() } catch {}
+        }
+      })
+    } catch {
+      // If interception isn't available on this puppeteer build, fall back
+      // to the post-nav assert below — strictly worse but still gated.
+    }
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'ko,en;q=0.8',
     })
@@ -408,8 +456,15 @@ async function scrapeWithFirecrawl(url, timeoutMs) {
     }
 
     const payload = await response.json()
-    const markdown = payload?.data?.markdown || payload?.markdown || ''
+    let markdown = payload?.data?.markdown || payload?.markdown || ''
     const title = payload?.data?.metadata?.title || payload?.metadata?.title || ''
+    // Local size cap: Firecrawl can return arbitrarily large markdown that
+    // bypasses MAX_BODY_BYTES (which only gates raw fetch responses).
+    // Truncate so a hostile or huge page can't flood the agent context.
+    if (typeof markdown === 'string' && markdown.length > MAX_BODY_BYTES) {
+      markdown = markdown.slice(0, MAX_BODY_BYTES)
+        + `\n\n[firecrawl: truncated at ${MAX_BODY_BYTES} bytes]`
+    }
     return buildContentPayload(url, title, markdown, 'firecrawl')
   } finally {
     clearTimeout(timer)

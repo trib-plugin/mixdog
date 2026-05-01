@@ -9,7 +9,7 @@
  */
 import { createServer } from 'http';
 import { randomBytes, createHash } from 'crypto';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, openSync, closeSync, renameSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { getPluginData } from '../config.mjs';
@@ -144,7 +144,41 @@ function loadTokens() {
     return null;
 }
 function saveTokens(tokens) {
-    writeFileSync(getOwnTokenPath(), JSON.stringify(tokens, null, 2));
+    // Cross-process safe: take an exclusive lockfile (O_EXCL), write to a
+    // temp file, fsync via writeFileSync flush semantics, then atomically
+    // rename onto the destination. The lock prevents two concurrent refresh
+    // paths from clobbering each other; the rename guarantees readers either
+    // see the old or new file, never a half-written one.
+    const target = getOwnTokenPath();
+    const lockPath = target + '.lock';
+    const tmpPath = target + '.tmp.' + process.pid + '.' + Date.now();
+    const deadline = Date.now() + 5000;
+    let lockFd = null;
+    while (true) {
+        try {
+            lockFd = openSync(lockPath, 'wx');
+            break;
+        } catch (err) {
+            if (err?.code !== 'EEXIST') throw err;
+            if (Date.now() > deadline) {
+                // Stale lock cleanup: best-effort unlink and one more attempt.
+                try { unlinkSync(lockPath); } catch {}
+                lockFd = openSync(lockPath, 'wx');
+                break;
+            }
+            // Brief spin (synchronous; refresh runs at most once per ~hour).
+            const until = Date.now() + 25;
+            while (Date.now() < until) { /* spin */ }
+        }
+    }
+    try {
+        writeFileSync(tmpPath, JSON.stringify(tokens, null, 2));
+        renameSync(tmpPath, target);
+    } finally {
+        try { if (lockFd !== null) closeSync(lockFd); } catch {}
+        try { unlinkSync(lockPath); } catch {}
+        try { unlinkSync(tmpPath); } catch {}
+    }
 }
 function extractAccountId(token) {
     try {

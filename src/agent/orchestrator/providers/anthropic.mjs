@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { loadConfig } from '../config.mjs';
-import { sanitizeToolPairs } from '../session/trim.mjs';
+import { sanitizeToolPairs, sanitizeAnthropicContentPairs } from '../session/trim.mjs';
 
 // 4-BP cache policy aligned with anthropic-oauth — tools + system + tier3
 // + messages-tail. 1h TTL requires the extended-cache-ttl beta header,
@@ -165,7 +165,7 @@ function toAnthropicMessages(
             : m.content;
         result.push({ role: m.role, content });
     }
-    return result;
+    return sanitizeAnthropicContentPairs(result);
 }
 function parseToolCalls(response) {
     const blocks = response.content.filter((b) => b.type === 'tool_use');

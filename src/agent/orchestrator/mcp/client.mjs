@@ -1,9 +1,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
+import { randomUUID } from 'crypto';
 import { DEFAULT_MARKETPLACE } from '../../../shared/plugin-paths.mjs';
 // --- Types ---
 /** Known auto-detect targets: port file path relative to tmpdir.
@@ -65,7 +66,7 @@ export async function executeMcpTool(name, args) {
         throw new Error(`MCP server "${serverName}" not connected`);
     let result;
     try {
-        result = await server.client.callTool({ name: toolName, arguments: args });
+        result = await _callToolWithTimeout(server, toolName, args);
     } catch (firstErr) {
         const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
         process.stderr.write(`[mcp-client] Tool call failed, attempting reconnect...\n`);
@@ -80,8 +81,11 @@ export async function executeMcpTool(name, args) {
             throw new Error(`Tool call failed: ${firstMsg}; reconnect also failed: ${reconnectMsg}`);
         }
         const retryServer = servers.get(serverName);
+        if (!retryServer) {
+            throw new Error(`Tool call failed: ${firstMsg}; reconnect succeeded but server "${serverName}" entry is missing from registry`);
+        }
         try {
-            result = await retryServer.client.callTool({ name: toolName, arguments: args });
+            result = await _callToolWithTimeout(retryServer, toolName, args);
         } catch (retryErr) {
             const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
             throw new Error(`Tool call failed: ${firstMsg}; retry after reconnect also failed: ${retryMsg}`);
@@ -108,13 +112,50 @@ export async function executeMcpTool(name, args) {
 // head slice is what the model sees.
 const MCP_OUTPUT_MAX_CHARS = 100_000;
 
+// MCP per-tool-call timeout. Hung servers used to leak the awaited
+// callTool promise forever, blocking the agent turn. We race against a
+// reject and on expiry close the transport (server.client.close()) so
+// the next dispatch reconnects fresh.
+const MCP_CALL_TIMEOUT_MS = 60_000;
+
+async function _callToolWithTimeout(server, toolName, args) {
+    let timer;
+    const timeout = new Promise((_, rej) => {
+        timer = setTimeout(() => {
+            try { server.client.close().catch(() => {}); } catch { /* ignore */ }
+            rej(new Error(`MCP tool call timed out after ${MCP_CALL_TIMEOUT_MS}ms (server="${server.name}", tool="${toolName}")`));
+        }, MCP_CALL_TIMEOUT_MS);
+        if (timer.unref) timer.unref();
+    });
+    try {
+        return await Promise.race([
+            server.client.callTool({ name: toolName, arguments: args }),
+            timeout,
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
 function capMcpOutput(content) {
     const s = typeof content === 'string' ? content : String(content ?? '');
     if (s.length <= MCP_OUTPUT_MAX_CHARS) return s;
     const head = s.slice(0, MCP_OUTPUT_MAX_CHARS);
     const tail = s.slice(MCP_OUTPUT_MAX_CHARS);
     const remainingLines = (tail.match(/\n/g) || []).length + 1;
-    return `${head}\n\n... [${remainingLines} lines truncated] ...`;
+    // Spill the full body to a tmp file so the caller can recover the
+    // truncated tail via FileRead instead of losing it to the head cap.
+    let spillPath = null;
+    try {
+        const dir = join(tmpdir(), 'mixdog-mcp-output');
+        mkdirSync(dir, { recursive: true });
+        spillPath = join(dir, `mcp-${Date.now()}-${randomUUID().slice(0, 8)}.txt`);
+        writeFileSync(spillPath, s, 'utf-8');
+    } catch { /* spill best-effort */ }
+    const marker = spillPath
+        ? `\n\n... [${remainingLines} lines truncated; full output spilled to ${spillPath}] ...`
+        : `\n\n... [${remainingLines} lines truncated] ...`;
+    return `${head}${marker}`;
 }
 /**
  * Check if a tool name is an MCP tool.
@@ -158,8 +199,15 @@ export async function disconnectAll() {
 export function loadMcpConfig(configPath) {
     if (!existsSync(configPath))
         return {};
+    let raw;
     try {
-        const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+        raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[mcp-client] Failed to parse config ${configPath}: ${msg}\n`);
+        return {};
+    }
+    try {
         const mcpServers = raw.mcpServers || raw;
         const result = {};
         for (const [name, cfg] of Object.entries(mcpServers)) {
@@ -230,7 +278,7 @@ async function connectServer(name, cfg) {
             env: {
                 ...process.env,
                 CLAUDE_PLUGIN_ROOT: resolved.dir,
-                CLAUDE_PLUGIN_DATA: join(homedir(), '.claude', 'plugins', 'data', `${pluginName}-${DEFAULT_MARKETPLACE}`),
+                CLAUDE_PLUGIN_DATA: join(homedir(), '.claude', 'plugins', 'data', `${cfg.pluginCache}-${DEFAULT_MARKETPLACE}`),
             },
         });
         process.stderr.write(`[mcp-client] Connecting "${name}" via ${resolved.source}\n`);
@@ -250,7 +298,12 @@ async function connectServer(name, cfg) {
         if (spec.portField) {
             try {
                 const json = JSON.parse(raw);
-                port = json[spec.portField];
+                const v = json[spec.portField];
+                port = (typeof v === 'number' && Number.isFinite(v)) ? v : Number(v);
+                if (!Number.isFinite(port)) {
+                    process.stderr.write(`[mcp-client] "${name}" autoDetect: portField "${spec.portField}" is not numeric in ${portFile}, skipping\n`);
+                    return;
+                }
             }
             catch {
                 process.stderr.write(`[mcp-client] "${name}" autoDetect: failed to parse JSON in ${portFile}, skipping\n`);
@@ -260,7 +313,7 @@ async function connectServer(name, cfg) {
         else {
             port = parseInt(raw, 10);
         }
-        if (!port || port < 1 || port > 65535) {
+        if (!Number.isFinite(port) || port < 1 || port > 65535) {
             process.stderr.write(`[mcp-client] "${name}" autoDetect: invalid port in ${portFile}, skipping\n`);
             return;
         }

@@ -79,8 +79,10 @@ export function prepareBridgeSession({
             sessionId: session.id,
             role: role || null,
             presetName: presetName || null,
-            model: runtimeSpec?.model || null,
-            provider: runtimeSpec?.provider || null,
+            // runtimeSpec carries scopeKey/lane but resolveRuntimeSpec does not
+            // populate model/provider — fall back to preset fields.
+            model: runtimeSpec?.model || preset?.model || null,
+            provider: runtimeSpec?.provider || preset?.provider || null,
             parentSessionId: parentSessionId || null,
             permission: permission || null,
             sourceName: sourceName || null,

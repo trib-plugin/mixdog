@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join } from "path";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { join, dirname } from "path";
 import { homedir } from "os";
 import { DATA_DIR } from "./config.mjs";
 const CACHE_FILE = join(DATA_DIR, "holidays-cache.json");
@@ -25,6 +25,7 @@ function loadCache(year, countryCode) {
 function saveCache(year, countryCode, holidays) {
   const cache = { year, countryCode, fetchedAt: Date.now(), holidays };
   try {
+    mkdirSync(dirname(CACHE_FILE), { recursive: true });
     writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
   } catch {
   }

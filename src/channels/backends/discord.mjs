@@ -223,7 +223,8 @@ class DiscordBackend {
     });
     const readyPromise = new Promise((resolve, reject) => {
       this.client.once("ready", () => resolve());
-      setTimeout(() => reject(new Error("discord ready timeout (30s)")), 3e4);
+      const readyTimeout = setTimeout(() => reject(new Error("discord ready timeout (30s)")), 3e4);
+      this.client.once("ready", () => clearTimeout(readyTimeout));
     });
     await this.client.login(this.token);
     await readyPromise;
@@ -241,7 +242,7 @@ class DiscordBackend {
       clearInterval(interval);
     }
     this.typingIntervals.clear();
-    this.client.destroy();
+    if (this.client) this.client.destroy();
   }
   resetSendCount() {
     this.sendCount = 0;
@@ -343,8 +344,9 @@ class DiscordBackend {
   async editMessage(chatId, messageId, text, opts) {
     const ch = await this.fetchAllowedChannel(chatId);
     const msg = await ch.messages.fetch(messageId);
+    const trimmedText = text && text.length > MAX_CHUNK_LIMIT ? text.slice(0, MAX_CHUNK_LIMIT) : text;
     const edited = await msg.edit({
-      content: text || null,
+      content: trimmedText || null,
       ...opts?.embeds ? { embeds: opts.embeds } : {},
       ...opts?.components ? { components: opts.components } : {}
     });
@@ -424,7 +426,7 @@ class DiscordBackend {
   saveAccess(a) {
     if (this.isStatic) return;
     if (!this.configFile) return;
-    void withConfigLock(() => {
+    return withConfigLock(() => {
       mkdirSync(this.stateDir, { recursive: true, mode: 448 });
       const current = (() => {
         try {
@@ -683,6 +685,12 @@ class DiscordBackend {
       throw new Error(`attachment download failed: HTTP ${res.status}`);
     }
     const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length === 0) {
+      throw new Error(`attachment download returned empty buffer: ${att.name ?? att.id}`);
+    }
+    if (att.size > 0 && buf.length !== att.size) {
+      process.stderr.write(`mixdog discord: attachment size mismatch: expected ${att.size} got ${buf.length} (${att.name ?? att.id})\n`);
+    }
     const name = att.name ?? `${att.id}`;
     const rawExt = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : "bin";
     const ext = rawExt.replace(/[^a-zA-Z0-9]/g, "") || "bin";

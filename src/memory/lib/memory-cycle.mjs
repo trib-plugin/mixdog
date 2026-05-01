@@ -35,19 +35,38 @@ function _writeDirtyIds(db, ids) {
   }
 }
 
+// #41: Concurrent markEmbeddingDirty/_removeDirty calls would race the
+// read-modify-write on the meta JSON blob (call A reads {1,2}, call B
+// reads {1,2}, A writes {1,2,3}, B writes {1,2,4} — id 3 lost). Wrap
+// every dirty-queue mutation in a single SQLite transaction so the
+// meta row's read+update is serialized by the database lock.
 export function markEmbeddingDirty(db, rootId) {
   const id = Number(rootId)
   if (!Number.isFinite(id)) return
-  const cur = _readDirtyIds(db)
-  if (cur.has(id)) return
-  cur.add(id)
-  _writeDirtyIds(db, cur)
+  try {
+    db.exec('BEGIN IMMEDIATE')
+    const cur = _readDirtyIds(db)
+    if (cur.has(id)) { db.exec('COMMIT'); return }
+    cur.add(id)
+    _writeDirtyIds(db, cur)
+    db.exec('COMMIT')
+  } catch (err) {
+    try { db.exec('ROLLBACK') } catch {}
+    process.stderr.write(`[embed-sync] markEmbeddingDirty txn failed: ${err.message}\n`)
+  }
 }
 
 function _removeDirty(db, rootId) {
-  const cur = _readDirtyIds(db)
-  if (!cur.delete(Number(rootId))) return
-  _writeDirtyIds(db, cur)
+  try {
+    db.exec('BEGIN IMMEDIATE')
+    const cur = _readDirtyIds(db)
+    if (!cur.delete(Number(rootId))) { db.exec('COMMIT'); return }
+    _writeDirtyIds(db, cur)
+    db.exec('COMMIT')
+  } catch (err) {
+    try { db.exec('ROLLBACK') } catch {}
+    process.stderr.write(`[embed-sync] _removeDirty txn failed: ${err.message}\n`)
+  }
 }
 
 const _flushInFlight = new WeakMap()
@@ -103,25 +122,24 @@ export async function syncRootEmbedding(db, rootId) {
     markEmbeddingDirty(db, rootId)
     return false
   }
-  // #9: vector dim must match the vec_entries table's declared dims. A
-  // mismatch corrupts vec0 silently, so refuse the write and re-queue.
+  const blob = Buffer.alloc(vector.length * 4)
+  for (let i = 0; i < vector.length; i++) blob.writeFloatLE(vector[i], i * 4)
+  // #9: wrap dim-check + entries + vec_entries write in one transaction so
+  // a concurrent dim-config switch cannot land between the check and the
+  // vec0 write (which would silently corrupt vec_entries on mismatch),
+  // and a partial failure cannot leave the two tables out of sync.
   try {
+    db.exec('BEGIN')
     const dimsRow = db.prepare(`SELECT value FROM meta WHERE key = 'embedding.current_dims'`).get()
     const expected = Number(dimsRow?.value ?? 0)
     if (Number.isFinite(expected) && expected > 0 && vector.length !== expected) {
+      db.exec('ROLLBACK')
       process.stderr.write(
         `[embed-sync] dim mismatch (id=${rootId} got=${vector.length} expected=${expected})\n`,
       )
       markEmbeddingDirty(db, rootId)
       return false
     }
-  } catch {}
-  const blob = Buffer.alloc(vector.length * 4)
-  for (let i = 0; i < vector.length; i++) blob.writeFloatLE(vector[i], i * 4)
-  // #9: wrap entries + vec_entries write in one transaction so a partial
-  // failure cannot leave the two tables out of sync.
-  try {
-    db.exec('BEGIN')
     db.prepare(`UPDATE entries SET embedding = ? WHERE id = ? AND is_root = 1`).run(blob, rootId)
     const upd = db.prepare(`UPDATE vec_entries SET embedding = ? WHERE rowid = ?`).run(blob, BigInt(rootId))
     if (Number(upd.changes ?? 0) === 0) {
@@ -139,11 +157,16 @@ export async function syncRootEmbedding(db, rootId) {
 }
 
 export function deleteRootEmbedding(db, rootId) {
+  // Wrap entries + vec_entries delete in one transaction so a crash between
+  // the two writes can't leave a vec0 row pointing at a now-detached entry.
   try {
+    db.exec('BEGIN')
     db.prepare(`UPDATE entries SET embedding = NULL WHERE id = ? AND is_root = 1`).run(rootId)
     db.prepare(`DELETE FROM vec_entries WHERE rowid = ?`).run(BigInt(rootId))
+    db.exec('COMMIT')
     return true
   } catch (err) {
+    try { db.exec('ROLLBACK') } catch {}
     process.stderr.write(`[embed-sync] delete failed (id=${rootId}): ${err.message}\n`)
     return false
   }

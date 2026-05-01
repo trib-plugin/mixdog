@@ -60,6 +60,9 @@ export function callBridgeLlm(opts = {}, prompt) {
     const timer = setTimeout(() => {
       if (!pending.has(callId)) return
       pending.delete(callId)
+      try {
+        process.send({ type: 'agent_ipc_cancel', callId })
+      } catch {}
       reject(new Error(`agent-ipc: timed out after ${timeoutMs}ms`))
     }, timeoutMs)
     pending.set(callId, {

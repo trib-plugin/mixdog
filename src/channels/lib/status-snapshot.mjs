@@ -19,7 +19,6 @@ import { DATA_DIR } from './config.mjs';
 
 const SNAPSHOT_DIR  = path.join(DATA_DIR, 'channels');
 const SNAPSHOT_PATH = path.join(SNAPSHOT_DIR, 'status-snapshot.json');
-const SNAPSHOT_TMP  = path.join(SNAPSHOT_DIR, 'status-snapshot.json.tmp');
 const INTERVAL_MS   = 10_000;
 
 // ── In-memory Discord unread tracking ────────────────────────────────────────
@@ -225,15 +224,16 @@ async function writeSnapshot(scheduler) {
   try {
     const snap = await computeSnapshot(scheduler);
     fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
-    fs.writeFileSync(SNAPSHOT_TMP, JSON.stringify(snap, null, 2), 'utf8');
-    fs.renameSync(SNAPSHOT_TMP, SNAPSHOT_PATH);
+    const tmpPath = SNAPSHOT_PATH + `.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(snap, null, 2), 'utf8');
+    fs.renameSync(tmpPath, SNAPSHOT_PATH);
   } catch (err) {
     // Non-fatal — statusline degrades gracefully when snapshot is absent.
     process.stderr.write(
       `mixdog status-snapshot: write failed: ${err?.message ?? err}\n`
     );
     // Clean up tmp if it exists
-    try { fs.unlinkSync(SNAPSHOT_TMP); } catch {}
+    // (tmp name is ephemeral — no reliable path to clean up on error)
   }
 }
 
@@ -274,5 +274,4 @@ export function stopSnapshotWriter() {
     _snapshotTimer = null;
   }
   try { fs.unlinkSync(SNAPSHOT_PATH); } catch {}
-  try { fs.unlinkSync(SNAPSHOT_TMP); } catch {}
 }

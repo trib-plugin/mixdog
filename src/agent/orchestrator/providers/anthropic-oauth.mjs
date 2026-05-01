@@ -17,7 +17,7 @@ import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { writeFileSync, existsSync as _existsSync } from 'fs';
 import { getPluginData } from '../config.mjs';
 import { enrichModels } from './model-catalog.mjs';
-import { sanitizeToolPairs } from '../session/trim.mjs';
+import { sanitizeToolPairs, sanitizeAnthropicContentPairs } from '../session/trim.mjs';
 
 // --- Model catalog cache helpers ---
 // Disk-backed cache so repeated process starts (cron, tool calls) don't
@@ -421,7 +421,7 @@ function toAnthropicMessages(
             : m.content;
         result.push({ role: m.role, content });
     }
-    return result;
+    return sanitizeAnthropicContentPairs(result);
 }
 
 // --- SSE parser ---

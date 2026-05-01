@@ -179,11 +179,23 @@ const TOOL_ARG_KEYS = {
 
 const REDACT_KEY_RE = /token|secret|password|passwd|credential|authorization|api[_-]?key/i;
 const BODY_KEY_RE = /content|old_string|new_string|patch|rewrite/i;
+// Redact bash `command` values that look like they carry secrets.
+const SHELL_SECRET_RE = /(?:^|\s)(?:export\s+\w+=\S+|PASSWORD=|SECRET=|TOKEN=|API_KEY=)/i;
+
+function _redactShellCommand(cmd) {
+    if (typeof cmd !== 'string') return cmd;
+    // Replace assignment RHS that looks like a secret token/password.
+    return cmd.replace(/((?:PASSWORD|SECRET|TOKEN|API_KEY|APIKEY)\s*=\s*)\S+/gi, '$1[redacted]');
+}
 
 function compactTraceArgValue(value, key = '', depth = 0) {
     if (REDACT_KEY_RE.test(key)) return '[redacted]';
     if (value === null || value === undefined) return value;
     if (typeof value === 'string') {
+        // Redact shell commands that embed secrets before length-truncating.
+        if (key === 'command') {
+            value = _redactShellCommand(value);
+        }
         const limit = BODY_KEY_RE.test(key) ? 60 : 180;
         return value.length > limit ? `${value.slice(0, limit)}...` : value;
     }
@@ -258,6 +270,17 @@ export function traceBridgeBatch({ sessionId, toolCallCount }) {
     });
 }
 
+function _sanitizeSample(sample, toolName) {
+    if (sample == null) return sample;
+    if (typeof sample === 'string') {
+        return compactTraceArgValue(sample, '', 0);
+    }
+    if (typeof sample === 'object') {
+        return compactTraceArgValue(sample, '', 0);
+    }
+    return sample;
+}
+
 function traceToolLoopDetected({ sessionId, iteration, info }) {
     appendBridgeTrace({
         sessionId,
@@ -267,8 +290,8 @@ function traceToolLoopDetected({ sessionId, iteration, info }) {
         tool_name: info.toolName,
         error_category: info.errorCategory,
         attempt_count: info.attemptCount,
-        args_sample: info.argsSample,
-        error_sample: info.errorSample,
+        args_sample: _sanitizeSample(info.argsSample, info.toolName),
+        error_sample: _sanitizeSample(info.errorSample, info.toolName),
     });
 }
 
@@ -284,8 +307,8 @@ function traceToolLoopAborted({ sessionId, iteration, info }) {
         family_key: info.familyKey || null,
         threshold: info.threshold ?? null,
         tools: Array.isArray(info.tools) ? info.tools : null,
-        args_sample: info.argsSample,
-        error_sample: info.errorSample,
+        args_sample: _sanitizeSample(info.argsSample, info.toolName),
+        error_sample: _sanitizeSample(info.errorSample, info.toolName),
     });
 }
 

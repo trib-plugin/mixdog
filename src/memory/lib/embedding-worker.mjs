@@ -16,6 +16,8 @@ let extractorPromise = null
 let configuredDtype = DEFAULT_DTYPE
 let _device = 'cpu'
 let _idleTimer = null
+let _embedInFlight = false
+const _msgQueue = []
 let ortPatched = false
 
 function resetIdleTimer() {
@@ -104,13 +106,19 @@ async function loadExtractor() {
   return extractorPromise
 }
 
-parentPort.on('message', async (msg) => {
+async function processMessage(msg) {
   const { id, action } = msg
   try {
     switch (action) {
       case 'embed': {
         resetIdleTimer()
         const extractor = await loadExtractor()
+        if (_embedInFlight) {
+          // Re-queue behind current — serialize all embed calls
+          _msgQueue.push(msg)
+          return
+        }
+        _embedInFlight = true
         const t0 = Date.now()
         const output = await extractor(msg.text, { pooling: 'mean', normalize: true })
         const wallMs = Date.now() - t0
@@ -118,13 +126,15 @@ parentPort.on('message', async (msg) => {
         const vector = Array.from(output.data ?? [])
         parentPort.postMessage({ id, type: 'result', vector, dims, wallMs, device: _device, dtype: configuredDtype })
         break
+        // _embedInFlight cleared in finally below
       }
       case 'warmup': {
         const extractor = await loadExtractor()
         const t0 = Date.now()
-        await extractor('warmup', { pooling: 'mean', normalize: true })
+        const warmupOutput = await extractor('warmup', { pooling: 'mean', normalize: true })
         const wallMs = Date.now() - t0
-        parentPort.postMessage({ id, type: 'result', dims: DEFAULT_DIMS, wallMs, device: _device, dtype: configuredDtype })
+        const measuredDims = warmupOutput.data?.length || DEFAULT_DIMS
+        parentPort.postMessage({ id, type: 'result', dims: measuredDims, wallMs, device: _device, dtype: configuredDtype })
         parentPort.postMessage({ type: 'profile', record: { phase: 'warmup', model: MODEL_ID, device: _device, dtype: configuredDtype, wallMs } })
         resetIdleTimer()
         break
@@ -163,5 +173,24 @@ parentPort.on('message', async (msg) => {
     }
   } catch (err) {
     parentPort.postMessage({ id, type: 'error', message: err?.message || String(err) })
+    if (action === 'embed') _embedInFlight = false
   }
+}
+
+async function drainQueue() {
+  while (_msgQueue.length > 0) {
+    const next = _msgQueue.shift()
+    _embedInFlight = false
+    await processMessage(next)
+  }
+  _embedInFlight = false
+}
+
+parentPort.on('message', async (msg) => {
+  if (msg.action === 'embed' && _embedInFlight) {
+    _msgQueue.push(msg)
+    return
+  }
+  await processMessage(msg)
+  if (msg.action === 'embed') await drainQueue()
 })

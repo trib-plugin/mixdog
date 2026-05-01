@@ -48,7 +48,17 @@ let _instance = null
 
 export function loadUsageState() {
   if (_instance) return _instance
-  const state = readJson(USAGE_PATH, defaultState())
+  const raw = readJson(USAGE_PATH, null)
+  const def = defaultState()
+  const state = raw && typeof raw === 'object' ? {
+    ...def,
+    ...raw,
+    providers: { ...(raw.providers || {}) },
+    routingCache: {
+      rawBySite: { ...(def.routingCache.rawBySite), ...(raw.routingCache?.rawBySite || {}) },
+      scrapeByHost: { ...(def.routingCache.scrapeByHost), ...(raw.routingCache?.scrapeByHost || {}) },
+    },
+  } : def
   _instance = state
   activeUsageState = state
   return state
@@ -108,7 +118,8 @@ export function rankProviders(baseProviders, state, site) {
   const filtered = baseProviders.filter(provider => {
     const info = state.providers?.[provider]
     if (!info?.cooldownUntil) return true
-    return new Date(info.cooldownUntil).getTime() <= currentTime
+    const t = new Date(info.cooldownUntil).getTime()
+    return !Number.isFinite(t) || t <= currentTime
   })
 
   const ranked = filtered.length > 0 ? filtered : [...baseProviders]

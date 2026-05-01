@@ -206,6 +206,10 @@ export class GeminiProvider {
     cacheManager;
     config;
     _geminiSessionCaches = new Map();
+    // Dedupe concurrent cache-create misses for the same cacheIndex. A second
+    // _doSend racing the first would otherwise create a duplicate cached
+    // resource (BP1 spend doubles) and the loser's create wins the map slot.
+    _geminiCacheInFlight = new Map();
 
     constructor(config) {
         this.config = config;
@@ -298,24 +302,54 @@ export class GeminiProvider {
                 : [{ role: 'user', parts: [{ text: '.' }] }]
         );
 
-        const cachedContent = await this.cacheManager.create({
-            model: useModel,
-            contents: createContents,
-            ttlSeconds: 3600,
-            ...(geminiTools ? { tools: geminiTools } : {}),
-            ...(systemInstruction ? { systemInstruction } : {}),
-            displayName: `mixdog-bridge-${cacheIndex.slice(0, 60)}`,
-        });
-        if (signal?.aborted) {
-            const reason = signal.reason;
-            throw reason instanceof Error ? reason : new Error('Gemini cache creation aborted by session close');
+        // Dedupe concurrent misses: if another caller is already creating a
+        // cache for this exact cacheIndex, await its result instead of issuing
+        // a parallel create.
+        let inFlight = this._geminiCacheInFlight.get(cacheIndex);
+        if (!inFlight) {
+            const createOpts = signal ? { signal } : undefined;
+            const createPromise = (async () => {
+                const cachedContent = await this.cacheManager.create({
+                    model: useModel,
+                    contents: createContents,
+                    ttlSeconds: 3600,
+                    ...(geminiTools ? { tools: geminiTools } : {}),
+                    ...(systemInstruction ? { systemInstruction } : {}),
+                    displayName: `mixdog-bridge-${cacheIndex.slice(0, 60)}`,
+                }, createOpts);
+                if (signal?.aborted) {
+                    const reason = signal.reason;
+                    throw reason instanceof Error ? reason : new Error('Gemini cache creation aborted by session close');
+                }
+                this._geminiSessionCaches.set(cacheIndex, {
+                    cachedContent,
+                    shapeFingerprint,
+                    prefixSnapshot,
+                    createdAt: Date.now(),
+                });
+                return cachedContent;
+            })().finally(() => {
+                if (this._geminiCacheInFlight.get(cacheIndex) === inFlight) {
+                    this._geminiCacheInFlight.delete(cacheIndex);
+                }
+            });
+            inFlight = createPromise;
+            this._geminiCacheInFlight.set(cacheIndex, inFlight);
         }
-        this._geminiSessionCaches.set(cacheIndex, {
-            cachedContent,
-            shapeFingerprint,
-            prefixSnapshot,
-            createdAt: now,
-        });
+        // Race the in-flight create against the caller's signal so an abort
+        // discards the wait without forcing the shared create to cancel.
+        const cachedContent = await (signal ? new Promise((resolve, reject) => {
+            const onAbort = () => {
+                const reason = signal.reason;
+                reject(reason instanceof Error ? reason : new Error('Gemini cache creation aborted by session close'));
+            };
+            if (signal.aborted) { onAbort(); return; }
+            signal.addEventListener('abort', onAbort, { once: true });
+            inFlight.then(
+                (v) => { signal.removeEventListener('abort', onAbort); resolve(v); },
+                (e) => { signal.removeEventListener('abort', onAbort); reject(e); },
+            );
+        }) : inFlight);
         return this.genAI.getGenerativeModelFromCachedContent(cachedContent);
     }
 

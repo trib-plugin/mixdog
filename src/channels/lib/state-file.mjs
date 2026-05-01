@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { mkdirSync, openSync, fsyncSync, closeSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { dirname } from "path";
+let _tmpSeq = 0;
 function ensureDir(dirPath) {
   mkdirSync(dirPath, { recursive: true });
 }
@@ -24,35 +25,34 @@ function writeTextFile(filePath, value) {
   writeFileSync(filePath, value);
 }
 function writeJsonFile(filePath, value) {
-  const tmpPath = filePath + ".tmp";
+  const tmpPath = `${filePath}.${process.pid}.${++_tmpSeq}.tmp`;
   ensureDir(dirname(filePath));
   writeFileSync(tmpPath, JSON.stringify(value));
-  for (let attempt = 0; attempt < 3; attempt++) {
+  try {
+    const fd = openSync(tmpPath, "r+");
     try {
-      renameSync(tmpPath, filePath);
-      return;
+      fsyncSync(fd);
     } catch (e) {
-      if (e.code !== "EPERM" || attempt === 2) {
-        try {
-          unlinkSync(filePath);
-        } catch {
-        }
-        try {
-          renameSync(tmpPath, filePath);
-          return;
-        } catch {
-        }
-        writeFileSync(filePath, readFileSync(tmpPath));
-        try {
-          unlinkSync(tmpPath);
-        } catch {
-        }
-        return;
-      }
-      const start = Date.now();
-      while (Date.now() - start < 50) {
-      }
+      if (e.code !== 'EPERM' && e.code !== 'ENOTSUP') throw e;
+      process.stderr.write(`[state-file] fsync unsupported on platform for ${filePath}: ${e.code}\n`);
+    } finally {
+      closeSync(fd);
     }
+  } catch (e) {
+    if (e.code !== 'EPERM' && e.code !== 'ENOTSUP') throw e;
+    process.stderr.write(`[state-file] fsync open unsupported on platform for ${filePath}: ${e.code}\n`);
+  }
+  try {
+    renameSync(tmpPath, filePath);
+  } catch (e) {
+    process.stderr.write(`[state-file] rename failed for ${filePath}: ${e?.code || e?.message}\n`);
+    throw e;
+  }
+  try {
+    const dfd = openSync(dirname(filePath), "r");
+    try { fsyncSync(dfd); } finally { closeSync(dfd); }
+  } catch (e) {
+    if (e.code !== "EPERM" && e.code !== "ENOTSUP") throw e;
   }
 }
 class JsonStateFile {

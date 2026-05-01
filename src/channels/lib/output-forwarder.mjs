@@ -269,6 +269,14 @@ class OutputForwarder {
   sending = false;
   sendRetryTimer = null;
   sendQueue = [];
+  // Cap sendQueue length under sustained backpressure (Discord 429 storm,
+  // network outage). When over the cap, the oldest text item is merged
+  // into the next pending text payload so we don't grow unbounded but
+  // also don't lose content.
+  static SEND_QUEUE_MAX = 200;
+  // Persisted final-flush ledger so a forwarder restart can resume final
+  // forwarding instead of giving up after 5 short retries.
+  pendingFinalFlush = false;
   mainSessionId = "";
   watchDebounce = null;
   turnTextBuffer = "";
@@ -463,7 +471,24 @@ class OutputForwarder {
     }
     const chunks = chunk(formatted, 2e3);
     for (const c of chunks) {
-      await this.cb.send(this.channelId, c);
+      try {
+        await this.cb.send(this.channelId, c);
+      } catch (err) {
+        // Discord 429 carries Retry-After (seconds, sometimes ms). Honour
+        // it by stalling the queue instead of hammering the API. The send
+        // is re-thrown so drainQueue's existing retry path picks the
+        // remaining chunks back up after the delay.
+        const status = err?.status ?? err?.code ?? err?.httpStatus;
+        const retryAfter = err?.retryAfter ?? err?.retry_after
+          ?? err?.headers?.["retry-after"] ?? err?.response?.headers?.["retry-after"];
+        if (status === 429 && retryAfter != null) {
+          const ms = Number(retryAfter) > 1000 ? Number(retryAfter) : Number(retryAfter) * 1000;
+          if (Number.isFinite(ms) && ms > 0) {
+            await new Promise((r) => setTimeout(r, Math.min(ms, 60_000)));
+          }
+        }
+        throw err;
+      }
     }
     if (!item.skipHashDedup) {
       this.lastHash = hash;
@@ -492,6 +517,22 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
         this.commitReadProgress(nextFileSize);
       }
       return false;
+    }
+    // Cap-and-merge backpressure guard. When the queue is saturated, fold
+    // the new text into the trailing text item instead of pushing a new
+    // entry. tool-log items stay separate (preformatted) so we only merge
+    // adjacent plain-text frames.
+    if (this.sendQueue.length >= OutputForwarder.SEND_QUEUE_MAX) {
+      for (let i = this.sendQueue.length - 1; i >= 0; i--) {
+        const tail = this.sendQueue[i];
+        if (tail?.type === "text") {
+          tail.text = `${tail.text}\n\n${newText}`;
+          tail.bufferText = `${tail.bufferText}\n\n${newText}`;
+          tail.nextFileSize = nextFileSize;
+          void this.drainQueue();
+          return true;
+        }
+      }
     }
     this.sendQueue.push({
       type: "text",
@@ -563,11 +604,33 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
   async forwardFinalText(retries = 0) {
     if (!this.channelId) return;
     if (this.sending || this.sendQueue.length > 0) {
+      // Mark a durable flush request so a process restart picks it up
+      // instead of dropping the final frame on the floor.
+      try {
+        this.pendingFinalFlush = true;
+        this.updateState((state) => { state.pendingFinalFlush = true; });
+      } catch {}
       if (retries < 5) {
         setTimeout(() => void this.forwardFinalText(retries + 1), 300);
+      } else {
+        // Past the short-retry budget: schedule a longer-tail drain wait so
+        // the final frame still ships once the queue empties, instead of
+        // silently giving up.
+        const waitDrain = () => {
+          if (!this.sending && this.sendQueue.length === 0) {
+            void this.forwardFinalText(0);
+            return;
+          }
+          setTimeout(waitDrain, 1000);
+        };
+        setTimeout(waitDrain, 1000);
       }
       return;
     }
+    try {
+      this.pendingFinalFlush = false;
+      this.updateState((state) => { state.pendingFinalFlush = false; });
+    } catch {}
     this.sending = true;
     try {
       if (this.userMessageId && this.emoji) {

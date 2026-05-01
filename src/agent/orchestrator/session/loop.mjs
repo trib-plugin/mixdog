@@ -462,6 +462,11 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         const startEagerTool = (call) => {
             if (!call?.id || pending.has(call.id) || !isEagerDispatchable(call.name)) return null;
             const toolKind = getToolKind(call.name);
+            // Run role guards before eager execution — same checks as the serial path.
+            const noToolRole = sessionRef?.role === 'cycle1-agent' || sessionRef?.role === 'cycle2-agent';
+            if (noToolRole) return null;
+            if (isBlockedHiddenWrapperCall(call.name, sessionRef)) return null;
+            if (isBlockedDirectHiddenTool(call.name, sessionRef)) return null;
             if (isBlockedByPermission(call.name, toolKind, effectiveToolPermission(sessionRef))) return null;
             const entry = { startedAt: Date.now(), endedAt: null };
             entry.promise = (async () => {

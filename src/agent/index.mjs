@@ -12,6 +12,7 @@ import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory
 import { prepareBridgeSession } from './orchestrator/smart-bridge/session-builder.mjs';
 import { normalizeInputPath } from './orchestrator/tools/builtin.mjs';
 import { traceBridgePreset } from './orchestrator/bridge-trace.mjs';
+import { runWithDispatchRetry, isRecoverableError } from './orchestrator/bridge-retry.mjs';
 import { ensureDataSeeds } from '../shared/seed.mjs';
 import { writeFileSync, readFileSync, existsSync, watch } from 'fs';
 import { join } from 'path';
@@ -49,7 +50,7 @@ function _safeCwdForSpawn(rawCwd) {
 }
 
 function applyRoleDefaults(raw) {
-  const permission = VALID_PERMISSIONS.has(raw.permission) ? raw.permission : 'full';
+  const permission = raw.permission;
   const desc_path = typeof raw.desc_path === 'string' ? raw.desc_path : null;
 
   return {
@@ -346,7 +347,12 @@ const TOOLS = [
         file: { type: 'string', description: 'Read prompt from a file path.' },
         cwd: { type: 'string', description: 'Working directory for bridge agent tool execution.' },
       },
-      required: ['prompt', 'role'],
+      required: ['role'],
+      oneOf: [
+        { required: ['prompt'] },
+        { required: ['file'] },
+        { required: ['ref'] },
+      ],
     },
   },
 ];
@@ -503,7 +509,19 @@ export async function handleToolCall(name, args, opts = {}) {
         const shouldWait = args.wait === false ? false : !!args.prompt;
         if (shouldWait) {
           try {
-            const result = await askSession(session.id, args.prompt);
+            let askAborted = false;
+            const onAbort = () => {
+              askAborted = true;
+              try { closeSession(session.id, 'request-aborted'); } catch {}
+            };
+            if (requestSignal) requestSignal.addEventListener('abort', onAbort, { once: true });
+            let result;
+            try {
+              result = await askSession(session.id, args.prompt);
+            } finally {
+              if (requestSignal) requestSignal.removeEventListener('abort', onAbort);
+            }
+            if (askAborted) return fail('bridge_spawn: request aborted');
             return ok({
               sessionId: session.id,
               profileId: session.profileId,
@@ -530,7 +548,19 @@ export async function handleToolCall(name, args, opts = {}) {
         const message = args.message;
         if (!sessionId || !message) return fail('bridge_send: sessionId and message are required');
         try {
-          const result = await askSession(sessionId, message);
+          let sendAborted = false;
+          const onAbort = () => {
+            sendAborted = true;
+            try { closeSession(sessionId, 'request-aborted'); } catch {}
+          };
+          if (requestSignal) requestSignal.addEventListener('abort', onAbort, { once: true });
+          let result;
+          try {
+            result = await askSession(sessionId, message);
+          } finally {
+            if (requestSignal) requestSignal.removeEventListener('abort', onAbort);
+          }
+          if (sendAborted) return fail(`bridge_send: request aborted`);
           return ok({
             sessionId,
             response: result.content,
@@ -783,17 +813,18 @@ export async function handleToolCall(name, args, opts = {}) {
         // explicitly through close_session(sessionId).
         const bridgeDetached = true;
         if (bridgeDetached && requestSignal) {
-          const onRequestAbortIgnored = () => {
+          const onRequestAbort = () => {
             try {
               process.stderr.write(
-                `[bridge] request aborted after detach; session continues: session=${session.id} role=${role} job=${jobId}\n`,
+                `[bridge] MCP request aborted — closing detached session: session=${session.id} role=${role} job=${jobId}\n`,
               );
+              closeSession(session.id, 'request-abort');
             } catch { /* best-effort */ }
           };
           if (requestSignal.aborted) {
-            queueMicrotask(onRequestAbortIgnored);
+            queueMicrotask(onRequestAbort);
           } else {
-            try { requestSignal.addEventListener('abort', onRequestAbortIgnored, { once: true }); } catch { /* ignore */ }
+            try { requestSignal.addEventListener('abort', onRequestAbort, { once: true }); } catch { /* ignore */ }
           }
         }
         // Short model tag for bridge worker lifecycle notifications.
@@ -835,6 +866,11 @@ export async function handleToolCall(name, args, opts = {}) {
           emit,
         });
 
+        // Track the active session id across retry attempts (may be replaced
+        // on each retry by a fresh session — the outer `session` binding is
+        // the first attempt; activeSession is updated per attempt and hoisted
+        // outside the IIFE so the .catch() handler can reference it).
+        let activeSession = session;
         (async () => {
           const t0 = Date.now();
           let completed = true;
@@ -844,7 +880,7 @@ export async function handleToolCall(name, args, opts = {}) {
           let lastIteration = 0;
           let stallWatch = { stop() {}, fired() { return false; } };
           try {
-            updateSessionStatus(session.id, 'running');
+            updateSessionStatus(activeSession.id, 'running');
             // Bridge Start — silent_to_agent so the "started" lifecycle ping
             // surfaces on Discord / user terminal but does NOT land in the Lead
             // agent's context (redundant since Lead already knows it just
@@ -859,21 +895,46 @@ export async function handleToolCall(name, args, opts = {}) {
             // and the session isn't in `tool_running`, emit via notifyFn and
             // abort so the outer catch renders a normal error footer.
             stallWatch = startBridgeStallWatchdog({
-              sessionId: session.id,
-              getRuntime: () => getSessionRuntime(session.id),
+              sessionId: activeSession.id,
+              getRuntime: () => getSessionRuntime(activeSession.id),
               getIteration: () => lastIteration,
               abort: (reason) => {
-                const rt = getSessionRuntime(session.id);
+                const rt = getSessionRuntime(activeSession.id);
                 rt?.controller?.abort?.(reason);
               },
               notify: emit,
               modelTag,
               role,
             });
-            result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => {
-              if (typeof iteration === 'number' && iteration > lastIteration) lastIteration = iteration;
-              for (const c of calls) toolCallLog.push({ name: c.name, iteration });
-            }, workerCwd);
+            ({ result } = await runWithDispatchRetry({
+              role,
+              jobId,
+              startAttempt: 0,
+              runFn: async (attempt) => {
+                if (attempt > 0) {
+                  // Fresh session for retry — no message-history carry-over.
+                  try { closeSession(activeSession.id, 'retry-replaced'); } catch {}
+                  const retryBuilt = prepareBridgeSession({
+                    role,
+                    presetName,
+                    preset,
+                    runtimeSpec,
+                    cwd: _safeBridgeCwd,
+                    sourceType: 'lead',
+                    sourceName: role,
+                    parentSessionId: callerSessionId,
+                    cacheKeyOverride: args.cacheKey || undefined,
+                  });
+                  activeSession = retryBuilt.session;
+                  updateSessionStatus(activeSession.id, 'running');
+                  emit(`${modelTag}${role} retry attempt=${attempt}`, { silent_to_agent: true });
+                }
+                return askSession(activeSession.id, prompt, args.context || null, (iteration, calls) => {
+                  if (typeof iteration === 'number' && iteration > lastIteration) lastIteration = iteration;
+                  for (const c of calls) toolCallLog.push({ name: c.name, iteration });
+                }, workerCwd);
+              },
+            }));
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
             // Usage display — `ctx` is the LAST turn's promptTokens (how big
             // the context was at the end, actionable for compaction decisions).
@@ -924,12 +985,12 @@ export async function handleToolCall(name, args, opts = {}) {
                 midstreamRetries: result?.__midstreamRetries ?? null,
                 keys: result && typeof result === 'object' ? Object.keys(result) : null,
               };
-              try { process.stderr.write(`[bridge] empty-content fallback for sessionId=${session?.id ?? 'unknown'} shape=${JSON.stringify(shape)}\n`); } catch {}
+              try { process.stderr.write(`[bridge] empty-content fallback for sessionId=${activeSession?.id ?? 'unknown'} shape=${JSON.stringify(shape)}\n`); } catch {}
               content = '(empty response)';
             }
             const footer = `${modelLabel} · ${ctxTok} ctx · cache ${lastPct}% · ${outTok} out · ${loopNote} · ${elapsed}s`;
             emit(`${modelTag}[${role}] ${content}\n\n${footer}`);
-            updateSessionStatus(session.id, 'idle');
+            updateSessionStatus(activeSession.id, 'idle');
           } catch (err) {
             completed = false;
             errorMessage = err instanceof Error ? err.message : String(err);
@@ -938,7 +999,7 @@ export async function handleToolCall(name, args, opts = {}) {
               // before aborting; whatever error bubbled up here (likely a
               // SessionClosedError or provider-side abort surface) is just
               // the unwind. Mark the session as errored and fall through.
-              updateSessionStatus(session.id, 'error');
+              updateSessionStatus(activeSession.id, 'error');
             } else if (err instanceof SessionClosedError) {
               // Prefer the structured enum on the error; fall back to
               // regex-parsing the message for older call paths that might
@@ -952,20 +1013,20 @@ export async function handleToolCall(name, args, opts = {}) {
               // Cancellation isn't an error; flip to idle so the next sweep
               // pass can reclaim the file instead of leaving a 'running'
               // zombie until the 24h tombstone window expires.
-              updateSessionStatus(session.id, 'idle');
+              updateSessionStatus(activeSession.id, 'idle');
             } else if (err instanceof StreamStalledAbortError) {
               const info = err.info || {};
               const header = `⚠ stream stalled — ${info.staleSeconds}s no delta (stage: ${info.stage || 'unknown'})`;
               emit(`${role} error: ${header}`);
-              updateSessionStatus(session.id, 'error');
+              updateSessionStatus(activeSession.id, 'error');
             } else if (err instanceof ToolLoopAbortError) {
               const info = err.info || {};
               const header = `⚠ tool loop aborted — ${info.attemptCount}× ${info.toolName}:${info.errorCategory}`;
               emit(`${role} error: ${header}`);
-              updateSessionStatus(session.id, 'error');
+              updateSessionStatus(activeSession.id, 'error');
             } else {
               emit(`${role} error: ${errorMessage}`);
-              updateSessionStatus(session.id, 'error');
+              updateSessionStatus(activeSession.id, 'error');
             }
           } finally {
             try { stallWatch.stop(); } catch { /* idempotent */ }
@@ -977,7 +1038,7 @@ export async function handleToolCall(name, args, opts = {}) {
               const cfg = loadConfig();
               if (cfg.trajectory?.enabled !== false) {
                 recordTrajectory({
-                  session_id: session.id,
+                  session_id: activeSession.id,
                   scope: role,
                   preset: presetName,
                   model: modelLabel,
@@ -996,15 +1057,15 @@ export async function handleToolCall(name, args, opts = {}) {
         })().catch((err) => {
           const msg = err instanceof Error ? (err.stack || err.message) : String(err);
           try {
-            process.stderr.write(`[bridge] detached runner unhandled: session=${session.id} role=${role} job=${jobId} ${msg}\n`);
+            process.stderr.write(`[bridge] detached runner unhandled: session=${activeSession?.id ?? session.id} role=${role} job=${jobId} ${msg}\n`);
           } catch {}
-          try { updateSessionStatus(session.id, 'error'); } catch {}
-          try { closeSession(session.id, 'runner-crash'); } catch {}
+          try { updateSessionStatus(activeSession?.id ?? session.id, 'error'); } catch {}
+          try { closeSession(activeSession?.id ?? session.id, 'runner-crash'); } catch {}
         });
 
         return ok({
           jobId,
-          sessionId: session.id,
+          sessionId: activeSession.id,
           role,
           model: modelLabel,
           detached: true,

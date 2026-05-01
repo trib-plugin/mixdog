@@ -24,7 +24,7 @@
  * parsing, and tracing.
  */
 import WebSocket from 'ws';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import {
     extractCachedTokens,
     traceBridgeFetch,
@@ -129,8 +129,12 @@ function _buildHandshakeHeaders({ auth, sessionToken, turnState }) {
     if (sessionToken) {
         const sid = String(sessionToken);
         headers['session_id'] = sid;
-        headers['x-client-request-id'] = sid;
     }
+    // x-client-request-id must be a per-request value so server-side request
+    // traces stay distinguishable across retries / reconnects sharing the same
+    // session_id. Reusing sessionToken (= cacheKey) collapsed every request
+    // for the same conversation onto one trace bucket.
+    headers['x-client-request-id'] = randomBytes(16).toString('hex');
     if (turnState) headers['x-codex-turn-state'] = turnState;
     return headers;
 }
@@ -146,12 +150,21 @@ function _mintSessionToken(cacheKey) {
     return cacheKey || 'mixdog-default';
 }
 
-function _openSocket({ auth, sessionToken, turnState }) {
+function _openSocket({ auth, sessionToken, turnState, externalSignal }) {
     const headers = _buildHandshakeHeaders({ auth, sessionToken, turnState });
     const baseUrl = auth.type === 'openai-direct' ? OPENAI_WS_URL : CODEX_WS_URL;
     const url = baseUrl + (sessionToken ? `?session_id=${encodeURIComponent(String(sessionToken))}` : '');
     return new Promise((resolve, reject) => {
         let settled = false;
+        let abortListener = null;
+        const settle = (ok, val) => {
+            if (settled) return;
+            settled = true;
+            if (abortListener && externalSignal) {
+                try { externalSignal.removeEventListener('abort', abortListener); } catch {}
+            }
+            (ok ? resolve : reject)(val);
+        };
         const socket = new WebSocket(url, { headers, handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS });
         const capturedHeaders = { turnState: null };
         socket.once('upgrade', (res) => {
@@ -161,31 +174,40 @@ function _openSocket({ auth, sessionToken, turnState }) {
             } catch {}
         });
         socket.once('open', () => {
-            if (settled) return;
-            settled = true;
-            resolve({ socket, turnState: capturedHeaders.turnState });
+            settle(true, { socket, turnState: capturedHeaders.turnState });
         });
         socket.once('error', (err) => {
-            if (settled) return;
-            settled = true;
             try { socket.terminate(); } catch {}
-            reject(err);
+            settle(false, err);
         });
         socket.once('unexpected-response', (_req, res) => {
             if (settled) return;
-            settled = true;
             const status = res?.statusCode || 0;
             let body = '';
             res.on('data', c => { if (body.length < 2048) body += c.toString('utf-8'); });
             res.on('end', () => {
                 try { socket.terminate(); } catch {}
-                reject(Object.assign(new Error(`Codex WS handshake ${status}: ${body.slice(0, 200)}`), { httpStatus: status, httpBody: body }));
+                settle(false, Object.assign(new Error(`Codex WS handshake ${status}: ${body.slice(0, 200)}`), { httpStatus: status, httpBody: body }));
             });
         });
+        if (externalSignal) {
+            const onAbort = () => {
+                try { socket.terminate(); } catch {}
+                const reason = externalSignal.reason;
+                settle(false, reason instanceof Error ? reason : new Error('Codex WS handshake aborted'));
+            };
+            if (externalSignal.aborted) { onAbort(); return; }
+            abortListener = onAbort;
+            externalSignal.addEventListener('abort', onAbort, { once: true });
+        }
     });
 }
 
-async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh }) {
+async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh, externalSignal }) {
+    if (externalSignal?.aborted) {
+        const reason = externalSignal.reason;
+        throw reason instanceof Error ? reason : new Error('Codex WS acquire aborted');
+    }
     if (poolKey && !forceFresh) {
         const arr = _wsPool.get(poolKey) || [];
         // Prune dead entries first.
@@ -211,7 +233,7 @@ async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh }) {
         // All entries busy and bucket at cap: fall through to ephemeral socket.
         if (arr.length >= MAX_POOLED_SOCKETS_PER_KEY) {
             const ephSessionToken = _mintSessionToken(cacheKey);
-            const { socket, turnState } = await _openSocket({ auth, sessionToken: ephSessionToken, turnState: null });
+            const { socket, turnState } = await _openSocket({ auth, sessionToken: ephSessionToken, turnState: null, externalSignal });
             const entry = {
                 socket,
                 busy: true,
@@ -234,7 +256,7 @@ async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh }) {
     // returns "No tool output found for function call …". turnState only
     // propagates within a single entry across its own iterations.
     const sessionToken = _mintSessionToken(cacheKey);
-    const { socket, turnState } = await _openSocket({ auth, sessionToken, turnState: null });
+    const { socket, turnState } = await _openSocket({ auth, sessionToken, turnState: null, externalSignal });
     const entry = {
         socket,
         busy: true,
@@ -472,6 +494,7 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
                     if (pending?.callId && pending?.name) {
                         const call = { id: pending.callId, name: pending.name, arguments: args };
                         toolCalls.push(call);
+                        midState.emittedToolCall = true;
                         try { onToolCall?.(call); } catch {}
                     } else {
                         // Synthesizing a `tc_${Date.now()}` callId here would
@@ -550,6 +573,7 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
                                     if (tc.id && tc.name) {
                                         delete tc._deferred;
                                         delete tc._pendingItemId;
+                                        midState.emittedToolCall = true;
                                         try { onToolCall?.(tc); } catch {}
                                     }
                                 }
@@ -575,10 +599,28 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
                     break;
                 }
                 case 'response.done':
-                case 'response.incomplete':
                     done = true;
                     finish();
                     break;
+                case 'response.incomplete': {
+                    // response.incomplete is a server-side abort (max_output_tokens,
+                    // content filter, length, etc.). Surfacing it as success silently
+                    // truncates the turn; convert to a terminal error so the caller
+                    // can decide whether to retry / surface to user.
+                    const reasonObj = event.response?.incomplete_details
+                        || event.incomplete_details
+                        || event.response?.status_details
+                        || null;
+                    const reasonStr = reasonObj?.reason
+                        || event.response?.status
+                        || 'incomplete';
+                    terminalError = Object.assign(
+                        new Error(`Codex WS response.incomplete: ${reasonStr}`),
+                        { responseIncomplete: event, incompleteReason: reasonStr },
+                    );
+                    finish();
+                    break;
+                }
                 case 'response.failed': {
                     // Stash the payload so the mid-stream classifier can sniff
                     // network_error / stream_disconnected without re-parsing.
@@ -618,7 +660,24 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
         };
         errorHandler = (err) => {
             if (done) return;
-            terminalError = err instanceof Error ? err : new Error(String(err));
+            const wrapped = err instanceof Error ? err : new Error(String(err));
+            if (terminalError) {
+                // Preserve the first terminalError; chain the later socket
+                // error in via `cause` (or `suppressed` if cause already set)
+                // so diagnostics keep the original failure visible.
+                try {
+                    if (!terminalError.cause) terminalError.cause = wrapped;
+                    else {
+                        const list = Array.isArray(terminalError.suppressed)
+                            ? terminalError.suppressed
+                            : [];
+                        list.push(wrapped);
+                        terminalError.suppressed = list;
+                    }
+                } catch {}
+            } else {
+                terminalError = wrapped;
+            }
             try { socket.close(4001, 'stream_error'); } catch {}
             finish();
         };
@@ -748,6 +807,17 @@ export function _classifyMidstreamError(err, state) {
     if ((state.attemptIndex | 0) >= 1) return null;
     // Already completed (shouldn't throw, but defensive).
     if (state.sawCompleted) return null;
+    // Any tool call already surfaced to the caller — retrying would
+    // normally duplicate the side effect. EXCEPTION: ws_1000 truncation
+    // (server-side normal close after response.created, before completion)
+    // leaves the caller with an orphaned tool_use that the next turn cannot
+    // pair to a tool_result, which the provider rejects with a hard 400.
+    // The duplicate-side-effect risk is preferable to deterministic worker
+    // death, especially for detached bridges that re-dispatch idempotently.
+    if (state.emittedToolCall) {
+        const _cc = Number(err?.wsCloseCode || state.wsCloseCode || 0);
+        if (!(_cc === 1000 && state.sawResponseCreated && !state.sawCompleted)) return null;
+    }
     // Pre-stream failures normally belong to the handshake retry layer. BUT
     // WS close 1011 / 1012 can fire after the 101 upgrade but BEFORE the
     // first response.created event when the server's keepalive times out or
@@ -826,14 +896,19 @@ export async function _acquireWithRetry({
     cacheKey,
     forceFresh,
     onRetry,
+    externalSignal,
     _acquire = acquireWebSocket,
     _sleepFn = _defaultSleep,
 } = {}) {
     let lastErr = null;
     let lastClassifier = null;
     for (let attempt = 1; attempt <= HANDSHAKE_MAX_ATTEMPTS; attempt++) {
+        if (externalSignal?.aborted) {
+            const reason = externalSignal.reason;
+            throw reason instanceof Error ? reason : new Error('Codex WS acquire aborted');
+        }
         try {
-            return await _acquire({ auth, poolKey, cacheKey, forceFresh });
+            return await _acquire({ auth, poolKey, cacheKey, forceFresh, externalSignal });
         } catch (err) {
             lastErr = err;
             const classifier = _classifyHandshakeError(err);
@@ -875,7 +950,25 @@ export async function _acquireWithRetry({
                     error: err,
                 });
             } catch {}
-            await _sleepFn(backoff);
+            // Sleep is abort-aware: an abort during backoff rejects immediately
+            // instead of burning the remaining wait.
+            if (externalSignal) {
+                await new Promise((resolve, reject) => {
+                    const t = setTimeout(() => {
+                        externalSignal.removeEventListener('abort', onAbort);
+                        resolve();
+                    }, backoff);
+                    const onAbort = () => {
+                        clearTimeout(t);
+                        const reason = externalSignal.reason;
+                        reject(reason instanceof Error ? reason : new Error('Codex WS acquire aborted'));
+                    };
+                    if (externalSignal.aborted) { onAbort(); return; }
+                    externalSignal.addEventListener('abort', onAbort, { once: true });
+                });
+            } else {
+                await _sleepFn(backoff);
+            }
         }
     }
     // Unreachable — the loop either returns or throws above — but keep the
@@ -937,6 +1030,7 @@ export async function sendViaWebSocket({
                 // Retry attempt must not reuse a pooled socket — the prior
                 // one is either torn down or in an unknown state.
                 forceFresh: attemptIndex > 0,
+                externalSignal,
             });
         } catch (err) {
             if (err?.httpStatus) {
@@ -1018,6 +1112,19 @@ export async function sendViaWebSocket({
                 // the user's turn actually tripped on), tag retries=1.
                 try { firstAttemptError.midstreamRetries = attemptIndex; } catch {}
                 try { firstAttemptError.midstreamClassifier = firstAttemptClassifier; } catch {}
+                // Attach the retry attempt's error so post-mortem diagnostics
+                // can see WHY the retry also failed instead of silently
+                // dropping it. Use `cause` if free, else `suppressed`.
+                try {
+                    if (!firstAttemptError.cause) firstAttemptError.cause = err;
+                    else {
+                        const list = Array.isArray(firstAttemptError.suppressed)
+                            ? firstAttemptError.suppressed
+                            : [];
+                        list.push(err);
+                        firstAttemptError.suppressed = list;
+                    }
+                } catch {}
                 throw firstAttemptError;
             }
             throw err;

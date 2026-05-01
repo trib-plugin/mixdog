@@ -157,6 +157,70 @@ export function sanitizeToolPairs(messages) {
     }
     return result;
 }
+
+/**
+ * Final-mile pairing for Anthropic API content arrays. Operates on the
+ * already-converted format (role: assistant|user|system, content: block[])
+ * — the mixdog-internal sanitizeToolPairs only sees toolCalls/toolCallId
+ * fields and misses cases where tool_use blocks were pushed directly into
+ * content (streaming chunk inserts, salvage paths, etc.). Without this
+ * pass, an unmatched tool_use can reach the provider and trigger
+ * `messages.N: tool_use ids were found without tool_result blocks
+ * immediately after`.
+ */
+export function sanitizeAnthropicContentPairs(messages) {
+    if (!Array.isArray(messages)) return messages;
+    const out = [];
+    for (let i = 0; i < messages.length; i++) {
+        const m = messages[i];
+        // Drop tool_use blocks without an id from assistant messages — these
+        // come from partial streaming chunks that never finalised, and the
+        // provider rejects them as `tool_use ids were found without
+        // tool_result blocks` even though no id was actually emitted.
+        if (m?.role === 'assistant' && Array.isArray(m.content)) {
+            const cleaned = m.content.filter(
+                (b) => !(b?.type === 'tool_use' && !b.id),
+            );
+            if (cleaned.length !== m.content.length) {
+                m.content = cleaned;
+            }
+        }
+        out.push(m);
+        if (m?.role !== 'assistant' || !Array.isArray(m.content)) continue;
+        const toolUseIds = m.content
+            .filter((b) => b?.type === 'tool_use' && b.id)
+            .map((b) => b.id);
+        if (toolUseIds.length === 0) continue;
+        const next = messages[i + 1];
+        const nextResultIds = (next?.role === 'user' && Array.isArray(next.content))
+            ? new Set(
+                next.content
+                    .filter((b) => b?.type === 'tool_result' && b.tool_use_id)
+                    .map((b) => b.tool_use_id),
+            )
+            : new Set();
+        const missing = toolUseIds.filter((id) => !nextResultIds.has(id));
+        if (missing.length === 0) continue;
+        const stubs = missing.map((id) => ({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: '[tool_result missing — recovered by sanitizeAnthropicContentPairs]',
+            is_error: true,
+        }));
+        if (next?.role === 'user' && Array.isArray(next.content)) {
+            // Anthropic requires tool_result blocks to lead the user message
+            // when responding to a prior tool_use. Reorder existing content
+            // so all tool_result blocks come first, followed by text/other.
+            const existingResults = next.content.filter((b) => b?.type === 'tool_result');
+            const nonResults = next.content.filter((b) => b?.type !== 'tool_result');
+            next.content = [...stubs, ...existingResults, ...nonResults];
+        } else {
+            out.push({ role: 'user', content: stubs });
+        }
+    }
+    return out;
+}
+
 /**
  * Trim messages to fit within a token budget.
  * Strategy:

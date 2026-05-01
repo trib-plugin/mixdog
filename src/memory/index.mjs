@@ -188,9 +188,18 @@ function acquireLock() {
         killPreviousServer(lockedPid)
       }
     }
-    fs.writeFileSync(LOCK_FILE, String(process.pid), 'utf8')
+    const fd = fs.openSync(LOCK_FILE, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600)
+    try {
+      fs.writeSync(fd, String(process.pid))
+    } finally {
+      fs.closeSync(fd)
+    }
   } catch (e) {
-    process.stderr.write(`[memory-service] Lock acquisition failed: ${e.message}\n`)
+    if (e.code !== 'EEXIST') {
+      process.stderr.write(`[memory-service] Lock acquisition failed: ${e.message}\n`)
+    } else {
+      process.stderr.write(`[memory-service] Lock file exists (EEXIST) — concurrent startup, skipping\n`)
+    }
   }
 }
 
@@ -492,9 +501,10 @@ function _startCycle1Run(config = {}, options = {}) {
       }
       return result
     } finally {
-      _cycle1InFlight = null
+      if (_cycle1InFlight === promise) _cycle1InFlight = null
     }
   })()
+  const promise = _cycle1InFlight
   return _cycle1InFlight
 }
 
@@ -766,11 +776,13 @@ async function handleSearch(args) {
     if (sort === 'date') {
       filtered.sort((a, b) => Number(b.ts) - Number(a.ts))
     } else {
-      filtered.sort((a, b) =>
-        (Number(b.retrievalScore ?? b.rrf ?? 0) - Number(a.retrievalScore ?? a.rrf ?? 0))
-        || (Number(b.score ?? 0) - Number(a.score ?? 0))
-        || (Number(b.ts ?? 0) - Number(a.ts ?? 0))
-      )
+      filtered.sort((a, b) => {
+        const sa = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+        return (sa(b.retrievalScore ?? b.rrf ?? 0) - sa(a.retrievalScore ?? a.rrf ?? 0))
+          || (sa(b.score ?? 0) - sa(a.score ?? 0))
+          || (sa(b.ts ?? 0) - sa(a.ts ?? 0))
+          || (Number(a.id ?? 0) - Number(b.id ?? 0))
+      })
     }
     const sliced = filtered.slice(offset, offset + limit)
     return { text: renderEntryLines(sliced) }

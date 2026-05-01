@@ -215,7 +215,7 @@ let _memoryCallSeq = 0;
 function callMemoryAction(action, args, timeoutMs) {
   return new Promise((resolve, reject) => {
     if (!process.send) return reject(new Error('not a worker process'));
-    const callId = `mc_${++_memoryCallSeq}_${Date.now()}`;
+    const callId = `mc_${INSTANCE_ID}_${++_memoryCallSeq}_${Math.random().toString(36).slice(2, 8)}`;
     const timer = setTimeout(() => {
       _memoryCallPending.delete(callId);
       reject(new Error(`memory_call ${action} timed out after ${timeoutMs}ms`));
@@ -597,6 +597,13 @@ async function ownerRequestHandler(req, res) {
           return;
         }
         case "/inject": {
+          // Require owner-token header to prevent unauthenticated local injection.
+          const injectToken = req.headers["x-owner-token"] || req.headers["x-instance-id"];
+          if (!injectToken || injectToken !== INSTANCE_ID) {
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "unauthorized: x-owner-token required" }));
+            return;
+          }
           const content = body.content;
           if (!content) {
             res.writeHead(400);
@@ -645,7 +652,21 @@ async function ownerRequestHandler(req, res) {
                 }
               });
             };
-            const result = await agentMod.handleToolCall("bridge", toolArgs, { notifyFn });
+            const BRIDGE_HTTP_TIMEOUT_MS = 10 * 60 * 1000; // 10 min
+            const bridgeAbort = new AbortController();
+            const bridgeTimer = setTimeout(() => bridgeAbort.abort(new Error("bridge HTTP timeout")), BRIDGE_HTTP_TIMEOUT_MS);
+            const onReqClose = () => bridgeAbort.abort(new Error("client disconnected"));
+            req.on("close", onReqClose);
+            let result;
+            try {
+              result = await Promise.race([
+                agentMod.handleToolCall("bridge", toolArgs, { notifyFn, requestSignal: bridgeAbort.signal }),
+                new Promise((_, reject) => bridgeAbort.signal.addEventListener("abort", () => reject(bridgeAbort.signal.reason), { once: true })),
+              ]);
+            } finally {
+              clearTimeout(bridgeTimer);
+              req.removeListener("close", onReqClose);
+            }
             res.writeHead(200);
             res.end(JSON.stringify(result));
           } catch (e) {
@@ -989,7 +1010,10 @@ async function startOwnedRuntime(options = {}) {
   } catch (e) {
     process.stderr.write(`mixdog: backend connect failed (non-fatal): ${e instanceof Error ? e.message : String(e)}
 `);
-    refreshActiveInstance(INSTANCE_ID, { ...httpPort ? { httpPort } : {}, backendReady: false });
+    // Clean up partial state so HTTP owner + active-instance don't linger
+    stopOwnerHttpServer();
+    releaseOwnedChannelLocks(INSTANCE_ID);
+    clearActiveInstance(INSTANCE_ID);
     return;
   }
   bridgeRuntimeConnected = true;
@@ -1019,9 +1043,12 @@ async function stopOwnedRuntime(reason) {
   stopWebhookAndEventRuntime();
   releaseOwnedChannelLocks(INSTANCE_ID);
   clearActiveInstance(INSTANCE_ID);
-  await backend.disconnect();
-  bridgeRuntimeConnected = false;
-  logOwnership(`standby: ${reason}`);
+  try {
+    await backend.disconnect();
+  } finally {
+    bridgeRuntimeConnected = false;
+    logOwnership(`standby: ${reason}`);
+  }
 }
 async function refreshBridgeOwnership(options = {}) {
   if (bridgeOwnershipRefreshRunning) return;
@@ -1236,6 +1263,9 @@ function editDiscordMessage(channelId, messageId, label) {
       "Content-Length": Buffer.byteLength(body)
     }
   }, (res) => {
+    if (res.statusCode && res.statusCode >= 400) {
+      process.stderr.write(`mixdog: editDiscordMessage HTTP ${res.statusCode}\n`);
+    }
     res.resume();
     res.on("end", () => {
     });
@@ -1345,7 +1375,7 @@ try {
         } catch {}
       }
     } catch {}
-  }, 30_000).unref?.();
+  }, 30_000)?.unref?.();
 } catch (err) {
   try { process.stderr.write(`mixdog channels: tool-exec signal watcher setup failed: ${err && err.message || err}\n`); } catch {}
 }
@@ -1402,8 +1432,12 @@ backend.onInteraction = (interaction) => {
       return;
     }
     const resultPath = getPermissionResultPath(INSTANCE_ID, uuid);
-    if (!fs.existsSync(resultPath)) {
-      fs.writeFileSync(resultPath, action);
+    try {
+      fs.writeFileSync(resultPath, action, { flag: "wx" });
+    } catch (e) {
+      if (e.code !== "EEXIST") {
+        process.stderr.write(`mixdog: writePermissionResult failed: ${e.message}\n`);
+      }
     }
     const labels = { allow: "Approved", session: "Session Approved", deny: "Denied" };
     if (interaction.message?.id && interaction.channelId) {
@@ -2207,11 +2241,15 @@ function shouldDropDuplicateInbound(msg) {
   inboundSeen.set(key, now);
   const marker = path.join(INBOUND_DEDUP_DIR, key.replace(/:/g, "_"));
   try {
-    const stat = fs.statSync(marker);
-    if (now - stat.mtimeMs < INBOUND_DEDUP_TTL) return true;
-  } catch {
+    fs.writeFileSync(marker, String(now), { flag: "wx" });
+  } catch (e) {
+    if (e.code === "EEXIST") {
+      try {
+        const stat = fs.statSync(marker);
+        if (now - stat.mtimeMs < INBOUND_DEDUP_TTL) return true;
+      } catch {}
+    }
   }
-  writeTextFile(marker, String(now));
   if (Math.random() < 0.1) {
     try {
       for (const f of fs.readdirSync(INBOUND_DEDUP_DIR)) {
@@ -2242,7 +2280,9 @@ function resolveInboundRoute(chatId) {
 const inboundQueue = (() => {
   let tail = Promise.resolve();
   return (fn) => {
-    tail = tail.then(fn, fn);
+    tail = Promise.resolve(tail).then(fn).catch((err) => {
+      try { process.stderr.write(`mixdog: inboundQueue error: ${err && err.message || err}\n`); } catch {}
+    });
   };
 })();
 // ── Reverse-lookup channelId → human label from channelsConfig ──────────────
@@ -2389,6 +2429,14 @@ async function start() {
 async function stop() {
   await stopOwnedRuntime("unified server stop");
   cleanupInstanceRuntimeFiles(INSTANCE_ID);
+  if (bridgeOwnershipTimer) {
+    clearInterval(bridgeOwnershipTimer);
+    bridgeOwnershipTimer = null;
+  }
+  if (turnEndWatcher) {
+    try { turnEndWatcher.close(); } catch {}
+    turnEndWatcher = null;
+  }
 }
 {
   let detectChannelFlag = function() {
@@ -2470,8 +2518,9 @@ async function stop() {
   // rules/bridge/50-proactive-decision.md.
   const configPath = path.join(DATA_DIR, "config.json");
   let reloadDebounce = null;
+  let configWatcher = null;
   try {
-    fs.watch(configPath, () => {
+    configWatcher = fs.watch(configPath, () => {
       if (reloadDebounce) clearTimeout(reloadDebounce);
       reloadDebounce = setTimeout(() => {
         try {
@@ -2482,6 +2531,10 @@ async function stop() {
     });
   } catch {
   }
+  process.on("exit", () => {
+    if (configWatcher) { try { configWatcher.close(); } catch {} }
+    if (bridgeOwnershipTimer) { clearInterval(bridgeOwnershipTimer); }
+  });
 }
 // ── IPC worker mode ──────────────────────────────────────────────
 if (_isWorkerMode && process.send) {

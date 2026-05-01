@@ -21,7 +21,10 @@ function addDays(d, n) {
 
 function addMonths(d, n) {
   const r = new Date(d)
-  r.setMonth(r.getMonth() + n)
+  const targetMonth = ((r.getMonth() + n) % 12 + 12) % 12
+  const targetYear = r.getFullYear() + Math.floor((r.getMonth() + n) / 12)
+  const maxDay = lastDayOfMonth(targetYear, targetMonth)
+  r.setFullYear(targetYear, targetMonth, Math.min(r.getDate(), maxDay))
   return r
 }
 
@@ -215,7 +218,9 @@ const EN_PATTERNS = [
 const NEUTRAL_PATTERNS = [
   // YYYY-MM-DD or YYYY.MM.DD
   { re: /(\d{4})[-.](\d{2})[-.](\d{2})/, fn: (_d, m) => {
-    return { date: new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3])), exact: true }
+    const y = parseInt(m[1]), mo = parseInt(m[2]) - 1, day = parseInt(m[3])
+    if (mo < 0 || mo > 11 || day < 1 || day > lastDayOfMonth(y, mo)) return null
+    return { date: new Date(y, mo, day), exact: true }
   }},
   // YYYY-MM (whole month)
   { re: /(\d{4})[-.](\d{2})(?![-.]\d)/, fn: (_d, m) => {
@@ -259,8 +264,21 @@ function resolveResult(matched, match) {
  * Returns { text, start: 'YYYY-MM-DD', end: 'YYYY-MM-DD' | null } or null.
  * Compatible with Python dateparser /temporal endpoint output format.
  */
+function nowInConfiguredTz() {
+  const TZ = process.env.MEMORY_TIMEZONE || process.env.TZ || ''
+  const useKst = !TZ || TZ === 'Asia/Seoul' || TZ === 'KST'
+  if (useKst) {
+    // Construct a Date whose local fields reflect KST (UTC+9)
+    const kstMs = Date.now() + 9 * 60 * 60 * 1000
+    const utcD = new Date(kstMs)
+    return new Date(utcD.getUTCFullYear(), utcD.getUTCMonth(), utcD.getUTCDate(),
+      utcD.getUTCHours(), utcD.getUTCMinutes(), utcD.getUTCSeconds())
+  }
+  return new Date()
+}
+
 export function parseKoreanDate(text, refDate) {
-  const ref = refDate ? new Date(refDate) : new Date()
+  const ref = refDate ? new Date(refDate) : nowInConfiguredTz()
   for (const { re, fn } of ALL_PATTERNS) {
     const match = text.match(re)
     if (match) {

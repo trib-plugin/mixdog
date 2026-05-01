@@ -11,6 +11,9 @@ const MODEL_ID = 'Xenova/bge-m3'
 const DEFAULT_DIMS = 1024
 
 let worker = null
+let _restartCount = 0
+let _lastRestartMs = 0
+const MAX_RESTART_BACKOFF_MS = 30_000
 let cachedDims = null
 let _device = 'cpu'
 let _embedCallCount = 0
@@ -41,6 +44,15 @@ function getCachedEmbedding(key) {
 
 function ensureWorker() {
   if (worker) return worker
+  const now = Date.now()
+  if (_restartCount > 0) {
+    const backoffMs = Math.min(1000 * Math.pow(2, _restartCount - 1), MAX_RESTART_BACKOFF_MS)
+    const elapsed = now - _lastRestartMs
+    if (elapsed < backoffMs) {
+      throw new Error(`embed worker in restart backoff (${Math.ceil((backoffMs - elapsed) / 1000)}s remaining)`)
+    }
+  }
+  _lastRestartMs = now
   const execArgv = process.execArgv.filter((arg) => !String(arg).startsWith('--input-type'))
   worker = new Worker(WORKER_PATH, { env: { ...process.env }, execArgv })
   worker.on('message', (msg) => {
@@ -69,12 +81,16 @@ function ensureWorker() {
     for (const [, p] of _pending) p.reject(err)
     _pending.clear()
     worker = null
+    _restartCount++
   })
   worker.on('exit', (code) => {
     if (code !== 0) {
       process.stderr.write(`[embed] worker exited with code ${code}\n`)
       for (const [, p] of _pending) p.reject(new Error(`Worker exited with code ${code}`))
       _pending.clear()
+      _restartCount++
+    } else {
+      _restartCount = 0
     }
     worker = null
   })
@@ -89,13 +105,26 @@ function sendToWorker(action, extra = {}, timeoutMs = EMBED_WORKER_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       _pending.delete(id)
+      process.stderr.write(`[embed] worker ${action} timed out — terminating worker\n`)
+      if (worker) {
+        const stuck = worker
+        worker = null
+        _restartCount++
+        stuck.terminate().catch(() => {})
+      }
       reject(new Error(`embed worker ${action} timed out after ${timeoutMs}ms`))
     }, timeoutMs)
     _pending.set(id, {
       resolve: (v) => { clearTimeout(timer); resolve(v) },
       reject: (e) => { clearTimeout(timer); reject(e) },
     })
-    w.postMessage({ id, action, ...extra })
+    try {
+      w.postMessage({ id, action, ...extra })
+    } catch (postErr) {
+      clearTimeout(timer)
+      _pending.delete(id)
+      reject(postErr)
+    }
   })
 }
 
@@ -158,9 +187,16 @@ export async function embedText(text) {
   if (cached) return [...cached]
 
   const result = await sendToWorker('embed', { text: clean })
-  cachedDims = result.dims || DEFAULT_DIMS
+  const resultDims = result.dims || DEFAULT_DIMS
+  if (cachedDims && resultDims !== cachedDims) {
+    throw new Error(`embed vector dims mismatch: expected ${cachedDims}, got ${resultDims}`)
+  }
+  cachedDims = resultDims
   _device = result.device || 'cpu'
   const vector = result.vector
+  if (!Array.isArray(vector) || vector.length !== cachedDims) {
+    throw new Error(`embed vector length mismatch: expected ${cachedDims}, got ${vector?.length}`)
+  }
   cacheEmbedding(cacheKey, vector)
   _embedCallCount++
   if (_embedCallCount % EMBED_STEADY_SAMPLE_EVERY === 0) {

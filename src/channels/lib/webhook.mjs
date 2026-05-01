@@ -55,13 +55,22 @@ function verifySignature(secret, rawBody, signatureValue, parser) {
   if (parser === "stripe") {
     const match = signatureValue.match(/v1=([a-f0-9]+)/);
     if (!match) return false;
-    return crypto.timingSafeEqual(Buffer.from(match[1], "hex"), Buffer.from(expected, "hex"));
+    // timingSafeEqual throws on length mismatch / malformed hex; wrap so a
+    // crafted signature header can't crash the request handler.
+    try {
+      const a = Buffer.from(match[1], "hex");
+      const b = Buffer.from(expected, "hex");
+      if (a.length !== b.length) return false;
+      return crypto.timingSafeEqual(a, b);
+    } catch {
+      return false;
+    }
   }
   try {
-    return crypto.timingSafeEqual(
-      Buffer.from(signatureValue, "hex"),
-      Buffer.from(expected, "hex")
-    );
+    const a = Buffer.from(signatureValue, "hex");
+    const b = Buffer.from(expected, "hex");
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
   } catch {
     return false;
   }
@@ -153,6 +162,15 @@ function deliveryDone(name, id) {
   const list = readDeliveries(name);
   const match = list.find((e) => e.id === id);
   return match?.status === "done";
+}
+// Any prior delivery row for this id (regardless of terminal status) — used
+// to atomically reject duplicate POSTs that arrive while a prior delivery
+// is still pending/processing. Without this guard a webhook sender that
+// retries fast (GitHub does ~5s) could spawn two concurrent delegate
+// dispatches for one event.
+function deliveryExists(name, id) {
+  const list = readDeliveries(name);
+  return list.some((e) => e.id === id);
 }
 function extractDeliveryId(headers) {
   return headers["x-github-delivery"]
@@ -310,10 +328,28 @@ class WebhookServer {
       if (req.method === "POST" && req.url?.startsWith("/webhook/")) {
         const name = req.url.slice("/webhook/".length).split("?")[0];
         let body = "";
+        let bodyBytes = 0;
+        // 5 MB body cap. GitHub webhook payload limit is 25 MB but we never
+        // need that — install/push events fit well under 1 MB. A larger body
+        // is either a misconfigured sender or a memory-exhaustion probe.
+        const MAX_BODY_BYTES = 5 * 1024 * 1024;
+        let bodyTooLarge = false;
         req.on("data", (chunk) => {
+          if (bodyTooLarge) return;
+          bodyBytes += chunk.length;
+          if (bodyBytes > MAX_BODY_BYTES) {
+            bodyTooLarge = true;
+            try {
+              res.writeHead(413, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "payload too large", limit: MAX_BODY_BYTES }));
+            } catch {}
+            try { req.destroy(); } catch {}
+            return;
+          }
           body += chunk;
         });
         req.on("end", () => {
+          if (bodyTooLarge) return;
           try {
             const headers = {};
             for (const [k, v] of Object.entries(req.headers)) {
@@ -339,6 +375,14 @@ class WebhookServer {
                 return;
               }
             } else {
+              // Fail closed: if a parser is explicitly configured (implying a
+              // signed integration), reject unsigned requests with 401.
+              if (parser) {
+                logWebhook(`${name}: rejected \u2014 parser "${parser}" configured but no secret set`);
+                res.writeHead(401, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: "webhook secret required for signed parser" }));
+                return;
+              }
               if (!this.noSecretWarned) {
                 this.noSecretWarned = true;
                 logWebhook(`warning \u2014 no webhook secret configured, skipping signature verification`);
@@ -348,10 +392,30 @@ class WebhookServer {
             // exists for this ID, skip with 200 {status:"dedup"} so the
             // sender (GitHub etc.) stops retrying the same event.
             const deliveryId = extractDeliveryId(headers) || `gen-${randomUUID()}`;
-            if (deliveryDone(name, deliveryId)) {
+            // Any existing delivery row (pending / processing / done /
+            // failed) means we have already accepted this event id at least
+            // once. Reject the replay flat so a fast-retrying sender cannot
+            // double-dispatch while the first run is still in flight.
+            if (deliveryExists(name, deliveryId)) {
               logWebhook(`${name}: dedup ${deliveryId}`);
               res.writeHead(200, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ status: "dedup", id: deliveryId }));
+              return;
+            }
+            // Atomic claim: write a `received` row before any further work so
+            // a concurrent duplicate POST that arrives after this point hits
+            // deliveryExists() above and is rejected.
+            appendDelivery(name, { id: deliveryId, endpoint: name, status: "received" });
+            // JSON content-type gate. Webhook handlers below assume parsed is
+            // a plain object; an x-www-form-urlencoded body would parse to a
+            // string and let downstream `parsed?.action` lookups silently miss
+            // the actionable-event filter.
+            const ctype = String(headers["content-type"] || "").toLowerCase();
+            const looksJson = ctype.includes("application/json") || ctype.includes("+json");
+            if (body && !looksJson) {
+              logWebhook(`${name}: rejected — non-JSON content-type "${ctype || "<none>"}"`);
+              res.writeHead(415, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "unsupported content-type", expected: "application/json" }));
               return;
             }
             const parsed = body ? JSON.parse(body) : {};
@@ -377,7 +441,6 @@ class WebhookServer {
             }
             appendDelivery(name, {
               id: deliveryId,
-              endpoint: name,
               status: "pending",
               event: eventType,
               headersSummary: buildHeadersSummary(headers),
@@ -597,7 +660,13 @@ ${payload}`;
           } else {
             appendDelivery(name, { id: deliveryId, status: "processing" });
             const fullPrompt = `${instructions}\n\n${payloadContent}`;
-            Promise.resolve(this.bridgeDispatch({
+            // Bridge dispatch must not be allowed to hang forever — without a
+            // ceiling a stuck LLM call leaves the delivery in `processing`
+            // for the lifetime of the process and dedup keeps re-running
+            // forever. 10 minutes covers the slowest delegate task we ship.
+            const DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;
+            let timeoutHandle = null;
+            const dispatchP = Promise.resolve(this.bridgeDispatch({
               role,
               prompt: fullPrompt,
               cwd: this.config?.cwd,
@@ -607,10 +676,19 @@ ${payload}`;
                 deliveryId,
                 event: headers["x-github-event"] || null,
               },
-            })).then(() => {
+            }));
+            const timeoutP = new Promise((_, reject) => {
+              timeoutHandle = setTimeout(
+                () => reject(new Error(`bridge dispatch timed out after ${DISPATCH_TIMEOUT_MS}ms`)),
+                DISPATCH_TIMEOUT_MS,
+              );
+            });
+            Promise.race([dispatchP, timeoutP]).then(() => {
+              if (timeoutHandle) clearTimeout(timeoutHandle);
               appendDelivery(name, { id: deliveryId, status: "done" });
               logWebhook(`${name}: delegate dispatched to bridge (role=${role}, id=${deliveryId})`);
             }).catch((err) => {
+              if (timeoutHandle) clearTimeout(timeoutHandle);
               appendDelivery(name, { id: deliveryId, status: "failed", error: String(err?.message || err) });
               logWebhook(`${name}: delegate dispatch failed: ${err?.message || err}`);
             });

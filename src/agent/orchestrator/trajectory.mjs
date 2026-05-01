@@ -39,6 +39,8 @@ export function initTrajectoryStore(dataDir) {
     `);
     db.exec('CREATE INDEX IF NOT EXISTS idx_traj_scope ON trajectories(scope, ts)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_traj_ts ON trajectories(ts)');
+    // Retention: keep at most 10 000 rows; delete oldest on init.
+    db.exec(`DELETE FROM trajectories WHERE id IN (SELECT id FROM trajectories ORDER BY id DESC LIMIT -1 OFFSET 10000)`);
   } catch (err) {
     initFailed = true;
     db = null;
@@ -52,8 +54,15 @@ const INSERT_SQL = `
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
+const RETENTION_MAX = 10_000;
+const RETENTION_CHECK_EVERY_N = 500;
+let _insertsSinceRetention = 0;
+
 export function recordTrajectory(data) {
   if (!db) return;
+  // Validate tool_calls_json before inserting.
+  let toolCallsJson = data.tool_calls_json || '[]';
+  try { JSON.parse(toolCallsJson); } catch { toolCallsJson = '[]'; }
   const stmt = db.prepare(INSERT_SQL);
   stmt.run(
     data.session_id || null,
@@ -62,7 +71,7 @@ export function recordTrajectory(data) {
     data.model || null,
     data.agent_type || null,
     data.phase || null,
-    data.tool_calls_json || '[]',
+    toolCallsJson,
     data.iterations ?? 1,
     data.tokens_in ?? 0,
     data.tokens_out ?? 0,
@@ -70,6 +79,13 @@ export function recordTrajectory(data) {
     data.completed ?? 1,
     data.error_message || null,
   );
+  // Periodic retention trim: delete rows beyond the cap.
+  if (++_insertsSinceRetention >= RETENTION_CHECK_EVERY_N) {
+    _insertsSinceRetention = 0;
+    try {
+      db.exec(`DELETE FROM trajectories WHERE id IN (SELECT id FROM trajectories ORDER BY id DESC LIMIT -1 OFFSET ${RETENTION_MAX})`);
+    } catch { /* best-effort */ }
+  }
 }
 
 export function getTrajectoryStats(scope, since) {
@@ -103,10 +119,11 @@ export function getTrajectoryStats(scope, since) {
     successRate: row.success_rate || 0,
     totalTokensIn: row.total_tokens_in || 0,
     totalTokensOut: row.total_tokens_out || 0,
-    topToolChains: topChains.map(c => ({
-      chain: JSON.parse(c.tool_calls_json),
-      count: c.cnt,
-    })),
+    topToolChains: topChains.map(c => {
+      let chain = [];
+      try { chain = JSON.parse(c.tool_calls_json); } catch { chain = []; }
+      return { chain, count: c.cnt };
+    }),
   };
 }
 

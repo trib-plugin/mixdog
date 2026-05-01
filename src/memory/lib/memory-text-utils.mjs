@@ -234,12 +234,16 @@ export function shortTokenMatchScore(content, shortTokens = []) {
   return -(matched / shortTokens.length) * 1.5
 }
 
+function escapeLikeToken(token) {
+  return token.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
+}
+
 export function buildTokenLikePatterns(text) {
   const clean = cleanMemoryText(text)
   if (!clean) return []
   const tokens = [...new Set(tokenizeMemoryText(clean))]
-  if (tokens.length > 0) return tokens.map(token => `%${token}%`)
-  return [`%${clean}%`]
+  if (tokens.length > 0) return tokens.map(token => `%${escapeLikeToken(token)}%`)
+  return [`%${escapeLikeToken(clean)}%`]
 }
 
 

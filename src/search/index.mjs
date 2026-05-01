@@ -376,9 +376,11 @@ function hostMatchesScope(host, scopedHost) {
 function sameDocIndexScope(url, site, fetchedIndexUrl, requestedIndexUrl) {
   const linkHost = hostFromUrl(url)
   if (!linkHost) return false
+  // Always require the link to match the original requested site host.
+  const siteHost = hostFromUrl(site)
+  if (siteHost && !hostMatchesScope(linkHost, siteHost)) return false
   const scopes = [
-    hostFromUrl(site),
-    hostFromUrl(fetchedIndexUrl),
+    siteHost,
     hostFromUrl(requestedIndexUrl),
   ].filter(Boolean)
   return scopes.some(scope => hostMatchesScope(linkHost, scope))
@@ -513,7 +515,19 @@ async function writeStartupSnapshot() {
 
 // ── Core action implementations (shared by individual and batch handlers) ──
 
+const _searchInFlight = new Map()
+
 async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) {
+  // Apply config-derived API keys to process.env for this call only; delete
+  // keys that did not exist before so they don't survive across requests.
+  const runtimeEnv = buildRuntimeEnv(config)
+  const _envAdded = []
+  for (const [k, v] of Object.entries(runtimeEnv)) {
+    if (k in process.env) continue
+    process.env[k] = v
+    _envAdded.push(k)
+  }
+  try {
   const siteRule = args.site ? getSiteRule(config, args.site) : null
   if (siteRule?.search === 'xai.x_search') {
     try {
@@ -567,6 +581,13 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) 
     )
   }
 
+  // Coalesce identical concurrent requests to the same cache key
+  const existing = _searchInFlight.get(searchCacheKey)
+  if (existing) return existing
+  let resolveCoalesce, rejectCoalesce
+  const coalescePromise = new Promise((res, rej) => { resolveCoalesce = res; rejectCoalesce = rej })
+  _searchInFlight.set(searchCacheKey, coalescePromise)
+
   try {
     const response = await runRawSearch({
       ...args,
@@ -581,7 +602,13 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) 
       noteProviderFailure(usageState, failure.provider, failure.error, 60000)
     }
     if (args.site) {
-      rememberPreferredRawProviders(usageState, args.site, [response.usedProvider, ...providers.filter(item => item !== response.usedProvider)])
+      // Version guard: only overwrite rawBySite if this response's provider
+      // isn't already top of the existing preference list (prevents
+      // last-finishing concurrent call from clobbering a faster winner).
+      const existing = usageState.routingCache?.rawBySite?.[args.site]
+      if (!existing?.length || existing[0] !== response.usedProvider) {
+        rememberPreferredRawProviders(usageState, args.site, [response.usedProvider, ...providers.filter(item => item !== response.usedProvider)])
+      }
     }
 
     const payload = await augmentSearchPayloadWithDocsIndex(
@@ -595,15 +622,31 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs }) 
       payload,
       getSearchCacheTtlMs(args.type || 'web'),
     )
-    return { ...payload, cache: buildCacheMeta(cachedEntry, false) }
+    const result = { ...payload, cache: buildCacheMeta(cachedEntry, false) }
+    _searchInFlight.delete(searchCacheKey)
+    resolveCoalesce(result)
+    return result
   } catch (error) {
-    for (const provider of providers) {
+    _searchInFlight.delete(searchCacheKey)
+    rejectCoalesce(error)
+    // Only cool down providers that runRawSearch actually attempted; the
+    // error object may carry an `attemptedProviders` array. Fall back to
+    // the full list only when that information is unavailable.
+    const attempted = error?.attemptedProviders ?? providers
+    for (const provider of attempted) {
       noteProviderFailure(usageState, provider, error instanceof Error ? error.message : String(error), 60000)
     }
 
     const err = error instanceof Error ? error : new Error(String(error))
     err.details = { tool: 'search', providers }
     throw err
+  }
+  } finally {
+    // Resolve coalesce waiters if not already rejected
+    if (_searchInFlight.has(searchCacheKey)) {
+      _searchInFlight.delete(searchCacheKey)
+    }
+    for (const k of _envAdded) delete process.env[k]
   }
 }
 
@@ -799,12 +842,11 @@ const server = new Server(
 )
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: toolDefinitions,
+  tools: toolDefinitions.filter(t => t.public !== false),
 }))
 
 async function handleToolCall(name, rawArgs) {
   const config = loadConfig()
-  Object.assign(process.env, buildRuntimeEnv(config))
   const usageState = loadUsageState()
   const cacheState = loadCacheState()
   const timeoutMs = getRequestTimeoutMs(config)
@@ -824,9 +866,10 @@ async function handleToolCall(name, rawArgs) {
       // grouped per-query with `### Query:` headers (mirrors memory_search).
       if (Array.isArray(args.keywords) && args.keywords.length > 1) {
         const dedupedKeywords = [...new Set(args.keywords.map(kw => String(kw || '').trim()).filter(Boolean))]
+        const fanOutAbort = new AbortController()
         const settled = await Promise.allSettled(
           dedupedKeywords.map(async (kw) => {
-            const sub = await handleToolCall('search', { ...rawArgs, keywords: kw })
+            const sub = await handleToolCall('search', { ...rawArgs, keywords: kw, _abortSignal: fanOutAbort.signal })
             const text = (sub.content || []).filter(p => p.type === 'text').map(p => p.text).join('\n')
             return `### Query: ${kw}\n\n${text}`
           })
@@ -934,28 +977,31 @@ async function handleToolCall(name, rawArgs) {
         throw e
       }
 
-      const ctx = { config, usageState, cacheState, timeoutMs }
-
+      // Each batch item gets its own isolated usageState clone to prevent
+      // concurrent provider state mutations from racing. Results are merged
+      // back into the shared usageState serially after all items finish.
       const batchPromises = args.batch.map(async (item, idx) => {
+        const itemUsage = JSON.parse(JSON.stringify(usageState))
+        const ctx = { config, usageState: itemUsage, cacheState, timeoutMs }
         try {
           switch (item.action) {
             case 'search': {
               const result = await _searchCore(item, ctx)
-              return { index: idx + 1, action: 'search', status: 'success', ...result }
+              return { index: idx + 1, action: 'search', status: 'success', ...result, _itemUsage: itemUsage }
             }
             case 'firecrawl_scrape': {
               const result = await _scrapeCore(item, ctx)
-              return { index: idx + 1, action: 'firecrawl_scrape', status: 'success', ...result }
+              return { index: idx + 1, action: 'firecrawl_scrape', status: 'success', ...result, _itemUsage: itemUsage }
             }
             case 'firecrawl_map': {
-              const result = await _mapCore(item, ctx)
+              const result = await _mapCore(item, { timeoutMs })
               return { index: idx + 1, action: 'firecrawl_map', status: 'success', ...result }
             }
             default:
               return { index: idx + 1, action: item.action, status: 'error', error: `Unknown action: ${item.action}` }
           }
         } catch (error) {
-          return { index: idx + 1, action: item.action, status: 'error', error: error instanceof Error ? error.message : String(error) }
+          return { index: idx + 1, action: item.action, status: 'error', error: error instanceof Error ? error.message : String(error), _itemUsage: itemUsage }
         }
       })
 
@@ -964,6 +1010,18 @@ async function handleToolCall(name, rawArgs) {
         if (outcome.status === 'fulfilled') return outcome.value
         return { index: idx + 1, action: args.batch[idx].action, status: 'error', error: outcome.reason?.message || String(outcome.reason) }
       })
+
+      // Merge isolated per-item usageStates back into shared state serially
+      for (const r of results) {
+        if (!r._itemUsage) continue
+        for (const [provider, info] of Object.entries(r._itemUsage.providers || {})) {
+          const existing = usageState.providers[provider]
+          if (!existing || (info.lastUsedAt && (!existing.lastUsedAt || info.lastUsedAt > existing.lastUsedAt))) {
+            usageState.providers[provider] = info
+          }
+        }
+        delete r._itemUsage
+      }
 
       saveUsageState(usageState)
       return formattedText('batch', { tool: 'batch', results })

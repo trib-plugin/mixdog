@@ -1,5 +1,6 @@
 import { join } from 'path';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'fs';
+import { randomBytes } from 'crypto';
 import { getPluginData } from './config.mjs';
 function getJobsDir() {
     const dir = join(getPluginData(), 'jobs');
@@ -25,15 +26,22 @@ function readState() {
     }
 }
 function writeState(state) {
-    writeFileSync(stateFilePath(), JSON.stringify(state, null, 2));
+    const p = stateFilePath();
+    const tmp = `${p}.${randomBytes(4).toString('hex')}.tmp`;
+    writeFileSync(tmp, JSON.stringify(state, null, 2));
+    renameSync(tmp, p);
 }
+
+// Module-level mutex: serializes all state R/M/W in this process.
+let _stateLock = Promise.resolve();
+
 export function createJob(sessionId, prompt, context, { scopeKey, lane } = {}) {
-    const jobId = `job_${Date.now()}`;
+    // Add random entropy to avoid same-millisecond collisions.
+    let jobId;
+    do {
+        jobId = `job_${Date.now()}_${randomBytes(3).toString('hex')}`;
+    } while (existsSync(jobFilePath(jobId)));
     const now = new Date().toISOString();
-    const index = { jobId, sessionId, status: 'running', startedAt: now, lane: lane || null };
-    const state = readState();
-    state.push(index);
-    writeState(state);
     const detail = {
         jobId,
         sessionId,
@@ -43,20 +51,33 @@ export function createJob(sessionId, prompt, context, { scopeKey, lane } = {}) {
         request: { prompt, context },
         startedAt: now,
     };
+    // Write detail file first (unique path — no contention).
     writeFileSync(jobFilePath(jobId), JSON.stringify(detail, null, 2));
+    // Serialize state index mutation.
+    _stateLock = _stateLock.then(() => {
+        try {
+            const state = readState();
+            state.push({ jobId, sessionId, status: 'running', startedAt: now, lane: lane || null });
+            writeState(state);
+        } catch { /* best-effort */ }
+    });
     return jobId;
 }
 export function completeJob(jobId, result, failed = false) {
     const now = new Date().toISOString();
     const status = failed ? 'failed' : 'completed';
-    // Update state index
-    const state = readState();
-    const entry = state.find(j => j.jobId === jobId);
-    if (entry) {
-        entry.status = status;
-        entry.finishedAt = now;
-        writeState(state);
-    }
+    // Serialize state index mutation.
+    _stateLock = _stateLock.then(() => {
+        try {
+            const state = readState();
+            const entry = state.find(j => j.jobId === jobId);
+            if (entry) {
+                entry.status = status;
+                entry.finishedAt = now;
+                writeState(state);
+            }
+        } catch { /* best-effort */ }
+    });
     // Update detail file
     const detailPath = jobFilePath(jobId);
     if (existsSync(detailPath)) {

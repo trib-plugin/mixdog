@@ -1097,11 +1097,11 @@ function _findSymbolHits(graph, symbol, { language = null } = {}) {
 }
 
 function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 5 } = {}) {
-  let hits = _findSymbolHits(graph, symbol, { language });
-  const retriedWithoutLanguage = !hits.length && Boolean(language);
-  if (retriedWithoutLanguage) {
-    hits = _findSymbolHits(graph, symbol, { language: null });
-  }
+  // Caller-supplied `language` is a hard scope: never widen to other
+  // languages on miss. Returning a different-language hit was producing
+  // misleading results when callers wanted strict language-narrowed
+  // analysis.
+  const hits = _findSymbolHits(graph, symbol, { language });
 
   if (!hits.length) return '(no symbol matches)';
 
@@ -1125,9 +1125,6 @@ function _findSymbolAcrossGraph(graph, symbol, cwd, { language = null, limit = 5
     lines.push('');
   }
   lines.push('# candidates');
-  if (retriedWithoutLanguage) {
-    lines.push(`language filter "${language}" had no matches; showing unfiltered repository matches.`);
-  }
   lines.push(...topHits.map((hit, idx) => {
     const kind = hit.declarationLike ? 'decl' : 'ref';
     const suffix = hit.content ? ` — ${hit.content.slice(0, 100)}` : '';
@@ -1141,8 +1138,9 @@ function _resolveReferenceLanguageNode(graph, symbol, rel, cwd, language = null)
     const node = graph.nodes.get(rel);
     if (node) return node;
   }
-  let hits = _findSymbolHits(graph, symbol, { language });
-  if (!hits.length && language) hits = _findSymbolHits(graph, symbol, { language: null });
+  const hits = _findSymbolHits(graph, symbol, { language });
+  // Caller-specified language is a hard filter — refuse to widen on miss so
+  // a `language: 'python'` query never bleeds into TS/JS results.
   if (!hits.length) return null;
   const primary = hits.find((hit) => hit.declarationLike) || hits[0];
   return primary?.rel ? graph.nodes.get(primary.rel) || null : null;
@@ -1547,17 +1545,30 @@ async function codeGraph(args, cwd) {
   if (mode === 'references') {
     const symbol = String(args?.symbol || '').trim();
     if (!symbol) throw new Error('code_graph references: "symbol" is required');
-    const resolvedNode = _resolveReferenceLanguageNode(graph, symbol, rel, cwd, String(args?.language || '').trim() || null);
-    if (!resolvedNode) return `code_graph references: file not found in graph: ${normFile || '(missing file)'}`;
-    return _cheapReferenceSearch(graph, symbol, cwd, { language: resolvedNode.lang });
+    const explicitLanguage = String(args?.language || '').trim() || null;
+    const narrowedByCaller = Boolean(rel || explicitLanguage);
+    const resolvedNode = _resolveReferenceLanguageNode(graph, symbol, rel, cwd, explicitLanguage);
+    // Only bail with "file not found" when the caller actually specified a file
+    // and that file isn't in the graph. When rel is falsy (no file narrowing),
+    // resolvedNode=null just means the symbol has no declaration hit — proceed
+    // with a broad language-agnostic search instead of failing.
+    if (!resolvedNode && rel) return `code_graph references: file not found in graph: ${normFile || '(missing file)'}`;
+    // Bare references (no file/language narrow) → search every language so
+    // a symbol with the same name in TS+PY isn't quietly truncated to
+    // whichever language the first hit happened to land in.
+    const lang = (narrowedByCaller && resolvedNode) ? resolvedNode.lang : null;
+    return _cheapReferenceSearch(graph, symbol, cwd, { language: lang });
   }
 
   if (mode === 'callers') {
     const symbol = String(args?.symbol || '').trim();
     if (!symbol) throw new Error('code_graph callers: "symbol" is required');
-    const resolvedNode = _resolveReferenceLanguageNode(graph, symbol, rel, cwd, String(args?.language || '').trim() || null);
-    if (!resolvedNode) return `code_graph callers: file not found in graph: ${normFile || '(missing file)'}`;
-    const refs = _cheapReferenceSearch(graph, symbol, cwd, { language: resolvedNode.lang });
+    const explicitLanguage = String(args?.language || '').trim() || null;
+    const narrowedByCaller = Boolean(rel || explicitLanguage);
+    const resolvedNode = _resolveReferenceLanguageNode(graph, symbol, rel, cwd, explicitLanguage);
+    if (!resolvedNode && rel) return `code_graph callers: file not found in graph: ${normFile || '(missing file)'}`;
+    const lang = (narrowedByCaller && resolvedNode) ? resolvedNode.lang : null;
+    const refs = _cheapReferenceSearch(graph, symbol, cwd, { language: lang });
     return _formatCallerReferences(graph, symbol, refs);
   }
 
@@ -1673,15 +1684,38 @@ export const CODE_GRAPH_TOOL_DEFS = [
   },
 ];
 
+// MCP clients sometimes inject empty-string defaults for optional schema
+// fields (e.g. `file: ""`). That empty path round-trips through
+// normalizeInputPath as a literal string, populating `rel` and tripping
+// the "file not found in graph" early-return in callers/references modes
+// even when the caller intended bare-symbol search. Strip empty/null
+// optional path-like fields before dispatch.
+function _stripEmptyArgs(args) {
+  const a = { ...(args || {}) };
+  for (const k of ['file', 'language']) {
+    if (a[k] === '' || a[k] === null) delete a[k];
+  }
+  return a;
+}
+
 export async function executeCodeGraphTool(name, args, cwd) {
   const effectiveCwd = cwd || process.cwd();
   switch (name) {
     case 'code_graph': return codeGraph(args, effectiveCwd);
-    case 'find_symbol': return findSymbolTool(args, effectiveCwd);
-    case 'find_imports': return codeGraph({ ...(args || {}), mode: 'imports' }, effectiveCwd);
-    case 'find_dependents': return codeGraph({ ...(args || {}), mode: 'dependents' }, effectiveCwd);
-    case 'find_references': return codeGraph({ ...(args || {}), mode: 'references' }, effectiveCwd);
-    case 'find_callers': return codeGraph({ ...(args || {}), mode: 'callers' }, effectiveCwd);
+    case 'find_symbol': {
+      // The advertised `mode` switch lets find_symbol act as a router into
+      // every code_graph query (callers/references/imports/dependents/
+      // overview/symbols/related/impact). Default to declaration lookup
+      // when omitted or set to symbol/find_symbol.
+      const rawMode = String(args?.mode || '').trim();
+      const declModes = new Set(['', 'symbol', 'find_symbol']);
+      if (declModes.has(rawMode)) return findSymbolTool(_stripEmptyArgs(args), effectiveCwd);
+      return codeGraph({ ..._stripEmptyArgs(args), mode: rawMode }, effectiveCwd);
+    }
+    case 'find_imports': return codeGraph({ ..._stripEmptyArgs(args), mode: 'imports' }, effectiveCwd);
+    case 'find_dependents': return codeGraph({ ..._stripEmptyArgs(args), mode: 'dependents' }, effectiveCwd);
+    case 'find_references': return codeGraph({ ..._stripEmptyArgs(args), mode: 'references' }, effectiveCwd);
+    case 'find_callers': return codeGraph({ ..._stripEmptyArgs(args), mode: 'callers' }, effectiveCwd);
     default: throw new Error(`Unknown code-graph tool: ${name}`);
   }
 }

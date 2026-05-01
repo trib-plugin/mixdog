@@ -5,8 +5,8 @@
  * Long total duration is fine; no progress for too long is not.
  *
  * Thresholds:
- *   300s — soft: emit tool_stream_stalled telemetry once per session.
- *   600s — hard: abort the session's controller with a StreamStalledAbortError,
+ *   300s (5m) — soft: emit tool_stream_stalled telemetry once per session.
+ *   600s (10m) — hard: abort the session's controller with a StreamStalledAbortError,
  *                emit tool_stream_aborted telemetry, stop tracking it.
  *                Kept well above the provider adapter's own idle ceiling
  *                (openai-oauth-ws.mjs WS_STREAM_IDLE_MS = 300s) so this
@@ -16,8 +16,8 @@
  */
 import { traceStreamAborted, traceStreamStalled } from '../bridge-trace.mjs';
 
-const SOFT_STALL_MS = 1_800_000;
-const HARD_STALL_MS = 3_600_000;
+const SOFT_STALL_MS = 300_000;
+const HARD_STALL_MS = 600_000;
 const TICK_MS = 15_000;
 
 let _tickHandle = null;

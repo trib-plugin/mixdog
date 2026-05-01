@@ -1,0 +1,3 @@
+bench-277 write test
+line two
+line three

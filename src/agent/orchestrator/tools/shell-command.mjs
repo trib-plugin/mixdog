@@ -72,7 +72,14 @@ export function stripAnsi(s) {
 // taskkill /T /F to walk the tree. Safe to call repeatedly; all errors
 // swallowed.
 export function treeKill(child) {
-  if (!child || child.killed) return;
+  if (!child) return;
+  // Track close/exit via the standard child fields (set by Node when
+  // the corresponding events fire) instead of `child.killed`, which is
+  // true the moment any signal is delivered — even before the child has
+  // actually terminated. Using exitCode/signalCode means the SIGKILL
+  // escalation only suppresses itself when the process is genuinely
+  // gone.
+  if (child.exitCode != null || child.signalCode != null) return;
   const pid = child.pid;
   if (!pid) return;
   try {
@@ -93,7 +100,7 @@ export function treeKill(child) {
       // still comes down. Windows taskkill /F is already forceful so
       // skip the escalation timer there.
       const esc = setTimeout(() => {
-        if (child.killed) return;
+        if (child.exitCode != null || child.signalCode != null) return;
         try {
           process.kill(-pid, 'SIGKILL');
         } catch {
@@ -119,10 +126,23 @@ function _readTail(filePath, fileSize) {
   }
   const fd = openSync(filePath, 'r');
   try {
-    const buf = Buffer.allocUnsafe(SHELL_OUTPUT_INLINE_CAP);
-    const start = Math.max(0, fileSize - SHELL_OUTPUT_INLINE_CAP);
-    readSync(fd, buf, 0, SHELL_OUTPUT_INLINE_CAP, start);
-    return `[truncated head: ${start} bytes]\n` + buf.toString('utf-8');
+    // Read a small padding window so we can advance past UTF-8
+    // continuation bytes at the slice boundary instead of decoding a
+    // mid-character truncation (which yields a U+FFFD glyph at the
+    // head of every spilled tail). UTF-8 sequences are at most 4 B.
+    const padding = 4;
+    const readSize = SHELL_OUTPUT_INLINE_CAP + padding;
+    const start = Math.max(0, fileSize - readSize);
+    const buf = Buffer.allocUnsafe(readSize);
+    const n = readSync(fd, buf, 0, readSize, start);
+    let offset = 0;
+    if (start > 0) {
+      while (offset < n && offset < padding && (buf[offset] & 0xC0) === 0x80) {
+        offset++;
+      }
+    }
+    const tail = buf.slice(offset, n).toString('utf-8');
+    return `[truncated head: ${start + offset} bytes]\n` + tail;
   } finally {
     try { closeSync(fd); } catch {}
   }
@@ -146,6 +166,7 @@ class TaskOutput {
     this.spilled = false;
     this.stdoutFileSize = 0;
     this.stderrFileSize = 0;
+    this.writeError = null;
   }
 
   _ensureFileBacking() {
@@ -161,14 +182,18 @@ class TaskOutput {
     if (this.stdoutBuf) {
       try {
         writeSync(this.stdoutFd, this.stdoutBuf);
-      } catch {}
-      this.stdoutFileSize += Buffer.byteLength(this.stdoutBuf, 'utf-8');
+        this.stdoutFileSize += Buffer.byteLength(this.stdoutBuf, 'utf-8');
+      } catch (err) {
+        this._recordWriteError('stdout-spill-flush', err);
+      }
     }
     if (this.stderrBuf) {
       try {
         writeSync(this.stderrFd, this.stderrBuf);
-      } catch {}
-      this.stderrFileSize += Buffer.byteLength(this.stderrBuf, 'utf-8');
+        this.stderrFileSize += Buffer.byteLength(this.stderrBuf, 'utf-8');
+      } catch (err) {
+        this._recordWriteError('stderr-spill-flush', err);
+      }
     }
     this.spilled = true;
   }
@@ -180,13 +205,21 @@ class TaskOutput {
     }
   }
 
+  _recordWriteError(stage, err) {
+    if (this.writeError) return;
+    const msg = (err && err.message) ? err.message : String(err);
+    this.writeError = `[output-capture-error: ${stage}] ${msg}`;
+  }
+
   writeStdout(s) {
     if (!s) return;
     if (this.spilled) {
       try {
         writeSync(this.stdoutFd, s);
-      } catch {}
-      this.stdoutFileSize += Buffer.byteLength(s, 'utf-8');
+        this.stdoutFileSize += Buffer.byteLength(s, 'utf-8');
+      } catch (err) {
+        this._recordWriteError('stdout-write', err);
+      }
       return;
     }
     this.stdoutBuf += s;
@@ -198,8 +231,10 @@ class TaskOutput {
     if (this.spilled) {
       try {
         writeSync(this.stderrFd, s);
-      } catch {}
-      this.stderrFileSize += Buffer.byteLength(s, 'utf-8');
+        this.stderrFileSize += Buffer.byteLength(s, 'utf-8');
+      } catch (err) {
+        this._recordWriteError('stderr-write', err);
+      }
       return;
     }
     this.stderrBuf += s;
@@ -293,6 +328,8 @@ export class ExecResult {
     this.stderrPath = opts.stderrPath || null;
     this.stderrFileSize = opts.stderrFileSize || 0;
     this.taskId = opts.taskId;
+    this.partialOutput = opts.partialOutput === true;
+    this.outputCaptureError = opts.outputCaptureError || null;
   }
 }
 
@@ -317,6 +354,13 @@ export function execShellCommand({
     let settled = false;
     let timer = null;
     let abortHandler = null;
+    let partialOutput = false;
+    // Background commands (trailing `&`) intentionally detach stdio
+    // from the parent shell, so 'close' may never fire while the
+    // backgrounded grandchild is still alive. For those we settle
+    // immediately on direct-child exit instead of waiting for close.
+    const _trimmed = String(command || '').replace(/\s+$/, '');
+    const _isBackground = /(^|[^&|])&$/.test(_trimmed);
 
     let child;
     try {
@@ -358,6 +402,16 @@ export function execShellCommand({
     child.stderr.setEncoding('utf-8');
     child.stdout.on('data', (chunk) => taskOutput.writeStdout(chunk));
     child.stderr.on('data', (chunk) => taskOutput.writeStderr(chunk));
+
+    // If the spill writer hits an I/O failure (full disk, EBADF after
+    // an unlink race) bring the child down so the agent isn't deceived
+    // by a successful exit code on a truncated capture.
+    const _abortOnCaptureError = () => {
+      if (taskOutput.writeError && !killed && !settled) {
+        killed = true;
+        treeKill(child);
+      }
+    };
 
     let sizeWatchdog = null;
     const settle = async (exitCode, signal) => {
@@ -403,6 +457,8 @@ export function execShellCommand({
           stderrPath: taskOutput.spilled ? taskOutput.stderrPath : null,
           stderrFileSize: taskOutput.stderrFileSize,
           taskId,
+          partialOutput,
+          outputCaptureError: taskOutput.writeError,
         }),
       );
     };
@@ -420,7 +476,15 @@ export function execShellCommand({
     // child termination regardless — give 'close' a 2 s grace then
     // settle anyway.
     child.once('exit', (code, signal) => {
-      const grace = setTimeout(() => settle(code == null ? 1 : code, signal), 2000);
+      if (_isBackground) {
+        setImmediate(() => settle(code == null ? 1 : code, signal));
+        return;
+      }
+      const grace = setTimeout(() => {
+        if (settled) return;
+        partialOutput = true;
+        settle(code == null ? 1 : code, signal);
+      }, 2000);
       if (grace.unref) grace.unref();
     });
 
@@ -439,6 +503,7 @@ export function execShellCommand({
     // body) so no extra exit / error listeners are needed here.
     sizeWatchdog = setInterval(() => {
       if (settled) return;
+      _abortOnCaptureError();
       if (taskOutput.totalDiskBytes() > SHELL_OUTPUT_DISK_CAP) {
         killed = true;
         treeKill(child);

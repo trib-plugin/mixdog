@@ -20,10 +20,7 @@ function readScheduleState() {
   }
 }
 function writeScheduleState(state) {
-  try {
-    writeFileSync(SCHEDULE_STATE_FILE, JSON.stringify(state ?? {}, null, 2));
-  } catch {
-  }
+  writeFileSync(SCHEDULE_STATE_FILE, JSON.stringify(state ?? {}, null, 2));
 }
 function logSchedule(msg) {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
@@ -584,15 +581,43 @@ ${Scheduler.INSTANCE_UUID}`;
       if ((s.dnd || this.respectQuietSchedules) && this.isQuietHours(now, tz)) continue;
       const intervalMatch = s.time.match(/^every(\d+)m$/);
       let shouldFire = false;
+      // 90s catch-up grace window. The legacy minute-exact check meant a
+      // tick that landed at HH:MM:01 (e.g. after a long GC pause or because
+      // the queue interval drifted) would miss the slot entirely. Persisted
+      // lastFired (snapKey) still prevents double-fire within the same
+      // minute on the same date.
+      const HHMM_GRACE_MS = 90 * 1000;
       if (intervalMatch) {
         const intervalMs = parseInt(intervalMatch[1]) * 6e4;
         const lastKey = this.lastFired.get(s.name);
         const lastTime = lastKey ? new Date(lastKey).getTime() : 0;
         shouldFire = Date.now() - lastTime >= intervalMs;
       } else if (s.time === "hourly") {
-        shouldFire = snap.hhmm.endsWith(":00") && this.lastFired.get(s.name) !== snapKey;
+        const isHour = snap.hhmm.endsWith(":00");
+        const wasUnfiredThisSlot = this.lastFired.get(s.name) !== snapKey;
+        shouldFire = (isHour || (snap.hhmm.endsWith(":01"))) && wasUnfiredThisSlot && isHour;
+        if (!shouldFire && wasUnfiredThisSlot) {
+          // Catch-up: if minute drift caused us to miss :00, allow firing on
+          // the next tick within the grace window using the :00 snapKey.
+          const expectedKey = `${snap.dateStr}T${snap.hhmm.slice(0,3)}00`;
+          const now2 = Date.now();
+          const slotMs = new Date(`${snap.dateStr}T${snap.hhmm.slice(0,3)}00:00`).getTime();
+          if (Number.isFinite(slotMs) && now2 - slotMs <= HHMM_GRACE_MS && this.lastFired.get(s.name) !== expectedKey) {
+            shouldFire = true;
+          }
+        }
       } else {
         shouldFire = s.time === snap.hhmm && this.lastFired.get(s.name) !== snapKey;
+        if (!shouldFire && /^\d{2}:\d{2}$/.test(s.time) && this.lastFired.get(s.name) !== `${snap.dateStr}T${s.time}`) {
+          // Catch-up: tick fell after the exact HH:MM minute. If we are still
+          // within the grace window relative to that scheduled wall time AND
+          // we have not yet fired for this slot today, fire once.
+          const slotMs = new Date(`${snap.dateStr}T${s.time}:00`).getTime();
+          const now2 = Date.now();
+          if (Number.isFinite(slotMs) && now2 >= slotMs && now2 - slotMs <= HHMM_GRACE_MS) {
+            shouldFire = true;
+          }
+        }
       }
       if (!shouldFire) continue;
       if (this.shouldSkip(s.name)) continue;
@@ -606,7 +631,19 @@ ${Scheduler.INSTANCE_UUID}`;
           }
         } catch {}
       }
-      this.lastFired.set(s.name, now.toISOString());
+      // Persist per-schedule fire key BEFORE dispatch so a process restart
+      // between fire-intent and next tick does not re-fire the same slot.
+      // In-memory map gates within the running process; the persisted key
+      // gates across restarts.
+      try {
+        const state = readScheduleState();
+        state.timed = { ...(state.timed || {}), [s.name]: { snapKey, ts: now.toISOString() } };
+        writeScheduleState(state);
+        this.lastFired.set(s.name, now.toISOString());
+      } catch (persistErr) {
+        logSchedule(`skipping "${s.name}" — persist failed: ${persistErr?.message || persistErr}`);
+        continue;
+      }
       this.fireTimed(s, type).catch(
         (err) => process.stderr.write(`mixdog scheduler: ${s.name} failed: ${err}
 `)
@@ -816,7 +853,9 @@ ${scriptResult}
   }
   async fireProactiveTick(preferredTopic) {
     // In-flight guard: during the ~90s LLM call, subsequent ticks must not
-    // overlap even while the session still reads as idle.
+    // overlap even while the session still reads as idle. Set BEFORE the
+    // first await so two near-simultaneous ticks can't both pass the
+    // dataFetcher await and end up running concurrently.
     if (this.proactiveInFlight) {
       logSchedule('proactive: skip (already in-flight)\n');
       return;
@@ -826,11 +865,20 @@ ${scriptResult}
       logSchedule('proactive: skip (session active, pre-check)\n');
       return;
     }
+    this.proactiveInFlight = true;
+    let _proactiveStarted = false;
     // D5: dataFetcher is expected to return { memory, sources }, where
     // `memory` includes recent ~20 role=user chunks (chronological, newest
     // first) plus preference/fact/user-profile core-memory entries. The
     // 50-proactive-decision template reads from `memoryContext` directly.
-    const data = await this.proactiveDataFetcher?.({ userChunkLimit: 20 }) ?? { memory: "", sources: [] };
+    let data;
+    try {
+      data = await this.proactiveDataFetcher?.({ userChunkLimit: 20 }) ?? { memory: "", sources: [] };
+    } catch (err) {
+      this.proactiveInFlight = false;
+      logSchedule(`proactive: dataFetcher error: ${err?.message || err}\n`);
+      return;
+    }
     const now = /* @__PURE__ */ new Date();
     const timeInfo = `${now.toLocaleDateString("ko-KR")} ${now.toLocaleTimeString("ko-KR")} (${["\uC77C", "\uC6D4", "\uD654", "\uC218", "\uBAA9", "\uAE08", "\uD1A0"][now.getDay()]}\uC694\uC77C)`;
     const sourcesText = data.sources.length > 0 ? data.sources.map((s) => `- [${s.category}] ${s.topic} (score: ${s.score}, used: ${s.hit_count}/${s.hit_count + s.skip_count})`).join("\n") : "(no sources registered)";
@@ -851,18 +899,29 @@ ${data.memory || "(no recent context)"}
 ## Available Conversation Sources
 ${sourcesText}
 ${preferredTopicText}`;
-    // Advance baseline + set in-flight at fire-intent time: baseline now
-    // moves on "we attempted a fire" (not on "talk succeeded"), so skip /
-    // error / parse-fail branches no longer re-enter every tick.
-    this.proactiveLastFireAt = Date.now();
-    // Persist baseline so a restart between fire-intent and next tick
-    // doesn't insta-fire again. State write failure is non-fatal.
+    // Advance baseline + persist BEFORE updating the in-memory baseline,
+    // so a state-write failure doesn't leave us with an in-memory baseline
+    // that wasn't durably recorded (which would re-fire on restart).
+    const prevBaseline = this.proactiveLastFireAt;
+    const newBaseline = Date.now();
+    let baselinePersisted = false;
     try {
       const state = readScheduleState();
-      state.proactive = { ...(state.proactive || {}), lastFireAt: this.proactiveLastFireAt };
+      state.proactive = { ...(state.proactive || {}), lastFireAt: newBaseline };
       writeScheduleState(state);
-    } catch {}
-    this.proactiveInFlight = true;
+      baselinePersisted = true;
+    } catch (err) {
+      logSchedule(`proactive: state persist failed: ${err?.message || err}\n`);
+    }
+    if (baselinePersisted) {
+      this.proactiveLastFireAt = newBaseline;
+    } else {
+      // Persist failed — keep the in-memory baseline at its prior value so
+      // a quick restart's recovery logic doesn't infer a fire we never
+      // durably recorded. Using an in-memory cooldown sentinel below.
+      this.proactiveLastFireAt = prevBaseline;
+    }
+    _proactiveStarted = true;
     logSchedule("proactive: firing LLM\n");
     const presetId = this.proactive?.model || 'sonnet-mid';
     try {

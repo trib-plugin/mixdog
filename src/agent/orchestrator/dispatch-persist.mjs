@@ -24,6 +24,9 @@ import { join, dirname } from 'path';
 const TTL_MS = 30 * 60_000;
 const FILE_NAME = 'pending-dispatches.json';
 
+// Single-writer mutex — serializes all R/M/W mutations within one process.
+let _writeLock = Promise.resolve();
+
 function pathFor(dataDir) {
   return join(dataDir, FILE_NAME);
 }
@@ -45,7 +48,8 @@ function writeAll(dataDir, map) {
   try {
     const p = pathFor(dataDir);
     mkdirSync(dirname(p), { recursive: true });
-    const tmp = `${p}.tmp`;
+    const rand = Math.random().toString(36).slice(2, 8);
+    const tmp = `${p}.${rand}.tmp`;
     writeFileSync(tmp, JSON.stringify(map), 'utf8');
     renameSync(tmp, p);
   } catch { /* best-effort */ }
@@ -74,11 +78,13 @@ function gc(map) {
 
 export function addPending(dataDir, handle, tool, queries) {
   if (!dataDir || !handle) return;
-  try {
-    const { map } = gc(readAll(dataDir));
-    map[handle] = { tool, queries: Array.isArray(queries) ? queries : [String(queries)], createdAt: Date.now() };
-    writeAll(dataDir, map);
-  } catch { /* best-effort */ }
+  _writeLock = _writeLock.then(() => {
+    try {
+      const { map } = gc(readAll(dataDir));
+      map[handle] = { tool, queries: Array.isArray(queries) ? queries : [String(queries)], createdAt: Date.now() };
+      writeAll(dataDir, map);
+    } catch { /* best-effort */ }
+  });
 }
 
 /**
@@ -100,15 +106,17 @@ export function hasPending(dataDir) {
 
 export function removePending(dataDir, handle) {
   if (!dataDir || !handle) return;
-  try {
-    const { map, changed } = gc(readAll(dataDir));
-    let mutated = changed;
-    if (handle in map) {
-      delete map[handle];
-      mutated = true;
-    }
-    if (mutated) writeAll(dataDir, map);
-  } catch { /* best-effort */ }
+  _writeLock = _writeLock.then(() => {
+    try {
+      const { map, changed } = gc(readAll(dataDir));
+      let mutated = changed;
+      if (handle in map) {
+        delete map[handle];
+        mutated = true;
+      }
+      if (mutated) writeAll(dataDir, map);
+    } catch { /* best-effort */ }
+  });
 }
 
 /**

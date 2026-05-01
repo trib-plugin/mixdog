@@ -255,10 +255,14 @@ export function loadRoleTemplate(role, dataDir) {
     const fm = parseFrontmatter(content);
     const body = content.replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
     const description = (fm.description || '').trim();
-    const permission = (fm.permission || '').trim().toLowerCase();
+    const rawPermission = (fm.permission || '').trim().toLowerCase();
+    const VALID_ROLE_PERMISSIONS = new Set(['read', 'read-write', 'mcp', 'full']);
+    // Fail closed: unknown permission values are rejected rather than silently
+    // falling through as full access.
+    const permission = VALID_ROLE_PERMISSIONS.has(rawPermission) ? rawPermission : null;
     const template = {
         description: description || null,
-        permission: permission || null,
+        permission,
         body: body || null,
     };
     _roleTemplateCache.set(key, { ts: Date.now(), value: template });

@@ -829,6 +829,30 @@ export async function dispatchAiWrapped(name, args, ctx) {
   if (typeof ctx?.notifyFn === 'function') {
     try { ctx.notifyFn(`${name} started`) } catch { /* best-effort */ }
   }
+  // Wire caller abort: when the caller session aborts (ESC, new prompt),
+  // mark the dispatch handle cancelled so a later result push doesn't echo
+  // a stale answer back to a session that already moved on. Best-effort:
+  // background sub-agents continue running on the bridge, but their result
+  // is suppressed at push time.
+  let _callerAborted = false;
+  try {
+    if (ctx?.callerSessionId) {
+      import('./session/abort-lookup.mjs').then(({ getAbortSignalForSession }) => {
+        Promise.resolve(getAbortSignalForSession(ctx.callerSessionId)).then((sig) => {
+          if (!sig) return;
+          if (sig.aborted) { _callerAborted = true; return; }
+          sig.addEventListener('abort', () => {
+            _callerAborted = true;
+            const entry = _dispatchResults.get(id);
+            if (entry && entry.status === 'running') {
+              entry.status = 'cancelled';
+              entry.completedAt = Date.now();
+            }
+          }, { once: true });
+        }).catch(() => {});
+      }).catch(() => {});
+    }
+  } catch {}
   Promise.allSettled(
     queries.map((q) => {
       const key = buildQueryCacheKey(name, q, resolvedCwd, brief)
@@ -867,7 +891,12 @@ export async function dispatchAiWrapped(name, args, ctx) {
       entry.completedAt = Date.now()
     }
     removePending(process.env.CLAUDE_PLUGIN_DATA, id)
-    pushDispatchResult(ctx, id, name, queries, merged)
+    if (_callerAborted) {
+      // Caller already moved on; suppress notification but keep registry
+      // entry for observability.
+      return
+    }
+    pushDispatchResult(ctx, id, name, queries, merged, { error: allFailed })
   }).catch((err) => {
     const msg = err?.message || String(err)
     _pruneDispatchResults()

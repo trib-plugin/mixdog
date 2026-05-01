@@ -90,7 +90,11 @@ async function cmdBridge(args) {
         if (a === '--provider' && args[i + 1]) { provider = args[++i]; continue; }
         if (a === '--model' && args[i + 1]) { model = args[++i]; continue; }
         if (a === '--preset' && args[i + 1]) { presetName = args[++i]; continue; }
-        if (a === '--role' && args[i + 1]) { role = args[++i]; continue; }
+        if (a === '--role') {
+            const val = args[i + 1];
+            if (!val || val.startsWith('--')) { process.stderr.write('--role requires a value\n'); process.exit(1); }
+            role = args[++i]; continue;
+        }
         if (a === '--context' && args[i + 1]) { context = args[++i]; continue; }
         if (!explicitSession && a.startsWith(':')) { explicitSession = a.slice(1); continue; }
         positional.push(a);

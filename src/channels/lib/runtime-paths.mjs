@@ -124,10 +124,10 @@ function waitForExit(pid, timeoutMs) {
     } catch {
       return true;
     }
-    const wait = 100;
-    const end = Date.now() + wait;
-    while (Date.now() < end) {
-    }
+    // Use a short synchronous pause via a tiny Atomics spin on a shared buffer
+    // so the event loop is not fully starved. Kept synchronous because callers
+    // (killSinglePid) are sync; 100 ms sleep via Atomics.wait on a 1-element buffer.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
   }
   return false;
 }

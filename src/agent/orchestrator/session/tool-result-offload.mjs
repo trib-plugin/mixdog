@@ -47,6 +47,12 @@ function ensureToolResultsDir(sessionId) {
     return dir;
 }
 
+// Map tool-call IDs to safe generated filenames. toolCallId arrives from
+// the provider and may contain path-unsafe characters (slashes, dots, etc.).
+// Use a monotonic counter keyed by sessionId so the sidecar path is
+// deterministic-ish within a session but never tainted by provider input.
+const _offloadCounters = new Map();
+
 function buildPreview(text, maxChars = TOOL_RESULT_PREVIEW_CHARS) {
     if (text.length <= maxChars) {
         return { preview: text, truncated: false };
@@ -80,8 +86,13 @@ export function maybeOffloadToolResult(sessionId, toolCallId, toolName, result) 
     const lower = result.trim().toLowerCase();
     if (lower.startsWith('error:') || lower.startsWith('error [') || lower.startsWith('[error')) return result;
 
+    // Generate a safe filename — never trust toolCallId as a path component.
+    const count = (_offloadCounters.get(sessionId) ?? 0) + 1;
+    _offloadCounters.set(sessionId, count);
+    const safeId = `r${count}`;
+
     const dir = ensureToolResultsDir(sessionId);
-    const filePath = join(dir, `${toolCallId}.txt`);
+    const filePath = join(dir, `${safeId}.txt`);
     writeFileSync(filePath, result, 'utf-8');
 
     const { preview, truncated } = buildPreview(result);

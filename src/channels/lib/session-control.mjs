@@ -1,20 +1,26 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync, renameSync } from "fs";
 import { setTimeout as delay } from "timers/promises";
 import { getControlPath, getControlResponsePath } from "./runtime-paths.mjs";
 async function controlClaudeSession(instanceId, command, timeoutMs = 3e3) {
   const controlPath = getControlPath(instanceId);
-  const responsePath = getControlResponsePath(instanceId);
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  // Per-request response file avoids concurrent callers unlinking each other's responses
+  const responsePath = getControlResponsePath(instanceId) + `.${id}`;
+  const sharedResponsePath = getControlResponsePath(instanceId);
   try {
-    unlinkSync(responsePath);
+    unlinkSync(sharedResponsePath);
   } catch {
   }
-  writeFileSync(controlPath, JSON.stringify({ id, command, requestedAt: Date.now() }));
+  // Write control atomically via tmp+rename
+  const controlTmp = controlPath + `.${id}.tmp`;
+  writeFileSync(controlTmp, JSON.stringify({ id, command, requestedAt: Date.now(), responsePath }));
+  renameSync(controlTmp, controlPath);
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    if (existsSync(responsePath)) {
+    if (existsSync(responsePath) || existsSync(sharedResponsePath)) {
       try {
-        const payload = JSON.parse(readFileSync(responsePath, "utf8"));
+        const readPath = existsSync(responsePath) ? responsePath : sharedResponsePath;
+        const payload = JSON.parse(readFileSync(readPath, "utf8"));
         if (payload.id === id) return payload;
       } catch {
       }

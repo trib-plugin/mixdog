@@ -18,6 +18,10 @@ class EventQueue {
   ownerGetter = null;
   ownerSkipLogged = false;
   notifiedFiles = /* @__PURE__ */ new Set();
+  // Monotonic enqueue counter — prevents same-millisecond enqueue ordering
+  // from being decided by Math.random() (lex sort on the random suffix).
+  // Counter is 8-digit zero-padded so lex sort matches numeric order.
+  enqueueSeq = 0;
   // track files already notified during active state
   constructor(config, channelsConfig) {
     this.config = config ?? {};
@@ -67,9 +71,16 @@ class EventQueue {
   // ── Enqueue ───────────────────────────────────────────────────────
   enqueue(item) {
     ensureDir(QUEUE_DIR);
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const seq = String(this.enqueueSeq++).padStart(8, "0");
+    const id = `${Date.now()}-${seq}-${Math.random().toString(36).slice(2, 6)}`;
     const filename = `${item.priority === "high" ? "0" : item.priority === "normal" ? "1" : "2"}-${id}.json`;
-    writeFileSync(join(QUEUE_DIR, filename), JSON.stringify(item, null, 2));
+    // Write to .tmp first then atomic rename so a partially-written file
+    // can't be read back by the next tick mid-enqueue. POSIX/NTFS rename
+    // within the same dir is atomic.
+    const finalPath = join(QUEUE_DIR, filename);
+    const tmpPath = `${finalPath}.tmp`;
+    writeFileSync(tmpPath, JSON.stringify(item, null, 2));
+    renameSync(tmpPath, finalPath);
     logEvent(`${item.name}: enqueued (${item.priority})`);
     if (item.priority === "high") {
       this.processQueue();

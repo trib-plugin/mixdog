@@ -63,15 +63,35 @@ export function ensureDataDir() {
 
 export function readJson(filePath, fallback) {
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    const raw = fs.readFileSync(filePath, 'utf8')
+    return JSON.parse(raw)
   } catch {
+    // If the file exists but parse failed, back it up before returning fallback
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.renameSync(filePath, filePath + '.corrupt.' + Date.now())
+        process.stderr.write(`[search-config] corrupt JSON backed up: ${filePath}\n`)
+      }
+    } catch {}
     return fallback
   }
 }
 
 export function writeJson(filePath, value) {
   ensureDir(path.dirname(filePath))
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + '\n', 'utf8')
+  const tmp = filePath + '.tmp.' + process.pid
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8')
+    try {
+      const fd = fs.openSync(tmp, 'r')
+      fs.fsyncSync(fd)
+      fs.closeSync(fd)
+    } catch {}
+    fs.renameSync(tmp, filePath)
+  } catch (e) {
+    try { fs.unlinkSync(tmp) } catch {}
+    throw e
+  }
 }
 
 function normalizeLegacyConfig(config) {

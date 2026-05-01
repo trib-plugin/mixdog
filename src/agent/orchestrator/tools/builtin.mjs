@@ -375,10 +375,10 @@ function extractGlobBaseDirectory(pattern) {
 // utils/shell/outputLimits.ts, 30_000 chars). Claude Code falls back to a
 // persisted stdout file the model can re-read via FileRead; this orchestrator
 // has no such sidecar store, so the head slice is the full record the model
-// ever sees. Larger raw outputs (seen in the wild: a 160k-token Grep result on
+// ever sees. Raised to 100_000 (TaskOutputTool parity). Larger raw outputs (seen in the wild: a 160k-token Grep result on
 // 2026-04-19) blow the context budget and crater the server-side prompt
 // cache, so the cap is the primary guard.
-const SHELL_OUTPUT_MAX_CHARS = 30_000;
+const SHELL_OUTPUT_MAX_CHARS = 100_000;
 
 // v0.6.231 smart truncation. Big raw payloads (large `read`, 500-line `bash`
 // dumps) bloat Pool B cache_write by 30-40k tokens per iter. These thresholds
@@ -514,6 +514,12 @@ async function streamReadRange(fullPath, offset, limit) {
         let collectedBytes = 0;
         let truncated = false;
         let stoppedAtLimit = false;
+        // W1 H: track first/last emitted line numbers (1-based) so callers
+        // snapshot only what was rendered. Byte-cap truncation can stop
+        // the stream short of `offset+limit`; recording the request
+        // marked unread lines as editable.
+        let firstEmitted = 0;
+        let lastEmitted = 0;
         rl.on('line', (line) => {
             if (lineIdx < offset) { lineIdx++; return; }
             if (collected.length >= limit) {
@@ -532,6 +538,8 @@ async function streamReadRange(fullPath, offset, limit) {
                 return;
             }
             collected.push(rendered);
+            if (firstEmitted === 0) firstEmitted = lineIdx + 1;
+            lastEmitted = lineIdx + 1;
             lineIdx++;
         });
         rl.on('close', () => {
@@ -543,7 +551,7 @@ async function streamReadRange(fullPath, offset, limit) {
             } else if (!out && offset >= lineIdx) {
                 out = `(no lines in range; file has ${lineIdx} lines)`;
             }
-            resolve(out);
+            resolve({ text: out, firstEmitted, lastEmitted });
         });
         rl.on('error', reject);
         stream.on('error', reject);
@@ -859,6 +867,7 @@ export const BUILTIN_TOOLS = [
                 '-C': { type: 'number', description: 'Lines before+after (content mode).' },
                 context: { type: 'number', description: 'Alias for -C.' },
                 multiline: { type: 'boolean', description: 'Allow patterns to span lines (rg -U --multiline-dotall).' },
+                type: { type: 'string', description: 'File type filter (e.g. js, py, rust, go).' },
             },
             required: ['pattern'],
         },
@@ -1092,6 +1101,20 @@ export function getBuiltinCacheStatsForTesting() {
 const DEFAULT_READ_STATE_SCOPE = '__global__';
 const _readFilesByScope = new Map(); // scope → Map(fullPath → { mtimeMs, size, ...meta })
 
+// Per-path mutex for concurrent Edit/Write operations. Maps absPath → Promise
+// chain so that overlapping calls for the same file are serialised in-process.
+const _editLocks = new Map();
+
+function _withPathLock(absPath, fn) {
+    const prev = _editLocks.get(absPath) ?? Promise.resolve();
+    const next = prev.then(fn, fn); // pass through errors so chain never stalls
+    _editLocks.set(absPath, next.then(
+        () => { if (_editLocks.get(absPath) === next) _editLocks.delete(absPath); },
+        () => { if (_editLocks.get(absPath) === next) _editLocks.delete(absPath); },
+    ));
+    return next;
+}
+
 function _readScopeKey(scope) {
     return scope ? String(scope) : DEFAULT_READ_STATE_SCOPE;
 }
@@ -1182,8 +1205,20 @@ function _getReadSnapshot(fullPath, scope = null) {
     return _readFilesForScope(scope).get(fullPath);
 }
 
-function _isSnapshotStale(stat, snapshot) {
-    if (stat.mtimeMs > snapshot.mtimeMs + 1) return true;
+function _isSnapshotStale(stat, snapshot, fullPath = '') {
+    // W1 H: any mtime drift counts as stale. Restored / rewound mtimes
+    // (touch -d, tar restore, file revert) preserve size while shifting
+    // mtime backward; the prior `> +1` check let those pass when size
+    // matched. Treat any delta beyond 1ms FS-resolution noise as drift.
+    if (Math.abs(stat.mtimeMs - snapshot.mtimeMs) > 1) return true;
+    // Same-mtime contentHash mismatch on full snapshots: in-place rewrite
+    // with identical length within FS timestamp resolution.
+    if (snapshot.contentHash && _snapshotCoversFullFile(snapshot)) {
+        try {
+            const cur = readFileSync(fullPath || '', 'utf-8');
+            if (cur && _hashText(cur) !== snapshot.contentHash) return true;
+        } catch { /* fullPath not threaded through stat — caller falls back to _readContentIfSnapshotHashMatches */ }
+    }
     // CC parity: same-mtime size drift counts as stale. NTFS / exFAT
     // 1 s mtime resolution lets a fast rewrite preserve mtimeMs while
     // the byte length changes; size check catches that case.
@@ -1234,16 +1269,13 @@ function _validatePartialSnapshotCoverage(content, oldStr, snapshot, filePath) {
 // extend the snapshot's ranges to cover the match site. Skips a forced
 // re-read when the model edits adjacent to (but outside) what it
 // already read. Multi-match keeps the strict reject upstream.
-function _maybeExtendSnapshotForUniqueMatch(content, oldStr, snapshot) {
-    if (!snapshot || typeof oldStr !== 'string' || oldStr.length === 0) return false;
-    const first = content.indexOf(oldStr);
-    if (first === -1) return false;
-    if (content.indexOf(oldStr, first + oldStr.length) !== -1) return false;
-    const startLine = _lineForIndex(content, first);
-    const endLine = startLine + oldStr.split('\n').length - 1;
-    const existing = Array.isArray(snapshot.ranges) ? snapshot.ranges : [];
-    snapshot.ranges = _mergeReadRanges([...existing, { startLine, endLine }]);
-    return true;
+function _maybeExtendSnapshotForUniqueMatch(_content, _oldStr, _snapshot) {
+    // W1 H: auto-widening removed. Silently mutating snapshot.ranges to
+    // admit an unread match defeated the partial-read edit gate — the
+    // model could edit lines it never saw as long as old_string was
+    // unique. Callers must explicitly re-read with a window covering
+    // the edit target.
+    return false;
 }
 
 function _countOccurrences(haystack, needle) {
@@ -1568,18 +1600,23 @@ function startBackgroundShellJob({ command, timeoutMs, workDir, mergeStderr, spa
     const _innerShellQ = shellQuoteSingle(shell);
     const _innerArgQ = shellQuoteSingle(shellArg);
     const wrapped = `{ if command -v timeout >/dev/null 2>&1; then timeout ${timeoutSeconds} ${_innerShellQ} ${_innerArgQ} ${_userCmdQuoted}; else ${_innerShellQ} ${_innerArgQ} ${_userCmdQuoted}; fi; rc=$?; printf '%s' \"$rc\" > ${shellQuoteSingle(exitPath)}; touch ${shellQuoteSingle(donePath)}; exit $rc; }`;
+    // W1 L: keep the parent fds so we can close them once the child has
+    // dup'd them. Leaking these meant a long-running mixdog process held
+    // a growing handle table for every background job.
+    const _stdoutFd = openSync(stdoutPath, 'a');
+    const _stderrFd = mergeStderr ? _stdoutFd : openSync(mergeStderr ? stdoutPath : stderrPath, 'a');
     const child = spawn(shell, [shellArg, wrapped], {
         cwd: workDir,
         env: spawnEnv,
         detached: true,
-        stdio: [
-            'ignore',
-            openSync(stdoutPath, 'a'),
-            openSync(mergeStderr ? stdoutPath : stderrPath, 'a'),
-        ],
+        stdio: ['ignore', _stdoutFd, _stderrFd],
         windowsHide: true,
     });
     child.unref();
+    try { closeSync(_stdoutFd); } catch { /* already inherited by child */ }
+    if (_stderrFd !== _stdoutFd) {
+        try { closeSync(_stderrFd); } catch { /* already inherited */ }
+    }
     const detail = {
         jobId,
         kind: 'bash',
@@ -1608,14 +1645,27 @@ const _CMD_START = '(?:^|[;&|\\n(){}]\\s*|\\$[\\({]\\s*|[<>]\\(\\s*|`\\s*)';
 const BLOCKED_PATTERNS = [
     // rm — catch -rf, -fr, split flags (-r -f / -f -r), and `--` separator;
     // target restricted to / or ~ so legitimate `rm -rf .build` still passes.
-    /\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|-[rR]\s+-[fF]|-[fF]\s+-[rR])(?:\s+--)?\s+[\/~]/i,
-    /\bgit\s+push\s+--force/i,
+    // W1 H: allow any number of intervening options (e.g. --no-preserve-root)
+    // between the recursive-force flag and the root target. Prior pattern
+    // only allowed bare `--` and missed `rm -rf --no-preserve-root /`.
+    /\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|-[rR]\s+-[fF]|-[fF]\s+-[rR])(?:\s+(?:--?[a-zA-Z][\w-]*))*\s+[\/~]/i,
+    // W1 H: force-push variants. --force, -f, --force-with-lease, and the
+    // leading-plus refspec form (`git push origin +branch`) all rewrite
+    // remote history without warning.
+    /\bgit\s+push\s+(?:[^\n]*\s)?(?:--force(?:-with-lease)?|-f)\b/i,
+    /\bgit\s+push\s+\S+\s+\+/i,
     /\bgit\s+reset\s+--hard/i,
     /\bformat\s+[a-z]:/i,
     /\b(shutdown|reboot|halt)\b/i,
     /\bdel\s+\/[sfq]/i,
+    // W1 H: Windows root removal via cmd builtins. `rmdir /s /q C:\` and
+    // its alias `rd /s /q D:\` wipe an entire drive without confirmation.
+    /\b(?:rmdir|rd)\s+(?:\/[sq]\s+)+[a-zA-Z]:\\?/i,
     new RegExp(_CMD_START + 'mkfs(?:\\.|\\b)', 'i'),
     new RegExp(_CMD_START + 'dd\\s+[^\\n]*\\bif=/dev/', 'i'),
+    // W1 H: dd writing to a block device (disk wipe). Block of=/dev/* the
+    // same way if=/dev/* (read from device) is blocked.
+    new RegExp(_CMD_START + 'dd\\s+[^\\n]*\\bof=/dev/', 'i'),
     new RegExp(_CMD_START + 'diskpart\\b[^\\n]*\\bclean\\b', 'i'),
     /:\(\)\s*\{[^}]*:\|:&[^}]*\};\s*:/, // bash fork-bomb signature (idempotent string)
 ];
@@ -1678,10 +1728,23 @@ export function isSafePath(filePath, cwd, { allowHome = false, allowPluginData =
         // targets out-of-scope (or UNC) can't be used to create a file
         // outside the sandbox.
         try {
-            const parent = normalize(realpathSync(dirname(normalized)));
-            if (isUncPath(parent)) return false;
-            if (!isInsideAllowedRoot(parent)) return false;
-        } catch { /* parent also doesn't resolve — let caller fail naturally */ }
+            // W1 H: walk up to nearest existing ancestor and realpath that.
+            // Single-level parent realpath let an in-scope symlink ancestor
+            // (e.g. /cwd/links/dir → /etc/) escape the sandbox when the
+            // immediate parent didn't exist yet but a grand-ancestor did.
+            let cur = dirname(normalized);
+            let prev = '';
+            // Bound the walk so a pathological path can't loop forever.
+            for (let i = 0; i < 64 && cur && cur !== prev; i++) {
+                let real;
+                try { real = realpathSync(cur); }
+                catch { prev = cur; cur = dirname(cur); continue; }
+                const realNorm = normalize(real);
+                if (isUncPath(realNorm)) return false;
+                if (!isInsideAllowedRoot(realNorm)) return false;
+                break;
+            }
+        } catch { /* nothing resolved — let caller fail naturally */ }
     }
     return true;
 }
@@ -2173,9 +2236,15 @@ export function analyzeShellCommandEffects(command, cwd) {
     const text = String(command || '').trim();
     let localCwd = resolve(cwd || process.cwd());
     if (!text) return { mutationMode: 'none', paths: [], finalCwd: localCwd };
-    if (!SHELL_MUTATION_PATTERN.test(text) && !/(^|[^0-9])>>?/.test(text) && !/\btee\b/.test(text)) {
+    // W1 M: redirect / tee detection must run before the read-only fast
+    // path. `echo x > file` and pipelines containing tee write to disk
+    // even though every segment starts with a read-only verb; previously
+    // these slipped through with mutationMode='none' and never
+    // invalidated caches or the code-graph.
+    const _hasRedirect = /(?:^|[^0-9&<>])>>?(?!\&)/.test(text) || /\btee\b/.test(text);
+    if (!SHELL_MUTATION_PATTERN.test(text) && !_hasRedirect) {
         const readOnly = _shellSplitSegments(text).every((segment) => {
-            const tokens = _stripShellAssignments(_shellTokenize(segment) || []);
+            const tokens = _stripShellProbeWrappers(_shellTokenize(segment) || []);
             if (tokens.length === 0) return true;
             const joined = tokens.join(' ');
             if (/^cd\b/i.test(joined)) {
@@ -2193,7 +2262,10 @@ export function analyzeShellCommandEffects(command, cwd) {
     for (const segment of _shellSplitSegments(text)) {
         const parsed = _shellTokenize(segment);
         if (!parsed) return { mutationMode: 'global', paths: [], finalCwd: localCwd };
-        const tokens = _stripShellAssignments(parsed);
+        // W1 M: strip env / sudo / nohup / exec / command wrappers so
+        // `env FOO=1 npm install` is still detected as a mutator (it was
+        // classified read-only because the first token was `env`).
+        const tokens = _stripShellProbeWrappers(parsed);
         if (tokens.length === 0) continue;
         const cmd = tokens[0].toLowerCase();
         const joined = tokens.join(' ');
@@ -2204,7 +2276,30 @@ export function analyzeShellCommandEffects(command, cwd) {
             else global = true;
             continue;
         }
-        if (SHELL_READ_ONLY_SEGMENT_RE.test(joined)) continue;
+        // W1 M: a pipeline starting with a read-only verb can still mutate
+        // via `| tee file` or `> file`. Don't short-circuit on read-only
+        // when the segment contains a tee or write redirect.
+        const _segmentMutates = tokens.includes('tee') || tokens.includes('>') || tokens.includes('>>');
+        if (!_segmentMutates && SHELL_READ_ONLY_SEGMENT_RE.test(joined)) continue;
+        if (_segmentMutates) {
+            // Extract tee path args + redirect targets even though `cmd` is
+            // a read-only verb; otherwise mutationMode falls through to
+            // 'global' (over-broad cache invalidation).
+            const _segPaths = [];
+            const _teeIdx = tokens.indexOf('tee');
+            if (_teeIdx !== -1) {
+                _segPaths.push(..._extractShellPathArgs(tokens, localCwd, { minIndex: _teeIdx + 1 }));
+            }
+            for (let _i = 0; _i < tokens.length; _i++) {
+                if (tokens[_i] === '>' || tokens[_i] === '>>') {
+                    const r = _resolveShellPathToken(tokens[_i + 1], localCwd);
+                    if (r) _segPaths.push(r);
+                }
+            }
+            if (_segPaths.length === 0) { global = true; continue; }
+            for (const p of _segPaths) paths.add(p);
+            continue;
+        }
         if (SHELL_GLOBAL_MUTATORS.has(cmd)) {
             if (cmd === 'git') {
                 const sub = String(tokens[1] || '').toLowerCase();
@@ -2610,7 +2705,7 @@ async function _runMultiEdit(args, workDir, readStateScope, pathOpts, options = 
         }) || `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
     }
     let mEditPreloadedContent = null;
-    if (_isSnapshotStale(mEditStat, mEditSnapshot)) {
+    if (_isSnapshotStale(mEditStat, mEditSnapshot, fullPath)) {
         mEditPreloadedContent = _readContentIfSnapshotHashMatches(fullPath, mEditSnapshot);
         if (mEditPreloadedContent === null) {
             return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
@@ -2737,10 +2832,12 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // Plumb session-scoped AbortSignal so ESC / new-prompt cancels
                 // a long-running persistent command (matches the one-shot
                 // path's getAbortSignalForSession hookup in execShellCommand).
-                const _persistAbort = (() => {
-                    try { return getAbortSignalForSession(options) || null; }
-                    catch { return null; }
-                })();
+                // W1 M: getAbortSignalForSession is async; the previous code
+                // passed the Promise itself as abortSignal. Await the lookup
+                // and key on options.sessionId (the function's contract).
+                let _persistAbort = null;
+                try { _persistAbort = (await getAbortSignalForSession(options?.sessionId)) || null; }
+                catch { _persistAbort = null; }
                 return executeBashSessionTool('bash_session', args, workDir, { abortSignal: _persistAbort });
             }
             const command = args.command;
@@ -2769,7 +2866,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // explicit timeout up to 1800 s honored; missing/0/non-numeric
             // → default. Hard cap on output remains SHELL_OUTPUT_DISK_CAP.
             const _DEFAULT_BASH_TIMEOUT_MS = 120_000;
-            const _MAX_BASH_TIMEOUT_MS = 1_800_000;
+            const _MAX_BASH_TIMEOUT_MS = 600_000; // CC parity (src/utils/timeouts.ts:3)
             const _rawTimeout = (typeof args.timeout === 'number' && args.timeout > 0)
                 ? args.timeout : _DEFAULT_BASH_TIMEOUT_MS;
             const timeout = Math.min(_rawTimeout, _MAX_BASH_TIMEOUT_MS);
@@ -2808,11 +2905,35 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // run_in_background path and the foreground execShellCommand
                 // path use it. Previously the background branch ran the raw
                 // command without alias / function support.
-                const _wrappedCommand = (process.platform === 'win32'
+                // W1 M: surface wrapper failure instead of silently running
+                // the raw command (alias / function support gone, snapshot
+                // not initialised). Errors propagate as a tool-level Error
+                // string so the agent retries with awareness.
+                let _wrappedCommand;
+                if (process.platform === 'win32'
                     ? shell.toLowerCase().endsWith('bash.exe')
-                    : (shell.includes('bash') || shell.includes('zsh')))
-                    ? await wrapCommandWithSnapshot(shell, command).catch(() => command)
-                    : command;
+                    : (shell.includes('bash') || shell.includes('zsh'))) {
+                    try {
+                        _wrappedCommand = await wrapCommandWithSnapshot(shell, command);
+                    } catch (wrapErr) {
+                        return `Error: shell snapshot wrapper failed — ${normalizeErrorMessage(wrapErr instanceof Error ? wrapErr.message : String(wrapErr))}`;
+                    }
+                } else {
+                    _wrappedCommand = command;
+                }
+                // W1 M: foreground bash also needs the POSIX-shell guard
+                // (background path enforces at startBackgroundShellJob).
+                // Without this, a Windows host without Git Bash fell back
+                // to cmd.exe and silently mis-parsed POSIX wrappers.
+                if (process.platform === 'win32') {
+                    const _shLower = String(shell || '').toLowerCase();
+                    const _isPosixShell = _shLower.includes('bash')
+                        || _shLower.endsWith('/sh') || _shLower.endsWith('\\sh.exe')
+                        || _shLower.includes('zsh');
+                    if (!_isPosixShell) {
+                        return `Error: bash one-shot requires a POSIX-compatible shell on Windows (resolved=${shell}); install Git Bash or use WSL`;
+                    }
+                }
                 if (args.run_in_background === true) {
                     const job = startBackgroundShellJob({
                         command: _wrappedCommand,
@@ -2845,10 +2966,11 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 //     outputFilePath marker so the model can read the full
                 //     output via the read tool without losing the tail past
                 //     the inline cap.
-                const _bashAbortSignal = (() => {
-                    try { return getAbortSignalForSession(options) || null; }
-                    catch { return null; }
-                })();
+                // W1 M: await the async lookup; passing the unresolved
+                // Promise as abortSignal silently disabled cancellation.
+                let _bashAbortSignal = null;
+                try { _bashAbortSignal = (await getAbortSignalForSession(options?.sessionId)) || null; }
+                catch { _bashAbortSignal = null; }
                 // _wrappedCommand was computed above (after resolveShell) so
                 // run_in_background and the foreground path share one wrap.
                 const result = await execShellCommand({
@@ -3020,6 +3142,16 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 }).join('\n\n');
                 return `${header}\n\n${body}`;
             }
+            // W1 H: device-file / UNC / scope guards must run BEFORE mode
+            // dispatches so head/tail/wc internal readers can't bypass the
+            // /dev/* and UNC blocks that the default-mode branch enforces.
+            if (typeof args.path === 'string' && args.path) {
+                const _modeProbePath = normalizeInputPath(args.path);
+                if (isBlockedDevicePath(_modeProbePath))
+                    return `Error: cannot read device file (would block or produce infinite output): ${normalizeOutputPath(_modeProbePath)}`;
+                if (isUncPath(_modeProbePath))
+                    return `Error: UNC paths are not supported (NTLM credential leak risk): ${normalizeOutputPath(_modeProbePath)}`;
+            }
             if (args.mode === 'head') return executeChildBuiltinTool('head', { path: args.path, n: args.n }, workDir);
             if (args.mode === 'tail') return executeChildBuiltinTool('tail', { path: args.path, n: args.n }, workDir);
             if (args.mode === 'count') return executeChildBuiltinTool('wc', { path: args.path }, workDir);
@@ -3086,6 +3218,22 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         _entryStillValid = false;
                     }
                 }
+                // Stronger gate: when the cached snapshot meta carries a full
+                // contentHash (set by full-file reads at :3190 and writes at
+                // :3235), recompute a fresh sha over the on-disk body and
+                // reject the stub on mismatch. The 64KiB prefix hash misses
+                // same-mtime+same-size rewrites that mutate bytes past the
+                // 64KiB head — Edit on a stale stub would operate on ghost
+                // content. A read failure here drops to the fresh read path.
+                if (_entryStillValid) {
+                    const _snapHash = cachedEntry.readSnapshotMeta?.contentHash;
+                    if (_snapHash) {
+                        try {
+                            const _freshHash = _hashText(readFileSync(fullPath, 'utf-8'));
+                            if (_freshHash !== _snapHash) _entryStillValid = false;
+                        } catch { _entryStillValid = false; }
+                    }
+                }
                 if (_entryStillValid) {
                     _recordReadSnapshot(fullPath, st, readStateScope, cachedEntry.readSnapshotMeta || { source: 'read_cached' });
                     // G6: file_unchanged stub. The full body is already in the
@@ -3111,10 +3259,16 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     return `Error: file appears to be binary (contains null bytes): ${normalizeOutputPath(filePath)}`;
                 }
                 try {
-                    const out = await streamReadRange(fullPath, offset, limit);
+                    const _streamRes = await streamReadRange(fullPath, offset, limit);
+                    const out = _streamRes.text;
+                    // W1 H: snapshot only emitted line bounds, not the
+                    // requested window — byte-cap truncation can stop short.
+                    const _emittedRanges = (_streamRes.firstEmitted && _streamRes.lastEmitted)
+                        ? [{ startLine: _streamRes.firstEmitted, endLine: _streamRes.lastEmitted }]
+                        : [];
                     const snapshotMeta = {
                         source: 'read',
-                        ranges: [{ startLine: offset + 1, endLine: offset + limit }],
+                        ranges: _emittedRanges,
                     };
                     // Compute prefix hash for race-guard on next cache hit.
                     const _streamPrefixHash = (() => {
@@ -3140,6 +3294,14 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }
             try {
                 const content = await readFile(fullPath, 'utf-8');
+                // W1 M: re-stat after the async readFile so a concurrent
+                // Write that landed during the read is detected before
+                // the cache + snapshot record stale bytes.
+                let _stPostRead;
+                try { _stPostRead = statSync(fullPath); } catch { _stPostRead = st; }
+                if (_stPostRead.mtimeMs !== st.mtimeMs || _stPostRead.size !== st.size) {
+                    st = _stPostRead;
+                }
                 const lines = content.split(/\r?\n/);
                 if (lines.length > 0 && lines[0].charCodeAt(0) === 0xFEFF) lines[0] = lines[0].slice(1);
                 const sliced = lines.slice(offset, offset + limit);
@@ -3150,12 +3312,16 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // individually pass the file-size check but explode after
                 // line-number prefixing.
                 let out;
+                // W1 H: track lines actually rendered so the snapshot below
+                // doesn't mark byte-cap-truncated lines as editable.
+                let _renderedLineCount = sliced.length;
                 if (rendered.length > READ_MAX_OUTPUT_BYTES) {
                     const linesShown = (() => {
                         const slice = rendered.slice(0, READ_MAX_OUTPUT_BYTES);
                         return slice.split('\n').length;
                     })();
                     const nextOffset = offset + linesShown;
+                    _renderedLineCount = linesShown;
                     out = rendered.slice(0, READ_MAX_OUTPUT_BYTES) + `\n\n... [output truncated at ${Math.round(READ_MAX_OUTPUT_BYTES/1024)} KB] ...\nnext_call: read({path, offset:${nextOffset}, limit:${limit}})`;
                 } else {
                     out = rendered;
@@ -3171,22 +3337,33 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // the default read (no offset/limit, full:false) AND the file
                 // is over the line/byte threshold. Explicit ranges always see
                 // byte-exact output.
+                // W1 H: smart-middle elision drops lines the model never
+                // saw — don't claim full-file coverage when it triggered.
+                let _smartTruncated = false;
                 if (!hasRangeArgs && !wantFull) {
-                    const { text } = smartReadTruncate(out, lines.length, st.size);
-                    out = text;
+                    const sm = smartReadTruncate(out, lines.length, st.size);
+                    out = sm.text;
+                    _smartTruncated = sm.truncated === true;
                 }
                 // CC parity: empty file gets a system-reminder instead of a
                 // bare `1\t` line. The reminder makes the empty-state
                 // explicit so the agent doesn't assume content was elided.
                 if (content.length === 0) {
-                    out = `<system-reminder>File exists but has empty contents: ${normalizeOutputPath(filePath)}</system-reminder>`;
+                    // W1 M: filename can contain `<` or `</system-reminder>`
+                    // sequences; XML-escape before interpolation so a hostile
+                    // path can't terminate the envelope and inject markup.
+                    const _safePath = normalizeOutputPath(filePath)
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;');
+                    out = `<system-reminder>File exists but has empty contents: ${_safePath}</system-reminder>`;
                 }
-                const isFullFileView = offset === 0 && offset + limit >= lines.length;
+                const isFullFileView = offset === 0 && offset + limit >= lines.length && !_smartTruncated;
                 const snapshotMeta = {
                     source: 'read',
                     ranges: isFullFileView
                         ? [{ startLine: 1, endLine: Infinity }]
-                        : [{ startLine: offset + 1, endLine: Math.min(lines.length, offset + limit) }],
+                        : [{ startLine: offset + 1, endLine: Math.min(lines.length, offset + _renderedLineCount) }],
                     ...(isFullFileView ? { contentHash: _hashText(content) } : {}),
                 };
                 // Race-guard prefix hash. content variable is the full file body
@@ -3225,19 +3402,35 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         results.push(`FAIL ${normalizeOutputPath(filePath)}: path outside allowed scope`);
                         continue;
                     }
-                    try {
+                    {
                         const fullPath = resolveAgainstCwd(filePath, workDir);
-                        mkdirSync(dirname(fullPath), { recursive: true });
-                        await atomicWrite(fullPath, content, { sessionId: options?.sessionId });
-                        dirtyPaths.push(fullPath);
-                        _recordReadSnapshot(fullPath, undefined, readStateScope, {
-                            source: 'write',
-                            contentHash: _hashText(content),
+                        // W1 H: read-before-overwrite gate + per-path mutex (CAS guard).
+                        const _batchResult = await _withPathLock(fullPath, async () => {
+                            try {
+                                const _existing = statSync(fullPath);
+                                if (_existing.isFile() && !_getReadSnapshot(fullPath, readStateScope)) {
+                                    return `FAIL ${normalizeOutputPath(filePath)}: file exists but has not been read yet — read before overwriting`;
+                                }
+                            } catch { /* doesn't exist — new-file write OK */ }
+                            try {
+                                mkdirSync(dirname(fullPath), { recursive: true });
+                                await atomicWrite(fullPath, content, { sessionId: options?.sessionId });
+                                _recordReadSnapshot(fullPath, undefined, readStateScope, {
+                                    source: 'write',
+                                    contentHash: _hashText(content),
+                                });
+                                return `OK ${normalizeOutputPath(filePath)}:${fullPath}`;
+                            }
+                            catch (err) {
+                                return `FAIL ${normalizeOutputPath(filePath)}: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+                            }
                         });
-                        results.push(`OK ${normalizeOutputPath(filePath)}`);
-                    }
-                    catch (err) {
-                        results.push(`FAIL ${normalizeOutputPath(filePath)}: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`);
+                        if (typeof _batchResult === 'string' && _batchResult.startsWith(`OK ${normalizeOutputPath(filePath)}:`)) {
+                            dirtyPaths.push(fullPath);
+                            results.push(`OK ${normalizeOutputPath(filePath)}`);
+                        } else {
+                            results.push(_batchResult);
+                        }
                     }
                 }
                 if (dirtyPaths.length > 0) {
@@ -3255,44 +3448,67 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 return 'Error: content is required';
             if (!isSafePath(filePath, workDir, pathOpts))
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
-            try {
+            {
                 const fullPath = resolveAgainstCwd(filePath, workDir);
-                // Read-before-overwrite gate (CC parity). Refuse to clobber an
-                // existing file the model has not Read in this session. New
-                // file creation (no statSync) is allowed. Prior Edits/Writes
-                // by us count as "read" since they recordReadSnapshot below.
-                try {
-                    const _existing = statSync(fullPath);
-                    if (_existing.isFile() && !_getReadSnapshot(fullPath, readStateScope)) {
-                        return `Error [code 6]: file exists but has not been read yet — read before overwriting: ${filePath}`;
+                return _withPathLock(fullPath, async () => {
+                    // Read-before-overwrite gate (CC parity). Refuse to clobber an
+                    // existing file the model has not Read in this session. New
+                    // file creation (no statSync) is allowed. Prior Edits/Writes
+                    // by us count as "read" since they recordReadSnapshot below.
+                    try {
+                        const _existing = statSync(fullPath);
+                        if (_existing.isFile() && !_getReadSnapshot(fullPath, readStateScope)) {
+                            return `Error [code 6]: file exists but has not been read yet — read before overwriting: ${filePath}`;
+                        }
+                        // W1 H: stale-snapshot validation. Existing-snapshot only
+                        // proved the model read SOMETHING; without re-stat the file
+                        // could have drifted via lint / external write since.
+                        if (_existing.isFile()) {
+                            const _snap = _getReadSnapshot(fullPath, readStateScope);
+                            // Partial-view guard (CC FileWriteTool parity): refuse to
+                            // overwrite when the snapshot only covered a range of the
+                            // file — the model never saw the full content so the write
+                            // could silently drop lines outside the viewed window.
+                            if (_snap && !_snapshotCoversFullFile(_snap)) {
+                                return `Error [code 10]: partial-read snapshot — read full file before overwriting: ${filePath}`;
+                            }
+                            if (_snap && _isSnapshotStale(_existing, _snap, fullPath)) {
+                                const _hashOk = _readContentIfSnapshotHashMatches(fullPath, _snap);
+                                if (_hashOk === null) {
+                                    return `Error [code 7]: file modified since read — read it again before overwriting: ${filePath}`;
+                                }
+                            }
+                        }
+                    } catch { /* doesn't exist — new file write OK */ }
+                    try {
+                        // Auto-create missing parent directories so deep new paths
+                        // like `.v0610_test/deep/nested/file.txt` succeed in one
+                        // shot, matching Claude Code's Write tool behaviour.
+                        // `recursive:true` is a no-op when the directory already
+                        // exists and is cross-OS safe (POSIX + NTFS).
+                        mkdirSync(dirname(fullPath), { recursive: true });
+                        // v0.6.248: atomic write via tempfile + fsync + rename.
+                        // Non-atomic writeFileSync leaves a 0-byte / truncated file
+                        // on disk if the process dies mid-write (observed 2026-XX
+                        // when a bridge worker's SSE stream hung during an Edit on
+                        // openai-oauth-ws.mjs). atomicWrite preserves the file mode
+                        // on overwrite so we don't inadvertently widen 0o600 → 0o644.
+                        await atomicWrite(fullPath, content, { sessionId: options?.sessionId });
+                        invalidateBuiltinResultCache([fullPath]);
+                        markCodeGraphDirtyPaths(workDir, [fullPath]);
+                        // Write establishes the on-disk state the model just
+                        // authored, so a subsequent Edit does not need a fresh
+                        // Read round-trip.
+                        _recordReadSnapshot(fullPath, undefined, readStateScope, {
+                            source: 'write',
+                            contentHash: _hashText(content),
+                        });
+                        return `Written: ${normalizeOutputPath(filePath)}`;
                     }
-                } catch { /* doesn't exist — new file write OK */ }
-                // Auto-create missing parent directories so deep new paths
-                // like `.v0610_test/deep/nested/file.txt` succeed in one
-                // shot, matching Claude Code's Write tool behaviour.
-                // `recursive:true` is a no-op when the directory already
-                // exists and is cross-OS safe (POSIX + NTFS).
-                mkdirSync(dirname(fullPath), { recursive: true });
-                // v0.6.248: atomic write via tempfile + fsync + rename.
-                // Non-atomic writeFileSync leaves a 0-byte / truncated file
-                // on disk if the process dies mid-write (observed 2026-XX
-                // when a bridge worker's SSE stream hung during an Edit on
-                // openai-oauth-ws.mjs). atomicWrite preserves the file mode
-                // on overwrite so we don't inadvertently widen 0o600 → 0o644.
-                await atomicWrite(fullPath, content, { sessionId: options?.sessionId });
-                invalidateBuiltinResultCache([fullPath]);
-                markCodeGraphDirtyPaths(workDir, [fullPath]);
-                // Write establishes the on-disk state the model just
-                // authored, so a subsequent Edit does not need a fresh
-                // Read round-trip.
-                _recordReadSnapshot(fullPath, undefined, readStateScope, {
-                    source: 'write',
-                    contentHash: _hashText(content),
+                    catch (err) {
+                        return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+                    }
                 });
-                return `Written: ${normalizeOutputPath(filePath)}`;
-            }
-            catch (err) {
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
         }
         case 'edit': {
@@ -3354,77 +3570,122 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // ENOENT -> Error [code 4] with similar-file hint; mtime drift ->
             // Error [code 7]. Collapsing the two probes also closes the TOCTOU
             // window where the file could be deleted between checks.
-            let editStat;
-            try { editStat = statSync(fullPath); }
-            catch (err) {
-                if (err && err.code === 'ENOENT') {
-                    const similar = findSimilarFile(fullPath);
-                    const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
-                    return `Error [code 4]: file not found: ${filePath}${hint}`;
-                }
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
-            }
-            // Error [code 6]: Read-before-Edit enforcement. Prevents phantom
-            // edits where the model invents an old_string based on cached
-            // assumptions against a file that has drifted.
-            const editSnapshot = _getReadSnapshot(fullPath, readStateScope);
-            if (!editSnapshot) {
-                return _primeReadSnapshotForEdit({
-                    fullPath,
-                    filePath,
-                    st: editStat,
-                    scope: readStateScope,
-                    oldStrings: [{ label: 'edit', old_string: oldStr }],
-                }) || `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
-            }
-            // Error [code 7]: detect stale read via mtime drift (Anthropic
-            // readFileState timestamp check parity). +1ms slack absorbs
-            // filesystem timestamp resolution noise on NTFS/exFAT.
-            let editPreloadedContent = null;
-            if (_isSnapshotStale(editStat, editSnapshot)) {
-                editPreloadedContent = _readContentIfSnapshotHashMatches(fullPath, editSnapshot);
-                if (editPreloadedContent === null) {
-                    return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
-                }
-            }
-            try {
-                const content = editPreloadedContent === null
-                    ? readFileSync(fullPath, 'utf-8')
-                    : editPreloadedContent;
-                let partialCoverageErr = _validatePartialSnapshotCoverage(content, oldStr, editSnapshot, filePath);
-                if (partialCoverageErr) {
-                    // Lenient path: snapshot's mtime/size still matches on-disk
-                    // file + unique `old_string` match → widen ranges and proceed.
-                    // Multi-match keeps the strict reject below via Error [code 9].
-                    if (_maybeExtendSnapshotForUniqueMatch(content, oldStr, editSnapshot)) {
-                        partialCoverageErr = _validatePartialSnapshotCoverage(content, oldStr, editSnapshot, filePath);
+            {
+                let _preLockStat;
+                try { _preLockStat = statSync(fullPath); }
+                catch (err) {
+                    if (err && err.code === 'ENOENT') {
+                        const similar = findSimilarFile(fullPath);
+                        const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+                        return `Error [code 4]: file not found: ${filePath}${hint}`;
                     }
-                    if (partialCoverageErr) return partialCoverageErr;
+                    return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
                 }
-                const count = content.split(oldStr).length - 1;
-                if (count === 0)
-                    return `Error [code 8]: old_string not found in ${filePath}.${_findEditHint(content, oldStr, editSnapshot)}`;
-                if (count > 1 && !replaceAll)
-                    return `Error [code 9]: old_string found ${count} times — set replace_all:true or provide more unique context`;
-                const updated = replaceAll
-                    ? content.split(oldStr).join(newStr)
-                    : content.replace(oldStr, () => newStr);
-                // v0.6.248: atomic write — see `write` handler for rationale.
-                await atomicWrite(fullPath, updated, { sessionId: options?.sessionId });
-                invalidateBuiltinResultCache([fullPath]);
-                markCodeGraphDirtyPaths(workDir, [fullPath]);
-                // Refresh the snapshot to the post-write mtime so a chain
-                // of edits against the same file doesn't trip the stale
-                // check on the second hop.
-                _recordReadSnapshot(fullPath, undefined, readStateScope, {
-                    source: 'edit',
-                    contentHash: _hashText(updated),
-                });
-                return `Edited: ${normalizeOutputPath(filePath)}`;
+                // Error [code 6]: Read-before-Edit enforcement. Prevents phantom
+                // edits where the model invents an old_string based on cached
+                // assumptions against a file that has drifted.
+                const _preLockSnap = _getReadSnapshot(fullPath, readStateScope);
+                if (!_preLockSnap) {
+                    return _primeReadSnapshotForEdit({
+                        fullPath,
+                        filePath,
+                        st: _preLockStat,
+                        scope: readStateScope,
+                        oldStrings: [{ label: 'edit', old_string: oldStr }],
+                    }) || `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
+                }
             }
-            catch (err) {
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
-            }
+            // CAS guard: serialise concurrent edits to the same path.
+            // After acquiring the lock, re-stat + re-hash to detect drift
+            // that occurred between the pre-lock snapshot check and now.
+            return _withPathLock(fullPath, async () => {
+                let editStat;
+                try { editStat = statSync(fullPath); }
+                catch (err) {
+                    if (err && err.code === 'ENOENT') {
+                        const similar = findSimilarFile(fullPath);
+                        const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+                        return `Error [code 4]: file not found: ${filePath}${hint}`;
+                    }
+                    return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+                }
+                const editSnapshot = _getReadSnapshot(fullPath, readStateScope);
+                if (!editSnapshot)
+                    return `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
+                // Error [code 7]: detect stale read via mtime drift (Anthropic
+                // readFileState timestamp check parity). +1ms slack absorbs
+                // filesystem timestamp resolution noise on NTFS/exFAT.
+                let editPreloadedContent = null;
+                if (_isSnapshotStale(editStat, editSnapshot, fullPath)) {
+                    editPreloadedContent = _readContentIfSnapshotHashMatches(fullPath, editSnapshot);
+                    if (editPreloadedContent === null) {
+                        return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
+                    }
+                }
+                try {
+                    let content = editPreloadedContent === null
+                        ? readFileSync(fullPath, 'utf-8')
+                        : editPreloadedContent;
+                    // W1 M: Read renders CRLF as LF and strips BOM. Edit must
+                    // accept old_string in the displayed shape: try the raw
+                    // bytes first, then a CRLF→LF / BOM-stripped retry. On
+                    // success the writeback preserves the original line
+                    // endings so Edit doesn't silently convert files.
+                    let _origContentForWrite = content;
+                    let _normalisedView = false;
+                    if (!content.includes(oldStr)
+                        && (content.indexOf('\r\n') !== -1 || content.charCodeAt(0) === 0xFEFF)) {
+                        const _stripped = (content.charCodeAt(0) === 0xFEFF ? content.slice(1) : content)
+                            .replace(/\r\n/g, '\n');
+                        if (_stripped.includes(oldStr)) {
+                            content = _stripped;
+                            _normalisedView = true;
+                        }
+                    }
+                    let partialCoverageErr = _validatePartialSnapshotCoverage(content, oldStr, editSnapshot, filePath);
+                    if (partialCoverageErr) {
+                        // Lenient path: snapshot's mtime/size still matches on-disk
+                        // file + unique `old_string` match → widen ranges and proceed.
+                        // Multi-match keeps the strict reject below via Error [code 9].
+                        if (_maybeExtendSnapshotForUniqueMatch(content, oldStr, editSnapshot)) {
+                            partialCoverageErr = _validatePartialSnapshotCoverage(content, oldStr, editSnapshot, filePath);
+                        }
+                        if (partialCoverageErr) return partialCoverageErr;
+                    }
+                    const count = content.split(oldStr).length - 1;
+                    if (count === 0)
+                        return `Error [code 8]: old_string not found in ${filePath}.${_findEditHint(content, oldStr, editSnapshot)}`;
+                    if (count > 1 && !replaceAll)
+                        return `Error [code 9]: old_string found ${count} times — set replace_all:true or provide more unique context`;
+                    let updated = replaceAll
+                        ? content.split(oldStr).join(newStr)
+                        : content.replace(oldStr, () => newStr);
+                    // W1 M: if we matched against the normalised view, restore
+                    // the original CRLF endings + BOM so Edit doesn't silently
+                    // convert line endings or strip the byte-order mark.
+                    if (_normalisedView) {
+                        const _hadBom = _origContentForWrite.charCodeAt(0) === 0xFEFF;
+                        const _hadCrlf = _origContentForWrite.indexOf('\r\n') !== -1;
+                        if (_hadCrlf) updated = updated.replace(/\n/g, '\r\n');
+                        if (_hadBom && updated.charCodeAt(0) !== 0xFEFF) updated = '\uFEFF' + updated;
+                    }
+                    // v0.6.248: atomic write — see `write` handler for rationale.
+                    await atomicWrite(fullPath, updated, { sessionId: options?.sessionId });
+                    invalidateBuiltinResultCache([fullPath]);
+                    markCodeGraphDirtyPaths(workDir, [fullPath]);
+                    // Refresh the snapshot to the post-write mtime so a chain
+                    // of edits against the same file doesn't trip the stale
+                    // check on the second hop.
+                    _recordReadSnapshot(fullPath, undefined, readStateScope, {
+                        source: 'edit',
+                        contentHash: _hashText(updated),
+                    });
+                    return `Edited: ${normalizeOutputPath(filePath)}`;
+                }
+                catch (err) {
+                    return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+                }
+            });
         }
         case 'grep': {
             args.path = normalizeInputPath(args.path);
@@ -3519,8 +3780,13 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // dump every match into the LLM context. Match CC GrepTool's
                 // 250-default semantic at the floor; explicit head_limit overrides.
                 const GREP_CONTENT_HARD_CAP = 1000;
+                // When caller explicitly passes head_limit:0, headLimitRaw===0
+                // which was converted to Infinity above. Treat that as "truly
+                // unlimited" — do NOT apply the hard cap. Only apply the cap
+                // when head_limit was absent (headLimitRaw was undefined/null).
+                const _callerExplicitUnlimited = headLimitRaw === 0;
                 const effectiveHeadLimit = headLimit === Infinity
-                    ? (outputMode === 'content' ? GREP_CONTENT_HARD_CAP : Infinity)
+                    ? (_callerExplicitUnlimited ? Infinity : (outputMode === 'content' ? GREP_CONTENT_HARD_CAP : Infinity))
                     : headLimit;
                 const lines = effectiveHeadLimit === Infinity ? windowed : windowed.slice(0, effectiveHeadLimit);
                 // Unify separators in the path portion so Windows results
@@ -3625,12 +3891,16 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             withStat.sort((a, b) => b.mtime - a.mtime);
             const windowed = offset > 0 ? withStat.slice(offset) : withStat;
             const capped = (headLimit === Infinity ? windowed : windowed.slice(0, headLimit)).map((entry) => {
-                // Always emit absolute paths. Mixing relative (in-cwd) and
-                // absolute (out-of-cwd) hits in a single result triggered
-                // ENOENT loops downstream when callers fed an in-cwd row
-                // back as a path under a different cwd assumption.
+                // Emit relative paths for files under cwd (GlobTool parity:
+                // GlobTool.ts:165 emits relative). Absolute only when the
+                // match lives outside the working directory (cross-root glob).
                 const abs = entry.full || resolveAgainstCwd(entry.path, workDir);
-                return normalizeOutputPath(abs);
+                const normalizedWorkDir = normalizeOutputPath(workDir);
+                const normalizedAbs = normalizeOutputPath(abs);
+                if (normalizedAbs.startsWith(normalizedWorkDir + '/') || normalizedAbs.startsWith(normalizedWorkDir + '\\')) {
+                    return normalizedAbs.slice(normalizedWorkDir.length + 1);
+                }
+                return normalizedAbs;
             });
             const remaining = windowed.length - capped.length;
             const errSuffix = rgErrors.length > 0 ? `\n... [warning] ${rgErrors.join(' | ')}` : '';
@@ -3944,6 +4214,12 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             try { opened = await openForRead(args.path, workDir, readPathOpts); }
             catch (err) {
                 if (err && err.code === 'ETOOBIG') {
+                    // W1 M: re-run binary check before streaming. openForRead
+                    // throws ETOOBIG before isBinaryFile, so the fallback
+                    // would happily stream a 300KB PNG as utf-8.
+                    if (err.fullPath && isBinaryFile(err.fullPath)) {
+                        return `Error: file appears to be binary (contains null bytes): ${normalizeOutputPath(err.fullPath)}`;
+                    }
                     try {
                         const stream = createReadStream(err.fullPath, { encoding: 'utf-8' });
                         const rl = createInterface({ input: stream, crlfDelay: Infinity });

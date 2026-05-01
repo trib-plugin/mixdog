@@ -28,7 +28,7 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, statSync } from 'node:fs';
-import { resolve as pathResolve, isAbsolute } from 'node:path';
+import { resolve as pathResolve, isAbsolute, dirname as pathDirname } from 'node:path';
 import { parsePatch, applyPatch } from 'diff';
 import {
   normalizeInputPath,
@@ -126,7 +126,10 @@ export function normalizeHunkHeaders(patchStr) {
   // Normalize CRLF/LF line endings up front so trailing `\r` from
   // Windows-emitted patches doesn't leak into the rebuilt hunk header
   // tail or get misclassified as a body line.
-  const lines = String(patchStr).replace(/\r\n/g, '\n').split('\n');
+  // Also strip a leading UTF-8 BOM (`\uFEFF`) so the first FILE_HEADER_RE
+  // and HUNK_RE matches don't fail on diffs saved by editors that prepend
+  // the BOM (Notepad, some PowerShell redirections).
+  const lines = String(patchStr).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').split('\n');
   const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
   const FILE_HEADER_RE = /^(?:--- |\+\+\+ |diff )/;
   const out = [];
@@ -162,7 +165,10 @@ export function normalizeHunkHeaders(patchStr) {
 }
 
 async function apply_patch(args, cwd, options = {}) {
-  const patchStr = typeof args?.patch === 'string' ? args.patch : '';
+  // Strip a leading UTF-8 BOM up-front: editors / PowerShell redirections
+  // sometimes prepend `\uFEFF` to text files and the bare BOM trips both
+  // parsePatch and the lenient `/^@@ -\d/m` envelope check.
+  const patchStr = (typeof args?.patch === 'string' ? args.patch : '').replace(/^\uFEFF/, '');
   if (!patchStr.trim()) {
     throw new Error('apply_patch: "patch" is required (unified diff string)');
   }
@@ -326,6 +332,22 @@ async function apply_patch(args, cwd, options = {}) {
       plan.push({ ok: false, index: i, displayPath, error: err?.message || String(err) });
       continue;
     }
+    // Reject non-UTF-8 input on the modify path: applyPatch operates on
+    // strings, so any byte that doesn't round-trip through utf-8 decode →
+    // re-encode would be silently rewritten as U+FFFD (EF BF BD) when the
+    // result is serialized back. atomicWrite would then corrupt every
+    // non-UTF-8 region of the file even though the patch's edits live
+    // entirely inside an ASCII span. The lossless alternative (splice the
+    // patched span back at the byte level) is hunk-aware and well over the
+    // 200-LOC budget for this fix; refusing the entry preserves data
+    // integrity and surfaces the issue to the caller.
+    if (!Buffer.from(source, 'utf-8').equals(preBytes)) {
+      plan.push({
+        ok: false, index: i, displayPath,
+        error: `file is not valid UTF-8 — apply_patch refuses non-UTF-8 modify targets (would corrupt bytes outside the patched span)`,
+      });
+      continue;
+    }
     // Keep the original content for rollback: when reject_partial:true and
     // a mid-batch rename fails, we replay this snapshot back onto disk for
     // every file we already rewrote. preBytes is the raw Buffer so phase 2
@@ -432,10 +454,37 @@ async function apply_patch(args, cwd, options = {}) {
   //
   // Re-stat-before-write mtime check stays in place to catch a concurrent
   // external writer between phase-1 read and phase-2 publish.
-  const { unlinkSync, mkdirSync } = await import('node:fs');
+  const { unlinkSync, mkdirSync, renameSync, rmdirSync } = await import('node:fs');
   const { dirname } = await import('node:path');
   const written = [];
   const skipped = [];
+  // Side-name tombstones: deletes are staged via `rename(orig → orig.tmp)`
+  // first so a downstream write failure can be undone (rename back) without
+  // reaching for filesystem trash. Finalised by a tail unlink loop only
+  // when the whole batch succeeds.
+  const DELETE_SIDE_SUFFIX = `.apply_patch-tomb-${process.pid}-${Date.now().toString(36)}`;
+  const stagedDeletes = []; // [{ p, sidePath }]
+  // Parent directories created during phase 2 for `create` entries. Tracked
+  // so a rollback can remove the new dirs we minted (deepest-first), but
+  // never an older directory that already existed.
+  const createdDirs = []; // [{ p, dirs: ['<deepest>', ..., '<shallowest>'] }]
+
+  function _planNewDirs(targetPath) {
+    const newDirs = [];
+    let cursor = pathDirname(targetPath);
+    // Walk up while the dir doesn't exist; stop at the first existing
+    // ancestor. mkdirSync recursive will then create exactly newDirs.
+    while (cursor && cursor !== pathDirname(cursor)) {
+      let exists = true;
+      try { statSync(cursor); } catch { exists = false; }
+      if (exists) break;
+      newDirs.push(cursor);
+      cursor = pathDirname(cursor);
+    }
+    // Stored deepest-first — same order rollback needs to rmdir from leaf
+    // toward root (each must be empty when removed).
+    return newDirs;
+  }
 
   // Three-stage drift check: mtime first (cheap, catches the common
   // editor-save case), size next (cheap, no extra IO since statSync
@@ -474,7 +523,12 @@ async function apply_patch(args, cwd, options = {}) {
     const t0 = Date.now();
     if (p.kind === 'delete') {
       _assertUnchangedSinceRead(p);
-      unlinkSync(p.fullPath);
+      // Stage the delete by rename to a sibling tombstone path. Finalize
+      // (real unlink) only after every batch entry succeeded; on abort we
+      // rename back to restore the original byte-for-byte.
+      const sidePath = `${p.fullPath}${DELETE_SIDE_SUFFIX}`;
+      renameSync(p.fullPath, sidePath);
+      stagedDeletes.push({ p, sidePath });
     } else if (p.kind === 'create') {
       // Re-check existence right before write — phase 1 ran tens of
       // ms ago at minimum and another process could have raced a file
@@ -487,7 +541,12 @@ async function apply_patch(args, cwd, options = {}) {
       if (raceExists) {
         throw Object.assign(new Error('create target appeared since plan (race)'), { __skip: true });
       }
+      // Compute which ancestor dirs don't exist yet so a rollback can
+      // unwind them. Has to happen BEFORE mkdirSync, otherwise every
+      // ancestor already exists and the diff-set is empty.
+      const newDirs = _planNewDirs(p.fullPath);
       mkdirSync(dirname(p.fullPath), { recursive: true });
+      if (newDirs.length) createdDirs.push({ p, dirs: newDirs });
       await atomicWrite(p.fullPath, p.newContent, { sessionId: options?.sessionId });
     } else {
       _assertUnchangedSinceRead(p);
@@ -497,22 +556,71 @@ async function apply_patch(args, cwd, options = {}) {
   };
 
   const rollbackOne = async (p) => {
-    // Best-effort reversal. For modify/delete we restore the captured
-    // pre-patch bytes; for create we unlink the newly-written file.
-    // Rollback failures are surfaced in the output so the operator
-    // knows which files are in a transient bad state.
+    // Best-effort reversal. For modify we restore the captured pre-patch
+    // bytes via atomicWrite; for delete we rename the tombstone back to
+    // its original path; for create we unlink the new file AND remove any
+    // parent dirs we minted on the way in. Rollback failures are surfaced
+    // in the output so the operator knows which files are in a transient
+    // bad state.
     if (p.kind === 'create') {
       try { unlinkSync(p.fullPath); } catch (err) {
         if (err?.code !== 'ENOENT') throw err;
       }
+      // Remove dirs we created — deepest first. Stop at the first non-
+      // empty dir (rmdirSync throws ENOTEMPTY) so we never delete a
+      // pre-existing populated directory.
+      const tracked = createdDirs.find((entry) => entry.p === p);
+      if (tracked) {
+        for (const dir of tracked.dirs) {
+          try { rmdirSync(dir); }
+          catch (err) {
+            // ENOTEMPTY / ENOENT are benign — the dir gained content from
+            // another concurrent write or was never created. Anything
+            // else surfaces as a rollback failure.
+            if (err?.code !== 'ENOTEMPTY' && err?.code !== 'ENOENT') throw err;
+            break;
+          }
+        }
+      }
+    } else if (p.kind === 'delete') {
+      // Reverse the rename — original bytes are still on disk under the
+      // tombstone path so this is byte-perfect.
+      const staged = stagedDeletes.find((s) => s.p === p);
+      if (staged) {
+        try { renameSync(staged.sidePath, p.fullPath); }
+        catch (err) {
+          // Fall back to writing the captured bytes if the tombstone
+          // disappeared (extremely unlikely; only if something else
+          // unlinked it between persist and rollback).
+          if (err?.code === 'ENOENT' && p.preBytes) {
+            await atomicWrite(p.fullPath, p.preBytes, { sessionId: options?.sessionId });
+          } else {
+            throw err;
+          }
+        }
+      } else if (p.preBytes ?? p.preContent != null) {
+        await atomicWrite(p.fullPath, p.preBytes ?? p.preContent ?? '', { sessionId: options?.sessionId });
+      }
     } else {
-      // modify / delete — restore original bytes via the raw Buffer
-      // when available so invalid-UTF-8 content survives a rollback
-      // intact. utf-8 string fallback only kicks in for legacy plan
-      // rows that lack preBytes (no real path in current phase 1
-      // since both branches now cache the Buffer).
+      // modify — restore original bytes via the raw Buffer when
+      // available so invalid-UTF-8 content survives a rollback intact.
       const restoreData = p.preBytes ?? p.preContent ?? '';
       await atomicWrite(p.fullPath, restoreData, { sessionId: options?.sessionId });
+    }
+  };
+
+  // Tail-unlink the staged delete tombstones. Called only after every
+  // entry persisted cleanly so an abort can still rename them back. Any
+  // unlink failure here is best-effort (the rename already removed the
+  // original); surface as a SKIP rather than failing the whole patch.
+  const finalizeStagedDeletes = (target) => {
+    for (const staged of target) {
+      try { unlinkSync(staged.sidePath); }
+      catch (err) {
+        if (err?.code !== 'ENOENT') {
+          skipped.push({ displayPath: staged.p.displayPath, reason: `tombstone cleanup: ${err?.message || String(err)}` });
+        }
+      }
     }
   };
 
@@ -549,6 +657,8 @@ async function apply_patch(args, cwd, options = {}) {
       }
       return lines.join('\n');
     }
+    // All persisted — finalize tombstones now that no more aborts are possible.
+    finalizeStagedDeletes(stagedDeletes);
   } else {
     // Independent per-file atomic writes. Surviving successes are
     // reported; failures land in `skipped`.
@@ -564,6 +674,9 @@ async function apply_patch(args, cwd, options = {}) {
         }
       }
     }
+    // Per-entry semantics: every staged delete that persisted is its own
+    // independent atomic op, so finalize them all unconditionally.
+    finalizeStagedDeletes(stagedDeletes);
   }
 
   const lines = [];

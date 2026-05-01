@@ -51,9 +51,18 @@ const MAX_TIMEOUT_MS = 1_800_000;
 const IDLE_TIMEOUT_MS = 5 * 60_000;
 const MAX_SESSIONS = 10;
 const STDERR_DRAIN_MS = 25;
+const STDERR_DRAIN_MAX_MS = 250;
+const STDERR_QUIESCENT_MS = 25;
 // Shared cap with the `bash` tool (SHELL_OUTPUT_MAX_CHARS). Duplicated here
 // so bash-session stays decoupled from builtin.mjs's private constants.
 const SHELL_OUTPUT_MAX_CHARS = 30_000;
+// Hard byte cap on each in-memory stream buffer. Past the cap further
+// data is dropped on the floor and replaced with a truncation marker so
+// a runaway command (e.g. `cat /dev/urandom`) can't OOM the orchestrator
+// before the marker fires. Spilling to a disk-backed TaskOutput sink
+// would require new plumbing; the simple cap is the in-budget fix.
+const STREAM_BUF_BYTE_CAP = 4 * 1024 * 1024; // 4 MB per stream
+const STREAM_TRUNC_MARKER = '\n... [TRUNCATED — stream cap reached] ...\n';
 const SMART_BASH_MAX_LINES = 400;
 const SMART_BASH_MAX_BYTES = 30 * 1024;
 const SMART_BASH_HEAD_LINES = 80;
@@ -177,23 +186,39 @@ function _startReaper() {
 // children can shut down cleanly; a SIGKILL escalation timer (3 s) forces the
 // issue if they don't. Safe to call multiple times — all errors swallowed.
 function _killProcessTree(proc) {
-    if (!proc || proc.killed) return;
+    // proc.killed flips to true the moment a signal is *sent*, NOT when the
+    // child actually exits — escalation off `proc.killed` was a no-op. We
+    // instead track the real exit/close state via a flag and only escalate
+    // when neither has fired by the timer deadline.
+    if (!proc) return;
     const pid = proc.pid;
     if (!pid) return;
+    let exited = false;
+    const onDone = () => { exited = true; };
+    try { proc.once('exit', onDone); } catch {}
+    try { proc.once('close', onDone); } catch {}
+    // Already dead from a prior call? Skip the SIGTERM but still let the
+    // listener wiring above clean up if a future exit/close arrives.
+    if (proc.exitCode !== null && proc.exitCode !== undefined) {
+        exited = true;
+    } else if (proc.signalCode) {
+        exited = true;
+    }
     try {
         if (process.platform === 'win32') {
             // /T walks the tree, /F forces — no graceful SIGTERM on win.
             spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
-        } else {
+        } else if (!exited) {
             try { process.kill(-pid, 'SIGTERM'); }
             catch { try { proc.kill('SIGTERM'); } catch { /* ignore */ } }
         }
     } catch { /* ignore */ }
-    // Escalate to SIGKILL if still alive. Windows taskkill /F is already
-    // forceful, so only posix needs the escalation timer.
+    // Escalate to SIGKILL if the child hasn't actually exited by the
+    // deadline. Windows taskkill /F is already forceful, so only posix
+    // needs the escalation timer.
     if (process.platform !== 'win32') {
         const esc = setTimeout(() => {
-            if (proc.killed) return;
+            if (exited) return;
             try { process.kill(-pid, 'SIGKILL'); }
             catch { try { proc.kill('SIGKILL'); } catch { /* ignore */ } }
         }, 3000);
@@ -277,8 +302,28 @@ function _spawnSession(id, initialCwd = process.cwd()) {
         dead: false,
         exitInfo: null,
     };
-    proc.stdout.on('data', (chunk) => { entry.stdoutBuf += chunk; });
-    proc.stderr.on('data', (chunk) => { entry.stderrBuf += chunk; });
+    // Hard-capped concat: past STREAM_BUF_BYTE_CAP we drop further
+    // chunks and stamp a truncation marker once. Without this a runaway
+    // command (e.g. `cat /dev/urandom`) blocks until OOM long before any
+    // smartMiddleTruncate downstream gets a chance to trim.
+    entry.stdoutCapped = false;
+    entry.stderrCapped = false;
+    proc.stdout.on('data', (chunk) => {
+        if (entry.stdoutCapped) return;
+        entry.stdoutBuf += chunk;
+        if (entry.stdoutBuf.length >= STREAM_BUF_BYTE_CAP) {
+            entry.stdoutBuf = entry.stdoutBuf.slice(0, STREAM_BUF_BYTE_CAP) + STREAM_TRUNC_MARKER;
+            entry.stdoutCapped = true;
+        }
+    });
+    proc.stderr.on('data', (chunk) => {
+        if (entry.stderrCapped) return;
+        entry.stderrBuf += chunk;
+        if (entry.stderrBuf.length >= STREAM_BUF_BYTE_CAP) {
+            entry.stderrBuf = entry.stderrBuf.slice(0, STREAM_BUF_BYTE_CAP) + STREAM_TRUNC_MARKER;
+            entry.stderrCapped = true;
+        }
+    });
     proc.on('error', (err) => {
         entry.dead = true;
         entry.exitInfo = { error: err?.message || String(err) };
@@ -355,16 +400,39 @@ function _runCommand(entry, command, timeoutMs, abortSignal = null) {
             const exitCode = Number(m[1]);
             // Everything before the marker line is the real stdout.
             const before = entry.stdoutBuf.slice(0, m.index);
-            // Drain any pending stderr writes before returning. 25 ms is
-            // plenty in practice — bash flushes stderr synchronously on
-            // command completion, but a forked child's dying writes may
-            // land a tick later.
-            setTimeout(() => {
+            // Drain pending stderr writes adaptively. The fixed 25 ms
+            // window dropped late stderr from forked children that
+            // flushed slightly after the parent shell exited. Loop
+            // instead: poll the stderr buffer length and finish only
+            // once it's been quiescent for STDERR_QUIESCENT_MS, the
+            // child closed stderr, or we hit the absolute ceiling.
+            const drainStart = Date.now();
+            let lastLen = entry.stderrBuf.length;
+            let lastChange = drainStart;
+            let stderrClosed = false;
+            const onStderrEnd = () => { stderrClosed = true; };
+            try { entry.proc.stderr.once('end', onStderrEnd); } catch {}
+            const finish = () => {
+                try { entry.proc.stderr.removeListener('end', onStderrEnd); } catch {}
                 const stderr = entry.stderrBuf;
                 entry.stdoutBuf = '';
                 entry.stderrBuf = '';
                 settle({ stdout: before, stderr, exit_code: exitCode });
-            }, STDERR_DRAIN_MS);
+            };
+            const tick = () => {
+                if (finished) { try { entry.proc.stderr.removeListener('end', onStderrEnd); } catch {} return; }
+                const now = Date.now();
+                const curLen = entry.stderrBuf.length;
+                if (curLen !== lastLen) {
+                    lastLen = curLen;
+                    lastChange = now;
+                }
+                if (stderrClosed) return finish();
+                if (now - drainStart >= STDERR_DRAIN_MAX_MS) return finish();
+                if (now - lastChange >= STDERR_QUIESCENT_MS) return finish();
+                setTimeout(tick, 10);
+            };
+            setTimeout(tick, STDERR_DRAIN_MS);
         };
 
         // Caller-driven abort (ESC / new prompt / session close). Kill the
@@ -486,7 +554,13 @@ async function bash_session(args, cwd = process.cwd(), opts = {}) {
     if (result.exit_code === 0 && shellEffects.finalCwd) {
         entry.cwd = shellEffects.finalCwd;
     }
-    if (!close && !result.timed_out) {
+    // Skip cwd sync on abort: the shell was already killed, so issuing
+    // another `pwd` would either hang on a dead pipe or spawn a fresh
+    // session against caller intent. Mark dead so the next call mints a
+    // new shell rather than reusing this one. Same logic for timeouts.
+    if (result.aborted) {
+        entry.dead = true;
+    } else if (!close && !result.timed_out) {
         await _syncSessionCwd(entry, effectiveTimeout);
     }
     if (shellEffects.mutationMode === 'paths') {

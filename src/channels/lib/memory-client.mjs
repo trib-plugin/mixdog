@@ -124,6 +124,14 @@ export async function flushBufferedEntries() {
       flushed++
     } catch (e) {
       process.stderr.write(`[memory-client] flushBufferedEntries failed for ${file}: ${e.message}\n`)
+      // Quarantine corrupted JSON so it does not block future flushes
+      if (e instanceof SyntaxError) {
+        try {
+          const quarantine = filePath + '.corrupt'
+          fs.renameSync(filePath, quarantine)
+          process.stderr.write(`[memory-client] quarantined corrupt file: ${quarantine}\n`)
+        } catch {}
+      }
       failed++
     }
   }

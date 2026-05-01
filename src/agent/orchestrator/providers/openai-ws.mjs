@@ -41,7 +41,11 @@ export class OpenAIDirectProvider {
         // injected only on the direct path. See openai-oauth.mjs:290-294
         // for the rationale.
         body.prompt_cache_retention = '24h';
-        const poolKey  = opts.sessionId || opts.promptCacheKey || null;
+        // poolKey MUST be sessionId-only. Falling back to promptCacheKey would
+        // let unrelated raw sessions sharing the same provider-scoped cache
+        // bucket reuse each other's pooled socket and inherit lastResponseId
+        // delta state, producing cross-session prompt corruption.
+        const poolKey  = opts.sessionId || null;
         const cacheKey = opts.promptCacheKey || opts.sessionId || null;
         // Force explicit cache grouping so back-to-back calls don't race the
         // server's implicit prefix-hash registration (codex path already does

@@ -94,7 +94,12 @@ echo "# Shell options" >> "$SNAPSHOT_FILE"
 ${optDump}
 echo "# Aliases" >> "$SNAPSHOT_FILE"
 ${aliasDump}
-echo "export PATH=\\"$PATH\\"" >> "$SNAPSHOT_FILE"
+# PATH may contain $, backticks, or quotes that would re-expand if we
+# emitted it inside double quotes. Emit a shell-safe single-quoted PATH
+# export line via printf %q-style escaping inside the dump shell.
+printf 'export PATH=' >> "$SNAPSHOT_FILE"
+_q=$(printf %s "$PATH" | sed "s/'/'\\\\''/g")
+printf "'%s'\n" "$_q" >> "$SNAPSHOT_FILE"
 exit 0
 `;
 }
@@ -225,5 +230,10 @@ export async function wrapCommandWithSnapshot(shellPath, command) {
   const snapshot = await getOrCreateSnapshot(shellPath).catch(() => null);
   if (!snapshot) return command;
   const escaped = snapshot.replace(/'/g, "'\\''");
-  return `source '${escaped}' 2>/dev/null; ${command}`;
+  // Source on its own line so the just-loaded aliases are visible to
+  // the user command. When alias declarations and the consuming command
+  // share a single shell line, alias expansion is skipped on that line
+  // (bash POSIX rule) and the user command runs without snapshot
+  // aliases applied.
+  return `source '${escaped}' 2>/dev/null\n${command}`;
 }

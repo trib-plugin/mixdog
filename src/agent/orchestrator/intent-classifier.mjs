@@ -73,32 +73,42 @@ function _cacheSet(prompt, candidateLabels, value) {
   }
 }
 
+// Per-label in-flight tracking. The previous single-promise design meant
+// caller A's promise embedded labels {X,Y}; caller B arriving while that
+// promise was in flight saw `PROTOTYPE_STATE.promise` set and awaited it,
+// but if B requested labels {Y,Z} the Z embedding was never started and
+// `_ensurePrototypeVectors` returned without it. After the await we recheck
+// missing labels and kick off a follow-up batch for anything still absent.
+const _labelInflight = new Map(); // label -> Promise<void>
+
+function _embedLabel(label) {
+  const existing = _labelInflight.get(label);
+  if (existing) return existing;
+  const p = (async () => {
+    const phrases = INTENT_PROTOTYPES[label];
+    const vectors = [];
+    for (const phrase of phrases) {
+      const vector = await embedText(phrase).catch(() => []);
+      if (Array.isArray(vector) && vector.length > 0) vectors.push(vector);
+    }
+    if (vectors.length > 0) {
+      PROTOTYPE_STATE.vectors.set(label, averageVectors(vectors));
+    }
+  })().finally(() => {
+    _labelInflight.delete(label);
+  });
+  _labelInflight.set(label, p);
+  return p;
+}
+
 async function _ensurePrototypeVectors(candidateLabels) {
   const labels = candidateLabels.filter((label) => Array.isArray(INTENT_PROTOTYPES[label]));
   const missing = labels.filter((label) => !PROTOTYPE_STATE.vectors.has(label));
   if (missing.length === 0) return;
-  if (!PROTOTYPE_STATE.promise) {
-    PROTOTYPE_STATE.promise = (async () => {
-      try {
-        const allMissing = [...new Set(missing)];
-        for (const label of allMissing) {
-          const phrases = INTENT_PROTOTYPES[label];
-          const vectors = [];
-          for (const phrase of phrases) {
-            const vector = await embedText(phrase).catch(() => []);
-            if (Array.isArray(vector) && vector.length > 0) vectors.push(vector);
-          }
-          if (vectors.length > 0) {
-            PROTOTYPE_STATE.vectors.set(label, averageVectors(vectors));
-          }
-        }
-        PROTOTYPE_STATE.ready = true;
-      } finally {
-        PROTOTYPE_STATE.promise = null;
-      }
-    })();
-  }
-  await PROTOTYPE_STATE.promise;
+  await Promise.all([...new Set(missing)].map(_embedLabel));
+  // Recheck: if any label failed (vector empty / embedText threw), we leave
+  // it absent for this call rather than spinning. The next call retries.
+  PROTOTYPE_STATE.ready = true;
 }
 
 export async function classifyPromptIntent(prompt, candidateLabels = []) {

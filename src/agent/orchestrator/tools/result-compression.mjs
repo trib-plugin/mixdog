@@ -38,14 +38,32 @@ const TRACE_MIN_SAVINGS_BYTES = 512;
 // safe. File-content tools (read / write / edit / apply_patch) are NOT
 // in this set — trailing whitespace and multi-blank runs in source
 // files can be semantically meaningful.
+//
+// The narrower SOURCE_BEARING set names tools that emit code or other
+// file content alongside locator text (path:line + matched line). For
+// those, compression keeps ANSI strip + dedup + separator collapse but
+// skips trailing-whitespace normalization (significant trailing
+// whitespace can be the matched evidence). bash is omitted entirely
+// since it streams arbitrary user output where dup-line / whitespace
+// runs may be the payload.
 const COMPRESS_TOOL_ALLOWLIST = new Set([
-    'bash', 'shell',
-    'grep', 'glob', 'list',
+    'shell',
+    'glob', 'list',
+    'grep',
+    'find_symbol', 'find_callers', 'find_references', 'find_imports', 'find_dependents', 'code_graph',
+]);
+
+const SOURCE_BEARING_TOOLS = new Set([
+    'grep',
     'find_symbol', 'find_callers', 'find_references', 'find_imports', 'find_dependents', 'code_graph',
 ]);
 
 const ANSI_CSI = /\x1b\[[0-9;?]*[a-zA-Z]/g;
-const ANSI_OSC = /\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g;
+// OSC (Operating System Command): ESC ] ... terminator (BEL or ESC \).
+// Match non-greedily across any payload bytes (including embedded ESC)
+// and consume the full terminator instead of stopping at the first
+// nested escape, which would leave a partial tail in the output.
+const ANSI_OSC = /\x1b\][\s\S]*?(?:\x07|\x1b\\)/g;
 const SEPARATOR_BAR = new RegExp(`^[=\\-_*~#]{${SEPARATOR_MIN_LEN},}\\s*$`);
 
 // Normalize MCP-prefixed names (mcp__<server>__<tool>) to their bare
@@ -137,9 +155,12 @@ export function compressToolResult(toolName, args, result, ctx) {
     // Pass chain: ANSI strip and whitespace normalization are strictly
     // reduce-only; dedup and separator collapse insert marker lines but
     // their net contribution is caught by the final expand guard if it
-    // would lengthen the output.
+    // would lengthen the output. Source-bearing tools (grep / find_*)
+    // skip whitespace normalization since trailing whitespace and blank
+    // runs in matched code lines may be the evidence the caller is
+    // looking for.
     let out = stripAnsi(result);
-    out = normalizeWhitespace(out);
+    if (!SOURCE_BEARING_TOOLS.has(bare)) out = normalizeWhitespace(out);
     out = dedupRepeatedLines(out);
     out = collapseSeparators(out);
     if (out.length >= before) return result;

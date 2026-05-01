@@ -67,11 +67,20 @@ function keysHeader(title, entries) {
 function applyKeys(config, section, data) {
   const target = section === 'rawSearch' ? 'credentials' : 'profiles'
   for (const [provider, value] of Object.entries(data)) {
-    if (!value || value === '') continue
+    if (value == null) continue
+    const trimmed = String(value).trim()
+    if (!trimmed) continue
+    const isClear = trimmed.toLowerCase() === 'clear'
     if (!config[section]) config[section] = {}
     if (!config[section][target]) config[section][target] = {}
     if (!config[section][target][provider]) config[section][target][provider] = {}
-    config[section][target][provider].apiKey = value === 'clear' ? '' : value
+    if (isClear) {
+      config[section][target][provider].apiKey = ''
+    } else {
+      // Validate: API keys should be non-empty printable ASCII, no whitespace
+      if (!/^[\x21-\x7E]+$/.test(trimmed)) continue
+      config[section][target][provider].apiKey = trimmed
+    }
   }
 }
 
