@@ -3445,7 +3445,12 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         // D-R1-1: rangeHash covers the exact text returned so
                         // _isSnapshotStale can detect same-mtime+same-size
                         // rewrites within the read window at edit time.
-                        rangeHash: _hashText(out),
+                        // Fix J-1 (b): hash raw line text, not rendered
+                        // "N\ttext" form, to match _isSnapshotStale which
+                        // hashes _lines.slice().join('\n') (raw content).
+                        // Strip the "N\t" prefix from each rendered line of
+                        // `out` before hashing so the two sides are comparable.
+                        rangeHash: _hashText(out.split('\n').map(l => { const ti = l.indexOf('\t'); return ti >= 0 ? l.slice(ti + 1) : l; }).join('\n')),
                     };
                     // Compute prefix hash for race-guard on next cache hit.
                     const _streamPrefixHash = (() => {
@@ -3826,21 +3831,40 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     // utf-8 decode round-trip silently corrupts bytes via
                     // U+FFFD replacement. Use Buffer.isUtf8 (Node>=18) or
                     // a byte-level walk as fallback.
-                    if (editPreloadedContent === null) {
-                        const _rawBuf = readFileSync(fullPath);
+                    // Fix J-3: always read raw bytes and validate encoding,
+                    // even when editPreloadedContent was set via contentHash
+                    // preload — the cached string bypasses the guard otherwise.
+                    {
+                        const _rawBuf = editPreloadedContent === null
+                            ? readFileSync(fullPath)
+                            : Buffer.from(editPreloadedContent, 'utf-8');
                         const _isUtf8Valid = (() => {
                             if (typeof Buffer.isUtf8 === 'function') return Buffer.isUtf8(_rawBuf);
-                            // Manual UTF-8 validity walk for Node <18.
+                            // Fix J-2: strict manual UTF-8 walk for Node <18.
+                            // Rejects overlong sequences, surrogates, out-of-range
+                            // code points, and 5/6-byte sequences (Unicode §3.9
+                            // Table 3-7).
                             let idx2 = 0;
                             while (idx2 < _rawBuf.length) {
-                                const byte = _rawBuf[idx2];
+                                const b0 = _rawBuf[idx2];
+                                if (b0 < 0x80) { idx2++; continue; }
                                 let seqLen = 0;
-                                if (byte < 0x80) { idx2++; continue; }
-                                else if ((byte & 0xE0) === 0xC0) seqLen = 2;
-                                else if ((byte & 0xF0) === 0xE0) seqLen = 3;
-                                else if ((byte & 0xF8) === 0xF0) seqLen = 4;
-                                else return false;
+                                if ((b0 & 0xE0) === 0xC0) seqLen = 2;
+                                else if ((b0 & 0xF0) === 0xE0) seqLen = 3;
+                                else if ((b0 & 0xF8) === 0xF0) seqLen = 4;
+                                else return false; // continuation byte or 5/6-byte leader
                                 if (idx2 + seqLen > _rawBuf.length) return false;
+                                // Reject overlong 2-byte: C0/C1 (< U+0080)
+                                if (seqLen === 2 && b0 <= 0xC1) return false;
+                                const b1 = _rawBuf[idx2 + 1];
+                                // Reject overlong 3-byte: E0 80–9F (< U+0800)
+                                if (seqLen === 3 && b0 === 0xE0 && b1 < 0xA0) return false;
+                                // Reject surrogates: ED A0–BF (U+D800–U+DFFF)
+                                if (seqLen === 3 && b0 === 0xED && b1 >= 0xA0) return false;
+                                // Reject overlong 4-byte: F0 80–8F (< U+10000)
+                                if (seqLen === 4 && b0 === 0xF0 && b1 < 0x90) return false;
+                                // Reject out-of-range 4-byte: F4 90–BF or F5+ (> U+10FFFF)
+                                if (seqLen === 4 && (b0 > 0xF4 || (b0 === 0xF4 && b1 >= 0x90))) return false;
                                 for (let k = 1; k < seqLen; k++) {
                                     if ((_rawBuf[idx2 + k] & 0xC0) !== 0x80) return false;
                                 }

@@ -20,6 +20,10 @@ function readJsonFile(filePath, fallback) {
     return fallback;
   }
 }
+function readJsonFileStrict(filePath) {
+  const raw = readFileSync(filePath, "utf8");
+  return JSON.parse(raw);
+}
 function writeTextFile(filePath, value) {
   ensureDir(dirname(filePath));
   writeFileSync(filePath, value);
@@ -71,7 +75,13 @@ class JsonStateFile {
     writeJsonFile(this.filePath, this.read());
   }
   update(mutator) {
-    const draft = this.read();
+    let draft;
+    try {
+      draft = readJsonFileStrict(this.filePath);
+    } catch (err) {
+      process.stderr.write(`[state-file] REFUSING update: parse error for ${this.filePath}: ${err.message}\n`);
+      throw err;
+    }
     mutator(draft);
     return this.write(draft);
   }

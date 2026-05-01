@@ -449,7 +449,14 @@ function _extractBridgeIdentifier(prompt) {
     const imperativeInPrompt = /\b(?:Read|Write|Edit|Update|Show|List|Find|Refactor|Implement|Delete|Remove|Add|Create)\b/i.test(text);
     if (imperativeInPrompt && best !== null) {
         const occurrences = (text.match(new RegExp(`\\b${best.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g')) || []).length;
-        if (occurrences < 2) return null;
+        if (occurrences < 2) {
+            // Exception: short prompt + single strong-pattern candidate + retrieval verb → accept.
+            const isRetrievalVerb = /\b(?:Find|Show|Locate|List)\b/.test(text);
+            const isSingleCandidate = strongCandidates.length === 1;
+            const isShort = text.length <= 80;
+            if (isShort && isSingleCandidate && isRetrievalVerb) return best;
+            return null;
+        }
     }
     return best;
 }

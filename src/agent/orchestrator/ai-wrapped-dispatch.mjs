@@ -1116,17 +1116,21 @@ export const _internals = {
 }
 
 
+function _escapeXml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 function buildExplorerPrompt(query, cwd) {
-  const rootLine = cwd ? `<root>${cwd}</root>\n` : ''
-  return `${rootLine}<query>${query}</query>`
+  const rootLine = cwd ? `<root>${_escapeXml(cwd)}</root>\n` : ''
+  return `${rootLine}<query>${_escapeXml(query)}</query>`
 }
 
 function buildRecallPrompt(query, _cwd) {
-  return `<query>${query}</query>`
+  return `<query>${_escapeXml(query)}</query>`
 }
 
 function buildSearchPrompt(query, _cwd) {
-  return `<query>${query}</query>`
+  return `<query>${_escapeXml(query)}</query>`
 }
 
 /**
