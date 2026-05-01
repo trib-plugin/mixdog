@@ -1372,6 +1372,25 @@ function _isSnapshotStale(stat, snapshot, fullPath = '') {
     // 1 s mtime resolution lets a fast rewrite preserve mtimeMs while
     // the byte length changes; size check catches that case.
     if (typeof snapshot.size === 'number' && stat.size !== snapshot.size) return true;
+    // D-R1-1: partial range reads >64KiB carry a rangeHash (SHA-256 of the
+    // read-range text). Same-mtime+same-size external rewrites inside the
+    // range slip past the mtime/size checks above; rangeHash catches them.
+    // The snapshot has no contentHash in this path (partial read), so the
+    // contentHash branch above is a no-op. Check rangeHash lazily here.
+    if (snapshot.rangeHash && !snapshot.contentHash && fullPath) {
+        try {
+            const _raw = readFileSync(fullPath, 'utf-8');
+            const _lines = _raw.split('\n')
+            const _ranges = Array.isArray(snapshot.ranges) ? snapshot.ranges : [];
+            if (_ranges.length > 0) {
+                const _r = _ranges[0];
+                const _startIdx = Math.max(0, (_r.startLine || 1) - 1);
+                const _endIdx = _r.endLine === Infinity ? _lines.length : Math.min(_lines.length, _r.endLine);
+                const _rangeText = _lines.slice(_startIdx, _endIdx).join('\n');
+                if (_hashText(_rangeText) !== snapshot.rangeHash) return true;
+            }
+        } catch { /* unreadable - skip */ }
+    }
     return false;
 }
 
@@ -3423,6 +3442,10 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     const snapshotMeta = {
                         source: 'read',
                         ranges: _emittedRanges,
+                        // D-R1-1: rangeHash covers the exact text returned so
+                        // _isSnapshotStale can detect same-mtime+same-size
+                        // rewrites within the read window at edit time.
+                        rangeHash: _hashText(out),
                     };
                     // Compute prefix hash for race-guard on next cache hit.
                     const _streamPrefixHash = (() => {
@@ -3799,6 +3822,36 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                             return `Error: edit refused: file too large (size: ${_editSz}B, cap: 1GiB)`;
                         }
                     } catch { /* statSync failed — fall through to readFileSync error */ }
+                    // D-R1-3: refuse edits on non-UTF-8 files before the
+                    // utf-8 decode round-trip silently corrupts bytes via
+                    // U+FFFD replacement. Use Buffer.isUtf8 (Node>=18) or
+                    // a byte-level walk as fallback.
+                    if (editPreloadedContent === null) {
+                        const _rawBuf = readFileSync(fullPath);
+                        const _isUtf8Valid = (() => {
+                            if (typeof Buffer.isUtf8 === 'function') return Buffer.isUtf8(_rawBuf);
+                            // Manual UTF-8 validity walk for Node <18.
+                            let idx2 = 0;
+                            while (idx2 < _rawBuf.length) {
+                                const byte = _rawBuf[idx2];
+                                let seqLen = 0;
+                                if (byte < 0x80) { idx2++; continue; }
+                                else if ((byte & 0xE0) === 0xC0) seqLen = 2;
+                                else if ((byte & 0xF0) === 0xE0) seqLen = 3;
+                                else if ((byte & 0xF8) === 0xF0) seqLen = 4;
+                                else return false;
+                                if (idx2 + seqLen > _rawBuf.length) return false;
+                                for (let k = 1; k < seqLen; k++) {
+                                    if ((_rawBuf[idx2 + k] & 0xC0) !== 0x80) return false;
+                                }
+                                idx2 += seqLen;
+                            }
+                            return true;
+                        })();
+                        if (!_isUtf8Valid) {
+                            return `Error: file appears to be non-UTF-8 (Shift-JIS/Latin-1/binary mix). Edit aborted to prevent silent corruption. Path: ${filePath}`;
+                        }
+                    }
                     let content = editPreloadedContent === null
                         ? readFileSync(fullPath, 'utf-8')
                         : editPreloadedContent;

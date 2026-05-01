@@ -47,13 +47,18 @@ function getChannelOwnerPath(channelId) {
   return join(OWNER_DIR, `${sanitize(channelId)}.json`);
 }
 function readActiveInstance() {
-  const state = readJsonFile(ACTIVE_INSTANCE_FILE, null);
-  if (!state) return null;
+  let state = readJsonFile(ACTIVE_INSTANCE_FILE, null);
+  if (!state) {
+    // Transient read during an atomic rename may yield empty/partial content.
+    // Retry once after 50 ms before giving up.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    state = readJsonFile(ACTIVE_INSTANCE_FILE, null);
+    if (!state) return null;
+  }
   try {
     process.kill(state.pid, 0);
   } catch {
-    process.stderr.write(`mixdog: stale active-instance.json (PID ${state.pid} is dead), removing
-`);
+    process.stderr.write(`mixdog: stale active-instance.json (PID ${state.pid} is dead), removing\n`);
     removeFileIfExists(ACTIVE_INSTANCE_FILE);
     return null;
   }

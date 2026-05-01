@@ -112,7 +112,11 @@ try {
 } catch { /* malformed — overwrite */ }
 
 const __nowMs = Date.now()
-fs.writeFileSync(__activeFile, JSON.stringify({
+// Atomic write: write to .tmp then rename so readers never observe partial JSON.
+// POSIX rename is atomic per directory entry; on Windows fs.renameSync uses
+// MoveFileEx with REPLACE_EXISTING which is atomic-equivalent for same-volume.
+const __activeTmp = `${__activeFile}.${process.pid}.tmp`
+fs.writeFileSync(__activeTmp, JSON.stringify({
   instanceId: __instanceId,
   pid: process.pid,
   startedAt: __nowMs,
@@ -123,6 +127,7 @@ fs.writeFileSync(__activeFile, JSON.stringify({
   backendReady: false,
   bootPhase: 'beacon',
 }))
+fs.renameSync(__activeTmp, __activeFile)
 
 globalThis.__mixdogBeacon = { server: __beacon, httpPort: __beaconPort }
 process.stderr.write(`[boot-time] tag=beacon-up port=${__beaconPort} tMs=${Date.now()}\n`)

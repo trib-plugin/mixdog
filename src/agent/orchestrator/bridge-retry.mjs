@@ -5,9 +5,9 @@
  * automatic retry when the failure is classified as RECOVERABLE (transient
  * provider fault). Fresh session per attempt — no message-history carry-over.
  *
- * Cap: 2 total attempts (attempt 0 + 1 retry). Hard cap enforced both here
- * and via the attempt counter persisted in dispatch-persist so a supervisor
- * restart cannot smuggle in a third attempt.
+ * Cap: 2 total attempts (attempt 0 + 1 retry). Cap is in-memory only;
+ * dispatch-persist stores no attempt counter, so a supervisor restart
+ * resets the attempt index to startAttempt (caller-supplied).
  */
 
 const MAX_ATTEMPTS = 2;
@@ -21,7 +21,8 @@ const MAX_ATTEMPTS = 2;
 const RECOVERABLE_MSG_PATTERNS = [
   // Anthropic 400 tool_use pairing
   /tool_use ids were found without tool_result/i,
-  /messages\.\d+:.*tool_use/i,
+  // messages.N:.*tool_use removed — too broad; matches deterministic schema
+  // validation errors. Transient tool_use faults are covered by the id-pairing pattern above.
   // OpenAI WS truncation
   /Codex WS closed before response\.completed/i,
   /response\.incomplete/i,
@@ -37,8 +38,15 @@ const RECOVERABLE_MSG_PATTERNS = [
 ];
 
 const RECOVERABLE_WS_CODES   = new Set([1006, 1011, 1012, 4000]);
-const RECOVERABLE_HTTP_STATUS = new Set([502, 503, 504]);
-const RECOVERABLE_ERR_CODES   = new Set(['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'ESOCKETTIMEDOUT']);
+// 408 Request Timeout and 500 Internal Server Error added alongside 502/503/504.
+const RECOVERABLE_HTTP_STATUS = new Set([408, 500, 502, 503, 504]);
+// ECONNREFUSED/ECONNABORTED: local proxy restart or refused connection.
+// UND_ERR_*: undici fetch timeout/socket faults (Node 18+ native fetch).
+const RECOVERABLE_ERR_CODES   = new Set([
+  'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'ESOCKETTIMEDOUT',
+  'ECONNREFUSED', 'ECONNABORTED',
+  'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
+]);
 // DNS faults likely indicate misconfig; tracked separately so retry policy
 // can cap them more aggressively than other transient errors.
 const DNS_ERR_CODES           = new Set(['ENOTFOUND', 'EAI_NONAME', 'EAI_FAIL']);

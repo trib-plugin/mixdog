@@ -19,17 +19,17 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[\w.]+)?$/;
-
 const newVersion = process.argv[2];
-if (!newVersion) {
-  process.stderr.write('Usage: bun scripts/bump-version.mjs <semver>\n');
-  process.stderr.write('Example: bun scripts/bump-version.mjs 1.2.3\n');
+if (!newVersion || !newVersion.trim()) {
+  process.stderr.write('Usage: bun scripts/bump-version.mjs <version>\n');
+  process.stderr.write('Writes the given string to the version field as-is. Any version scheme is accepted (SemVer, CalVer, build number, prerelease identifier, etc.).\n');
   process.exit(1);
 }
-if (!SEMVER_RE.test(newVersion)) {
-  process.stderr.write(`Error: "${newVersion}" is not a valid semver string.\n`);
-  process.stderr.write('Expected format: MAJOR.MINOR.PATCH (e.g. 0.1.12) or MAJOR.MINOR.PATCH-tag\n');
+// Reject only characters that break JSON or shell pipelines; do NOT enforce
+// a particular versioning scheme — projects vary (SemVer, CalVer, build
+// numbers, custom tags). The version is written to the manifest verbatim.
+if (/[\x00-\x1f"\\]/.test(newVersion)) {
+  process.stderr.write(`Error: version "${newVersion}" contains control characters or unescaped quotes/backslashes.\n`);
   process.exit(1);
 }
 

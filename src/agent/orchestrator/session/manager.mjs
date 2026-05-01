@@ -394,6 +394,10 @@ function _isSimpleIdentifierLookup(prompt) {
     // as 1-3 whitespace "words" and slip through, then return a one-line
     // symbol match instead of routing to the LLM.
     if (text.length > 200) return false;
+    // Strict: short imperative prompts ("Read X and update Y") must not qualify.
+    if (text.length > 80) return false;
+    if ((text.match(/\b(?:Read|Write|Edit|Update|Show|List|Find)\b/gi) || []).length > 2) return false;
+    if (/\b(?:and|then|step\s*\d)\b/i.test(text)) return false;
     const words = text.split(/\s+/).filter(Boolean);
     if (words.length > 12) return false;
     if (/\b(list|propose|evaluate|identify|trace|review|audit|summarize|design|implement|refactor|analyze|compare|suggest|recommend|walkthrough|walk\s+through)\b/i.test(text)) return false;
@@ -440,6 +444,12 @@ function _extractBridgeIdentifier(prompt) {
             best = token;
             bestScore = score;
         }
+    }
+    // Fail-closed: long prose with a weakly-attested token is ambiguous — return null.
+    const imperativeInPrompt = /\b(?:Read|Write|Edit|Update|Show|List|Find|Refactor|Implement|Delete|Remove|Add|Create)\b/i.test(text);
+    if (imperativeInPrompt && best !== null) {
+        const occurrences = (text.match(new RegExp(`\\b${best.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g')) || []).length;
+        if (occurrences < 2) return null;
     }
     return best;
 }
@@ -588,6 +598,10 @@ function _extractDirectoryMetadataRequest(prompt) {
         || text.match(/\b(?:under|in|within)\s+([./~A-Za-z0-9_-]+)/i);
     const path = pathMatch?.[1]?.trim();
     if (!path) return null;
+    // Strict: reject numeric-only paths; require path separator, known prefix, or known top-level dir name.
+    const KNOWN_TOP_DIRS = new Set(['src', 'dev', 'rules', 'scripts']);
+    const validPath = /^(?:\.\/|\/|~)/.test(path) || path.includes('/') || KNOWN_TOP_DIRS.has(path);
+    if (!validPath) return null;
     const minSizeMatch = text.match(/\b(?:larger|greater|more)\s+than\s+(\d+)\s*bytes?\b/i)
         || text.match(/\b(?:over|above)\s+(\d+)\s*bytes?\b/i);
     const maxSizeMatch = text.match(/\b(?:smaller|less)\s+than\s+(\d+)\s*bytes?\b/i)
@@ -1809,6 +1823,7 @@ export function stopIdleCleanup() {
 export const _internals = {
     _extractBridgeIdentifier,
     _isSimpleIdentifierLookup,
+    _extractDirectoryMetadataRequest,
     _tryBridgeFastPath,
     _tryBridgePrefetchContext,
     // Allows harnesses to inject a deterministic classifyPromptIntent mock
