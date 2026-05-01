@@ -699,6 +699,18 @@ async function runRulesPart() {
     if (fs.existsSync(asp)) fs.unlinkSync(asp);
   } catch {}
 
+  // Persist user cwd so the MCP server (spawned from cache dir) can resolve
+  // the correct sandbox root. Atomic rename prevents partial reads.
+  try {
+    const eventCwd = typeof _event.cwd === 'string' ? _event.cwd.trim() : '';
+    if (eventCwd) {
+      const cwdTxtPath = path.join(DATA_DIR, 'user-cwd.txt');
+      const cwdTmpPath = cwdTxtPath + '.tmp';
+      fs.writeFileSync(cwdTmpPath, eventCwd);
+      fs.renameSync(cwdTmpPath, cwdTxtPath);
+    }
+  } catch {}
+
   try {
     const stalePending = path.join(DATA_DIR, 'recap-pending.json');
     if (fs.existsSync(stalePending)) fs.unlinkSync(stalePending);

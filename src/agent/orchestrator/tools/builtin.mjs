@@ -17,6 +17,22 @@ import { interpretCommandResult } from './command-semantics.mjs';
 import { getDestructiveCommandWarning, stripQuotedAndHeredoc, extractShellCInner } from './destructive-warning.mjs';
 const execAsync = promisify(exec);
 
+// ---------------------------------------------------------------------------
+// User-cwd persistence bridge: hook writes user-cwd.txt on SessionStart so
+// the MCP server (spawned from cache dir) resolves the correct sandbox root.
+// ---------------------------------------------------------------------------
+let _cachedUserCwd = undefined; // undefined = not yet resolved; null = absent
+function _resolveDefaultUserCwd() {
+    if (_cachedUserCwd !== undefined) return _cachedUserCwd;
+    try {
+        const txt = readFileSync(join(process.env.CLAUDE_PLUGIN_DATA || '', 'user-cwd.txt'), 'utf8').trim();
+        _cachedUserCwd = txt || null;
+    } catch {
+        _cachedUserCwd = null;
+    }
+    return _cachedUserCwd;
+}
+
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
 // implementation that handles CSI + OSC + DCS edge cases; older runtimes
 // fall back to a regex covering CSI (ESC [ ... final-byte) and OSC
@@ -1840,7 +1856,7 @@ const BLOCKED_PATTERNS = [
 const SHELL_MUTATION_PATTERN = /(?:^|[;&|\n]\s*)(?:touch|mkdir|mktemp|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+-i|perl\s+-pi|npm\s+(?:install|i|ci|uninstall)|pnpm\s+(?:install|i|add|remove|update|up)|yarn\s+(?:install|add|remove|up)|bun\s+(?:install|add|remove|update|up)|pip(?:3)?\s+install|python(?:3)?\s+-m\s+pip\s+install|git\s+(?:checkout|switch|restore|clean|apply|am|cherry-pick|merge|rebase|stash|pull|reset)|cargo\s+(?:build|install|clean)|go\s+(?:build|install|generate)|make|cmake)\b/i;
 const SHELL_READ_ONLY_SEGMENT_RE = /^(?:cd|pwd|echo|printf|env|printenv|set|unset|export|alias|unalias|source|\.|type|which|whereis|ls|dir|cat|head|tail|wc|grep|rg|find|git\s+(?:status|diff|show|log|rev-parse|branch|remote|ls-files)|stat|readlink|realpath|basename|dirname|sort|uniq|cut|sed\s+-n|awk|ps|whoami|uname|date|true|false|test|\[)\b/i;
 const SHELL_GLOBAL_MUTATORS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip3', 'python', 'python3', 'git', 'cargo', 'go', 'make', 'cmake', 'dd']);
-export function isSafePath(filePath, cwd, { allowHome = false, allowPluginData = false } = {}) {
+export function isSafePath(filePath, cwd, { allowHome = false, allowPluginData = false, allowPluginTree = false } = {}) {
     const baseCwd = normalize(resolve(cwd));
     const normalized = normalize(resolve(baseCwd, filePath));
     // Boundary-aware containment check: a path is "inside" baseCwd iff
@@ -1869,6 +1885,14 @@ export function isSafePath(filePath, cwd, { allowHome = false, allowPluginData =
     // output" recovery path actually works without widening write tools.
     if (allowPluginData) {
         try { allowedRoots.push(normalize(resolve(getPluginData()))); } catch { /* plugin data unavailable in standalone tests */ }
+    }
+    // Plugin tree opt-in: ~/.claude/plugins/marketplaces and ~/.claude/plugins/cache.
+    // Never granted by default; callers must pass allowPluginTree: true explicitly.
+    // WRITE tools must never pass this flag.
+    if (allowPluginTree) {
+        const pluginBase = join(homedir(), '.claude', 'plugins');
+        allowedRoots.push(normalize(join(pluginBase, 'marketplaces')));
+        allowedRoots.push(normalize(join(pluginBase, 'cache')));
     }
     const isInsideAllowedRoot = (candidate) => allowedRoots.some((root) => isInside(candidate, root));
     if (!isInsideAllowedRoot(normalized)) {
@@ -2976,7 +3000,7 @@ async function _runBatchEdit(args, workDir, readStateScope, pathOpts, executeChi
 
 // --- Tool execution ---
 export async function executeBuiltinTool(name, args, cwd, options = {}) {
-    const workDir = cwd || process.cwd();
+    const workDir = cwd || _resolveDefaultUserCwd() || process.cwd();
     const readStateScope = options?.readStateScope ?? options?.sessionId ?? null;
     const executeChildBuiltinTool = (childName, childArgs, childCwd = workDir) =>
         executeBuiltinTool(childName, childArgs, childCwd, options);
