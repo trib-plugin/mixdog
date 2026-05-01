@@ -330,6 +330,7 @@ const TOOLS = [
     title: 'Bridge to External Model',
     annotations: { title: 'Bridge to External Model', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.',
+    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided. Pass `prefetch:{files,callers,references}` to prepend Lead-specified context (paths, code-graph caller/reference sites) into the worker prompt and skip heuristic prefetch.',
     inputSchema: {
       type: 'object',
       properties: {

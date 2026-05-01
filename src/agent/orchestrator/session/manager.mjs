@@ -761,28 +761,38 @@ async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
     if (!explicitPrefetch || typeof explicitPrefetch !== 'object') return null;
     if (session?.owner !== 'bridge') return null;
     const parts = [];
+    const failed = [];
+    const totalEntries = [];
     // files[]
     const files = Array.isArray(explicitPrefetch.files) ? explicitPrefetch.files.filter(f => typeof f === 'string' && f) : [];
     if (files.length > 0) {
         const readOut = await executeInternalTool('read', { path: files, mode: 'head', n: 120 }).catch((e) => {
             process.stderr.write(`[bridge-prefetch] files read failed: ${e && e.message || e}\n`);
+            failed.push(...files);
             return null;
         });
         if (readOut && !String(readOut).startsWith('Error:')) {
             parts.push(`### prefetch files\n${readOut}`);
+        } else if (readOut !== null) {
+            failed.push(...files);
         }
+        totalEntries.push(...files);
     }
     // callers[]
     const callers = Array.isArray(explicitPrefetch.callers) ? explicitPrefetch.callers.filter(c => c && typeof c.symbol === 'string') : [];
     for (const { symbol, file } of callers) {
         const cgArgs = { mode: 'callers', symbol };
         if (file) cgArgs.file = file;
+        totalEntries.push(symbol);
         const out = await executeInternalTool('code_graph', cgArgs).catch((e) => {
             process.stderr.write(`[bridge-prefetch] callers(${symbol}) failed: ${e && e.message || e}\n`);
+            failed.push(symbol);
             return null;
         });
         if (out && !String(out).startsWith('Error:')) {
             parts.push(`### prefetch callers ${symbol}\n${out}`);
+        } else if (out !== null) {
+            failed.push(symbol);
         }
     }
     // references[]
@@ -790,16 +800,23 @@ async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
     for (const { symbol, file } of references) {
         const cgArgs = { mode: 'references', symbol };
         if (file) cgArgs.file = file;
+        totalEntries.push(symbol);
         const out = await executeInternalTool('code_graph', cgArgs).catch((e) => {
             process.stderr.write(`[bridge-prefetch] references(${symbol}) failed: ${e && e.message || e}\n`);
+            failed.push(symbol);
             return null;
         });
         if (out && !String(out).startsWith('Error:')) {
             parts.push(`### prefetch references ${symbol}\n${out}`);
+        } else if (out !== null) {
+            failed.push(symbol);
         }
     }
     if (parts.length === 0) return null;
-    return `<prefetch>\n${parts.join('\n\n')}\n</prefetch>`;
+    const warnLine = failed.length > 0
+        ? `<prefetch-warn>${failed.length} of ${totalEntries.length} prefetch entries failed: ${[...new Set(failed)].join(', ')}</prefetch-warn>\n`
+        : '';
+    return `${warnLine}<prefetch>\n${parts.join('\n\n')}\n</prefetch>`;
 }
 
 async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCall) {
@@ -1388,7 +1405,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             const effectiveCwd = cwdOverride || session.cwd;
             const fastPath = prefetchedContext
                 ? null
-                : await _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall);
+                : (explicitPrefetchResult ? null : await _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall));
             if (fastPath) {
                 session.messages = [...session.messages, { role: 'user', content: prompt }];
                 if (fastPath.content) {

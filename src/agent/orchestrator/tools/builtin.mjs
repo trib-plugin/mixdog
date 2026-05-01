@@ -854,8 +854,22 @@ export const BUILTIN_TOOLS = [
                 limit: { type: 'number', description: 'Max lines for full mode (default 2000).' },
                 full: { type: 'boolean', description: 'Opt out of the big-file head/tail cap. Default false.' },
                 pages: { type: 'string', description: 'PDF only: page range to extract, e.g. "1-5", "3", "10-20". Max 20 pages.' },
+                reads: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            path: { type: 'string' },
+                            offset: { type: 'number' },
+                            limit: { type: 'number' },
+                            mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'] },
+                            n: { type: 'number' },
+                        },
+                        required: ['path'],
+                    },
+                    description: 'Per-file read with independent offset/limit/mode. Use this OR `path`, not both.',
+                },
             },
-            required: ['path'],
         },
     },
     {
