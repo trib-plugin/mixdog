@@ -68,7 +68,7 @@ const WINDOWS_RENAME_RETRY_DELAY_MS = 50;
 
 function _sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-export async function atomicWrite(targetPath, content, { mode, signal, sessionId } = {}) {
+export async function atomicWrite(targetPath, content, { mode, signal, sessionId, flags } = {}) {
     let resolvedSignal = signal;
     if (!resolvedSignal && sessionId) {
         try { resolvedSignal = await getAbortSignalForSession(sessionId); } catch { resolvedSignal = null; }
@@ -101,13 +101,34 @@ export async function atomicWrite(targetPath, content, { mode, signal, sessionId
         } else {
             await fh.writeFile(content);
         }
-        try { await fh.sync(); } catch { /* fsync can fail on some FS — proceed anyway, rename is still the durability gate */ }
+        await fh.sync();
     } catch (writeErr) {
         try { if (fh) await fh.close(); } catch { /* already closed */ }
         try { await fsPromises.unlink(tmp); } catch { /* already gone */ }
         throw writeErr;
     }
-    try { await fh.close(); } catch { /* already closed */ }
+    try { await fh.close(); } catch (closeErr) {
+        try { await fsPromises.unlink(tmp); } catch { /* already gone */ }
+        throw closeErr;
+    }
+
+    // O_EXCL no-clobber: if caller requested wx semantics, atomically verify
+    // the target does not exist by opening it exclusively. On EEXIST a racing
+    // writer beat us; clean up the tmp and throw so the caller aborts.
+    if (flags === 'wx') {
+        let excl = null;
+        try {
+            excl = await fsPromises.open(targetPath, 'wx');
+            await excl.close();
+        } catch (exclErr) {
+            if (excl) try { await excl.close(); } catch { /* already closed */ }
+            try { await fsPromises.unlink(tmp); } catch { /* already gone */ }
+            throw Object.assign(
+                new Error(`create target already exists (race detected): ${targetPath}`),
+                { code: 'EEXIST', __skip: true }
+            );
+        }
+    }
 
     // Abort that arrived during the write phase: drop the tempfile and
     // throw so the caller sees a clean cancellation rather than a

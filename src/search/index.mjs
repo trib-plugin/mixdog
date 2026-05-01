@@ -517,32 +517,46 @@ async function writeStartupSnapshot() {
 
 const _searchInFlight = new Map()
 
-async function _searchCore(args, { config, usageState, cacheState, timeoutMs, signal }) {
-  // Apply config-derived API keys to process.env for this call only; delete
-  // keys that did not exist before so they don't survive across requests.
-  const runtimeEnv = buildRuntimeEnv(config)
-  const _envAdded = []
-  // Hoisted so the outer `finally` can safely reference it even when an early
-  // throw/return (e.g. xai.x_search route, no-providers guard) fires before
-  // the cache key is built.
-  let searchCacheKey
+// Mutex that serialises every section that must write process.env.
+// Concurrent callers wait; the window is: save → set → await fn → restore.
+let _envMutex = Promise.resolve()
+async function _withEnv(runtimeEnv, fn) {
+  let release
+  const slot = new Promise(res => { release = res })
+  const prev = _envMutex
+  _envMutex = slot
+  await prev
+  const saved = {}
   for (const [k, v] of Object.entries(runtimeEnv)) {
-    if (k in process.env) continue
+    saved[k] = k in process.env ? process.env[k] : undefined
     process.env[k] = v
-    _envAdded.push(k)
   }
+  try {
+    return await fn()
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    release()
+  }
+}
+
+async function _searchCore(args, { config, usageState, cacheState, timeoutMs, signal }) {
+  // Hoisted so the outer finally can reference it even on early throw.
+  let searchCacheKey
   try {
   const siteRule = args.site ? getSiteRule(config, args.site) : null
   if (siteRule?.search === 'xai.x_search') {
     try {
-      const response = await runRawSearch({
+      const response = await _withEnv(buildRuntimeEnv(config), () => runRawSearch({
         keywords: Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords,
         providers: ['xai'],
         site: args.site,
         type: 'web',
         maxResults: args.maxResults || getRawSearchMaxResults(config),
         signal,
-      })
+      }))
       noteProviderSuccess(usageState, 'xai', {
         lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
       })
@@ -555,8 +569,7 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs, si
     }
   }
 
-  const runtimeEnv = buildRuntimeEnv(config)
-  const available = getAvailableRawProviders(runtimeEnv)
+  const available = getAvailableRawProviders(buildRuntimeEnv(config))
   const providers = rankProviders(
     getRawSearchPriority(config).filter(provider => available.includes(provider)),
     usageState,
@@ -594,12 +607,12 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs, si
   _searchInFlight.set(searchCacheKey, coalescePromise)
 
   try {
-    const response = await runRawSearch({
+    const response = await _withEnv(buildRuntimeEnv(config), () => runRawSearch({
       ...args,
       providers,
       maxResults: args.maxResults || getRawSearchMaxResults(config),
       signal,
-    })
+    }))
 
     noteProviderSuccess(usageState, response.usedProvider, {
       lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
@@ -652,7 +665,6 @@ async function _searchCore(args, { config, usageState, cacheState, timeoutMs, si
     if (_searchInFlight.has(searchCacheKey)) {
       _searchInFlight.delete(searchCacheKey)
     }
-    for (const k of _envAdded) delete process.env[k]
   }
 }
 

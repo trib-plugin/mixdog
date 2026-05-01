@@ -530,24 +530,15 @@ async function apply_patch(args, cwd, options = {}) {
       renameSync(p.fullPath, sidePath);
       stagedDeletes.push({ p, sidePath });
     } else if (p.kind === 'create') {
-      // Re-check existence right before write — phase 1 ran tens of
-      // ms ago at minimum and another process could have raced a file
-      // into the target path in the gap. Refusing to overwrite
-      // preserves the same "create target already exists" contract
-      // phase 1 already enforces; without this, atomicWrite happily
-      // clobbers the racing writer.
-      let raceExists = false;
-      try { statSync(p.fullPath); raceExists = true; } catch {}
-      if (raceExists) {
-        throw Object.assign(new Error('create target appeared since plan (race)'), { __skip: true });
-      }
       // Compute which ancestor dirs don't exist yet so a rollback can
       // unwind them. Has to happen BEFORE mkdirSync, otherwise every
       // ancestor already exists and the diff-set is empty.
       const newDirs = _planNewDirs(p.fullPath);
       mkdirSync(dirname(p.fullPath), { recursive: true });
       if (newDirs.length) createdDirs.push({ p, dirs: newDirs });
-      await atomicWrite(p.fullPath, p.newContent, { sessionId: options?.sessionId });
+      // Pass flags:'wx' (O_EXCL) so atomicWrite detects a racing writer
+      // atomically and aborts rather than clobbering the target.
+      await atomicWrite(p.fullPath, p.newContent, { sessionId: options?.sessionId, flags: 'wx' });
     } else {
       _assertUnchangedSinceRead(p);
       await atomicWrite(p.fullPath, p.newContent, { sessionId: options?.sessionId });

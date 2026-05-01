@@ -743,10 +743,11 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
         const mode = intent === 'imports' ? 'imports' : 'dependents';
         const graphArgs = { mode, file: knownFiles[0] };
         const graphOut = await executeInternalTool('code_graph', graphArgs).catch(() => null);
-        if (graphOut && !String(graphOut).startsWith('Error:')) {
+        const _gid = String(graphOut ?? '');
+        if (graphOut && !_gid.startsWith('Error:') && !/file not found in graph/i.test(_gid) && !/^\(no [^)]+\)$/m.test(_gid)) {
             onToolCall?.(1, [{ name: 'code_graph', arguments: graphArgs }]);
             return {
-                content: String(graphOut),
+                content: _gid,
                 iterations: 2,
                 toolCallsTotal: 1,
                 usage: null,
@@ -812,7 +813,15 @@ async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
             failed.push(symbol);
         }
     }
-    if (parts.length === 0) return null;
+    if (parts.length === 0) {
+        // All entries failed but Lead presence must still be signalled — emit
+        // warn-only so the gate logic can distinguish "prefetch was requested"
+        // from "no prefetch at all".
+        if (totalEntries.length > 0 && failed.length > 0) {
+            return `<prefetch-warn>${failed.length} of ${totalEntries.length} prefetch entries failed: ${[...new Set(failed)].join(', ')}</prefetch-warn>`;
+        }
+        return null;
+    }
     const warnLine = failed.length > 0
         ? `<prefetch-warn>${failed.length} of ${totalEntries.length} prefetch entries failed: ${[...new Set(failed)].join(', ')}</prefetch-warn>\n`
         : '';
@@ -821,6 +830,7 @@ async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
 
 async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCall) {
     if (session?.owner !== 'bridge') return null;
+    if (isHiddenRole(session?.role)) return null;
     // Fix 3: pass null cwd through — `_extractKnownFilePaths` returns [] for
     // cwd-less callers, so the read-array prefetch further down naturally
     // becomes a no-op instead of resolving against the launcher's cwd.
@@ -1388,7 +1398,17 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 session.messages.push({ role: 'user', content: `Additional context:\n\n${_capCtx(explicitPrefetchResult)}` });
                 session.messages.push({ role: 'assistant', content: 'Noted.' });
             }
-            const prefetchedContext = explicitPrefetchResult ? null : await _tryBridgePrefetchContext(session, prompt, cwdOverride || session.cwd, onToolCall);
+            // Gate: if Lead supplied any prefetch entries (files/callers/references),
+            // skip both heuristic prefetch and fast-path regardless of whether the
+            // explicit prefetch succeeded. Lead presence is the gate, not success.
+            const _hasExplicitPrefetchEntries = (ep) => {
+                if (!ep || typeof ep !== 'object') return false;
+                return (Array.isArray(ep.files) && ep.files.length > 0)
+                    || (Array.isArray(ep.callers) && ep.callers.length > 0)
+                    || (Array.isArray(ep.references) && ep.references.length > 0);
+            };
+            const _explicitPresent = _hasExplicitPrefetchEntries(explicitPrefetch);
+            const prefetchedContext = _explicitPresent ? null : await _tryBridgePrefetchContext(session, prompt, cwdOverride || session.cwd, onToolCall);
             if (prefetchedContext) {
                 session.messages.push({ role: 'user', content: `Additional context:\n\n${_capCtx(prefetchedContext)}` });
                 session.messages.push({ role: 'assistant', content: 'Noted.' });
@@ -1405,7 +1425,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             const effectiveCwd = cwdOverride || session.cwd;
             const fastPath = prefetchedContext
                 ? null
-                : (explicitPrefetchResult ? null : await _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall));
+                : (_explicitPresent ? null : await _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall));
             if (fastPath) {
                 session.messages = [...session.messages, { role: 'user', content: prompt }];
                 if (fastPath.content) {

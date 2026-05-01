@@ -1,6 +1,6 @@
 # Tool Routing
 
-**HARD RULE — file/code/memory/web lookup MUST start with `recall` (past) / `search` (web) / `explore` (codebase). Reaching for `bash` / `grep` / `glob` / `read` / `find_symbol` as the very first move on an unknown target is a violation. Shell and low-level file tools are reserved for known-coordinate work — exact path + line range or a precise literal pattern. `bash` is shell-only (git, build, test, run); using it with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file/code lookup is a violation.**
+**HARD RULE — file/code/memory/web lookup MUST start with `recall` (past) / `search` (web) / `explore` (codebase). Reaching for `bash` / `grep` / `glob` / `read` / `find_symbol` as the very first move on an unknown target (unknown target excludes known identifiers, paths, or regex — those routes are listed in the decision table below) is a violation. Shell and low-level file tools are reserved for known-coordinate work — exact path + line range or a precise literal pattern. `bash` is shell-only (git, build, test, run); using it with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file/code lookup is a violation.**
 
 Recap-visible coordinates count as past context — use them or `recall` before any probing. Never compose source paths from package / cache / marketplace directory names without verification.
 

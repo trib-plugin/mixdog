@@ -16,7 +16,7 @@ Lead-provided `path:line/range` coordinates are LOCKED — go straight to edit/a
 
 Before free-form planning, map the request to the most decisive first tool:
 
-- **Lead provided `path:line` or `path:start-end` coordinates** → treat the target as already located. Open the specified file/range directly; do not re-locate via `find_symbol` / `grep` / `glob`. Re-locate only if coordinates are invalid (file moved, line range missed the symbol).
+- **Lead provided `path:line` or `path:start-end` coordinates** → treat the target as already located; edit directly unless the task is read-only/review. Do not re-locate via `find_symbol` / `grep` / `glob`; re-locate only if coordinates are invalid (file moved, line range missed the symbol).
 - If the user explicitly says to use a specific tool, call that tool before answering.
 - When the request names an exact marker, identifier, or `KEY=VALUE` token, extract from that exact match.
 - Directory metadata constraints (size, mtime, newest/oldest) → `list mode:"find"` first.

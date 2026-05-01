@@ -374,7 +374,19 @@ function spawnChild() {
       process.stderr.write(
         `[run-mcp] child crash loop (${recentRestarts.length} restarts in ${CRASH_WINDOW_MS}ms) — backing off ${CRASH_BACKOFF_MS}ms; supervisor stays up\n`,
       );
-      setTimeout(spawnChild, CRASH_BACKOFF_MS * 4);
+      setTimeout(() => {
+        spawnChild();
+        // Re-handshake the fresh child after crash-loop backoff.
+        if (!cachedInitRequest) {
+          process.stderr.write('[run-mcp] WARN: crash-loop respawn before initialize landed — skipping init replay\n');
+        } else {
+          replayInitToChild();
+        }
+        writeToClient(JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notifications/tools/list_changed',
+        }));
+      }, CRASH_BACKOFF_MS * 4);
       return;
     }
     process.stderr.write(`[run-mcp] child exit code=${code} signal=${signal} — respawning (#${recentRestarts.length})\n`);

@@ -15,6 +15,7 @@ import { traceBridgePreset } from './orchestrator/bridge-trace.mjs';
 import { runWithDispatchRetry, isRecoverableError } from './orchestrator/bridge-retry.mjs';
 import { ensureDataSeeds } from '../shared/seed.mjs';
 import { writeFileSync, readFileSync, existsSync, watch } from 'fs';
+import { addPending, removePending } from './orchestrator/dispatch-persist.mjs';
 import { join } from 'path';
 
 // --- user-workflow.json loader ---
@@ -809,6 +810,10 @@ export async function handleToolCall(name, args, opts = {}) {
         const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const modelLabel = preset.model || preset.name;
         const emit = notifyFn || (() => {});
+        // Persist the in-flight bridge job so a child crash/restart can surface
+        // a loss notification via recoverPending() on next bootstrap instead of
+        // leaving the session permanently stuck at 'running'.
+        addPending(process.env.CLAUDE_PLUGIN_DATA, jobId, 'bridge', [role]);
         // Public `bridge` is intentionally detached: we return immediately and
         // keep the session alive until it completes (or is explicitly closed).
         // Tying requestSignal to session lifetime caused long reviewer runs to
@@ -1039,6 +1044,9 @@ export async function handleToolCall(name, args, opts = {}) {
             // aborts on the MCP request have nothing to tear down. Harmless
             // if already removed via { once: true } on fire.
             try { abortHandle.detach(); } catch { /* ignore */ }
+            // Remove persist record — job completed (success or handled error).
+            // Idempotent: removePending is a no-op if the entry is already gone.
+            try { removePending(process.env.CLAUDE_PLUGIN_DATA, jobId); } catch {}
             try {
               const cfg = loadConfig();
               if (cfg.trajectory?.enabled !== false) {
@@ -1060,6 +1068,7 @@ export async function handleToolCall(name, args, opts = {}) {
             } catch {}
           }
         })().catch((err) => {
+          try { removePending(process.env.CLAUDE_PLUGIN_DATA, jobId); } catch {}
           const msg = err instanceof Error ? (err.stack || err.message) : String(err);
           try {
             process.stderr.write(`[bridge] detached runner unhandled: session=${activeSession?.id ?? session.id} role=${role} job=${jobId} ${msg}\n`);
