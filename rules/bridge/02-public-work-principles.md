@@ -30,6 +30,10 @@ Tool descriptions carry array / multi-form rules. The single discipline that spa
 - If the work is blocked or ambiguous, report partial findings + the specific blocker. Don't guess.
 - Match the scope of the task — a one-line fix doesn't justify a refactor.
 
+## Tool routing
+
+Brief names an exact path / line / identifier (Lead-provided coordinate or self-evident from the question) → route directly through `read` / `grep` / `find_symbol`. Do NOT delegate the same probe to `recall` / `explore` / `memory_search` — those spawn sub-agents whose aggregated answer can fold in stale memory or rephrased noise (observed: `version` query fanned out to 4 hidden agents and surfaced `0.1.271` while the actual file held `0.1.406`). Reserve fan-out retrieval for genuinely unknown locations or cross-cutting questions. (Decision Table in `rules/shared/01-tool.md`.)
+
 ## Edit Ordering
 
 Applies when the next move is `edit` or `apply_patch` AND the target span is not yet locked. **Locked = exact file path AND one or more uniquely-identified line ranges you can edit without re-reading.** (`write` for whole-file create/replace is exempt.)
