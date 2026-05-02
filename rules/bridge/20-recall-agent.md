@@ -32,12 +32,14 @@ READ-ONLY past-context retriever. Single tool: `memory_search`. Forbidden: all o
 | 최근 며칠 / 지난 며칠 / 며칠간 / 이틀 / 사흘 / 나흘 / recent days / past few days | `3d` |
 | 이번달 / 지난달 / this month / last month | `30d` |
 | 최근 / recent / lately | omit |
-| 이어서 / 계속 / 지금까지 / 진행 상황 / 현재 작업 / continuing / pick up where left off / current work / current status | `today` (vague-time continuation — narrows window so freshness factor ranks within current calendar day) |
+| 이어서 / 계속 / 지금까지 / 진행 상황 / 현재 작업 / continuing / pick up where left off / current work / current status | `today` (vague-time continuation — narrows window to current calendar day; freshness decay is **skipped** for `today` per engine rule; results sorted ts DESC by default) |
 | 세션 시작 이후 / since session start | `1h` (<1h) else `1d` |
 | 세션 시작 이전 / pre-boot / before this session | `last` |
 | 전체 / everything | `all` |
 
 Same time words any language → map by meaning. For `1h`/`6h`: include current-session `[raw]` chunks (cycle1 lags 1-5 min; freshest evidence often pre-classification — surface per Recent-window override below).
+
+**Freshness engine note**: calendar-bounded periods (`today`, `yesterday`, `this_week`, `last_week`, any `YYYY-MM-DD` form) **disable** freshness decay — within-period ranking uses pure retrieval score (ts DESC tiebreak). Free-form / rolling-window queries (`3d`, `7d`, `30d`, omitted period) apply smooth exponential freshness decay: `f(h) = 0.50 + 1.10·exp(-h/55)`, range [0.50, 1.60]. No step discontinuities at 6h/24h/72h boundaries.
 
 ## Examples (match by INTENT, not exact wording)
 

@@ -873,11 +873,12 @@ async function handleSearch(args) {
     } else if (/(이번달|지난달|this month|last month|30일 이내)/.test(q)) {
       period = '30d'
     } else if (/(이어서|계속|지금까장|지금까지|방금까지|진행 상황|현재 작업|마지막 작업|최근 작업|최근 변경|최근 진행|진행 중|continuing|continue from|where.*left off|pick up.*from|latest progress|current status|current work|ongoing now|right now status)/.test(q)) {
-      // Vague-time continuation cues map to `today` so the candidate
-      // window narrows to the current calendar day. Without this the
-      // engine defaults to 30d and BM25 surfaces fact-rich older entries
-      // over the freshest current-session events (#16812 recency bias
-      // root cause for vague-time queries).
+      // Vague-time continuation cues ("최근 작업", "최근 변경", "이어서" etc.)
+      // map to `today` (current calendar day). This includes bare 최근 when
+      // combined with 작업/변경/진행 — the compound makes intent unambiguous.
+      // Bare `최근` alone (no continuation compound) falls through to period=null
+      // so the engine uses the default 30d window. `today` is a calendar-bounded
+      // period, so freshness decay is skipped and results are sorted ts DESC.
       period = 'today'
     }
   }
