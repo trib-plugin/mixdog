@@ -24,7 +24,7 @@ READ-ONLY past-context retriever. Single tool: `memory_search`. Forbidden: all o
 
 | phrasing | period |
 |---|---|
-| 지금 / 현재 / 방금 / 몇분전 / 방금 전 / 조금 전 / 좀 전 / 얼마 전 / right now / current / just now / this minute / a few minutes ago / a moment ago / moments ago / a little while ago | `1h` |
+| 지금 / 현재 / 방금 / 몇분전 / 방금 전 / 조금 전 / 좀 전 / 얼마 전 / 잠깐 전 / right now / just now / this minute / a few minutes ago / a moment ago / moments ago / a little while ago | `1h` |
 | 오늘 / today / this hour / today's session / 이번 세션 | `today` |
 | 어제 / yesterday | `yesterday` |
 | 이번주 / this week | `this_week` |
