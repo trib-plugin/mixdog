@@ -316,6 +316,42 @@ function _parseGrepContentLine(line) {
     return { path, lineNo, content };
 }
 
+// Group content-mode grep hits by file: emit each path once, indent
+// the line:content rows below it. `path:line:content` shape preserved per
+// row so existing parsers (Lead grep summary, file:line jump) still work.
+// Context lines (-A/-B/-C) are not grouped — caller wants raw context window.
+function _groupGrepContentByFile(lines) {
+    const groupOrder = [];
+    const groups = new Map();
+    const others = [];
+    for (const line of lines) {
+        const parsed = _parseGrepContentLine(line);
+        if (!parsed) {
+            others.push(line);
+            continue;
+        }
+        if (!groups.has(parsed.path)) {
+            groups.set(parsed.path, []);
+            groupOrder.push(parsed.path);
+        }
+        groups.get(parsed.path).push(parsed);
+    }
+    if (groupOrder.length === 0) return others.join('\n');
+    const out = [];
+    for (const path of groupOrder) {
+        const hits = groups.get(path);
+        out.push(hits.length === 1 ? path : `${path} (${hits.length} hits)`);
+        for (const hit of hits) {
+            out.push(`  ${hit.lineNo}: ${hit.content}`);
+        }
+    }
+    if (others.length) {
+        out.push('');
+        out.push(...others);
+    }
+    return out.join('\n');
+}
+
 function _buildGrepContentSummary(lines, patterns) {
     const token = _primaryIdentifierPattern(patterns);
     if (!token) return '';
@@ -4018,7 +4054,11 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 const truncated = remaining > 0
                     ? `\n... [${remaining} more entries]`
                     : '';
-                const body = (normalized.join('\n') + truncated) || '(no matches)';
+                const hasContext = (beforeN > 0 || afterN > 0 || contextN > 0);
+                const groupedBody = (outputMode === 'content' && !hasContext)
+                    ? _groupGrepContentByFile(normalized)
+                    : normalized.join('\n');
+                const body = (groupedBody + truncated) || '(no matches)';
                 const out = capShellOutput((summary ? `${summary}\n\n${body}` : body));
                 _cacheSet(cacheKey, out, { scopes: [resolveAgainstCwd(searchPath, workDir)] });
                 return out;
