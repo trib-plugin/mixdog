@@ -474,8 +474,6 @@ async function runExploreFilenamePatternFastPath(query, cwd) {
   }
   if (!globOut || String(globOut).startsWith('Error:')) return null
   return [
-    'Filename pattern matches for route modules and policy JSON files under `src`:',
-    'Complete grounded result; no follow-up filesystem listing is needed for this lookup.',
     String(globOut).trim(),
   ].join('\n')
 }
@@ -500,8 +498,6 @@ async function runExploreCallerFastPath(query, cwd) {
   }
   if (!callers || String(callers).startsWith('Error:') || /^\(no callers\)/i.test(String(callers).trim())) return null
   return [
-    `Direct caller lookup for \`${identifier}\` from code_graph:`,
-    'Complete grounded result; no follow-up file read is needed when caller and evidence line are present.',
     String(callers).trim(),
   ].join('\n')
 }
@@ -535,18 +531,18 @@ async function runExploreGrepLiteralFastPath(identifier, cwd) {
     readOut = ''
   }
   const parts = [
-    `Best literal match for \`${identifier}\`: \`${candidate.filePath}:${candidate.line}\`.`,
+    `- \`${candidate.filePath}:${candidate.line}\` — literal match for \`${identifier}\``,
   ]
-  if (candidate.content) parts.push(`Match: ${candidate.content}`)
+  if (candidate.content) parts.push(`- match: ${candidate.content}`)
   const enclosing = inferEnclosingFunctionHint(readOut, candidate.line)
   if (enclosing) {
-    parts.push(`Enclosing function hint: \`${enclosing}\`.`)
+    parts.push(`- enclosing: \`${enclosing}\``)
   }
   if (readOut && !String(readOut).startsWith('Error:')) {
     const compactRead = String(readOut).split('\n').slice(0, 8).join('\n')
-    parts.push(`Nearby lines:\n${compactRead}`)
+    parts.push(compactRead)
   }
-  return parts.join('\n\n')
+  return parts.join('\n')
 }
 
 async function runExploreLiteralFastPath(query, cwd) {
@@ -593,7 +589,7 @@ async function runExploreFastPath(query, cwd) {
     }
 
     const pieces = [
-      `Best code match for \`${identifier}\`: \`${symbolCandidate.filePath}:${symbolCandidate.line}\`.`,
+      `- \`${symbolCandidate.filePath}:${symbolCandidate.line}\` — \`${identifier}\``,
       summarizeDeclarationShape(identifier, symbolCandidate.declaration),
       `Declaration: ${symbolCandidate.declaration}`,
     ]
@@ -602,13 +598,13 @@ async function runExploreFastPath(query, cwd) {
     }
     const enclosing = inferEnclosingFunctionHint(readOut, symbolCandidate.line)
     if (enclosing) {
-      pieces.push(`Enclosing function hint: \`${enclosing}\`.`)
+      pieces.push(`- enclosing: \`${enclosing}\``)
     }
     if (readOut && !String(readOut).startsWith('Error:')) {
       const compactRead = String(readOut).split('\n').slice(0, 8).join('\n')
-      pieces.push(`Nearby lines:\n${compactRead}`)
+      pieces.push(compactRead)
     }
-    return pieces.join('\n\n')
+    return pieces.filter(Boolean).join('\n')
   }
 
   return runExploreGrepLiteralFastPath(identifier, cwd)
@@ -1163,7 +1159,28 @@ function _escapeXml(str) {
 
 function buildExplorerPrompt(query, cwd) {
   const rootLine = cwd ? `<root>${_escapeXml(cwd)}</root>\n` : ''
-  return `${rootLine}<query>${_escapeXml(query)}</query>`
+  const today = new Date().toLocaleString('sv-SE').slice(0, 10)
+  return `${rootLine}<query>${_escapeXml(query)}</query>
+<final_pass>
+**POSITIVE OUTPUT SPEC** — your answer MUST start with one of:
+  (a) \`path:line\` or \`- \` (bullet) — filesystem fact
+  (b) \`[unverified] path:line\` — weak candidate from this turn's tool output
+  (c) \`not found under <root>\` — with patterns tried on next line
+  (d) \`### \` — header for grouped finding sets
+Any other first character = VIOLATION. DELETE the offending first line and start over from the first concrete fact.
+
+Before emitting, scan your draft and DELETE any line matching these patterns:
+- preamble: "Best code match for", "Best literal match for", "Direct caller lookup", "Filename pattern matches", "Complete grounded result", "Here's what I found", "정리하겠습니다", "확인하겠습니다", "찾아보겠습니다"
+- process narration: "Let me ", "I'll ", "Now I'll ", "Looking at ", "Let's ", "이제 ", "다음으로 ", "호출자를 찾겠습니다", "설정 파일을 확인하겠습니다", "호출 불가", "라우팅 룰 관련 파일:"
+- ask-back / refusal: "I need more specificity", "쿼리가 명확하지 않습니다", "이 쿼리는 ... 불충분합니다", "호출 불가", "쿼리가 너무 광범위합니다"
+- closer: "If you need ...", "let me know", "필요하면 ...", "필요하신가요", "원하시면 ...", "더 자세한 ...", "Would you like ...?", "추가로 ... 알려드릴까요"
+- memory chunk-id lines: any line containing #N / \`#N\` / ⟨#N⟩ where N is digits — explorer reads filesystem only; never cite memory ids
+- redirect: "For more information, visit", "자세한 내용은 ...에서 확인", "권장합니다"
+
+Each fact line must be: \`path:line — description\` or \`- path:line — description\` or \`[unverified] path:line — candidate\`.
+Line content (variable name, constant, function name, literal value) MUST appear literally in this turn's tool output for that exact line range — do NOT invent or paraphrase code content.
+After the last fact line, STOP. No trailing summary, no offer, no question. (accessed ${today})
+</final_pass>`
 }
 
 function buildRecallPrompt(query, _cwd) {
