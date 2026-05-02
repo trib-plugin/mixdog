@@ -1609,7 +1609,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
     name: 'find_symbol',
     title: 'Find Symbol',
     annotations: { title: 'Find Symbol', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Symbol-level navigation across the repository. Default mode finds the declaration site for a known identifier (file:line + nearby code). Pass `mode` to switch into graph queries: `callers` (call sites for functions), `references` (all references — use for non-function symbols too), `imports` (what a file imports), `dependents` (who imports a file), or `overview`/`symbols`/`related`/`impact` for file-level analysis. Prefer over grep when the identifier is known but the file is not.',
+    description: 'Symbol-level navigation across the repository. Default mode finds the declaration site for a known identifier (file:line + nearby code). Pass `mode` to switch into graph queries: `callers` (call sites for functions), `references` (all references — use for non-function symbols too), `imports` (what a file imports), `dependents` (who imports a file), or `overview`/`symbols`/`related`/`impact` for file-level analysis. Prefer over grep when the identifier is known but the file is not. Default mode already returns file-grouped reference candidates with matches=N counts; call references mode only when line-level details for every reference are required.',
     inputSchema: {
       type: 'object',
       properties: {

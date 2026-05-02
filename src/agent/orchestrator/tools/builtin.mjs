@@ -863,32 +863,17 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read file(s). `path` accepts a single string or array (`["a.mjs","b.mjs"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead. For per-file differing offset/limit/mode, use `reads:[{path,offset,limit,mode?,n?},…]` instead of separate `path` array calls.',
+        description: 'Read file(s). `path` accepts a single string or array (`["a.mjs","b.mjs"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead. For per-file differing offset/limit/mode, pass `path` as an array of objects: `path:[{path:"a.mjs",offset:10,limit:5},{path:"b.mjs",mode:"head",n:3}]`.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'File path string, or array of paths for parallel multi-file read.' },
+                path: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }, { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' }, mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'] }, n: { type: 'number' } }, required: ['path'] }, minItems: 1 }], description: 'File path string, or array of paths for parallel multi-file read, or array of objects with per-file options.' },
                 mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'], description: 'full (default) | head | tail | count.' },
                 n: { type: 'number', description: 'Lines for head / tail mode. Default 20.' },
                 offset: { type: 'number', description: 'Start line for full mode (0-based; mixdog convention).' },
                 limit: { type: 'number', description: 'Max lines for full mode (default 2000).' },
                 full: { type: 'boolean', description: 'Opt out of the big-file head/tail cap. Default false.' },
                 pages: { type: 'string', description: 'PDF only: page range to extract, e.g. "1-5", "3", "10-20". Max 20 pages.' },
-                reads: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            path: { type: 'string' },
-                            offset: { type: 'number' },
-                            limit: { type: 'number' },
-                            mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'] },
-                            n: { type: 'number' },
-                        },
-                        required: ['path'],
-                    },
-                    description: 'Per-file read with independent offset/limit/mode. Use this OR `path`, not both.',
-                },
             },
         },
     },
@@ -3161,20 +3146,20 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             //   reads: [{path, mode?, n?, offset?, limit?, full?}]
             //                               → per-file batch (different
             //                                 ranges per file in one call)
-            //   path: string[]              → parallel per-file batch
+            //   path: string[] | object[]   → parallel per-file batch
             //                                 (top-level opts apply uniformly)
             //   mode: 'head'|'tail'|'count' → head / tail / wc handlers
             //   else                        → single-file read below.
             // Single turn can touch many files or swap modes without
             // the agent iterating across multiple tool names.
-            if (Array.isArray(args.reads)) {
+            if (Array.isArray(args.path) && args.path.length > 0 && args.path[0] && typeof args.path[0] === 'object') {
                 // Per-file batch: each entry carries its own options.
                 // Coalesce same-path entries: multiple chunks for the same
                 // file are merged into a single wider read (min offset to max
                 // offset+limit) so the file is only opened once. The merged
                 // result is sliced back into the original per-entry windows
                 // for response assembly. Non-same-path entries are untouched.
-                const rawEntries = args.reads.map((r) => {
+                const rawEntries = args.path.map((r) => {
                     const entry = { path: normalizeInputPath(r?.path ?? '') };
                     if (r?.mode !== undefined) entry.mode = r.mode;
                     if (r?.n !== undefined) entry.n = r.n;
@@ -4008,8 +3993,24 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 const lines = effectiveHeadLimit === Infinity ? windowed : windowed.slice(0, effectiveHeadLimit);
                 // Unify separators in the path portion so Windows results
                 // don't surface mixed `C:/.../foo\bar.mjs` lines.
-                const normalized = lines.map(normalizeGrepLine);
-                const summarySource = (headLimit === Infinity ? windowed : windowed.slice(0, Math.max(lines.length, 120))).map(normalizeGrepLine);
+                // Also relativize absolute paths against cwd so output is
+                // repo-relative (e.g. src/foo.mjs) rather than full OS paths.
+                const _makeRelGrepLine = (line) => {
+                    const nl = normalizeGrepLine(line);
+                    if (!workDir) return nl;
+                    const cwdFwd = workDir.replace(/\\/g, '/');
+                    // Replace leading absolute path prefix with relative equivalent.
+                    // Handles both plain files_with_matches lines and path:N:content lines.
+                    return nl.replace(/^([A-Za-z]:\/[^:\n]*|\/[^:\n]*?)(?=:|$)/, (abs) => {
+                        const absFwd = abs.replace(/\\/g, '/');
+                        if (absFwd.startsWith(cwdFwd + '/') || absFwd === cwdFwd) {
+                            return absFwd.slice(cwdFwd.length + 1) || '.';
+                        }
+                        return abs;
+                    });
+                };
+                const normalized = lines.map(_makeRelGrepLine);
+                const summarySource = (headLimit === Infinity ? windowed : windowed.slice(0, Math.max(lines.length, 120))).map(_makeRelGrepLine);
                 const summary = outputMode === 'content'
                     ? _buildGrepContentSummary(summarySource, patterns)
                     : '';

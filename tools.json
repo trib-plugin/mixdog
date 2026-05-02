@@ -424,7 +424,7 @@
         },
         "cwd": {
           "type": "string",
-          "description": "Optional workspace hint (no-op for recall; builder ignores it). Rarely needed."
+          "description": "Optional workspace hint."
         },
         "background": {
           "type": "boolean",
@@ -513,7 +513,7 @@
         },
         "cwd": {
           "type": "string",
-          "description": "Optional workspace hint (no-op for search; builder ignores it). Rarely needed."
+          "description": "Optional workspace hint. Rarely needed."
         },
         "background": {
           "type": "boolean",
@@ -673,7 +673,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.",
+    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided. Pass `prefetch:{files,callers,references}` to prepend Lead-specified context (paths, code-graph caller/reference sites) into the worker prompt and skip heuristic prefetch.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -728,6 +728,55 @@
         "cwd": {
           "type": "string",
           "description": "Working directory for bridge agent tool execution."
+        },
+        "prefetch": {
+          "type": "object",
+          "description": "Explicit prefetch coordinates. Manager fetches and prepends as <prefetch> block before worker runs. All failures are silent.",
+          "properties": {
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Paths to prepend as head excerpts (≤120 lines each)."
+            },
+            "callers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "symbol": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "symbol"
+                ]
+              },
+              "description": "Symbols to fetch caller sites for via code_graph mode=callers."
+            },
+            "references": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "symbol": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "symbol"
+                ]
+              },
+              "description": "Symbols to fetch reference sites for via code_graph mode=references."
+            }
+          }
         }
       },
       "required": [
@@ -746,7 +795,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read file(s). `path` accepts a single string or array (`[\"a.mjs\",\"b.mjs\"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead. For per-file differing offset/limit/mode, use `reads:[{path,offset,limit,mode?,n?},…]` instead of separate `path` array calls.",
+    "description": "Read file(s). `path` accepts a single string or array (`[\"a.mjs\",\"b.mjs\"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead. For per-file differing offset/limit/mode, pass `path` as an array of objects: `path:[{path:\"a.mjs\",offset:10,limit:5},{path:\"b.mjs\",mode:\"head\",n:3}]`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -761,9 +810,42 @@
                 "type": "string"
               },
               "minItems": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "offset": {
+                    "type": "number"
+                  },
+                  "limit": {
+                    "type": "number"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "full",
+                      "head",
+                      "tail",
+                      "count"
+                    ]
+                  },
+                  "n": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              },
+              "minItems": 1
             }
           ],
-          "description": "File path string, or array of paths for parallel multi-file read."
+          "description": "File path string, or array of paths for parallel multi-file read, or array of objects with per-file options."
         },
         "mode": {
           "type": "string",
@@ -794,44 +876,8 @@
         "pages": {
           "type": "string",
           "description": "PDF only: page range to extract, e.g. \"1-5\", \"3\", \"10-20\". Max 20 pages."
-        },
-        "reads": {
-          "type": "array",
-          "description": "Per-file read with independent offset/limit/mode. Use this OR `path`, not both.",
-          "items": {
-            "type": "object",
-            "properties": {
-              "path": {
-                "type": "string"
-              },
-              "offset": {
-                "type": "number"
-              },
-              "limit": {
-                "type": "number"
-              },
-              "mode": {
-                "type": "string",
-                "enum": [
-                  "full",
-                  "head",
-                  "tail",
-                  "count"
-                ]
-              },
-              "n": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "path"
-            ]
-          }
         }
-      },
-      "required": [
-        "path"
-      ]
+      }
     },
     "module": "builtin"
   },
@@ -954,7 +1000,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Pass `persistent:true` to keep cwd/env/venv across calls in the same session (the bridge reuses one shell). Use explicit `session_id` to isolate separate shells (different tasks or parallel workstreams each get their own shell). Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.",
+    "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Pass `persistent:true` to keep cwd/env/venv across calls in the same session (the bridge reuses one shell). Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -980,7 +1026,7 @@
         },
         "session_id": {
           "type": "string",
-          "description": "Explicit persistent shell session id to reuse. Each unique session_id gets its own isolated shell (separate cwd/env/venv). Prefer `persistent:true` unless targeting a specific named shell."
+          "description": "Explicit persistent shell session id to reuse. Prefer `persistent:true` unless targeting a specific shell."
         }
       },
       "required": [
@@ -1269,7 +1315,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Symbol-level navigation across the repository. Default mode finds the declaration site for a known identifier (file:line + nearby code). Pass `mode` to switch into graph queries: `callers` (call sites for functions), `references` (all references — use for non-function symbols too), `imports` (what a file imports), `dependents` (who imports a file), or `overview`/`symbols`/`related`/`impact` for file-level analysis. Prefer over grep when the identifier is known but the file is not.",
+    "description": "Symbol-level navigation across the repository. Default mode finds the declaration site for a known identifier (file:line + nearby code). Pass `mode` to switch into graph queries: `callers` (call sites for functions), `references` (all references — use for non-function symbols too), `imports` (what a file imports), `dependents` (who imports a file), or `overview`/`symbols`/`related`/`impact` for file-level analysis. Prefer over grep when the identifier is known but the file is not. Default mode already returns file-grouped reference candidates with matches=N counts; call references mode only when line-level details for every reference are required.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1294,7 +1340,7 @@
         },
         "file": {
           "type": "string",
-          "description": "Target file path. Required for imports/dependents/related/impact/symbols. Optional for callers/references (narrows language)."
+          "description": "Target file path. Required for imports/dependents/related/impact/symbols. Optional for declaration mode (auto-derives graph cwd from the file's nearest project root) or callers/references (narrows language)."
         },
         "language": {
           "type": "string",
@@ -1323,7 +1369,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Apply a unified-diff patch in ONE turn. Prefer this over repeated `read` → `edit` loops when 2+ files change or the exact edit is already clear. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Patch context lines self-verify, so it skips the normal read-before-edit round-trip. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.",
+    "description": "Apply a unified-diff patch in ONE turn. Prefer this over repeated `read` → `edit` loops when 2+ files change or the exact edit is already clear. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Patch context lines self-verify, so it skips the normal read-before-edit round-trip. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools. For 2+ hunks across different files in one turn, batch all hunks into a single patch string rather than making multiple `apply_patch` calls.",
     "inputSchema": {
       "type": "object",
       "properties": {
