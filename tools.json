@@ -1270,6 +1270,10 @@
         "limit": {
           "type": "number",
           "description": "Optional result cap. Default 20, max 50."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Override search cwd. If absent, uses caller cwd."
         }
       },
       "required": []

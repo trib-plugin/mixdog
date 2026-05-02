@@ -1600,6 +1600,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
         symbol: { type: 'string', description: 'Symbol name. Required for find_symbol/references/callers; optional for impact.' },
         language: { type: 'string', description: 'Optional language filter for find_symbol/references/callers; omit if unsure.' },
         limit: { type: 'number', description: 'Optional result cap for find_symbol. Default 20, max 50.' },
+        cwd: { type: 'string', description: 'Override search cwd. If absent, uses caller cwd.' },
       },
       required: ['mode'],
     },
@@ -1617,6 +1618,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
         file: { type: 'string', description: 'Target file path. Required for imports/dependents/related/impact/symbols. Optional for declaration mode (auto-derives graph cwd from the file\'s nearest project root) or callers/references (narrows language).' },
         language: { type: 'string', description: 'Optional language filter (e.g. javascript, typescript, python).' },
         limit: { type: 'number', description: 'Optional result cap. Default 20, max 50.' },
+        cwd: { type: 'string', description: 'Override search cwd. If absent, uses caller cwd.' },
       },
       required: [],
     },
@@ -1631,6 +1633,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
       type: 'object',
       properties: {
         file: { type: 'string', description: 'Path to the target file.' },
+        cwd: { type: 'string', description: 'Override search cwd. If absent, uses caller cwd.' },
       },
       required: ['file'],
     },
@@ -1645,6 +1648,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
       type: 'object',
       properties: {
         file: { type: 'string', description: 'Path to the target file.' },
+        cwd: { type: 'string', description: 'Override search cwd. If absent, uses caller cwd.' },
       },
       required: ['file'],
     },
@@ -1661,6 +1665,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
         symbol: { type: 'string', description: 'Symbol name to resolve references for.' },
         file: { type: 'string', description: 'Optional file path to narrow the language/source file.' },
         language: { type: 'string', description: 'Optional language filter (e.g. javascript, typescript, python).' },
+        cwd: { type: 'string', description: 'Override search cwd. If absent, uses caller cwd.' },
       },
       required: ['symbol'],
     },
@@ -1677,6 +1682,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
         symbol: { type: 'string', description: 'Symbol name to resolve callers for.' },
         file: { type: 'string', description: 'Optional file path to narrow the language/source file.' },
         language: { type: 'string', description: 'Optional language filter (e.g. javascript, typescript, python).' },
+        cwd: { type: 'string', description: 'Override search cwd. If absent, uses caller cwd.' },
       },
       required: ['symbol'],
     },
@@ -1717,7 +1723,8 @@ export async function executeCodeGraphTool(name, args, cwd) {
   // Lets find_symbol({symbol, file}) work cross-cwd without forcing the
   // caller to also override cwd manually.
   const fileArg = (args && typeof args.file === 'string' && args.file.trim()) ? args.file.trim() : '';
-  const effectiveCwd = fileArg ? _deriveCwdFromFile(fileArg, cwd) : cwd;
+  const baseCwd = (args && typeof args.cwd === 'string' && args.cwd.trim()) ? args.cwd.trim() : cwd;
+  const effectiveCwd = fileArg ? _deriveCwdFromFile(fileArg, baseCwd) : baseCwd;
   switch (name) {
     case 'code_graph': return codeGraph(args, effectiveCwd);
     case 'find_symbol': {
