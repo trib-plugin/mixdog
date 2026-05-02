@@ -954,7 +954,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Pass `persistent:true` to keep cwd/env/venv across calls in the same session (the bridge reuses one shell). Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.",
+    "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Pass `persistent:true` to keep cwd/env/venv across calls in the same session (the bridge reuses one shell). Use explicit `session_id` to isolate separate shells (different tasks or parallel workstreams each get their own shell). Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -980,7 +980,7 @@
         },
         "session_id": {
           "type": "string",
-          "description": "Explicit persistent shell session id to reuse. Prefer `persistent:true` unless targeting a specific shell."
+          "description": "Explicit persistent shell session id to reuse. Each unique session_id gets its own isolated shell (separate cwd/env/venv). Prefer `persistent:true` unless targeting a specific named shell."
         }
       },
       "required": [

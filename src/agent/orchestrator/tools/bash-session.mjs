@@ -446,6 +446,10 @@ function _runCommand(entry, command, timeoutMs, abortSignal = null) {
                 entry.stdoutBuf = '';
                 entry.stderrBuf = '';
                 _killProcessTree(entry.proc);
+                // Mark dead and remove from pool immediately so the next call
+                // doesn't pick up a killed shell entry.
+                entry.dead = true;
+                for (const [sid, s] of _sessions) { if (s === entry) { _sessions.delete(sid); break; } }
                 cleanup();
                 resolve({
                     stdout: partialOut,

@@ -2924,7 +2924,14 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 let _persistAbort = null;
                 try { _persistAbort = (await getAbortSignalForSession(options?.sessionId)) || null; }
                 catch { _persistAbort = null; }
-                return executeBashSessionTool('bash_session', args, workDir, { abortSignal: _persistAbort });
+                // If the caller set persistent:true without an explicit session_id,
+                // derive a stable default key from the orchestrator session so the
+                // same session reuses one shell across calls instead of minting a
+                // fresh shell every time.
+                const _effectiveArgs = (args.persistent === true && !args.session_id && options?.sessionId)
+                    ? { ...args, session_id: `__default__${options.sessionId}` }
+                    : args;
+                return executeBashSessionTool('bash_session', _effectiveArgs, workDir, { abortSignal: _persistAbort });
             }
             const command = args.command;
             if (!command)
