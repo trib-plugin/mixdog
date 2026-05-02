@@ -1842,7 +1842,7 @@ const SHELL_GLOBAL_MUTATORS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip
 // Dangerous absolute path prefixes that are hard-blocked regardless of
 // Claude Code permissions. Keep this list tight — only genuinely dangerous
 // system roots, not workspace-boundary decisions (those are CC's concern).
-function resolveAgainstCwd(filePath, cwd) {
+export function resolveAgainstCwd(filePath, cwd) {
     return resolve(cwd, filePath);
 }
 function _shellSplitSegments(command) {
@@ -3162,7 +3162,12 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // the agent iterating across multiple tool names.
             if (Array.isArray(args.reads)) {
                 // Per-file batch: each entry carries its own options.
-                const entries = args.reads.map((r) => {
+                // Coalesce same-path entries: multiple chunks for the same
+                // file are merged into a single wider read (min offset to max
+                // offset+limit) so the file is only opened once. The merged
+                // result is sliced back into the original per-entry windows
+                // for response assembly. Non-same-path entries are untouched.
+                const rawEntries = args.reads.map((r) => {
                     const entry = { path: normalizeInputPath(r?.path ?? '') };
                     if (r?.mode !== undefined) entry.mode = r.mode;
                     if (r?.n !== undefined) entry.n = r.n;
@@ -3171,12 +3176,44 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     if (r?.full !== undefined) entry.full = r.full;
                     return entry;
                 });
+                // Build per-path union ranges for full-mode (offset/limit) entries.
+                // head/tail/count modes are NOT coalesced — they don't use offset/limit.
+                const _pathRanges = new Map(); // path → {minOffset, maxEnd}
+                for (const e of rawEntries) {
+                    const isFullMode = !e.mode || e.mode === 'full';
+                    if (!isFullMode) continue;
+                    const eOff = typeof e.offset === 'number' ? e.offset : 0;
+                    const eLim = typeof e.limit === 'number' ? e.limit : 2000;
+                    _pathRanges.set(e.path, {
+                        minOffset: Math.min(_pathRanges.get(e.path)?.minOffset ?? eOff, eOff),
+                        maxEnd:    Math.max(_pathRanges.get(e.path)?.maxEnd   ?? (eOff + eLim), eOff + eLim),
+                    });
+                }
+                // Rewrite full-mode entries that share a path to the union range.
+                // _origOffset/_origLimit preserved for response header display.
+                const entries = rawEntries.map((e) => {
+                    const isFullMode = !e.mode || e.mode === 'full';
+                    const range = isFullMode ? _pathRanges.get(e.path) : null;
+                    if (!range) return e;
+                    return { ...e, offset: range.minOffset, limit: range.maxEnd - range.minOffset,
+                               _origOffset: e.offset, _origLimit: e.limit };
+                });
+                // Deduplicate so the same union-range is read only once per path.
+                const _seen = new Map(); // cacheKey → dedupedEntries index
+                const dedupedEntries = [];
+                const entryToDeduped = []; // entries[i] → dedupedEntries index
+                for (let i = 0; i < entries.length; i++) {
+                    const e = entries[i];
+                    const key = `${e.path}|${e.offset ?? ''}|${e.limit ?? ''}|${e.mode ?? ''}|${e.n ?? ''}|${e.full ?? ''}`;
+                    if (_seen.has(key)) { entryToDeduped.push(_seen.get(key)); }
+                    else { _seen.set(key, dedupedEntries.length); entryToDeduped.push(dedupedEntries.length); dedupedEntries.push(e); }
+                }
                 if (entries.length === 0) return 'Error: reads array must not be empty';
-                // Reuse the same parallel-dispatch path as args.path[] below.
-                args = { ...args, path: entries.map(e => e.path) };
-                // Strip top-level uniform opts; the per-entry loop below would
-                // re-apply them. Mark entries override via args._readsEntries.
-                args._readsEntries = entries;
+                // Dispatch deduplicated reads in parallel; re-assemble in original order.
+                args = { ...args, path: dedupedEntries.map(e => e.path) };
+                args._readsEntries = dedupedEntries;
+                args._readsOrigEntries = rawEntries;
+                args._readsEntryToDeduped = entryToDeduped;
                 args.mode = undefined; args.n = undefined; args.offset = undefined; args.limit = undefined; args.full = undefined;
             }
             if (Array.isArray(args.path)) {
@@ -3202,25 +3239,35 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 // above — reuses size cap, line-number formatting.
                 // Per-file errors come back as their own string and are pasted
                 // into the aggregate rather than aborting the whole batch.
+                // When origEntries/entryToDeduped set (reads[] coalesce path),
+                // re-order results to match the caller's original entry order.
+                const _origEntries2 = Array.isArray(args._readsOrigEntries) ? args._readsOrigEntries : null;
+                const _entryMap2 = Array.isArray(args._readsEntryToDeduped) ? args._readsEntryToDeduped : null;
                 const results = await Promise.all(entries.map(async (entry) => {
                     if (!entry || !entry.path) return { path: '(missing-path)', mode: 'full', body: 'Error: path is required' };
                     const body = await executeChildBuiltinTool('read', entry, workDir);
                     return { path: entry.path, mode: entry.mode || 'full', n: entry.n, body };
                 }));
+                const orderedResults = _origEntries2
+                    ? _origEntries2.map((orig, i) => {
+                        const r = results[_entryMap2 ? _entryMap2[i] : i] || { path: orig.path, mode: orig.mode || 'full', body: 'Error: dedup mapping failed' };
+                        return { ...r, mode: orig.mode || 'full', n: orig.n };
+                    })
+                    : results;
                 // Header path → forward slash; error bodies already normalised
                 // inside the read case's catch blocks. When `read` emitted a
                 // smart-cap marker, surface the truncation state in the header
                 // so downstream skimming spots it without parsing the body.
                 const summaries = [];
-                for (const r of results) {
+                for (const r of orderedResults) {
                     if (r.mode === 'count') {
                         const m = String(r.body || '').match(/lines\t(\d+)/);
                         if (m) summaries.push(`${normalizeOutputPath(r.path)} has ${m[1]} lines`);
                     }
                 }
                 const summaryLine = summaries.length ? ` ${summaries.join('; ')}` : '';
-                const header = `read ${results.length}${summaryLine}`;
-                const body = results.map(r => {
+                const header = `read ${orderedResults.length}${summaryLine}`;
+                const body = orderedResults.map(r => {
                     const match = /\[TRUNCATED — file is (\d+) lines \/ (\d+) KB\./.exec(r.body || '');
                     const suffix = match ? ` (truncated ${match[1]}L/${match[2]}KB)` : '';
                     const mode = r.n !== undefined ? `${r.mode} n=${r.n}` : r.mode;

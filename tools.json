@@ -424,7 +424,7 @@
         },
         "cwd": {
           "type": "string",
-          "description": "Optional workspace hint."
+          "description": "Optional workspace hint (no-op for recall; builder ignores it). Rarely needed."
         },
         "background": {
           "type": "boolean",
@@ -513,7 +513,7 @@
         },
         "cwd": {
           "type": "string",
-          "description": "Optional workspace hint. Rarely needed."
+          "description": "Optional workspace hint (no-op for search; builder ignores it). Rarely needed."
         },
         "background": {
           "type": "boolean",

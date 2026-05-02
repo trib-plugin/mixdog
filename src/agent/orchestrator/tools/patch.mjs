@@ -31,6 +31,7 @@ import { parsePatch, applyPatch } from 'diff';
 import {
   normalizeInputPath,
   normalizeOutputPath,
+  resolveAgainstCwd,
   atomicWrite,
   invalidateBuiltinResultCache,
   recordReadSnapshotForPath,
@@ -63,13 +64,13 @@ function stripDiffPrefix(name) {
 function resolveEntryPath(basePath, rawName) {
   const stripped = stripDiffPrefix(rawName);
   const norm = normalizeInputPath(stripped);
-  return isAbsolute(norm) ? pathResolve(norm) : pathResolve(basePath, norm);
+  return isAbsolute(norm) ? pathResolve(norm) : resolveAgainstCwd(norm, basePath);
 }
 
 function resolveBasePath(cwd, basePath) {
   if (!basePath) return cwd;
   const norm = normalizeInputPath(basePath);
-  return isAbsolute(norm) ? pathResolve(norm) : pathResolve(cwd, norm);
+  return isAbsolute(norm) ? pathResolve(norm) : resolveAgainstCwd(norm, cwd);
 }
 
 // Categorise the per-file entry. A unified diff can describe:
