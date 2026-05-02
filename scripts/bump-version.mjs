@@ -1,10 +1,16 @@
 #!/usr/bin/env bun
 /**
  * bump-version.mjs
- * Usage: bun scripts/bump-version.mjs <semver>
+ * Usage:
+ *   bun scripts/bump-version.mjs <X.Y.Z>          explicit semver
+ *   bun scripts/bump-version.mjs <X.Y.Z-suffix>   explicit semver with prerelease
+ *   bun scripts/bump-version.mjs patch             X.Y.Z → X.Y.(Z+1)
+ *   bun scripts/bump-version.mjs minor             X.Y.Z → X.(Y+1).0
+ *   bun scripts/bump-version.mjs major             X.Y.Z → (X+1).0.0
  *
  * Updates version in:
  *   - package.json                → .version
+ *   - package-lock.json           → .version + .packages[""].version  (skipped if absent)
  *   - .claude-plugin/plugin.json  → .version  (skipped if absent)
  *
  * After bumping, run `bun install` to refresh bun.lock.
@@ -19,18 +25,44 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
-const newVersion = process.argv[2];
-if (!newVersion || !newVersion.trim()) {
-  process.stderr.write('Usage: bun scripts/bump-version.mjs <version>\n');
-  process.stderr.write('Writes the given string to the version field as-is. Any version scheme is accepted (SemVer, CalVer, build number, prerelease identifier, etc.).\n');
+const USAGE = [
+  'Usage:',
+  '  bun scripts/bump-version.mjs <X.Y.Z>          explicit semver',
+  '  bun scripts/bump-version.mjs <X.Y.Z-suffix>   explicit semver with prerelease',
+  '  bun scripts/bump-version.mjs patch             X.Y.Z → X.Y.(Z+1)',
+  '  bun scripts/bump-version.mjs minor             X.Y.Z → X.(Y+1).0',
+  '  bun scripts/bump-version.mjs major             X.Y.Z → (X+1).0.0',
+].join('\n') + '\n';
+
+const SEMVER_RE = /^\d+\.\d+\.\d+(-[\w.]+)?$/;
+const KEYWORDS = new Set(['patch', 'minor', 'major']);
+
+const arg = process.argv[2];
+if (!arg || !arg.trim()) {
+  process.stderr.write('Error: version argument is required.\n' + USAGE);
   process.exit(1);
 }
-// Reject only characters that break JSON or shell pipelines; do NOT enforce
-// a particular versioning scheme — projects vary (SemVer, CalVer, build
-// numbers, custom tags). The version is written to the manifest verbatim.
-if (/[\x00-\x1f"\\]/.test(newVersion)) {
-  process.stderr.write(`Error: version "${newVersion}" contains control characters or unescaped quotes/backslashes.\n`);
-  process.exit(1);
+
+let newVersion;
+
+if (KEYWORDS.has(arg)) {
+  // Read current version from package.json to compute next
+  const pkgRaw = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const current = pkgRaw.version;
+  if (!SEMVER_RE.test(current)) {
+    process.stderr.write(`Error: current package.json version "${current}" is not valid semver (X.Y.Z). Cannot auto-increment.\n`);
+    process.exit(1);
+  }
+  const [major, minor, patch] = current.split('-')[0].split('.').map(Number);
+  if (arg === 'patch') newVersion = `${major}.${minor}.${patch + 1}`;
+  else if (arg === 'minor') newVersion = `${major}.${minor + 1}.0`;
+  else /* major */          newVersion = `${major + 1}.0.0`;
+} else {
+  if (!SEMVER_RE.test(arg)) {
+    process.stderr.write(`Error: "${arg}" is not a valid semver version (expected X.Y.Z or X.Y.Z-suffix) and is not a keyword (patch/minor/major).\n` + USAGE);
+    process.exit(1);
+  }
+  newVersion = arg;
 }
 
 // ── Exclusive file lock ──────────────────────────────────────────────────────
@@ -95,6 +127,15 @@ try {
   pkg.version = newVersion;
   writeJson(pkgPath, pkg);
   touched.push('package.json');
+
+  const lockJsonPath = path.join(ROOT, 'package-lock.json');
+  if (fs.existsSync(lockJsonPath)) {
+    const lock = readJson(lockJsonPath);
+    lock.version = newVersion;
+    if (lock.packages && lock.packages['']) lock.packages[''].version = newVersion;
+    writeJson(lockJsonPath, lock);
+    touched.push('package-lock.json');
+  }
 
   const pluginJsonPath = path.join(ROOT, '.claude-plugin', 'plugin.json');
   if (fs.existsSync(pluginJsonPath)) {
