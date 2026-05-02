@@ -185,8 +185,10 @@ function _mergeRecallSearchSettled(settled, queries, label, partialInfo) {
 }
 
 // Detect "very broad" cwds — user home, ~/.claude, or filesystem root.
-// We only warn (prepend a soft note); the call is never blocked.
-function buildBroadCwdWarning(resolvedCwd, rawCwdInput) {
+// Returns a non-empty error string when the cwd is too broad to explore safely
+// (V8 string-limit risk), or '' when the cwd is acceptable.
+// Callers MUST check the return value and abort with an MCP error when non-empty.
+function checkBroadCwdBlock(resolvedCwd, rawCwdInput) {
   const display = (typeof rawCwdInput === 'string' && rawCwdInput.trim())
     ? rawCwdInput.trim()
     : (resolvedCwd || '')
@@ -201,8 +203,6 @@ function buildBroadCwdWarning(resolvedCwd, rawCwdInput) {
     try { return resolvePath(homedir()).replace(/[\\/]+$/g, '') }
     catch { return '' }
   })()
-  // Filesystem root: POSIX `/` (length <= 1 after trim) or Windows drive
-  // root like `C:` / `C:\` / `D:/`.
   const isFsRoot = normalized === ''
     || normalized === '/'
     || /^[A-Za-z]:$/.test(normalized)
@@ -212,7 +212,7 @@ function buildBroadCwdWarning(resolvedCwd, rawCwdInput) {
     normalized === join(home, '.claude').replace(/[\\/]+$/g, '')
   )
   if (isFsRoot || isHome || isDotClaude) {
-    return `[explore: cwd "${display}" is broad; consider narrowing to a subdir for sharper results]\n\n`
+    return `Error: explore cwd "${display}" is too broad (home, ~/.claude, or filesystem root) — V8 string-limit risk. Narrow to a specific subdir (e.g. ~/.claude/projects/<slug> or a workspace subdirectory).`
   }
   return ''
 }
@@ -826,6 +826,15 @@ export async function dispatchAiWrapped(name, args, ctx) {
     ? resolveExploreCwd(cwdInput, ctx?.callerCwd, queryText, Boolean(hasExplicitCwdArg))
     : resolveCwd(cwdInput, ctx?.callerCwd)
 
+  // Hard-block broad cwds for explore before spawning any sub-agents.
+  // V8 string-limit risk: scanning home / ~/.claude / fs-root can blow the
+  // mcp server process. Fail fast here so neither the sync nor background
+  // path ever launches a sub-agent against a dangerous root.
+  if (name === 'explore') {
+    const _earlyBroadErr = checkBroadCwdBlock(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
+    if (_earlyBroadErr) return fail(_earlyBroadErr)
+  }
+
   // Sync by default — the merged sub-agent answer lands in-turn as the MCP
   // tool response, no channel round-trip, no turn fragmentation. Opt into
   // background=true for heavy multi-angle queries that risk exceeding the
@@ -929,9 +938,9 @@ export async function dispatchAiWrapped(name, args, ctx) {
 
     let merged
     if (name === 'explore') {
+      const broadErr = checkBroadCwdBlock(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
+      if (broadErr) return fail(broadErr)
       merged = mergeExploreSettled(settled, queries, spec.label, partialInfo)
-      const warn = buildBroadCwdWarning(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
-      if (warn) merged = warn + merged
     } else {
       merged = _mergeRecallSearchSettled(settled, queries, spec.label, partialInfo)
     }
@@ -1092,9 +1101,12 @@ export async function dispatchAiWrapped(name, args, ctx) {
 
     let merged
     if (name === 'explore') {
+      const broadErr = checkBroadCwdBlock(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
+      if (broadErr) {
+        pushDispatchResult(ctx, id, name, queries, broadErr, { error: true })
+        return
+      }
       merged = mergeExploreSettled(settled, queries, spec.label, bgPartialInfo)
-      const warn = buildBroadCwdWarning(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
-      if (warn) merged = warn + merged
     } else {
       merged = _mergeRecallSearchSettled(settled, queries, spec.label, bgPartialInfo)
     }

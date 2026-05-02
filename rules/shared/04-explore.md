@@ -6,9 +6,9 @@
 
 `cwd` is the authoritative search root. Absolute path or `~` expansion supported. Omitted → launch workspace. Pass `cwd: "~/.claude/..."` explicitly to target the plugin install tree or other directories outside the workspace. No silent fan-out between roots.
 
-## Avoid these cwd shapes (runtime warns, does not block)
+## Avoid these cwd shapes (runtime hard-blocks)
 
-Too broad — `explore` synthesises across millions of files and has historically blown the V8 string limit, killing the mcp server. Self-enforced halt:
+Too broad — `explore` synthesises across millions of files and has historically blown the V8 string limit, killing the mcp server. The handler now returns a hard error (MCP `isError`) and never spawns a sub-agent:
 
 - `~`, `$HOME`, `/`, `C:/`, `D:/`, drive roots
 - `~/.claude` itself (whole tree mixes sessions, plugins, projects, transcripts)

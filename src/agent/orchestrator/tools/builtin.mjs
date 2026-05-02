@@ -3904,6 +3904,17 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 : (rawPattern ? [String(rawPattern)] : [])).map(normalizeSearchPattern);
             if (patterns.length === 0)
                 return 'Error: pattern is required';
+            // Pattern count caps: multiline (-U) regex can cause catastrophic
+            // backtracking / explosive match sets when many patterns are OR-joined.
+            // Hard-block before spawning rg to prevent V8 / rg hangs.
+            const GREP_MULTILINE_PATTERN_CAP = 5;
+            const GREP_ARRAY_PATTERN_CAP = 20;
+            if (multilineMode && patterns.length > GREP_MULTILINE_PATTERN_CAP) {
+                return `Error: multiline:true with more than ${GREP_MULTILINE_PATTERN_CAP} patterns is not allowed (got ${patterns.length}); split into separate grep calls`;
+            }
+            if (patterns.length > GREP_ARRAY_PATTERN_CAP) {
+                return `Error: pattern array exceeds the ${GREP_ARRAY_PATTERN_CAP}-pattern cap (got ${patterns.length}); split into separate grep calls`;
+            }
             const searchPath = args.path || '.';
             const rawGlob = args.glob;
             const rawGlobs = (Array.isArray(rawGlob)
