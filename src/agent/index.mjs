@@ -195,6 +195,16 @@ const _promptStore = {
 
 // --- Helpers ---
 
+// Worker reply protocol: every bridge response is wrapped in
+// <final-answer>...</final-answer> by instruction (rules/bridge/00-common.md).
+// Extract the wrapped content; if the tag is missing fall back to the raw text
+// untouched. No deliberation-marker heuristics — the boundary is explicit.
+function extractFinalAnswer(text) {
+  if (typeof text !== 'string' || !text) return text;
+  const m = text.match(/<final-answer>([\s\S]*?)<\/final-answer>/);
+  return m ? m[1].trim() : text;
+}
+
 function ok(data) {
   return { content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data, null, 2) }] };
 }
@@ -1009,7 +1019,7 @@ export async function handleToolCall(name, args, opts = {}) {
             // Footer (model/ctx/cache/out/loops/elapsed) dropped per user spec
             // — caller (Lead) wants core content only, no diagnostic noise. Stats
             // remain available via session telemetry / list_sessions for debugging.
-            emit(`${modelTag}[${role}] ${content}`);
+            emit(`${modelTag}[${role}] ${extractFinalAnswer(content)}`);
             updateSessionStatus(activeSession.id, 'idle');
           } catch (err) {
             completed = false;

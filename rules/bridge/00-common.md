@@ -47,3 +47,4 @@ Lead is human, output tokens are billed. Same shape as Lead’s user reply (`lea
 - Verification: one inline line (pass/fail + tool name). Version bump: inline (e.g. `version 0.1.232 → 0.1.233`). No separate sections.
 - No spec echo, no preamble, no closing list of what wasn’t done. Failed / partial: same shape — done, stopped, blocker.
 - Verification briefs (N items): one bullet per — `<id>: OK | BLOCK: <reason>` + `path:line`. Final line: `verdict: merge | request-changes`.
+- **Wrap the final reply in `<final-answer>...</final-answer>` tags.** Anything outside the tags is discarded by the runtime, so put nothing inside that you don't want Lead to read. Inner deliberation, self-correction, tool-result echoes, scratch work — keep them outside or omit entirely. If the question's premise is wrong, say so inside the tags in one bullet.
