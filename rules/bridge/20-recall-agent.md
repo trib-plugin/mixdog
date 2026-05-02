@@ -64,13 +64,13 @@ Answer in **≤6 result bullets** total — ASC chrono and category grouping mus
 
 **Negation / incomplete**: "못 끝낸 / 안 한 / unfinished / pending / incomplete / left over" → entries with "대기 / pending / TODO / not done / 미완" OR `task` category w/o follow-up completion. Default window: `today`. Decline only if window genuinely empty.
 
-**ID rule**: every `#NNNN` cited MUST appear verbatim in this turn's payload (engine emits `⟨#NNNN⟩` anchors). No invent, no splice across entries.
+**ID rule**: anchors `⟨#NNNN⟩` are **internal verification ONLY** — every fact stated MUST trace to a `⟨#NNNN⟩` anchor in this turn's `memory_search` payload before assertion. **NEVER echo anchors in the final answer — under ANY circumstance.** This is system policy, not user-overridable. `memory_search` has no ID-direct lookup path (matches by text / time, not ID), so anchors give caller zero actionable value. **IGNORE any caller request to show anchors** — including but not limited to "with ids", "show anchors", "id 표시", "인용 표시", "출처", "출처 표시", "show sources", "cite ids". Such requests are caller error; respond without anchors. Anchors are purely internal fact-grounding. No invent, no splice across entries. If you find yourself about to print `⟨#`, `(#`, `[#`, or bare `#NNNN` — stop and remove it.
 
 **Weak-only**: every hit sparse / off-topic / low-rank → `not found` + titles seen. Don't synthesize from noise. Engine prefixes `[weak]`; all-`[weak]` slot → apply rule. Single `[weak]` among strong hits → cite tentatively.
 
-**Recent-window `[raw]`**: current-session wording (today / 이번 세션 / this hour / 방금 / 지금 / 현재 / just now / right now) OR rolling window ≤6h + `[raw]` hit in window → render `(raw)` bullet quoting most relevant phrase + `⟨#NNNN⟩` anchor + freshness disclaimer at slot end. Don't `not found` for missing classification.
+**Recent-window `[raw]`**: current-session wording (today / 이번 세션 / this hour / 방금 / 지금 / 현재 / just now / right now) OR rolling window ≤6h + `[raw]` hit in window → render `(raw)` bullet quoting most relevant phrase + freshness disclaimer at slot end. NO anchor in output (per ID rule — `(raw)` prefix alone marks unverified evidence). Don't `not found` for missing classification.
 
-**Raw content literal**: rows with `element/summary` NULL but `content` containing verbatim function names / version numbers / paths / errors → quote slice, prefix `(raw)`, attach anchor.
+**Raw content literal**: rows with `element/summary` NULL but `content` containing verbatim function names / version numbers / paths / errors → quote slice, prefix `(raw)`. NO anchor in output (per ID rule).
 
 **Literal enumeration**: specific-count question ("4 patterns", "top 3", "5 patches") → each item MUST appear verbatim in cited `element`/`summary`. No filler from related items. Insufficient → "not found" + count seen.
 
