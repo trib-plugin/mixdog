@@ -46,7 +46,7 @@ import { runCycle1, runCycle2, parseInterval, syncRootEmbedding } from './lib/me
 import { searchRelevantHybrid } from './lib/memory-recall-store.mjs'
 import { retrieveEntries } from './lib/memory-retrievers.mjs'
 import { resetEmbeddingIndex, pruneOldEntries } from './lib/memory-maintenance-store.mjs'
-import { computeEntryScore } from './lib/memory-score.mjs'
+import { computeEntryScore, freshnessFactor } from './lib/memory-score.mjs'
 import { runFullBackfill } from './lib/memory-ops-policy.mjs'
 
 import { resolvePluginData } from '../shared/plugin-paths.mjs'
@@ -315,6 +315,25 @@ function setCycleLastRun(kind, ts) {
   const cur = getCycleLastRun()
   cur[kind] = ts
   setMetaValue(db, CYCLE_LAST_RUN_KEY, JSON.stringify(cur))
+}
+
+// Raw-row priority lookup for narrow-window queries. Raw rows (is_root=0,
+// chunk_root IS NULL) are inserted immediately by ingestTranscriptFile before
+// cycle1 runs, so they always carry the freshest turns in the DB.
+function readRawRowsInWindow(db, tsFromMs, tsToMs, hardLimit = 10) {
+  try {
+    const stmt = db.prepare(
+      `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
+              element, category, summary, status, score, last_seen_at
+       FROM entries
+       WHERE chunk_root IS NULL AND is_root = 0
+         AND ts >= ? AND ts <= ?
+       ORDER BY ts DESC
+       LIMIT ?`
+    )
+    return stmt.all(tsFromMs ?? 0, tsToMs ?? Date.now(), hardLimit)
+      .map(r => ({ ...r, retrievalScore: 0, rrf: 0 }))
+  } catch { return [] }
 }
 
 function ingestTranscriptFile(transcriptPath) {
@@ -688,6 +707,42 @@ function parsePeriod(period, hasQuery) {
   if (!period) return null
   if (period === 'all') return null
   if (period === 'last') return { mode: 'last' }
+  // Calendar-day windows: 'today' anchors at local midnight rather than
+  // rolling 24h. Without this, a query asking '오늘' at 01:30 would silently
+  // include yesterday's last 22.5h of activity, mislabelling them as
+  // 'today's work'. 'yesterday' is the previous calendar day.
+  if (period === 'today') {
+    const start = new Date()
+    start.setHours(0, 0, 0, 0)
+    return { startMs: start.getTime(), endMs: Date.now() }
+  }
+  if (period === 'yesterday') {
+    const start = new Date()
+    start.setDate(start.getDate() - 1)
+    start.setHours(0, 0, 0, 0)
+    const end = new Date(start)
+    end.setHours(23, 59, 59, 999)
+    return { startMs: start.getTime(), endMs: end.getTime() }
+  }
+  if (period === 'this_week' || period === 'last_week') {
+    // R6 P9: calendar Mon-Sun previous/current week. Mon-start ISO
+    // convention. Replaces R5 rolling 7-14d range which was empty for
+    // sessions where "지난주" decisions actually fell on Mon (4/27) of
+    // this week. Precise calendar bounds match Korean intuition.
+    const d = new Date()
+    d.setHours(0, 0, 0, 0)
+    const dayOfWeek = d.getDay()
+    const daysSinceMon = (dayOfWeek + 6) % 7
+    const thisWeekMon = new Date(d)
+    thisWeekMon.setDate(d.getDate() - daysSinceMon)
+    if (period === 'this_week') {
+      return { startMs: thisWeekMon.getTime(), endMs: Date.now() }
+    }
+    const lastWeekMon = new Date(thisWeekMon)
+    lastWeekMon.setDate(thisWeekMon.getDate() - 7)
+    const lastWeekSunEnd = new Date(thisWeekMon.getTime() - 1)
+    return { startMs: lastWeekMon.getTime(), endMs: lastWeekSunEnd.getTime() }
+  }
   const relMatch = period.match(/^(\d+)(h|d)$/)
   if (relMatch) {
     const n = parseInt(relMatch[1])
@@ -784,25 +839,171 @@ async function handleSearch(args) {
     return { text: header + parts.join('\n\n') }
   }
   const query = String(args.query ?? '').trim()
-  const period = String(args.period ?? '').trim() || undefined
+  let period = String(args.period ?? '').trim() || undefined
+  // Auto-derive period from time keywords in the query when the caller did
+  // not pass one explicitly. The recall-agent rules try to map these but
+  // models occasionally skip the mapping; this engine-side fallback ensures
+  // 'right now / 지금 / 방금 / 현재 / today / 오늘' always activates the
+  // narrow-window pre-filter and JSONL tail merge below.
+  if (!period && query) {
+    const q = query.toLowerCase()
+    if (/(지금|방금|현재|몇분전|방금전|1시간 이내|한 시간 이내|몇분 전|최근 1시간|right now|just now|this minute|a few minutes ago|right this second|in the last hour|past hour|within an hour)/.test(q)) {
+      period = '1h'
+    } else if (/(어제|yesterday)/.test(q)) {
+      period = 'yesterday'
+    } else if (/(오늘|today|this hour|today's session|this session|이번 세션)/.test(q)) {
+      // Calendar 'today' (since local midnight) instead of rolling 24h.
+      period = 'today'
+    } else if (/(24시간 이내|하루 이내|last 24 hours)/.test(q)) {
+      period = '1d'
+    } else if (/(지난주|last week)/.test(q)) {
+      // R5 P7: 지난주 → calendar-style previous-week window (7–14d ago)
+      // instead of rolling 7d which silently included today and this week.
+      period = 'last_week'
+    } else if (/(이번주|this week)/.test(q)) {
+      // R6 P9: 이번주 → calendar Mon-now (this calendar week) instead
+      // of rolling 7d which silently included last weekend.
+      period = 'this_week'
+    } else if (/(7일 이내|last 7 days|past 7 days)/.test(q)) {
+      period = '7d'
+    } else if (/(최근 며칠|지난 며칠|recent days|past few days|few days ago|며칠간|며칠동안|지난 [2-7]일|이틀|사흘|나흘)/.test(q)) {
+      // R5 P6: vague multi-day cues collapse to 3d so candidate window
+      // covers today + last 2 days, freshness factor handles ranking.
+      period = '3d'
+    } else if (/(이번달|지난달|this month|last month|30일 이내)/.test(q)) {
+      period = '30d'
+    } else if (/(이어서|계속|지금까장|지금까지|방금까지|진행 상황|현재 작업|마지막 작업|최근 작업|최근 변경|최근 진행|진행 중|continuing|continue from|where.*left off|pick up.*from|latest progress|current status|current work|ongoing now|right now status)/.test(q)) {
+      // Vague-time continuation cues map to `today` so the candidate
+      // window narrows to the current calendar day. Without this the
+      // engine defaults to 30d and BM25 surfaces fact-rich older entries
+      // over the freshest current-session events (#16812 recency bias
+      // root cause for vague-time queries).
+      period = 'today'
+    }
+  }
+  // R6 P12: detect chronological cues so "가장 최근 결정 / 최근 결정 /
+  // 시간순 / 순서대로 / recent decisions / chronological / date order"
+  // queries return ts-DESC ordering even in mid/wide windows, instead of
+  // letting BM25 surface lexically-rich older entries first. Forced sort
+  // is overridden by an explicit caller sort.
+  let forcedSort = null
+  if (query) {
+    const cq = query.toLowerCase()
+    if (/(가장 최근|최근 결정|시간순|순서대로|낙시순|최근 동향|최근 이벤트|chronological|date order|recent decisions|recent events|latest decisions|latest events|most recent decisions)/.test(cq)) {
+      forcedSort = 'date'
+    }
+  }
   const limit = Math.max(1, Number(args.limit ?? 10))
   const offset = Math.max(0, Number(args.offset ?? 0))
-  const sort = args.sort != null ? String(args.sort) : 'importance'
+  const sort = args.sort != null ? String(args.sort) : (forcedSort ?? 'importance')
   const includeMembers = Boolean(args.includeMembers)
   const temporal = parsePeriod(period, Boolean(query))
 
   if (query) {
     const queryVector = await embedText(query).catch(() => null)
+    // Push ts and status filters into the hybrid candidate query so FTS / vec
+    // rank inside the requested window, not the whole tree. The previous post-
+    // filter approach silently emptied results when relevant matches sat
+    // outside `period` (default 30d) and could not bubble through.
     const results = await searchRelevantHybrid(db, query, {
       limit: limit + offset,
       queryVector: Array.isArray(queryVector) ? queryVector : null,
       includeMembers,
+      ts_from: temporal?.startMs,
+      ts_to: temporal?.endMs,
     })
     let filtered = results
-    if (temporal?.startMs != null) {
-      filtered = filtered.filter(r => Number(r.ts) >= temporal.startMs && Number(r.ts) <= temporal.endMs)
+    // Narrow-window fallback: caller asked for 'today / right now / just now
+    // / 1d' (≤24h) and hybrid found nothing because the freshest evidence
+    // lives in raw NULL chunks whose content does not lexically overlap the
+    // caller's exact tokens (cycle1 has not produced an `element/summary`
+    // yet). Pull both classified roots and raw chunks in the window so the
+    // recall-agent can render them as `[raw]` recent-window evidence per
+    // its rules.
+    const narrowWindowMs = 24 * 60 * 60 * 1000
+    const isNarrow = temporal?.startMs != null
+      && temporal?.endMs != null
+      && (temporal.endMs - temporal.startMs) <= narrowWindowMs
+    // P5 R3: ALWAYS augment narrow-window candidate pool with chronological
+    // scan results. The previous behaviour (run only on empty hybrid) caused
+    // BM25 to seed `filtered` with topic-matched older entries while the
+    // freshest in-window items never entered the candidate set, so freshness
+    // factor had nothing to rank. Now we union hybrid hits with the full
+    // window scan and dedup by id; sort=date default below makes ts the
+    // ranking key for narrow windows.
+    // R5 P8: extend augment to mid-band (>24h, ≤7d). Narrow keeps
+    // root+raw, mid-band keeps roots only so week-scope queries get
+    // classified decisions injected without the noise of raw turn
+    // chunks. Augmented entries carry freshnessFactor so they tiebreak
+    // with low-tier hybrid hits but never overtake high-quality matches.
+    const sevenDayMs = 7 * 24 * 60 * 60 * 1000
+    const isMidWindow = !isNarrow
+      && temporal?.startMs != null
+      && temporal?.endMs != null
+      && (temporal.endMs - temporal.startMs) <= sevenDayMs * 1.1
+    if (isNarrow || isMidWindow) {
+      const baseFilters = {
+        limit: Math.max(limit + offset, isNarrow ? 24 : 32),
+        ts_from: temporal.startMs,
+        ts_to: temporal.endMs,
+      }
+      if (includeMembers) baseFilters.includeMembers = true
+      const rootHits = retrieveEntries(db, { ...baseFilters, is_root: true })
+      const rawHits = isNarrow
+        ? retrieveEntries(db, { ...baseFilters, is_root: false })
+        : []
+      const existingIds = new Set(filtered.map(f => Number(f.id)))
+      const nowForAugment = Date.now()
+      for (const r of [...rootHits, ...rawHits]) {
+        const id = Number(r.id)
+        if (existingIds.has(id)) continue
+        existingIds.add(id)
+        const fresh = freshnessFactor(r.ts, nowForAugment)
+        const augBase = isNarrow ? 0.005 : 0.012
+        filtered.push({ ...r, retrievalScore: augBase * fresh, rrf: 0, freshness: fresh })
+      }
     }
-    if (sort === 'date') {
+    // Raw-row merge for narrow windows: raw rows (chunk_root IS NULL, is_root=0)
+    // are inserted immediately by ingestTranscriptFile so they carry the
+    // freshest turns available in the DB. Merge and deduplicate against hybrid
+    // results; apply a freshness boost so recent raw rows sort to the top.
+    if (isNarrow) {
+      const rawEntries = readRawRowsInWindow(
+        db,
+        temporal.startMs,
+        temporal.endMs,
+        Math.max(limit + offset, 6),
+      )
+      if (rawEntries.length > 0) {
+        const dedupKey = (r) => {
+          const head = String(r.content || r.element || '').replace(/\s+/g, ' ').slice(0, 80)
+          return `${Number(r.ts) || 0}|${r.role || ''}|${head}`
+        }
+        const dbKeys = new Set(filtered.map(dedupKey))
+        const nowMs = Date.now()
+        const fresh = rawEntries
+          .filter(t => !dbKeys.has(dedupKey(t)))
+          .map(t => {
+            const ageMs = Math.max(0, nowMs - Number(t.ts || 0))
+            const ageMinutes = ageMs / (60 * 1000)
+            const boost = ageMinutes < 5 ? 1.0
+              : ageMinutes < 30 ? 0.5
+              : ageMinutes < 60 ? 0.2
+              : 0.1
+            return { ...t, retrievalScore: boost, rrf: boost }
+          })
+        filtered = [...fresh, ...filtered]
+      }
+    }
+    // P5 R3: narrow-window queries default to chronological sort. Caller
+    // semantics for "today / 지금까지 / 이어서 / 최근 진행" is "latest
+    // events", not "most lexically relevant". Explicit sort='importance'
+    // still works for callers that want BM25-ranked narrow searches.
+    // R6 P12: forcedSort wins over narrow-window auto-default.
+    const effectiveSort = (args.sort != null)
+      ? sort
+      : (forcedSort ?? (isNarrow ? 'date' : sort))
+    if (effectiveSort === 'date') {
       filtered.sort((a, b) => Number(b.ts) - Number(a.ts))
     } else {
       filtered.sort((a, b) => {
@@ -857,10 +1058,13 @@ function _renderAnchor(row, members, opts) {
   // verbose=true) restores the full sid/turns trailer for transcript
   // navigation; callers that need it (includeMembers, debug rendering)
   // pass it explicitly.
+  // The id is emitted as `#NNNN` so it matches the citation form the
+  // recall-agent rules require verbatim, removing the translation step
+  // (`id:NNNN` → `#NNNN`) where transposition errors used to creep in.
   const verbose = Boolean(opts && opts.verbose)
   const bits = []
   if (verbose && row.session_id) bits.push(`sid:${String(row.session_id).slice(0, 8)}`)
-  if (row.id != null) bits.push(`id:${row.id}`)
+  if (row.id != null) bits.push(`#${row.id}`)
   if (verbose) {
     const turn = _turnRange(row, members)
     if (turn) bits.push(`turns:${turn}`)
@@ -876,9 +1080,20 @@ function renderEntryLines(rows) {
     const cat = r.category ? `[${r.category}] ` : ''
     const element = r.element ?? ''
     const summary = r.summary ?? ''
+    // Distinguish classified entries (cycle1 produced element/summary) from
+    // raw turns. Raw rows are recent conversation slices with no `element`
+    // or `summary`; the agent should treat them as weak evidence rather
+    // than as a confident citation. The [raw] marker plus the missing
+    // [category] gives the recall-agent a visible signal to label them
+    // tentative per the retrieval-role-principles weak-match rule.
+    // The [weak] marker fires when retrievalScore is near the relevance
+    // floor — the synthesizer can then refuse to grant the entry a
+    // confident citation per the weak-only rule.
+    const score = Number(r.retrievalScore ?? r.rrf ?? 0)
+    const weakTag = (Number.isFinite(score) && score > 0 && score < 0.012) ? '[weak] ' : ''
     const head = element || summary
-      ? `${cat}${element}${summary ? ' — ' + summary : ''}`
-      : (cleanMemoryText(String(r.content ?? '')).slice(0, 300))
+      ? `${weakTag}${cat}${element}${summary ? ' — ' + summary : ''}`
+      : `${weakTag}[raw] ${cleanMemoryText(String(r.content ?? '')).slice(0, 300)}`
     lines.push(`[${ts}] ${head.slice(0, 500)}${_renderAnchor(r, r.members)}`)
     if (Array.isArray(r.members) && r.members.length > 0) {
       for (const m of r.members) {

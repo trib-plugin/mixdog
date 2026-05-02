@@ -6,7 +6,7 @@ import {
   tokenizeMemoryText,
 } from './memory-text-utils.mjs'
 import { vecToHex } from './memory-vector-utils.mjs'
-import { computeEntryScore } from './memory-score.mjs'
+import { computeEntryScore, freshnessFactor } from './memory-score.mjs'
 
 function setCandidateRank(candidateIds, id, key, rank) {
   if (!Number.isFinite(id) || !Number.isFinite(rank) || rank <= 0) return
@@ -44,6 +44,18 @@ export async function searchRelevantHybrid(db, query, options = {}) {
   const candidateWindow = Math.min(200, Math.max(limit * 5, 24))
   const includeMembers = Boolean(options.includeMembers)
   const writeBackMemberHits = options.writeBackMemberHits !== false
+  // Pre-filter knobs. Without them, FTS/vec rank the whole tree and a
+  // post-filter time window can wipe the result set; archived/demoted
+  // entries also pollute candidates and lure the synthesizer into
+  // confidently-wrong attribution.
+  const tsFrom = Number.isFinite(Number(options.ts_from)) ? Number(options.ts_from) : null
+  const tsTo = Number.isFinite(Number(options.ts_to)) ? Number(options.ts_to) : null
+  const excludeStatuses = Array.isArray(options.excludeStatuses)
+    ? options.excludeStatuses.filter(s => typeof s === 'string' && s.trim()).map(s => s.trim().toLowerCase())
+    : ['archived', 'demoted']
+  const minRetrievalScore = Number.isFinite(Number(options.minRetrievalScore))
+    ? Number(options.minRetrievalScore)
+    : 0.005
 
   const candidateIds = new Map()
   let denseCount = 0
@@ -129,29 +141,44 @@ export async function searchRelevantHybrid(db, query, options = {}) {
 
   const topIds = scored.map(s => s.id)
   const placeholders = topIds.map(() => '?').join(',')
+  const filterClauses = []
+  const filterParams = []
+  if (tsFrom != null) { filterClauses.push('ts >= ?'); filterParams.push(tsFrom) }
+  if (tsTo != null) { filterClauses.push('ts <= ?'); filterParams.push(tsTo) }
+  if (excludeStatuses.length > 0) {
+    filterClauses.push(`(status IS NULL OR status NOT IN (${excludeStatuses.map(() => '?').join(',')}))`)
+    filterParams.push(...excludeStatuses)
+  }
+  const filterSql = filterClauses.length > 0 ? ` AND ${filterClauses.join(' AND ')}` : ''
   const rawRows = db.prepare(
     `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
             element, category, summary, status, score, last_seen_at
-     FROM entries WHERE id IN (${placeholders})`,
-  ).all(...topIds)
+     FROM entries WHERE id IN (${placeholders})${filterSql}`,
+  ).all(...topIds, ...filterParams)
   const byId = new Map(rawRows.map(r => [Number(r.id), r]))
   const queryTokenSet = new Set([
     ...tokenizeMemoryText(clean),
     ...extractKoCompoundTokens(clean),
   ])
+  const nowMs = Date.now()
+  // Age decay multiplier applied to retrievalScore. R5: shared with
+  // handleSearch augment path via memory-score.mjs export.
   const ranked = scored
     .map((entry) => {
       const row = byId.get(entry.id)
       const lexicalBonus = row ? computeLexicalBonus(row, queryTokenSet, clean) : 0
+      const freshness = freshnessFactor(row?.ts, nowMs)
+      const baseScore = entry.rrf + lexicalBonus
       return {
         ...entry,
         lexicalBonus,
-        retrievalScore: entry.rrf + lexicalBonus,
+        freshness,
+        retrievalScore: baseScore * freshness,
       }
     })
+    .filter(entry => entry.retrievalScore >= minRetrievalScore)
     .sort((a, b) => b.retrievalScore - a.retrievalScore || b.rrf - a.rrf)
 
-  const nowMs = Date.now()
   const memberHitRootIds = new Set()
   const rootIdsForReturn = []
   const seen = new Set()

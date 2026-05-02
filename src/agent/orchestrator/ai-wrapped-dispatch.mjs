@@ -17,7 +17,7 @@
 
 import { homedir } from 'os'
 import { resolve as resolvePath, isAbsolute, join, relative } from 'path'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs'
 import { loadConfig, getPluginData } from './config.mjs'
 import { resolvePresetName } from './smart-bridge/bridge-llm.mjs'
 import { smartReadTruncate } from './tools/builtin.mjs'
@@ -1126,11 +1126,20 @@ function buildExplorerPrompt(query, cwd) {
 }
 
 function buildRecallPrompt(query, _cwd) {
-  return `<query>${_escapeXml(query)}</query>`
+  // Inject current_date + current_time so the recall-agent can resolve
+  // relative time words ("이어서 / 최근 / 계속 / 지금까지") against an
+  // absolute anchor instead of guessing. Without this anchor the agent
+  // defaults to 30d and BM25 surfaces fact-rich older entries over the
+  // current session's freshest events (#16812 recency bias).
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const time = now.toISOString().slice(11, 19) + 'Z'
+  return `<current_date>${today}</current_date>\n<current_time>${time}</current_time>\n<query>${_escapeXml(query)}</query>`
 }
 
 function buildSearchPrompt(query, _cwd) {
-  return `<query>${_escapeXml(query)}</query>`
+  const today = new Date().toISOString().slice(0, 10)
+  return `<current_date>${today}</current_date>\n<query>${_escapeXml(query)}</query>`
 }
 
 /**
@@ -1153,8 +1162,20 @@ function resolveExploreCwd(input, callerCwd, queryText, hasExplicitCwdArg = fals
   const resolved = resolveCwd(input, base || process.cwd())
   if (!hasExplicitCwdArg || !base || !resolved) return resolved
   if (isPathInside(base, resolved)) return resolved
+  // Caller passed an explicit cwd outside callerCwd. If it points to a real
+  // directory, trust the deliberate redirect (Lead exploring a sibling tree,
+  // plugin source, etc.). queryMentionsCwd stays as fallback for ambiguous /
+  // non-existent inputs that look like model typos.
+  if (_cwdIsExistingDir(resolved)) return resolved
   if (queryMentionsCwd(queryText, input, resolved)) return resolved
   return base
+}
+
+function _cwdIsExistingDir(p) {
+  if (!p || typeof p !== 'string') return false
+  let st
+  try { st = statSync(p) } catch { return false }
+  return Boolean(st && st.isDirectory())
 }
 
 function isPathInside(baseCwd, targetCwd) {
