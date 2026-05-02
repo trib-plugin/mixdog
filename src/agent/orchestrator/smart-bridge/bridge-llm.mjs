@@ -33,7 +33,7 @@ import {
     updateSessionStatus,
 } from '../session/manager.mjs';
 
-// v0.6.231: cap sub-agent synthesis to ~3000 tokens (~12 KB at the 4 B/tok
+// Cap sub-agent synthesis to ~3000 tokens (~12 KB at the 4 B/tok
 // working average). Pool B explore/recall/search answers occasionally land
 // 8-10k-token walls that then ride in the Lead context for the rest of the
 // turn; the cap keeps those outliers bounded without touching the 95%+ of
@@ -228,7 +228,7 @@ export function makeBridgeLlm(opts = {}) {
             const result = await askSession(session.id, finalPrompt, null, null, cwd);
             process.stderr.write(`[bridge-llm] role=${role} session=${session.id} elapsed=${Date.now() - _bridgeT0}ms\n`);
             const raw = result?.content || '';
-            // v0.6.231 brief cap. Sub-agent answers (explore/recall/search)
+            // Brief cap. Sub-agent answers (explore/recall/search)
             // occasionally balloon to 8-10k token walls that then ride in the
             // parent Lead's context for the rest of the turn. A 3000-token
             // (~12 KB) ceiling trims the long tail while leaving the vast

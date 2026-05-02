@@ -1178,7 +1178,7 @@ function reloadRuntimeConfig() {
   }
 }
 function injectAndRecord(channelId, name, content, options) {
-  // v0.1.117 — Strip soft-warn markers (Tool-loop / Repeated-tool /
+  // Strip soft-warn markers (Tool-loop / Repeated-tool /
   // Mixed-tool / Tool-budget) from the LEADING lines of the outbound
   // body. Markers are intentionally prepended onto tool RESULTS upstream
   // (tool-loop-guard.mjs buildSoftWarn / buildRunUpSoftWarn /

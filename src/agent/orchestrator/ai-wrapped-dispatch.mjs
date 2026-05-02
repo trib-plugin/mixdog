@@ -1351,7 +1351,7 @@ export function pushDispatchResult(ctx, id, tool, queries, body, flags = {}) {
   const bodyHeader = flags.error
     ? `${tool} failed`
     : `${tool} — ${queryCount}`
-  // v0.6.249 smart truncation — large recall/search/explore merged bodies
+  // Smart truncation — large recall/search/explore merged bodies
   // (multi-query fan-out) can blow past the 30 KB smart-read cap and waste
   // Lead context. Apply the same head/tail summariser used by `read`
   // (single + array form) so Lead still sees the interesting frames (first queries
@@ -1359,7 +1359,7 @@ export function pushDispatchResult(ctx, id, tool, queries, body, flags = {}) {
   // on the body only — the `Done.` header is prepended AFTER, so it never
   // gets cut.
   let bodyStr = typeof body === 'string' ? body : String(body ?? '')
-  // v0.1.117 — Sub-agents tend to echo the soft-warn marker line as the
+  // Sub-agents tend to echo the soft-warn marker line as the
   // first line of their reply. The marker is intentionally prepended onto
   // tool RESULTS so the model self-corrects (see tool-loop-guard.mjs
   // buildSoftWarn / buildRunUpSoftWarn / buildMixedSoftWarn /
@@ -1377,7 +1377,7 @@ export function pushDispatchResult(ctx, id, tool, queries, body, flags = {}) {
   const bodyLines = bodyStr.length === 0 ? 0 : bodyStr.split('\n').length
   const { text: cappedBody } = smartReadTruncate(bodyStr, bodyLines, bodyBytes)
   const originalBody = `${bodyHeader}\n\n${cappedBody}`
-  // v0.6.241: prepend a `Done.` wrapper that mirrors the Pool B worker
+  // Prepend a `Done.` wrapper that mirrors the Pool B worker
   // completion header in src/agent/index.mjs (`${modelTag}[${role}] ...`).
   // When the model tag can't be resolved, the helper falls back to
   // `[{tool}] Done.` — still better than no header.

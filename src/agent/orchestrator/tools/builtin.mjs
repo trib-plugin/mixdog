@@ -450,7 +450,7 @@ function extractGlobBaseDirectory(pattern) {
 // cache, so the cap is the primary guard.
 const SHELL_OUTPUT_MAX_CHARS = 100_000;
 
-// v0.6.231 smart truncation. Big raw payloads (large `read`, 500-line `bash`
+// Smart truncation. Big raw payloads (large `read`, 500-line `bash`
 // dumps) bloat Pool B cache_write by 30-40k tokens per iter. These thresholds
 // trigger head/tail summarisation so the agent still sees the interesting
 // frames (start of file, tail of log) without paying for the middle mass.
@@ -3069,7 +3069,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         `Use job_wait to block until it finishes; read the stdout/stderr paths above for logs.`,
                     ].filter(Boolean).join('\n');
                 }
-                // v0.1.252 (G1): spawnSync → execShellCommand (async).
+                // spawnSync → execShellCommand (async).
                 // Improvements:
                 //   - tree-kill on timeout so forked grandchildren come down
                 //     with the parent (sleep & + node servers etc).
@@ -3504,7 +3504,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         out += `${out ? '\n' : ''}${formatPaginationHint(lines.length - offset - sliced.length, offset + sliced.length)}`;
                     }
                 }
-                // v0.6.231 smart cap. Only engages when the caller asked for
+                // Smart cap. Only engages when the caller asked for
                 // the default read (no offset/limit, full:false) AND the file
                 // is over the line/byte threshold. Explicit ranges always see
                 // byte-exact output.
@@ -3664,7 +3664,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         // `recursive:true` is a no-op when the directory already
                         // exists and is cross-OS safe (POSIX + NTFS).
                         mkdirSync(dirname(fullPath), { recursive: true });
-                        // v0.6.248: atomic write via tempfile + fsync + rename.
+                        // Atomic write via tempfile + fsync + rename.
                         // Non-atomic writeFileSync leaves a 0-byte / truncated file
                         // on disk if the process dies mid-write (observed 2026-XX
                         // when a bridge worker's SSE stream hung during an Edit on
@@ -3899,7 +3899,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                         if (_hadCrlf) updated = updated.replace(/\n/g, '\r\n');
                         if (_hadBom && updated.charCodeAt(0) !== 0xFEFF) updated = '\uFEFF' + updated;
                     }
-                    // v0.6.248: atomic write — see `write` handler for rationale.
+                    // Atomic write — see `write` handler for rationale.
                     await atomicWrite(fullPath, updated, { sessionId: options?.sessionId });
                     invalidateBuiltinResultCache([fullPath]);
                     markCodeGraphDirtyPaths(workDir, [fullPath]);
