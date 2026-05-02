@@ -39,6 +39,23 @@ export function retrieveEntries(db, filters = {}) {
     }
   }
 
+  // R11 reviewer H2: exclude archived/demoted leakage in temporal augment paths.
+  if (Array.isArray(filters.excludeStatuses) && filters.excludeStatuses.length > 0) {
+    const exc = filters.excludeStatuses
+      .map(s => String(s).trim().toLowerCase())
+      .filter(s => VALID_STATUS_SET.has(s))
+    if (exc.length > 0) {
+      where.push(`(status IS NULL OR status NOT IN (${exc.map(() => '?').join(',')}))`)
+      params.push(...exc)
+    }
+  }
+
+  // R11 reviewer M3: orphan raw chunks (chunk_root IS NULL) for narrow-window
+  // raw merging — prevents classified-member chunks from duplicating their root.
+  if (filters.chunkRootNull === true) {
+    where.push(`chunk_root IS NULL`)
+  }
+
   const limit = Math.max(1, Math.min(500, Number(filters.limit ?? 50)))
   const offset = Math.max(0, Number(filters.offset ?? 0))
   const orderBy = 'score DESC NULLS LAST, ts DESC, id DESC'

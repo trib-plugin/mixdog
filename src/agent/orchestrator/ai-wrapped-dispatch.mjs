@@ -1131,9 +1131,12 @@ function buildRecallPrompt(query, _cwd) {
   // absolute anchor instead of guessing. Without this anchor the agent
   // defaults to 30d and BM25 surfaces fact-rich older entries over the
   // current session's freshest events (#16812 recency bias).
-  const now = new Date()
-  const today = now.toISOString().slice(0, 10)
-  const time = now.toISOString().slice(11, 19) + 'Z'
+  // R11 reviewer L6: emit LOCAL time so it agrees with parsePeriod's
+  // calendar-day math (today/yesterday anchor at LOCAL midnight). UTC
+  // anchors created Sun-Mon mismatches near KST midnight.
+  const localIso = new Date().toLocaleString('sv-SE')
+  const today = localIso.slice(0, 10)
+  const time = localIso.slice(11, 19)
   return `<current_date>${today}</current_date>\n<current_time>${time}</current_time>\n<query>${_escapeXml(query)}</query>`
 }
 

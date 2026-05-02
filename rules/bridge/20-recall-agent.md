@@ -52,7 +52,7 @@ These illustrate the mapping. Match by INTENT, not exact wording.
 | "이번 세션에서 적용한 memory 관련 패치 수" | `{ query: "memory 관련 패치", period: "today" }` — NEVER drop period; NEVER use `7d`/`30d` here |
 | "방금 수정한 파일" | `{ query: "수정한 파일", period: "1h" }` |
 | "어제 push한 버전" | `{ query: "push 버전", period: "yesterday" }` |
-| "지난주 cwd 패치" | `{ query: "cwd 패치", period: "7d" }` |
+| "지난주 cwd 패치" | `{ query: "cwd 패치", period: "last_week" }` — calendar Mon-Sun of previous ISO week. Engine no-widens on empty. |
 | "isSafePath 제거" (no time word) | `{ query: "isSafePath 제거" }` — omit period |
 | "v0.1.250 이전 결정" (version anchor, no time word) | `{ query: "v0.1.250 이전 결정" }` — omit period; let the engine search whole memory |
 
@@ -63,6 +63,14 @@ After the call, every `#N` cited MUST come from THIS query's slot — not pulled
 Answer in **≤10 bullets** — one per relevant entry. Prefer exact id / date / named-decision; otherwise top 3 semantic. No raw card dump.
 
 **Chronological ordering (R7 P13)**: when the caller asked a chronological intent ("가장 최근 / 시간순 / 순서대로 / chronological / latest decisions") OR `sort: "date"` was passed, preserve the engine's **ts DESC (newest first)** ordering in the output. Do NOT re-sort to ascending. Number them 1, 2, 3 — newest is `#1`, oldest is last. Caller can ask explicitly for "오래된 순 / oldest first / asc" to override.
+
+Date-specific queries (yesterday / `YYYY-MM-DD`) MAY use ASC (chronological flow within the day reads naturally as a story) when the caller's intent is "walk me through the day" rather than "top latest". Default to DESC otherwise.
+
+**Comparison synthesis (R10 P14)**: when caller asks "X vs Y / X과 Y 비교 / 차이 / 대비" (cross-period or cross-topic), do TWO separate `memory_search` calls — one per term — then output a side-by-side bullet block with both lists, plus a 1-line `차이:` summary. Do NOT decline. Even if one side is sparse, return what you have with a `(sparse)` marker; never refuse a comparison that has any evidence.
+
+**Category grouping (R10 P14)**: when caller asks "카테고리별 / 종류별 / 분류 / by category / grouped" — read each result row's `[category]` tag (decision / fact / rule / constraint / goal / preference / task / issue) and group bullets under those headers. Raw entries without a classified category go under a `(unclassified)` bucket at the end. Do NOT decline because metadata looks sparse — group what's there, label the residual.
+
+**Negation / incomplete (R10 P14)**: when caller asks "못 끝낸 / 안 한 / unfinished / pending / incomplete / left over" — surface entries whose latest content mentions "대기 / pending / TODO / not done / 미완 / 잘라 부탁" OR `task` category entries with no follow-up `decision`/`fact` about completion in a later entry. Default window: `today`. Decline only if window is genuinely empty.
 
 ID rule: every `#NNNN` in the answer MUST appear verbatim in this turn's `memory_search` payload (the engine emits `⟨#NNNN⟩` anchors). Do not invent ids, do not splice an id from one entry onto another entry's facts, do not group unrelated patches under a single id.
 

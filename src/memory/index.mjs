@@ -899,6 +899,13 @@ async function handleSearch(args) {
   const includeMembers = Boolean(args.includeMembers)
   const temporal = parsePeriod(period, Boolean(query))
 
+  // R11 reviewer M4: calendar-bounded periods disable freshness decay
+  // so within-period ranking doesn't downgrade Mon entries vs Sun.
+  const CALENDAR_PERIODS = new Set(['yesterday', 'today', 'this_week', 'last_week'])
+  const isCalendarPeriod = period != null
+    && (CALENDAR_PERIODS.has(period) || /^\d{4}-\d{2}-\d{2}/.test(period))
+  const applyFreshness = !isCalendarPeriod
+
   if (query) {
     const queryVector = await embedText(query).catch(() => null)
     // Push ts and status filters into the hybrid candidate query so FTS / vec
@@ -911,6 +918,7 @@ async function handleSearch(args) {
       includeMembers,
       ts_from: temporal?.startMs,
       ts_to: temporal?.endMs,
+      applyFreshness,
     })
     let filtered = results
     // Narrow-window fallback: caller asked for 'today / right now / just now
@@ -942,15 +950,19 @@ async function handleSearch(args) {
       && temporal?.endMs != null
       && (temporal.endMs - temporal.startMs) <= sevenDayMs * 1.1
     if (isNarrow || isMidWindow) {
+      // R11 reviewer H2/M3: exclude archived/demoted, scope raw to orphan
+      // chunks (chunk_root IS NULL) so member rows of classified roots
+      // can't duplicate their root in the augment pool.
       const baseFilters = {
         limit: Math.max(limit + offset, isNarrow ? 24 : 32),
         ts_from: temporal.startMs,
         ts_to: temporal.endMs,
+        excludeStatuses: ['archived', 'demoted'],
       }
       if (includeMembers) baseFilters.includeMembers = true
       const rootHits = retrieveEntries(db, { ...baseFilters, is_root: true })
       const rawHits = isNarrow
-        ? retrieveEntries(db, { ...baseFilters, is_root: false })
+        ? retrieveEntries(db, { ...baseFilters, is_root: false, chunkRootNull: true })
         : []
       const existingIds = new Set(filtered.map(f => Number(f.id)))
       const nowForAugment = Date.now()
@@ -958,7 +970,8 @@ async function handleSearch(args) {
         const id = Number(r.id)
         if (existingIds.has(id)) continue
         existingIds.add(id)
-        const fresh = freshnessFactor(r.ts, nowForAugment)
+        // R11 reviewer M4: calendar periods skip freshness within-window.
+        const fresh = applyFreshness ? freshnessFactor(r.ts, nowForAugment) : 1.0
         const augBase = isNarrow ? 0.005 : 0.012
         filtered.push({ ...r, retrievalScore: augBase * fresh, rrf: 0, freshness: fresh })
       }
@@ -1004,7 +1017,9 @@ async function handleSearch(args) {
       ? sort
       : (forcedSort ?? (isNarrow ? 'date' : sort))
     if (effectiveSort === 'date') {
-      filtered.sort((a, b) => Number(b.ts) - Number(a.ts))
+      // R11 reviewer L5: NaN guard — entries with null/undefined ts default
+      // to 0 so the comparator stays numeric and stable.
+      filtered.sort((a, b) => (Number(b.ts) || 0) - (Number(a.ts) || 0))
     } else {
       filtered.sort((a, b) => {
         const sa = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }

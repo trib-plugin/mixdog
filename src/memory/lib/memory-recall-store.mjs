@@ -56,6 +56,12 @@ export async function searchRelevantHybrid(db, query, options = {}) {
   const minRetrievalScore = Number.isFinite(Number(options.minRetrievalScore))
     ? Number(options.minRetrievalScore)
     : 0.005
+  // R11 reviewer M4: caller can disable freshness decay when the period
+  // is calendar-bounded (yesterday / today / this_week / last_week / a
+  // specific date). Inside a fixed window, applying absolute-age decay
+  // makes Mon score 0.7 and Sun 1.4 within the same calendar week, which
+  // misranks early-week decisions vs late-week chatter.
+  const applyFreshness = options.applyFreshness !== false
 
   const candidateIds = new Map()
   let denseCount = 0
@@ -167,7 +173,7 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     .map((entry) => {
       const row = byId.get(entry.id)
       const lexicalBonus = row ? computeLexicalBonus(row, queryTokenSet, clean) : 0
-      const freshness = freshnessFactor(row?.ts, nowMs)
+      const freshness = applyFreshness ? freshnessFactor(row?.ts, nowMs) : 1.0
       const baseScore = entry.rrf + lexicalBonus
       return {
         ...entry,
