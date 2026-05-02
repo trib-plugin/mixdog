@@ -729,6 +729,10 @@
           "type": "string",
           "description": "Working directory for bridge agent tool execution."
         },
+        "allow_retrieval": {
+          "type": "boolean",
+          "description": "Default false. When true, the worker may call retrieval wrappers (recall / explore / search) which spawn hidden sub-agents. Set true only when the brief is genuinely unknown-coordinate; for known path/line/identifier briefs leave it off so the worker uses direct read/grep/find_symbol."
+        },
         "prefetch": {
           "type": "object",
           "description": "Explicit prefetch coordinates. Manager fetches and prepends as <prefetch> block before worker runs. All failures are silent.",

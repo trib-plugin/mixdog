@@ -55,6 +55,7 @@ export function prepareBridgeSession({
     parentSessionId,
     skipRoleReminder = false,
     cacheKeyOverride,
+    allowRetrieval = false,
 }) {
     // Pass cwd through verbatim — null is the fixed bridge sentinel meaning
     // "no caller workspace context" (cycle1-agent shards, etc). Upgrading
@@ -76,7 +77,9 @@ export function prepareBridgeSession({
     if (permissionMode) sessionOpts.permissionMode = permissionMode;
     if (skipRoleReminder) sessionOpts.skipRoleReminder = true;
     if (cacheKeyOverride) sessionOpts.cacheKeyOverride = cacheKeyOverride;
+    if (allowRetrieval) sessionOpts.allowRetrieval = true;
     const session = createSession(sessionOpts);
+    if (allowRetrieval) session.allowRetrieval = true;
     try {
         traceBridgePreset({
             sessionId: session.id,

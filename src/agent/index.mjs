@@ -816,6 +816,7 @@ export async function handleToolCall(name, args, opts = {}) {
           parentSessionId: callerSessionId,
           permissionMode: _permissionMode,
           cacheKeyOverride: args.cacheKey || undefined,
+          allowRetrieval: args.allow_retrieval === true || args.allowRetrieval === true,
         });
 
         // workerCwd: explicit Lead intent > inherited AsyncLocalStorage override > original user cwd.

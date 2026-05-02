@@ -270,6 +270,22 @@ function isBlockedHiddenWrapperCall(toolName, sessionRef) {
     if (sessionRef?.owner !== 'bridge') return false;
     return isHiddenRole(sessionRef?.role);
 }
+// Public bridge roles (worker/reviewer/debugger/tester) must not call
+// retrieval wrappers — those spawn hidden sub-agents (explorer / recall-agent
+// / search-agent + memory cycle), aggregating stale data and burning latency
+// (observed: 5-min worker stall + 0.1.271 hallucination on a known-coord
+// version query). Lead does retrieval in the brief and passes coordinates;
+// the worker's job is direct read/grep/find_symbol on those coordinates.
+function isBlockedPublicWrapperCall(toolName, sessionRef) {
+    if (!RETRIEVAL_WRAPPERS.has(toolName)) return false;
+    if (sessionRef?.owner !== 'bridge') return false;
+    if (isHiddenRole(sessionRef?.role)) return false;
+    // Lead opt-in: when the brief is genuinely unknown-coordinate Lead
+    // passes allow_retrieval:true on the bridge call. The flag rides through
+    // session-builder onto the session object.
+    if (sessionRef?.allowRetrieval === true) return false;
+    return true;
+}
 function messagesArrayChanged(before, after) {
     if (!Array.isArray(before) || !Array.isArray(after)) return before !== after;
     if (before.length !== after.length) return true;
@@ -511,6 +527,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             const noToolRole = sessionRef?.role === 'cycle1-agent' || sessionRef?.role === 'cycle2-agent';
             if (noToolRole) return null;
             if (isBlockedHiddenWrapperCall(call.name, sessionRef)) return null;
+            if (isBlockedPublicWrapperCall(call.name, sessionRef)) return null;
             if (isBlockedDirectHiddenTool(call.name, sessionRef)) return null;
             if (isBlockedByPermission(call.name, toolKind, effectiveToolPermission(sessionRef))) return null;
             const entry = { startedAt: Date.now(), endedAt: null };
@@ -689,6 +706,9 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                         toolEndedAt = Date.now();
                     } else if (isBlockedHiddenWrapperCall(call.name, sessionRef)) {
                         result = `Error: tool "${call.name}" is the wrapper your role (${sessionRef?.role || 'hidden'}) backs. Calling it would spawn another hidden agent of the same kind — use the role's direct tool (memory_search / web_search / find_symbol+grep+read) instead.`;
+                        toolEndedAt = Date.now();
+                    } else if (isBlockedPublicWrapperCall(call.name, sessionRef)) {
+                        result = `Error: tool "${call.name}" is a fan-out retrieval wrapper. Public bridge roles must use direct read/grep/find_symbol/list/glob on the coordinates Lead provided in the brief — see rules/bridge/02-public-work-principles.md Tool routing.`;
                         toolEndedAt = Date.now();
                     } else if (isBlockedDirectHiddenTool(call.name, sessionRef)) {
                         result = `Error: tool "${call.name}" is only available inside Pool C hidden retrieval roles. Use recall/search/explore instead.`;
