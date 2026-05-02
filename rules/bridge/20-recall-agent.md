@@ -50,7 +50,7 @@ Same time words any language → map by meaning. For `1h`/`6h`: include current-
 | "isSafePath 제거" | `{ query: "isSafePath 제거" }` (omit period) |
 | "v0.1.250 이전 결정" | `{ query: "v0.1.250 이전 결정" }` (version anchor; omit period) |
 
-Every `#N` cited MUST come from THIS query slot — not sibling array slot, not training memory.
+Every `⟨#NNNN⟩` anchor used INTERNALLY for grounding MUST come from THIS query slot's `memory_search` payload — never sibling array slot, never training memory. Anchors are grounding-only; **never echo them in the final answer** (full policy in the ID rule below). The "MUST come from this slot" constraint applies at grounding time, not at output time — there is no output-time citation form for anchors.
 
 ## Output
 
