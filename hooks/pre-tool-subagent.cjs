@@ -124,7 +124,7 @@ process.stdin.on('end', async () => {
     const data = JSON.parse(input);
 
     const mode = data.permissionMode || data.permission_mode || data.mode;
-    if (mode === 'bypassPermissions') process.exit(0);
+    if (mode === 'bypassPermissions' || mode === 'auto') process.exit(0);
 
     const isSidechain = data.isSidechain ?? data.is_sidechain;
     const agentIdRaw = data.agentId ?? data.agent_id;

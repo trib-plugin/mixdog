@@ -148,8 +148,17 @@ function evaluatePermission({ toolName, toolInput, permissionMode, projectDir, u
   const input = (toolInput && typeof toolInput === 'object') ? toolInput : {};
   const cwd   = (typeof userCwd === 'string' && userCwd) ? userCwd : process.cwd();
 
+  // Plugin source tree: read-only exemption.
+  // Paths inside CLAUDE_PLUGIN_ROOT are always allowed for read-class tools.
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || '';
+  const rawPaths0 = extractPaths(name, input);
+  if (pluginRoot && isReadOnlyTool(name) && rawPaths0.length > 0 &&
+      rawPaths0.every(p => { const r = resolveCandidate(p, cwd); return r && isInside(r, pluginRoot); })) {
+    return { decision: 'allow', reason: 'Plugin source tree read-only access allowed.' };
+  }
+
   // 1. Extract candidate paths
-  const rawPaths = extractPaths(name, input);
+  const rawPaths = rawPaths0;
 
   // 2. Resolve paths; find first outside-cwd hit
   let firstOutsidePath     = null;
@@ -187,10 +196,14 @@ function evaluatePermission({ toolName, toolInput, permissionMode, projectDir, u
   }
 
   // 5. Mode default (no list matched)
-  const mode = permissionMode || defaultMode || 'default';
+  // Settings-derived auto-approval modes take priority over a payload
+  // 'default' so that a user-level bypassPermissions is never shadowed.
+  const AUTO_MODES = new Set(['bypassPermissions', 'auto']);
+  const mode = (AUTO_MODES.has(defaultMode) && !AUTO_MODES.has(permissionMode))
+    ? defaultMode
+    : (permissionMode || defaultMode || 'default');
 
-  // 'auto' is treated as bypass per user policy (CC LLM classifier handles its own layer above the hook).
-  if (mode === 'bypassPermissions' || mode === 'auto') {
+  if (AUTO_MODES.has(mode)) {
     return { decision: 'allow', reason: 'bypassPermissions mode.' };
   }
 

@@ -96,6 +96,14 @@ function main() {
     process.env.CLAUDE_PROJECT_DIR || userCwd;
   const permissionMode = payload?.permissionMode || payload?.permission_mode || undefined;
 
+  // Fast-path: auto-approval modes bypass the sandbox gate entirely.
+  // Check settings-derived mode as well, so a user-level bypassPermissions
+  // in settings.json is respected even when payload carries no permissionMode.
+  const { loadPermissions } = require('./lib/settings-loader.cjs');
+  const settingsPerms = loadPermissions(projectDir);
+  const effectiveMode = permissionMode || settingsPerms.defaultMode;
+  if (effectiveMode === 'bypassPermissions' || effectiveMode === 'auto') process.exit(0);
+
   // 4. Delegate to shared evaluator
   const evalResult = evaluatePermission({
     toolName,

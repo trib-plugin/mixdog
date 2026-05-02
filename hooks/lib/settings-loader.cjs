@@ -80,9 +80,21 @@ function loadPermissions(projectDir) {
   const projectSettings = readJsonCached(path.join(projDir, '.claude', 'settings.json'));
   const localSettings   = readJsonCached(path.join(projDir, '.claude', 'settings.local.json'));
 
-  const userPerms    = (userSettings    && userSettings.permissions)    || {};
-  const projectPerms = (projectSettings && projectSettings.permissions) || {};
-  const localPerms   = (localSettings   && localSettings.permissions)   || {};
+  // Accept permissions from `settings.permissions` (canonical) OR top-level
+  // `allow`/`deny`/`ask`/`defaultMode` fields (common user shorthand).
+  function extractPerms(s) {
+    if (!s) return {};
+    const nested = (s.permissions && typeof s.permissions === 'object') ? s.permissions : {};
+    const topLevel = {};
+    for (const key of ['allow', 'deny', 'ask']) {
+      if (Array.isArray(s[key])) topLevel[key] = s[key];
+    }
+    if (typeof s.defaultMode === 'string') topLevel.defaultMode = s.defaultMode;
+    return mergePermissions(nested, topLevel);
+  }
+  const userPerms    = extractPerms(userSettings);
+  const projectPerms = extractPerms(projectSettings);
+  const localPerms   = extractPerms(localSettings);
 
   let merged = mergePermissions({}, userPerms);
   merged = mergePermissions(merged, projectPerms);
