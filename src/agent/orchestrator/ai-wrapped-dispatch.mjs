@@ -26,6 +26,14 @@ import { executeCodeGraphTool } from './tools/code-graph.mjs'
 import { addPending, removePending } from './dispatch-persist.mjs'
 import { notifyActivity } from './activity-bus.mjs'
 import { stripLeadingSoftWarns } from './tool-loop-guard.mjs'
+import {
+  validateExploreOutput,
+  enforceExploreContract,
+  EXPLORE_REJECT_FALLBACK,
+  EXPLORE_OUTPUT_CHAR_CAP,
+  EXPLORE_PER_PIECE_CHAR_CAP,
+  EXPLORE_TRUNCATION_MARKER,
+} from './explore-validator.mjs'
 
 // Fan-out deadline: default 240 s. Override via env FANOUT_DEADLINE_S.
 // Applied to both sync and background fan-out paths. After expiry, settled
@@ -49,20 +57,6 @@ const ROLE_BY_TOOL = Object.freeze({
   search:  { role: 'search-agent',  build: (q, cwd) => _internals.builders.search(q, cwd),   label: 'search-agent' },
   explore: { role: 'explorer',      build: (q, cwd) => _internals.builders.explore(q, cwd),  label: 'explorer agent' },
 })
-
-// Cumulative-character cap for explore output. V8's max string length
-// sits around 512 MB; concatenating raw matches + per-query syntheses
-// across a very broad cwd (e.g. the whole `~/.claude` tree) used to blow
-// past that and crash the MCP server with `Invalid string length`.
-// 50 MB chars stays well clear and is still far above any realistic
-// single-answer payload.
-const EXPLORE_OUTPUT_CHAR_CAP = 50_000_000
-// Per-piece pre-clamp. Caps each subagent body before it is folded into
-// the cumulative buffer so a single runaway response can't blow past V8
-// max-string-length (~512MB) at template-literal construction time,
-// before the running-total guard below ever gets to run.
-const EXPLORE_PER_PIECE_CHAR_CAP = 5_000_000
-const EXPLORE_TRUNCATION_MARKER = '\n\n[explore: output truncated at 50MB cap; narrow cwd or split queries to see more]'
 
 // search-agent output validator. Reviewer-recommended (gpt-5.5):
 // prompt polishing alone hits diminishing returns against LLM phrasing
@@ -93,13 +87,6 @@ function filterSearchOutput(raw) {
   }
   return kept.join('\n')
 }
-
-// explore-agent output validator extracted to ./explore-validator.mjs (T3 refactor).
-import {
-  validateExploreOutput,
-  enforceExploreContract,
-  EXPLORE_REJECT_FALLBACK,
-} from './explore-validator.mjs'
 
 // Clamp a raw subagent body (or error string) to the per-piece cap
 // BEFORE it gets wrapped with header / separator. Returns the (possibly

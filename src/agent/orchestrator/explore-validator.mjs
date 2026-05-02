@@ -51,6 +51,20 @@ export function validateExploreOutput(raw) {
 export const EXPLORE_REJECT_FALLBACK =
   '[unverified] explorer output rejected (chunk-id pattern); not found under <root>'
 
+// Cumulative-character cap for explore output. V8's max string length
+// sits around 512 MB; concatenating raw matches + per-query syntheses
+// across a very broad cwd (e.g. the whole `~/.claude` tree) used to blow
+// past that and crash the MCP server with `Invalid string length`.
+// 50 MB chars stays well clear and is still far above any realistic
+// single-answer payload.
+export const EXPLORE_OUTPUT_CHAR_CAP = 50_000_000
+// Per-piece pre-clamp. Caps each subagent body before it is folded into
+// the cumulative buffer so a single runaway response can't blow past V8
+// max-string-length (~512MB) at template-literal construction time,
+// before the running-total guard below ever gets to run.
+export const EXPLORE_PER_PIECE_CHAR_CAP = 5_000_000
+export const EXPLORE_TRUNCATION_MARKER = '\n\n[explore: output truncated at 50MB cap; narrow cwd or split queries to see more]'
+
 export async function enforceExploreContract(raw, llm, spec, q, resolvedCwd) {
   if (validateExploreOutput(raw)) return raw
   const retryRaw = await llm({
