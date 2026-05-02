@@ -26,6 +26,7 @@ import { executeCodeGraphTool } from './tools/code-graph.mjs'
 import { addPending, removePending } from './dispatch-persist.mjs'
 import { notifyActivity } from './activity-bus.mjs'
 import { stripLeadingSoftWarns } from './tool-loop-guard.mjs'
+import { stripAnsi, normalizeWhitespace, dedupRepeatedLines } from './tools/result-compression.mjs'
 import {
   validateExploreOutput,
   enforceExploreContract,
