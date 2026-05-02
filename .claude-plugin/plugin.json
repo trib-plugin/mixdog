@@ -1,6 +1,6 @@
 {
   "name": "mixdog",
-  "version": "patch",
+  "version": "0.1.404",
   "description": "Claude Code all-in-one agent plugin — autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing.",
   "mcpServers": {
     "mixdog": {
