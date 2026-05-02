@@ -847,7 +847,7 @@ async function handleSearch(args) {
   // narrow-window pre-filter and JSONL tail merge below.
   if (!period && query) {
     const q = query.toLowerCase()
-    if (/(지금|방금|현재|몇분전|방금전|1시간 이내|한 시간 이내|몇분 전|최근 1시간|right now|just now|this minute|a few minutes ago|right this second|in the last hour|past hour|within an hour)/.test(q)) {
+    if (/(지금|방금|현재|몇분전|방금전|1시간 이내|한 시간 이내|몇분 전|조금 전|좀 전|얼마 전|최근 1시간|right now|just now|this minute|a few minutes ago|a moment ago|moments ago|a little while ago|right this second|in the last hour|past hour|within an hour)/.test(q)) {
       period = '1h'
     } else if (/(어제|yesterday)/.test(q)) {
       period = 'yesterday'
