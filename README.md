@@ -92,6 +92,22 @@ caching across every role in a session. Token usage is logged per
 provider and per role so you can see where cost lands before the bill
 arrives.
 
+### Output compression
+
+Tool results are compressed before they hit the model context: smart
+head/tail truncation for large reads, ANSI / whitespace / repeated-line
+dedup for sub-agent fan-out bodies, and file-grouped grep output that
+emits each path once with indented `line: content` rows.
+
+### Bridge guards
+
+Public bridge roles (worker / reviewer / debugger / tester) route
+through direct `read` / `grep` / `find_symbol` on the coordinates Lead
+provides; opt-in `allow_retrieval: true` is required to reach
+`recall` / `explore` / `search` wrappers. A `<final-answer>` tag
+protocol cleanly separates the worker's final reply from any internal
+deliberation.
+
 ### Multi-provider sub-agents
 
 Anthropic (direct or OAuth), OpenAI (direct or OAuth), Google Gemini,
