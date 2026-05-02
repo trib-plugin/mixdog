@@ -3909,6 +3909,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // Hard-block before spawning rg to prevent V8 / rg hangs.
             const GREP_MULTILINE_PATTERN_CAP = 5;
             const GREP_ARRAY_PATTERN_CAP = 20;
+            const multilineMode = args.multiline === true;
             if (multilineMode && patterns.length > GREP_MULTILINE_PATTERN_CAP) {
                 return `Error: multiline:true with more than ${GREP_MULTILINE_PATTERN_CAP} patterns is not allowed (got ${patterns.length}); split into separate grep calls`;
             }
@@ -3952,7 +3953,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const contextN = typeof args['-C'] === 'number'
                 ? args['-C']
                 : (typeof args.context === 'number' ? args.context : null);
-            const multilineMode = args.multiline === true;
             const fileType = typeof args.type === 'string' && args.type.trim()
                 ? args.type.trim()
                 : '';
