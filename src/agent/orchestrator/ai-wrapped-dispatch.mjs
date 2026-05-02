@@ -880,6 +880,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
         })
         const raw = await llm({ prompt: spec.build(q, resolvedCwd) })
         return name === 'search' ? filterSearchOutput(raw)
+          // T17 FOLLOW-UP: enforceExploreContract catches chunk-id format only; line-content hallucination open.
           : name === 'explore' ? enforceExploreContract(raw, llm, spec, q, resolvedCwd)
           : raw
       })

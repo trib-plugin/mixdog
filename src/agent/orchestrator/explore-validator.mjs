@@ -51,6 +51,10 @@ export function validateExploreOutput(raw) {
 export const EXPLORE_REJECT_FALLBACK =
   '[unverified] explorer output rejected (chunk-id pattern); not found under <root>'
 
+// T17 FOLLOW-UP: line-content hallucination (e.g. `path.mjs:1 — meaningful content`
+// when actual file line 1 is unrelated) is NOT caught by this validator — only
+// chunk-id format + first-line narration are. Cross-check layer (read cited
+// line, verify literal match) is open work.
 // Cumulative-character cap for explore output. V8's max string length
 // sits around 512 MB; concatenating raw matches + per-query syntheses
 // across a very broad cwd (e.g. the whole `~/.claude` tree) used to blow
