@@ -1366,6 +1366,13 @@ export function pushDispatchResult(ctx, id, tool, queries, body, flags = {}) {
   // buildBudgetSoftWarn — those PREPEND sites must stay), but it should
   // not surface in the outbound report to Lead. Strip leading markers only.
   bodyStr = stripLeadingSoftWarns(bodyStr)
+  // Apply result-compression helpers before smart-truncate so sub-agent
+  // aggregated bodies (recall/explore/search merged answers) shed ANSI
+  // escapes, redundant whitespace, and repeated lines before the head/tail
+  // budget gets allocated.
+  bodyStr = stripAnsi(bodyStr)
+  bodyStr = normalizeWhitespace(bodyStr)
+  bodyStr = dedupRepeatedLines(bodyStr)
   const bodyBytes = Buffer.byteLength(bodyStr, 'utf8')
   const bodyLines = bodyStr.length === 0 ? 0 : bodyStr.split('\n').length
   const { text: cappedBody } = smartReadTruncate(bodyStr, bodyLines, bodyBytes)
