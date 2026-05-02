@@ -19,6 +19,9 @@ let ev = {};
 try { ev = raw ? JSON.parse(raw) : {}; } catch {}
 
 if (ev.isSidechain) process.exit(0);
+if (ev.is_sidechain) process.exit(0);
+if (ev.agentId) process.exit(0);
+if (ev.agent_id) process.exit(0);
 
 const mode = process.argv[2] || '';
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;

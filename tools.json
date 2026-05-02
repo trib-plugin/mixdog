@@ -132,9 +132,9 @@
       },
       "required": [
         "chat_id",
-        "message_id",
-        "text"
-      ]
+        "message_id"
+      ],
+      "minProperties": 3
     },
     "module": "channels"
   },
@@ -669,7 +669,7 @@
     "annotations": {
       "title": "Bridge to External Model",
       "readOnlyHint": false,
-      "destructiveHint": false,
+      "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": true
     },
@@ -728,10 +728,6 @@
         "cwd": {
           "type": "string",
           "description": "Working directory for bridge agent tool execution."
-        },
-        "allow_retrieval": {
-          "type": "boolean",
-          "description": "Default false. When true, the worker may call retrieval wrappers (recall / explore / search) which spawn hidden sub-agents. Set true only when the brief is genuinely unknown-coordinate; for known path/line/identifier briefs leave it off so the worker uses direct read/grep/find_symbol."
         },
         "prefetch": {
           "type": "object",
@@ -1402,7 +1398,15 @@
   },
   {
     "name": "inject_input",
-    "description": "Inject text into host terminal (parent console). Always submits — appends newline if absent.",
+    "title": "Inject Host Input",
+    "annotations": {
+      "title": "Inject Host Input",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "description": "Inject text into host terminal (parent console). DANGER: text is submitted as a keypress event to the host process — it can execute arbitrary commands in the parent shell. Always submits — appends newline if absent.",
     "inputSchema": {
       "type": "object",
       "properties": {

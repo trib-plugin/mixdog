@@ -1,5 +1,5 @@
 {
-  "_doc": "cycle1 evaluation fixtures. Each case = ordered entries (timestamps auto-assigned 1000ms apart from base_ts) + expected block. role default: 'user' for caller turns, 'assistant' for replies. session_id default: 'sess1'. See bench/cycle-probe.mjs for metric definitions.",
+  "_doc": "cycle1 evaluation fixtures. Each case = ordered entries (timestamps auto-assigned 1000ms apart from base_ts) + expected block. role default: 'user' for caller turns, 'assistant' for replies. session_id default: 'sess1'.",
   "base_ts": 1714000000000,
   "cases": [
     {

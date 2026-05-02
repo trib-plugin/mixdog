@@ -1395,23 +1395,6 @@ const TOOL_DEFS = [
     },
   },
   {
-    name: 'explore',
-    title: 'Explore',
-    aiWrapped: true,
-    annotations: { title: 'Explore', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: 'Internal codebase/file/structure search — try this first when location uncertain; never grep/read/bash/find_symbol blind. Local filesystem only — not web, not memory. `query`: single rich NL query (default — one internal agent judges glob+grep fan-out & synthesizes) or array of strings (N independent agents, mechanical merge, no cross-synthesis — only for genuinely unrelated asks). Omit `cwd` for the current workspace; set `cwd` only when the user explicitly names that root/path. Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Single NL string, or array of strings for unrelated multi-question.' },
-        cwd: { type: 'string', description: 'Optional search root. Omit for current workspace; pass only when the user names a path.' },
-        background: { type: 'boolean', description: 'Default false (sync). Set true for heavy queries to dispatch async and receive answer via channel.' },
-      },
-      required: ['query'],
-      additionalProperties: false,
-    },
-  },
-  {
     name: 'search_memories',
     title: 'Search Memories',
     public: false,
@@ -1436,6 +1419,13 @@ async function handleToolCall(name, args) {
   try {
     if (name === 'search_memories') {
       const result = await handleSearch(args || {})
+      return { content: [{ type: 'text', text: result.text }], isError: result.isError || false }
+    }
+    if (name === 'recall') {
+      // recall is aiWrapped in the unified build; in standalone mode map it to
+      // search_memories so the advertised tool name actually works.
+      const searchArgs = { query: args?.query, ...(args?.period ? { period: args.period } : {}) }
+      const result = await handleSearch(searchArgs)
       return { content: [{ type: 'text', text: result.text }], isError: result.isError || false }
     }
     if (name === 'memory') {

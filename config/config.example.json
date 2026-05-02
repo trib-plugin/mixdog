@@ -1,8 +1,35 @@
 {
   "__comment": "Global plugin configuration. Seeded automatically on first install — edit via /mixdog:config or directly in the data directory.",
-  "promptInjection": {
-    "__comment": "Controls how mixdog injects rules and memory into the session. 'claude_md' writes to CLAUDE.md (recommended); 'hook' uses the session-start hook output only.",
-    "mode": "claude_md",
-    "targetPath": "~/.claude/CLAUDE.md"
+  "backend": "discord",
+  "discord": {
+    "token": ""
+  },
+  "access": {
+    "dmPolicy": "pairing",
+    "allowFrom": [],
+    "channels": {}
+  },
+  "mainChannel": "main",
+  "channelsConfig": {
+    "main": {
+      "channelId": "",
+      "mode": "interactive"
+    }
+  },
+  "quiet": {
+    "schedule": "23:00-09:00",
+    "holidays": false
+  },
+  "proactive": {
+    "enabled": true,
+    "idleMinutes": 30,
+    "model": "sonnet-mid",
+    "respectQuiet": true
+  },
+  "schedules": {
+    "respectQuiet": true
+  },
+  "webhook": {
+    "respectQuiet": false
   }
 }

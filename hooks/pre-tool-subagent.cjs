@@ -135,7 +135,7 @@ process.stdin.on('end', async () => {
     const agentId = agentIdRaw || 'unknown';
 
     const toolName = data.tool_name || '';
-    if (toolName !== 'Edit' && toolName !== 'Write') process.exit(0);
+    if (toolName !== 'Edit' && toolName !== 'Write' && toolName !== 'MultiEdit') process.exit(0);
 
     const filePath = toolInput.file_path || '';
     // Resolve the session cwd: hook payload carries it on newer Claude Code
@@ -224,10 +224,10 @@ process.stdin.on('end', async () => {
           if (result === 'allow' || result === 'session') {
             decision = { hookSpecificOutput: { hookEventName: 'PreToolUse', decision: 'allow' } };
           } else {
-            decision = { hookSpecificOutput: { hookEventName: 'PreToolUse', decision: 'deny', reason: 'Denied from Discord' } };
+            decision = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Denied from Discord' } };
           }
         } catch {
-          decision = { hookSpecificOutput: { hookEventName: 'PreToolUse', decision: 'deny', reason: 'Failed to read result' } };
+          decision = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Failed to read result' } };
         }
         await patchAndExit('', decision);
         return;
@@ -245,7 +245,7 @@ process.stdin.on('end', async () => {
     // Timeout → deny
     await patchAndExit(
       '\n\n⚠️ Auto-denied due to timeout.',
-      { hookSpecificOutput: { hookEventName: 'PreToolUse', decision: 'deny', reason: 'Timeout' } }
+      { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Timeout' } }
     );
   } catch {
     process.exit(0);

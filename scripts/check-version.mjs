@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * check-version.mjs
- * Verifies that version fields in package.json and .claude-plugin/plugin.json match.
+ * Verifies that version fields in package.json, package-lock.json, and .claude-plugin/plugin.json match.
  *
  * Exit 0 → in sync.
  * Exit 1 → mismatch (prints a table of mismatches).
@@ -30,6 +30,19 @@ const readings = [];
 const pkgPath = path.join(ROOT, 'package.json');
 const pkg = readJson(pkgPath);
 readings.push({ file: 'package.json', field: 'version', value: pkg.version });
+
+const pkgLockPath = path.join(ROOT, 'package-lock.json');
+if (fs.existsSync(pkgLockPath)) {
+  const lock = readJson(pkgLockPath);
+  readings.push({ file: 'package-lock.json', field: 'version', value: lock.version });
+  const rootPkg = lock?.packages?.[''];
+  if (rootPkg !== undefined) {
+    readings.push({ file: 'package-lock.json', field: 'packages[""].version', value: rootPkg.version });
+  } else {
+    process.stderr.write('✗ package-lock.json missing packages[""] entry\n');
+    process.exit(1);
+  }
+}
 
 const pluginJsonPath = path.join(ROOT, '.claude-plugin', 'plugin.json');
 if (fs.existsSync(pluginJsonPath)) {

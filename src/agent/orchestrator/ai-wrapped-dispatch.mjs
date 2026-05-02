@@ -1104,6 +1104,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
     if (name === 'explore') {
       const broadErr = checkBroadCwdBlock(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
       if (broadErr) {
+        removePending(process.env.CLAUDE_PLUGIN_DATA, id)
         pushDispatchResult(ctx, id, name, queries, broadErr, { error: true })
         return
       }
@@ -1344,7 +1345,16 @@ export function buildDispatchResultHeader(tool, modelTag) {
 
 export function pushDispatchResult(ctx, id, tool, queries, body, flags = {}) {
   const notify = ctx?.notifyFn
-  if (typeof notify !== 'function') return
+  if (typeof notify !== 'function') {
+    // notifyFn absent means the background result has nowhere to go — the
+    // promise would silently vanish.  Write a visible stderr line so the
+    // operator can diagnose "auto-pushed" answers that never arrived, and
+    // return a structured marker so callers can detect the gap.
+    try {
+      process.stderr.write(`[ai-wrapped-dispatch] pushDispatchResult: no notifyFn — result lost tool=${tool} id=${id}\n`)
+    } catch {}
+    return { lost: true, tool, id, reason: 'no-notify-fn' }
+  }
   const queryCount = queries.length === 1
     ? `1 query`
     : `${queries.length} queries`
@@ -1397,8 +1407,19 @@ export function pushDispatchResult(ctx, id, tool, queries, body, flags = {}) {
       }),
     ).catch((err) => {
       try {
-        process.stderr.write(`[ai-wrapped-dispatch] pushDispatchResult async failed: tool=${tool} id=${id} err=${err?.message ?? String(err)}\n`)
+        process.stderr.write(`[ai-wrapped-dispatch] pushDispatchResult async failed: tool=${tool} id=${id} err=${err?.message ?? String(err)} — re-queuing to pending\n`)
       } catch {}
+      // Re-insert into the pending queue so the next plugin bootstrap
+      // (recoverPending) can surface the result as Aborted rather than
+      // losing it silently.  Only write if CLAUDE_PLUGIN_DATA is available.
+      const dataDir = process.env.CLAUDE_PLUGIN_DATA
+      if (dataDir && id && tool) {
+        // .catch callback is not async — use dynamic import().then chain.
+        import('./dispatch-persist.mjs').then(({ addPending }) => {
+          const qs = Array.isArray(queries) ? queries : [String(queries ?? '')]
+          addPending(dataDir, id, tool, qs)
+        }).catch(() => { /* best-effort */ })
+      }
     })
   } catch (err) {
     try { process.stderr.write(`[ai-wrapped-dispatch] pushDispatchResult failed: tool=${tool} id=${id} err=${err?.message ?? String(err)}\n`); } catch {}

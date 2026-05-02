@@ -19,7 +19,7 @@
 // Read-only tool set (mixdog tool names).
 const READ_ONLY_TOOLS = new Set([
   'read', 'list', 'glob', 'grep', 'find_symbol', 'explore',
-  'recall', 'search', 'fetch',
+  'recall', 'search', 'fetch', 'code_graph',
 ]);
 
 /**
@@ -74,7 +74,7 @@ function matchesPattern(pattern, toolName, toolInput) {
     const inp = toolInput || {};
     const candidates = [...new Set([
       inp.path, inp.command, inp.file, inp.file_path, inp.base_path, inp.cwd,
-      ...(Array.isArray(inp.path)      ? inp.path      : []),
+      ...(Array.isArray(inp.path)      ? inp.path.map(p => (p && typeof p === 'object' ? p.path : p)) : []),
       ...(Array.isArray(inp.reads)     ? inp.reads.map(r => r?.path)                              : []),
       ...(Array.isArray(inp.edits)     ? inp.edits.flatMap(e => [e?.path, e?.file_path])          : []),
       ...(Array.isArray(inp.writes)    ? inp.writes.flatMap(w => [w?.path, w?.file_path])         : []),

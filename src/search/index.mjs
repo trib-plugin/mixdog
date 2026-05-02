@@ -872,6 +872,13 @@ async function handleToolCall(name, rawArgs, { signal } = {}) {
   switch (name) {
     case 'search': {
       let args
+      // The public aiWrapped schema uses `query` (to match recall/explore style).
+      // The direct zod schema expects `keywords`. Normalize so standalone callers
+      // using the advertised schema don't get a validation error.
+      if (rawArgs && rawArgs.query !== undefined && rawArgs.keywords === undefined) {
+        rawArgs = { ...rawArgs, keywords: rawArgs.query }
+        delete rawArgs.query
+      }
       try {
         args = searchArgsSchema.parse(normalizeSearchArgs(rawArgs || {}))
       } catch (e) {

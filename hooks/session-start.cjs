@@ -70,6 +70,8 @@ try {
 
 if (_event.isSidechain) process.exit(0);
 if (_event.agentId) process.exit(0);
+if (_event.is_sidechain) process.exit(0);
+if (_event.agent_id) process.exit(0);
 if (_event.kind && _event.kind !== 'interactive') process.exit(0);
 
 const DATA_DIR = resolvePluginData();

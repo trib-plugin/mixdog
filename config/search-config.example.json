@@ -1,5 +1,6 @@
 {
   "__comment": "Web search configuration. Seeded automatically on first install — add API keys via /mixdog:config or by editing this file in the data directory.",
+  "enabled": true,
   "rawSearch": {
     "__comment": "Provider priority list — first provider with a valid key is tried first, then falls back in order.",
     "priority": ["serper", "brave", "perplexity", "firecrawl", "tavily", "xai"],

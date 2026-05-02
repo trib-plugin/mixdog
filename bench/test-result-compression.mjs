@@ -98,17 +98,17 @@ test('compressToolResult: read tool skipped (allowlist excludes file content)', 
   const out = compressToolResult('read', null, big, null)
   eq(out, big, 'read result must be returned unchanged')
 })
-test('compressToolResult: bash tool processed', () => {
+test('compressToolResult: shell tool processed', () => {
   const big = '\x1b[31mERROR\x1b[0m   \n'.repeat(60)
   truthy(big.length >= 512, 'fixture above min bytes')
-  const out = compressToolResult('bash', null, big, null)
-  truthy(out.length < big.length, 'bash output should be compressed')
+  const out = compressToolResult('shell', null, big, null)
+  truthy(out.length < big.length, 'shell output should be compressed')
   truthy(!out.includes('\x1b['), 'ANSI sequences should be gone')
 })
-test('compressToolResult: MCP-prefixed bash tool also processed', () => {
+test('compressToolResult: MCP-prefixed shell tool also processed', () => {
   const big = '\x1b[31mERROR\x1b[0m   \n'.repeat(60)
-  const out = compressToolResult('mcp__plugin_mixdog_mixdog__bash', null, big, null)
-  truthy(out.length < big.length, 'prefixed bash should also be compressed')
+  const out = compressToolResult('mcp__plugin_mixdog_mixdog__shell', null, big, null)
+  truthy(out.length < big.length, 'prefixed shell should also be compressed')
 })
 test('compressToolResult: edit tool skipped', () => {
   const big = 'line\n'.repeat(200)
@@ -138,8 +138,6 @@ test('compressToolResult: incompressible large input returns unchanged (expand g
 
 // --- combined chain ---
 test('chain: ANSI + trailing + dedup + separator all reduce together', () => {
-  // Fixture must clear COMPRESS_MIN_BYTES (512) before compressToolResult
-  // engages the chain at all.
   const bar = '=========================================='
   const block = '\x1b[32mPASS this is a longer payload line\x1b[0m   \n'.repeat(20)
   const input = [
@@ -151,7 +149,7 @@ test('chain: ANSI + trailing + dedup + separator all reduce together', () => {
     'tail   ',
   ].join('\n')
   truthy(input.length >= 512, `fixture above min bytes (got ${input.length})`)
-  const out = compressToolResult('bash', null, input, null)
+  const out = compressToolResult('shell', null, input, null)
   truthy(out.length < input.length, `compressed (in=${input.length}, out=${out.length})`)
   truthy(!out.includes('\x1b['), 'ANSI gone')
   truthy(out.includes('separator lines collapsed') || out.includes('identical lines collapsed'), 'at least one collapse marker')

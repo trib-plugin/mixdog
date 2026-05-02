@@ -33,8 +33,8 @@
     {
       "id": "reviewer-probe-modes",
       "role": "reviewer",
-      "prompt": "Review `bench/probe.mjs` — compare the 'run' and 'sweep' commands: (1) what each mode does, (2) what artifacts each mode writes, (3) when to choose one over the other. 6-10 lines.",
-      "expected_substrings": ["run", "sweep"]
+      "prompt": "Review `bench/bridge-tasks.json` — compare the 'worker' and 'reviewer' role tasks: (1) what each role targets, (2) what expected_substrings each checks, (3) when to choose one over the other. 6-10 lines.",
+      "expected_substrings": ["worker", "reviewer"]
     },
     {
       "id": "debugger-bridge-cwd",
@@ -51,7 +51,7 @@
     {
       "id": "tester-probe-smoke",
       "role": "tester",
-      "prompt": "Run `node bench/probe.mjs run --concurrency=30` once and report (1) wall ms, (2) per-tool p95 ms for recall/search/explore, (3) any FAIL/TIMEOUT signatures. Read-only test execution; do not edit code. 5-8 lines.",
+      "prompt": "Run `node bench/test-result-compression.mjs` once and report (1) wall ms (approximate), (2) pass/fail counts, (3) any FAIL signatures. Read-only test execution; do not edit code. 5-8 lines.",
       "expected_substrings": ["wall", "p95"]
     },
     {

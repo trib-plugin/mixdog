@@ -280,10 +280,6 @@ function isBlockedPublicWrapperCall(toolName, sessionRef) {
     if (!RETRIEVAL_WRAPPERS.has(toolName)) return false;
     if (sessionRef?.owner !== 'bridge') return false;
     if (isHiddenRole(sessionRef?.role)) return false;
-    // Lead opt-in: when the brief is genuinely unknown-coordinate Lead
-    // passes allow_retrieval:true on the bridge call. The flag rides through
-    // session-builder onto the session object.
-    if (sessionRef?.allowRetrieval === true) return false;
     return true;
 }
 function messagesArrayChanged(before, after) {

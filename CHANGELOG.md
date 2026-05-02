@@ -4,12 +4,11 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.1.104] - Unreleased
+## [0.1.420] - 2026-05-02
 
 ### Changed
 
-- **default `recall` / `search` / `explore` builders switched to a per-tool preflight hybrid.** A 3-run cumulative sweep (`bench/probe.mjs`) showed that input-side scope extraction combined with a tighter per-tool output schema beats the previous structured-routing default. The new layout: `recall` runs a MUST step-by-step preflight that anchors on entry id / date / named decision, `search` caps output at 2 paragraphs with URL / owner-repo / domain extraction, `explore` caps at 3 paragraphs with identifier / file-path / regex extraction. Wall mean dropped ~24% vs the prior default; p50 search 6909 → 5531 ms (-20%), p50 explore 11765 → 11497 ms. `bench/prompt-variants/baseline.mjs` is kept in sync as the sweep mirror.
-- **`rules/shared/01-tool.md` adds a `## Preflight` section** that codifies the same scan-first rule (extract known scope, collapse multiple rounds into one targeted call) so every delegated role inherits it without relying on per-role overrides.
+- Final review pass: bridge dispatcher / channels / hooks / setup wizard / config example sync hardened.
 
 ## [0.1.52] - Unreleased
 
@@ -112,7 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`find_symbol` MCP tool** — code-graph-backed symbol lookup across the workspace. Implementation in `src/agent/orchestrator/tools/code-graph.mjs` (`_findSymbolAcrossGraph` + new tool def); registered as a builtin in `src/agent/orchestrator/tools/builtin.mjs`. Added to every agent role doc (`agents/worker.md`, `agents/reviewer.md`, `agents/debugger.md`, `agents/tester.md`, `agents/researcher.md`) and the shared tool-routing rules (`rules/shared/01-tool.md`, `rules/bridge/00-common.md`).
+- **`find_symbol` MCP tool** — code-graph-backed symbol lookup across the workspace. Implementation in `src/agent/orchestrator/tools/code-graph.mjs` (`_findSymbolAcrossGraph` + new tool def); registered as a builtin in `src/agent/orchestrator/tools/builtin.mjs`. Tool-routing rules updated in `rules/shared/01-tool.md` and `rules/bridge/00-common.md`.
 - **Explore fast-path** — `runExploreFastPath` in `src/agent/orchestrator/ai-wrapped-dispatch.mjs`. When the query yields a clean identifier candidate, answer directly via `executeBuiltinTool` / `executeCodeGraphTool` without going through the LLM bridge. Layered on top of main's existing `searchProviderKeysMissing` gate and sync-by-default behaviour (0.1.19).
 - **`fetch_many` channels MCP tool** — multi-channel fetch in a single call. Defined in `src/channels/index.mjs` alongside existing `fetch`.
 - **Bridge eager-dispatch hooks** — `src/agent/orchestrator/session/loop.mjs` and `src/agent/orchestrator/session/manager.mjs` expose fast-path helper surface (`_extractBridgeIdentifier`, `_parseFindSymbolBestCandidate`, etc.).

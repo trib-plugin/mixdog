@@ -23,17 +23,66 @@ function _isPidAlive(pid) {
   try { process.kill(pid, 0); return true }
   catch (err) { return err?.code === 'EPERM' }
 }
-try {
-  if (fs.existsSync(LOCK_PATH)) {
-    const raw = fs.readFileSync(LOCK_PATH, 'utf-8').trim()
-    const existingPid = Number.parseInt(raw, 10)
+// Atomic lock acquisition: open with 'wx' (exclusive create) so two racing
+// processes cannot both believe they won. If the file already exists, 'wx'
+// throws EEXIST — read the PID, decide if the owner is still alive, and
+// either retry (stale) or exit (live).
+let _lockFd = null
+function _acquireLock() {
+  // First try: atomic exclusive create.
+  try {
+    _lockFd = fs.openSync(LOCK_PATH, 'wx')
+    fs.writeSync(_lockFd, String(process.pid))
+    fs.closeSync(_lockFd)
+    _lockFd = null
+    return // success — fast path
+  } catch (err) {
+    if (err?.code !== 'EEXIST') {
+      // Unexpected error — best-effort write and continue.
+      try { if (_lockFd !== null) { fs.closeSync(_lockFd); _lockFd = null } } catch {}
+      try { fs.writeFileSync(LOCK_PATH, String(process.pid)) } catch {}
+      return
+    }
+  }
+
+  // EEXIST — inspect the current owner.
+  const _LOCK_RETRIES = 3
+  const _LOCK_RETRY_MS = 50
+  for (let attempt = 0; attempt <= _LOCK_RETRIES; attempt++) {
+    let existingPid = NaN
+    try { existingPid = Number.parseInt(fs.readFileSync(LOCK_PATH, 'utf-8').trim(), 10) } catch {}
     if (Number.isFinite(existingPid) && _isPidAlive(existingPid)) {
       process.stderr.write(`[server] another mixdog instance already running (pid=${existingPid}); exiting.\n`)
       process.exit(0)
     }
+    // Stale lock — unlink then re-acquire atomically via 'wx'.
+    try { fs.unlinkSync(LOCK_PATH) } catch {}
+    try {
+      _lockFd = fs.openSync(LOCK_PATH, 'wx')
+      fs.writeSync(_lockFd, String(process.pid))
+      fs.closeSync(_lockFd)
+      _lockFd = null
+      return // atomic re-acquire succeeded
+    } catch (retryErr) {
+      if (retryErr?.code !== 'EEXIST') {
+        // Unexpected error on retry — best-effort and continue.
+        try { if (_lockFd !== null) { fs.closeSync(_lockFd); _lockFd = null } } catch {}
+        try { fs.writeFileSync(LOCK_PATH, String(process.pid)) } catch {}
+        return
+      }
+      // Another process beat us to 'wx' — wait and retry.
+      if (attempt < _LOCK_RETRIES) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, _LOCK_RETRY_MS)
+      }
+    }
   }
-} catch { /* malformed lock — overwrite below */ }
-fs.writeFileSync(LOCK_PATH, String(process.pid))
+  // All retries exhausted — another process won the race.
+  let finalPid = NaN
+  try { finalPid = Number.parseInt(fs.readFileSync(LOCK_PATH, 'utf-8').trim(), 10) } catch {}
+  process.stderr.write(`[server] failed to acquire server.lock after ${_LOCK_RETRIES} retries (owner pid=${finalPid}); exiting.\n`)
+  process.exit(0)
+}
+_acquireLock()
 const _releaseLock = () => {
   try {
     const raw = fs.readFileSync(LOCK_PATH, 'utf-8').trim()

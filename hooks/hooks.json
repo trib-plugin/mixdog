@@ -25,12 +25,44 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-subagent.cjs\"",
+            "timeout": 900
+          }
+        ]
+      },
+      {
         "matcher": "mcp__plugin_mixdog_mixdog__.*",
         "hooks": [
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-mcp-sandbox.cjs\"",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/turn-timer.cjs\" start",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/turn-timer.cjs\" stop",
+            "timeout": 5
           }
         ]
       }

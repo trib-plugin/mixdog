@@ -344,13 +344,23 @@ class DiscordBackend {
   async editMessage(chatId, messageId, text, opts) {
     const ch = await this.fetchAllowedChannel(chatId);
     const msg = await ch.messages.fetch(messageId);
-    const trimmedText = text && text.length > MAX_CHUNK_LIMIT ? text.slice(0, MAX_CHUNK_LIMIT) : text;
+    const access = this.loadAccess();
+    const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT));
+    const chunks = chunk(text, limit);
+    // Edit the original message with the first chunk; send subsequent chunks
+    // as new messages to the same channel (same behaviour as reply chunking).
     const edited = await msg.edit({
-      content: trimmedText || null,
+      content: chunks[0] || null,
       ...opts?.embeds ? { embeds: opts.embeds } : {},
       ...opts?.components ? { components: opts.components } : {}
     });
-    return edited.id;
+    const sentIds = [edited.id];
+    for (let i = 1; i < chunks.length; i++) {
+      const sent = await ch.send({ content: chunks[i] });
+      this.noteSent(sent.id);
+      sentIds.push(sent.id);
+    }
+    return sentIds[0];
   }
   async deleteMessage(chatId, messageId) {
     const ch = await this.fetchAllowedChannel(chatId);

@@ -151,6 +151,12 @@ function buildInstructions() {
 // Seed default workflows into user data dir if none exist yet.
 seedDefaults();
 
+// jobId → current activeSession.id registry. Populated by detached bridge
+// workers so close_session can reach the *latest* session after a retry
+// replaced the original. Cleared when the job finishes (finally block).
+// Map<jobId, sessionId>
+const _jobSessionRegistry = new Map();
+
 // Seed plugin-owned scaffolding files (memory-config.json, etc.) so
 // first-time installs land with the Pool B surface populated and the Config
 // UI has real paths to edit.
@@ -341,7 +347,6 @@ const TOOLS = [
     name: 'bridge',
     title: 'Bridge to External Model',
     annotations: { title: 'Bridge to External Model', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided.',
     description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided. Pass `prefetch:{files,callers,references}` to prepend Lead-specified context (paths, code-graph caller/reference sites) into the worker prompt and skip heuristic prefetch.',
     inputSchema: {
       type: 'object',
@@ -646,7 +651,24 @@ export async function handleToolCall(name, args, opts = {}) {
         // cleanup. We don't wait for the abort to unwind — callers get an
         // immediate ack and unknown IDs return the same shape for simplicity
         // (Q1: unified {ok: true}).
+        //
+        // Retry-session forwarding: if the supplied sessionId was the initial
+        // session for a detached bridge job that has since been replaced by a
+        // retry, the registry maps jobId→currentSessionId. We scan for a
+        // registry entry whose current value matches the requested id AND close
+        // the current (possibly newer) replacement too so the worker is actually
+        // stopped. If no retry replacement exists the current==requested and
+        // both closeSession calls are idempotent no-ops on the same id.
         closeSession(args.sessionId, 'manual');
+        // Forward close to the retry-replacement session of the specific job
+        // whose currentSessionId matches the requested args.sessionId.
+        // Only that job's replacement is closed — other detached jobs are left alone.
+        for (const [jobId, currentId] of _jobSessionRegistry) {
+          if (currentId === args.sessionId) {
+            try { closeSession(currentId, 'manual'); } catch {}
+            break;
+          }
+        }
         return ok({ ok: true, sessionId: args.sessionId });
       }
 
@@ -816,7 +838,6 @@ export async function handleToolCall(name, args, opts = {}) {
           parentSessionId: callerSessionId,
           permissionMode: _permissionMode,
           cacheKeyOverride: args.cacheKey || undefined,
-          allowRetrieval: args.allow_retrieval === true || args.allowRetrieval === true,
         });
 
         // workerCwd: explicit Lead intent > inherited AsyncLocalStorage override > original user cwd.
@@ -837,13 +858,17 @@ export async function handleToolCall(name, args, opts = {}) {
         // request abort into closeSession(); operators can still stop the work
         // explicitly through close_session(sessionId).
         const bridgeDetached = true;
+        // Detached workers must NOT be closed on MCP request abort — the worker
+        // outlives the request by design. Logging only so operators can track
+        // the lifecycle without accidentally killing long-running jobs.
         if (bridgeDetached && requestSignal) {
           const onRequestAbort = () => {
             try {
               process.stderr.write(
-                `[bridge] MCP request aborted — closing detached session: session=${session.id} role=${role} job=${jobId}\n`,
+                `[bridge] MCP request aborted — detached worker continues: session=${session.id} role=${role} job=${jobId}\n`,
               );
-              closeSession(session.id, 'request-abort');
+              // Intentionally NOT calling closeSession() here — detached bridge
+              // workers survive the MCP request lifecycle.
             } catch { /* best-effort */ }
           };
           if (requestSignal.aborted) {
@@ -896,6 +921,9 @@ export async function handleToolCall(name, args, opts = {}) {
         // the first attempt; activeSession is updated per attempt and hoisted
         // outside the IIFE so the .catch() handler can reference it).
         let activeSession = session;
+        // Register initial mapping so close_session can resolve the job's current
+        // session before the IIFE has had a chance to update it.
+        _jobSessionRegistry.set(jobId, activeSession.id);
         // Wrap the detached async IIFE in runWithCwdOverride so all builtin tool
         // calls inside this worker's async context resolve paths against workerCwd
         // via pwd() — no manual callerCwd propagation through nested calls needed.
@@ -953,9 +981,12 @@ export async function handleToolCall(name, args, opts = {}) {
                     parentSessionId: callerSessionId,
                     permissionMode: _permissionMode,
                     cacheKeyOverride: args.cacheKey || undefined,
-                    allowRetrieval: args.allow_retrieval === true || args.allowRetrieval === true,
                   });
                   activeSession = retryBuilt.session;
+                  // Keep jobId→sessionId registry current so close_session
+                  // (called by the Lead with the original sessionId or jobId)
+                  // can forward the close to the replacement worker.
+                  _jobSessionRegistry.set(jobId, activeSession.id);
                   updateSessionStatus(activeSession.id, 'running');
                   emit(`${modelTag}${role} retry attempt=${attempt}`, { silent_to_agent: true });
                 }
@@ -1069,6 +1100,7 @@ export async function handleToolCall(name, args, opts = {}) {
             // Remove persist record — job completed (success or handled error).
             // Idempotent: removePending is a no-op if the entry is already gone.
             try { removePending(process.env.CLAUDE_PLUGIN_DATA, jobId); } catch {}
+            try { _jobSessionRegistry.delete(jobId); } catch {}
             try {
               const cfg = loadConfig();
               if (cfg.trajectory?.enabled !== false) {
@@ -1091,12 +1123,18 @@ export async function handleToolCall(name, args, opts = {}) {
           }
         }))().catch((err) => {
           try { removePending(process.env.CLAUDE_PLUGIN_DATA, jobId); } catch {}
+          try { _jobSessionRegistry.delete(jobId); } catch {}
           const msg = err instanceof Error ? (err.stack || err.message) : String(err);
+          const crashSessionId = activeSession?.id ?? session.id;
           try {
-            process.stderr.write(`[bridge] detached runner unhandled: session=${activeSession?.id ?? session.id} role=${role} job=${jobId} ${msg}\n`);
+            process.stderr.write(`[bridge] detached runner unhandled: session=${crashSessionId} role=${role} job=${jobId} ${msg}\n`);
           } catch {}
-          try { updateSessionStatus(activeSession?.id ?? session.id, 'error'); } catch {}
-          try { closeSession(activeSession?.id ?? session.id, 'runner-crash'); } catch {}
+          // Notify via emit so the crash surfaces to the Lead / channel instead
+          // of silently disappearing. Uses the same channel as normal error
+          // emissions so the Lead can act on it.
+          try { emit(`${role} crash: ${err instanceof Error ? err.message : String(err)}`); } catch {}
+          try { updateSessionStatus(crashSessionId, 'error'); } catch {}
+          try { closeSession(crashSessionId, 'runner-crash'); } catch {}
         });
 
         return ok({

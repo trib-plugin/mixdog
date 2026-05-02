@@ -112,8 +112,17 @@ function findAncestorPid() {
 function requestOpen() {
   return new Promise(resolve => {
     const req = http.get(`http://localhost:${PORT}/open`, res => {
-      res.resume();
-      resolve(res.statusCode && res.statusCode < 400);
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(body);
+          resolve(json.ok === true);
+        } catch {
+          resolve(res.statusCode >= 200 && res.statusCode < 300);
+        }
+      });
     });
     req.on('error', () => resolve(false));
     req.setTimeout(3000, () => { req.destroy(); resolve(false); });

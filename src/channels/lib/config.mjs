@@ -10,7 +10,7 @@ if (!process.env.CLAUDE_PLUGIN_DATA) {
 }
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? new URL("..", import.meta.url).pathname;
-const CONFIG_FILE = join(DATA_DIR, "config.json");
+const CONFIG_FILE = MIXDOG_CONFIG_PATH;
 const DEFAULT_ACCESS = {
   dmPolicy: "pairing",
   allowFrom: [],

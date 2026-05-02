@@ -112,7 +112,10 @@ function extractPaths(toolName, toolInput) {
       if (toolInput.path && typeof toolInput.path === 'string') push(toolInput.path);
       push(toolInput.cwd);
       if (Array.isArray(toolInput.reads)) toolInput.reads.forEach(r => push(r?.path));
-      if (Array.isArray(toolInput.path))  toolInput.path.forEach(p => push(p));
+      if (Array.isArray(toolInput.path))  toolInput.path.forEach(p => {
+        if (p && typeof p === 'string') push(p);
+        else if (p && typeof p === 'object' && p.path) push(p.path);
+      });
       break;
     }
     default:

@@ -83,7 +83,7 @@ try {
     }
     if (Object.keys(merged).length > 0) writeFileSync(mixdogCfgPath, JSON.stringify(merged, null, 2) + '\n')
   }
-} catch (e) { log(`config sync: ${e.message}`) }
+} catch (e) { process.stderr.write(`[boot] config sync: ${e?.message ?? e}\n`) }
 
 // ── Module enable flags (B6 General toggles) ──────────────────────
 // Snapshotted once at boot — toggling in the setup UI requires a full
@@ -112,7 +112,17 @@ const RAW_TOOL_DEFS = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'tools.json'), '
 // response AND the bridge's internal-tools registry. `builtin` / `lsp` /
 // `bash_session` / `patch` are not module-gated — they ride along with
 // the plugin regardless.
+// Gate host_input on MIXDOG_ALLOW_HOST_INPUT env-var or
+// modules.host_input.enabled config flag. Default: off.
+const _hostInputAllowed = (() => {
+  if (process.env.MIXDOG_ALLOW_HOST_INPUT === '1') return true
+  try {
+    const raw = JSON.parse(readFileSync(join(PLUGIN_DATA, 'mixdog-config.json'), 'utf8'))
+    return !!(raw?.modules?.host_input?.enabled)
+  } catch { return false }
+})()
 const TOOL_DEFS = RAW_TOOL_DEFS.filter(t => {
+  if (t.module === 'host_input') return _hostInputAllowed
   if (!t.module) return true
   if (MODULE_NAMES.includes(t.module)) return isModuleEnabled(t.module)
   return true
@@ -772,7 +782,7 @@ try {
   if (!isModuleEnabled('agent')) {
     log(`module 'agent' disabled — skipping eager init, bridge and synthetic tools will not register`)
   } else {
-  loadModule('agent').then(async () => {
+  await loadModule('agent').then(async () => {
     // Populate the in-process tool registry at boot so ALL session entry
     // points (direct createSession / resumeSession, not just handleToolCall)
     // see the bridge from the first call. handleToolCall still calls
@@ -1159,7 +1169,8 @@ async function shutdown(reason) {
     const pid = statusServerChild.pid
     try {
       if (isWin && pid) {
-        require('child_process').execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', windowsHide: true, timeout: 3000 })
+        const { execSync: _execSync } = await import('node:child_process')
+        _execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', windowsHide: true, timeout: 3000 })
       } else {
         statusServerChild.kill('SIGTERM')
       }
@@ -1172,7 +1183,8 @@ async function shutdown(reason) {
     const pid = entry.proc.pid
     try {
       if (isWin && pid) {
-        require('child_process').execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', windowsHide: true, timeout: 5000 })
+        const { execSync: _execSync2 } = await import('node:child_process')
+        _execSync2(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', windowsHide: true, timeout: 5000 })
       } else {
         entry.proc.kill('SIGTERM')
       }

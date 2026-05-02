@@ -824,7 +824,10 @@ async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
         const _pfGuard = _guardedPrefetchTool('read', { path: files }, session);
         if (_pfGuard) {
             process.stderr.write(`[bridge-prefetch] files read blocked: ${_pfGuard}\n`);
+            failed.push(...files);
+            totalEntries.push(...files);
         } else {
+        totalEntries.push(...files);
         const readOut = await executeInternalTool('read', { path: files, mode: 'head', n: 120 }).catch((e) => {
             process.stderr.write(`[bridge-prefetch] files read failed: ${e && e.message || e}\n`);
             failed.push(...files);
@@ -835,7 +838,6 @@ async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
         } else if (readOut !== null) {
             failed.push(...files);
         }
-        totalEntries.push(...files);
         }
     }
     // callers[]
@@ -844,6 +846,12 @@ async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
         const cgArgs = { mode: 'callers', symbol };
         if (file) cgArgs.file = file;
         totalEntries.push(symbol);
+        const _pfGuardCallers = _guardedPrefetchTool('code_graph', cgArgs, session);
+        if (_pfGuardCallers) {
+            process.stderr.write(`[bridge-prefetch] callers(${symbol}) blocked: ${_pfGuardCallers}\n`);
+            failed.push(symbol);
+            continue;
+        }
         const out = await executeInternalTool('code_graph', cgArgs).catch((e) => {
             process.stderr.write(`[bridge-prefetch] callers(${symbol}) failed: ${e && e.message || e}\n`);
             failed.push(symbol);
@@ -861,6 +869,12 @@ async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
         const cgArgs = { mode: 'references', symbol };
         if (file) cgArgs.file = file;
         totalEntries.push(symbol);
+        const _pfGuardRefs = _guardedPrefetchTool('code_graph', cgArgs, session);
+        if (_pfGuardRefs) {
+            process.stderr.write(`[bridge-prefetch] references(${symbol}) blocked: ${_pfGuardRefs}\n`);
+            failed.push(symbol);
+            continue;
+        }
         const out = await executeInternalTool('code_graph', cgArgs).catch((e) => {
             process.stderr.write(`[bridge-prefetch] references(${symbol}) failed: ${e && e.message || e}\n`);
             failed.push(symbol);

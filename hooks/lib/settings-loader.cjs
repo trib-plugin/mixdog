@@ -100,7 +100,7 @@ function loadPermissions(projectDir) {
   merged = mergePermissions(merged, projectPerms);
   merged = mergePermissions(merged, localPerms);
 
-  const VALID_MODES = new Set(['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions']);
+  const VALID_MODES = new Set(['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions', 'auto']);
   const rawMode = merged.defaultMode;
   const resolvedMode = (typeof rawMode === 'string' && VALID_MODES.has(rawMode))
     ? rawMode

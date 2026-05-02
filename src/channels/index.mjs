@@ -2329,12 +2329,25 @@ function shouldDropDuplicateInbound(msg) {
 function resolveInboundRoute(chatId) {
   const main = config.channelsConfig?.main;
   const isMain = typeof main === "object" && main !== null && main.channelId === chatId;
-  return {
-    targetChatId: chatId,
-    sourceChatId: chatId,
-    sourceLabel: isMain ? "main" : undefined,
-    sourceMode: (isMain && main.mode) || "interactive"
-  };
+  if (isMain) {
+    return {
+      targetChatId: chatId,
+      sourceChatId: chatId,
+      sourceLabel: "main",
+      sourceMode: main.mode || "interactive"
+    };
+  }
+  // Scan all channelsConfig entries for a matching channelId.
+  if (config.channelsConfig) {
+    for (const [label, entry] of Object.entries(config.channelsConfig)) {
+      if (typeof entry === "object" && entry !== null && entry.channelId === chatId) {
+        // monitor mode must not be downgraded to interactive.
+        const mode = entry.mode === "monitor" ? "monitor" : (entry.mode || "interactive");
+        return { targetChatId: chatId, sourceChatId: chatId, sourceLabel: label, sourceMode: mode };
+      }
+    }
+  }
+  return { targetChatId: chatId, sourceChatId: chatId, sourceLabel: undefined, sourceMode: "interactive" };
 }
 const inboundQueue = (() => {
   let tail = Promise.resolve();

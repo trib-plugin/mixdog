@@ -870,16 +870,38 @@ async function openAppWindow() {
   }
 
   if (process.platform === 'darwin') {
-    exec(`open "${appUrl}"`, error => {
-      if (error) logOpenFailure('macOS open', formatOpenError(error));
+    const macResult = await new Promise(resolve => {
+      const child = spawn('open', [appUrl], { stdio: 'ignore' });
+      let timer = setTimeout(() => {
+        try { child.kill(); } catch {}
+        resolve({ ok: false, error: 'open-timeout' });
+      }, 5000);
+      child.once('error', err => resolve({ ok: false, error: err.message }));
+      child.once('close', code => {
+        clearTimeout(timer);
+        resolve(code === 0 ? { ok: true } : { ok: false, error: `exit ${code}` });
+      });
     });
-    return { ok: true, method: 'macOS open', attempts: [{ method: 'macOS open', ok: true }] };
+    const macAttempt = { method: 'macOS open', ...macResult };
+    if (!macResult.ok) logOpenFailure('macOS open', macResult.error);
+    return { ...macResult, method: 'macOS open', attempts: [macAttempt] };
   }
 
-  exec(`xdg-open "${appUrl}"`, error => {
-    if (error) logOpenFailure('xdg-open', formatOpenError(error));
+  const xdgResult = await new Promise(resolve => {
+    const child = spawn('xdg-open', [appUrl], { stdio: 'ignore' });
+    let timer = setTimeout(() => {
+      try { child.kill(); } catch {}
+      resolve({ ok: false, error: 'open-timeout' });
+    }, 5000);
+    child.once('error', err => resolve({ ok: false, error: err.message }));
+    child.once('close', code => {
+      clearTimeout(timer);
+      resolve(code === 0 ? { ok: true } : { ok: false, error: `exit ${code}` });
+    });
   });
-  return { ok: true, method: 'xdg-open', attempts: [{ method: 'xdg-open', ok: true }] };
+  const xdgAttempt = { method: 'xdg-open', ...xdgResult };
+  if (!xdgResult.ok) logOpenFailure('xdg-open', xdgResult.error);
+  return { ...xdgResult, method: 'xdg-open', attempts: [xdgAttempt] };
 }
 
 // -- Merge logic --
@@ -1257,7 +1279,7 @@ const server = http.createServer(async (req, res) => {
     const name = decodeURIComponent(path.slice('/schedules/file/'.length));
     const filePath = join(SCHEDULES_DIR, name, 'prompt.md');
     if (!existsSync(filePath)) { mkdirSync(join(SCHEDULES_DIR, name), { recursive: true }); writeFileSync(filePath, '', 'utf8'); }
-    if (isWin) { spawn('cmd', ['/c', 'start', '', filePath], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); }
+    if (isWin) { spawn('cmd', ['/c', 'start', '""', filePath.replace(/[&^"<>|]/g, '^$&')], { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: false }).unref(); }
     else { spawn('open', [filePath], { detached: true, stdio: 'ignore' }).unref(); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
@@ -1318,7 +1340,7 @@ const server = http.createServer(async (req, res) => {
     const name = decodeURIComponent(path.slice('/webhooks/file/'.length));
     const filePath = join(WEBHOOKS_DIR, name, 'instructions.md');
     if (!existsSync(filePath)) { mkdirSync(join(WEBHOOKS_DIR, name), { recursive: true }); writeFileSync(filePath, '', 'utf8'); }
-    if (isWin) { spawn('cmd', ['/c', 'start', '', filePath], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); }
+    if (isWin) { spawn('cmd', ['/c', 'start', '""', filePath.replace(/[&^"<>|]/g, '^$&')], { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: false }).unref(); }
     else { spawn('open', [filePath], { detached: true, stdio: 'ignore' }).unref(); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
@@ -2775,13 +2797,21 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
-server.listen(PORT, '127.0.0.1', () => { // loopback-only: local config UI; never expose to LAN
+server.listen(PORT, 'localhost', () => { // loopback-only: local config UI; never expose to LAN
   console.log(`\n  MIXDOG CONFIG`);
   console.log(`  http://localhost:${PORT}\n`);
   if (process.env.MIXDOG_SETUP_OPEN_ON_START === '1') {
     openGeneration++;
     windowOpen = true;
-    setTimeout(() => { openAppWindow(); }, 0);
+    openAppWindow().then(result => {
+      if (!result?.ok) {
+        windowOpen = false;
+        console.error(`[setup] openAppWindow failed: ${result?.error || JSON.stringify(result?.attempts)}`);
+      }
+    }).catch(err => {
+      windowOpen = false;
+      console.error(`[setup] openAppWindow threw: ${err?.message || err}`);
+    });
   }
 });
 

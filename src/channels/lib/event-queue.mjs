@@ -212,12 +212,13 @@ ${p.item.prompt}`).join("\n\n")}`;
   executeItem(item, file) {
     if (this.injectFn) {
       const opts = { type: "webhook" };
+      const chatId = this.resolveChannel(item.channel) || "";
       if (item.instruction) {
         opts.instruction = `${item.instruction}\n\n${item.prompt}`;
       } else {
         opts.instruction = item.prompt;
       }
-      this.injectFn("", `event:${item.name}`, " ", opts);
+      this.injectFn(chatId, `event:${item.name}`, " ", opts);
     }
     if (file) this.moveToProcessed(file, "injected");
   }

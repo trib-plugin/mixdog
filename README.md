@@ -72,8 +72,8 @@ run `npm install`, and register the MCP server declared in
 ### Autonomous agents
 
 The agent module exposes a session orchestrator that can dispatch work
-to any registered provider. Each role is a plain markdown prompt under
-`agents/` plus a binding in `user-workflow.json`. Sessions run as
+to any registered provider. User-defined roles are declared in
+`user-workflow.json`; built-in maintenance roles ship under `agents/`. Sessions run as
 long-lived loops with trim / compress, a stream watchdog, and
 background job tracking, so Claude Code can fan out real work rather
 than one-shot completions.
@@ -101,12 +101,14 @@ emits each path once with indented `line: content` rows.
 
 ### Bridge guards
 
-Public bridge roles (worker / reviewer / debugger / tester) route
-through direct `read` / `grep` / `find_symbol` on the coordinates Lead
-provides; opt-in `allow_retrieval: true` is required to reach
-`recall` / `explore` / `search` wrappers. A `<final-answer>` tag
-protocol cleanly separates the worker's final reply from any internal
-deliberation.
+Bridge roles are user-defined via `user-workflow.json`. The plugin ships
+built-in hidden maintenance roles (`maintenance`, `memory-classification`, `scheduler-task`,
+`webhook-handler`); any additional roles (worker, reviewer, debugger,
+etc.) are defined locally in `user-workflow.json`, not bundled files. Roles dispatched
+through the bridge use direct `read` / `grep` / `find_symbol` on
+the coordinates Lead provides. A
+`<final-answer>` tag protocol cleanly separates the worker's final
+reply from any internal deliberation.
 
 ### Multi-provider sub-agents
 
@@ -149,7 +151,7 @@ The following files are managed in the data directory:
 | --------------------- | ----------------------- | --------------------------------------------- |
 | `agent-config.json`   | Auto-seeded on install  | Provider presets and maintenance role bindings |
 | `user-workflow.json`  | Auto-seeded on install  | Role → preset bindings for delegated agents   |
-| `config.json`         | Auto-seeded on install  | Prompt injection mode and target path          |
+| `config.json`         | Auto-seeded on install  | Channels, quiet hours, proactive, schedules, webhook defaults, and prompt injection mode |
 | `memory-config.json`  | Auto-seeded on install  | Memory pipeline toggles and cycle intervals    |
 | `search-config.json`  | Auto-seeded on install  | Web search providers and API credentials       |
 | `bot.json`            | Manual copy (see below) | Discord credentials (required for channels)   |
@@ -167,17 +169,9 @@ enable channels from `/mixdog:config`.
 Slash commands live under `commands/` and are invoked as
 `/mixdog:<name>`.
 
-| Command                 | Purpose                                              |
-| ----------------------- | ---------------------------------------------------- |
-| `/mixdog:new`           | Start a fresh session with a clean context window.   |
-| `/mixdog:resume`        | Resume the most recent session (or pick by id).      |
-| `/mixdog:clear`         | Clear transient session state while keeping memory.  |
-| `/mixdog:config`        | Open the in-browser config page.                     |
-| `/mixdog:model`         | Switch the active model for the current role.        |
-| `/mixdog:bridge`        | Route a prompt through the external-agent bridge.    |
-| `/mixdog:review`        | Delegate a code review to the reviewer role.         |
-| `/mixdog:security`      | Run the security-audit prompt on the current diff.   |
-| `/mixdog:memory-delete` | Wipe all memory entries (requires `DELETE ALL MEMORY` confirmation). |
+| Command          | Purpose                          |
+| ---------------- | -------------------------------- |
+| `/mixdog:config` | Open the in-browser config page. |
 
 ## Safety
 

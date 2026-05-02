@@ -11,6 +11,8 @@
  */
 
 import http from 'http';
+import { readSection } from '../shared/config.mjs';
+
 import {
   existsSync,
   readFileSync,
@@ -57,7 +59,6 @@ export async function buildBridgeStatus(dataDir, options = {}) {
 
   const SESSIONS_DIR = join(dataDir, 'sessions');
   const STATUS_SNAPSHOT_PATH = join(dataDir, 'channels', 'status-snapshot.json');
-  const CONFIG_PATH = join(dataDir, 'config.json');
   const TRACE_PATH = join(dataDir, 'history', 'bridge-trace.jsonl');
   const JOBS_STATE_PATH = join(dataDir, 'jobs', 'state.json');
 
@@ -98,7 +99,7 @@ export async function buildBridgeStatus(dataDir, options = {}) {
       const snap = JSON.parse(readFileSync(STATUS_SNAPSHOT_PATH, 'utf-8'));
       if (snap && typeof snap.writtenAt === 'number' && (now - snap.writtenAt) <= SNAPSHOT_STALE_MS) {
         snapshotFresh = true;
-        const cfg = readJsonFile(CONFIG_PATH) || {};
+        const cfg = readSection('channels');
         const allSchedules = [
           ...(cfg.nonInteractive || []),
           ...(cfg.interactive || []),
@@ -106,7 +107,10 @@ export async function buildBridgeStatus(dataDir, options = {}) {
         scheduleActive = allSchedules.length;
         scheduleDeferred = snap.schedules?.deferredCount ?? 0;
         if (snap.schedules?.next) {
-          nextSchedule = { name: snap.schedules.next.name, fireAt: snap.schedules.next.fireAt };
+          const fireAt = Number(snap.schedules.next.fireAt);
+          if (Number.isFinite(fireAt) && !Number.isNaN(fireAt)) {
+            nextSchedule = { name: snap.schedules.next.name, fireAt };
+          }
         }
         if (typeof snap.discord?.totalUnread === 'number') {
           discordTotalUnread = snap.discord.totalUnread;
@@ -120,7 +124,7 @@ export async function buildBridgeStatus(dataDir, options = {}) {
 
   if (!snapshotFresh) {
     try {
-      const cfg = readJsonFile(CONFIG_PATH) || {};
+      const cfg = readSection('channels');
       const allSchedules = [
         ...(cfg.nonInteractive || []),
         ...(cfg.interactive || []),

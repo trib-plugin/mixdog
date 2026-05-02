@@ -42,6 +42,20 @@ process.stdin.on('end', () => {
   } catch { /* best-effort */ }
 
   try {
+    // Sweep stale signal files (older than 60 s) to prevent leaks when the
+    // channels worker is absent or slow to claim them.
+    try {
+      const now = Date.now();
+      const STALE_MS = 60_000;
+      for (const f of fs.readdirSync(RUNTIME_ROOT)) {
+        if (!f.startsWith('tool-exec-') || !f.endsWith('.signal')) continue;
+        const full = path.join(RUNTIME_ROOT, f);
+        try {
+          if (now - fs.statSync(full).mtimeMs > STALE_MS) fs.unlinkSync(full);
+        } catch { /* best-effort */ }
+      }
+    } catch { /* best-effort */ }
+
     const rand = crypto.randomBytes(4).toString('hex');
     const signalFile = path.join(RUNTIME_ROOT, `tool-exec-${Date.now()}-${rand}.signal`);
     fs.writeFileSync(signalFile, JSON.stringify({ toolName, filePath, toolUseId, ts: Date.now() }));

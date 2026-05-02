@@ -174,18 +174,29 @@ if (needsInstall) {
       : ['install'];
     process.stderr.write(`[run-mcp] installing shared deps: bun ${args.join(' ')}\n`);
 
+    const INSTALL_TIMEOUT_MS = 30_000;
     const result = spawnSync('bun', args, {
       cwd: dataDir,
       stdio: 'inherit',
+      timeout: INSTALL_TIMEOUT_MS,
     });
-    if (result.status !== 0) {
+    if (result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGTERM') {
+      process.stderr.write(
+        `[run-mcp] WARN: bun install timed out after ${INSTALL_TIMEOUT_MS}ms — ` +
+        `continuing with existing node_modules (stale lock removed)\n`
+      );
+      try { fs.unlinkSync(lockFile); } catch {}
+    } else if (result.status !== 0) {
       const detail = result.status ?? result.signal ?? 'unknown';
-      throw new Error(`bun install exited with status ${detail}`);
+      process.stderr.write(
+        `[run-mcp] WARN: bun install exited with status ${detail} — ` +
+        `continuing with existing node_modules if available\n`
+      );
+    } else {
+      // Atomic stamp write: tmp + rename so a crash cannot leave it half-written.
+      fs.writeFileSync(stampTmp, currentHash);
+      fs.renameSync(stampTmp, stamp);
     }
-
-    // Atomic stamp write: tmp + rename so a crash cannot leave it half-written.
-    fs.writeFileSync(stampTmp, currentHash);
-    fs.renameSync(stampTmp, stamp);
   } finally {
     releaseLock(lockFile);
   }
@@ -195,7 +206,22 @@ ensureNmSymlink(pluginNm, sharedNm);
 
 const probe = join(pluginNm, '@modelcontextprotocol', 'sdk', 'package.json');
 if (!fs.existsSync(probe)) {
-  throw new Error('install completed but @modelcontextprotocol/sdk is missing — bun install may have failed silently');
+  // Probe failed: node_modules may be stale or install failed.
+  // If any required dep is present the env may still be usable — warn and continue.
+  // If ALL required deps are missing (fresh env + install failure), abort with guidance.
+  const anyPresent = hasRequiredDeps(sharedNm) || hasRequiredDeps(pluginNm);
+  if (anyPresent) {
+    process.stderr.write(
+      `[run-mcp] WARN: @modelcontextprotocol/sdk not found at expected path after install — ` +
+      `continuing with available node_modules\n`
+    );
+  } else {
+    process.stderr.write(
+      `[run-mcp] ERROR: node_modules is incomplete and bun install did not succeed.\n` +
+      `  Run \`bun install\` manually in ${pluginRoot} and retry.\n`
+    );
+    process.exit(1);
+  }
 }
 
 const isWin = process.platform === 'win32';
