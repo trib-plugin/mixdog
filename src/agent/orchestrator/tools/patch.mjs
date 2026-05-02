@@ -18,8 +18,6 @@
 //     before reading and stat again immediately before writing; if the
 //     mtime advanced between those two points another writer touched the
 //     file and we abort that entry (errorCode 7 parity).
-//   - isSafePath hard-block checked per file so a malicious patch can't
-//     inject UNC, parent-escape, or system-path entries via the diff header.
 //
 // With `reject_partial: true` (the default) the whole batch is two-phase:
 // we build every file's new content in memory first; only if all files
@@ -33,8 +31,6 @@ import { parsePatch, applyPatch } from 'diff';
 import {
   normalizeInputPath,
   normalizeOutputPath,
-  isSafePath,
-  _isSafePathReason as _isSafePathBlockReason,
   atomicWrite,
   invalidateBuiltinResultCache,
   recordReadSnapshotForPath,
@@ -177,10 +173,6 @@ async function apply_patch(args, cwd, options = {}) {
   const dryRun = args?.dry_run === true;
   // Default true — atomic batch semantics.
   const rejectPartial = args?.reject_partial !== false;
-  if (!isSafePath(basePath)) {
-    return `Error: ${_isSafePathBlockReason(basePath)} — ${normalizeOutputPath(basePath)}`;
-  }
-
   // Strict parse first. Fall back to lenient repair whenever a hunk
   // header is present — stale line counts from LLM-authored patches
   // are the dominant failure mode, and lenient retry only rewrites
@@ -231,16 +223,6 @@ async function apply_patch(args, cwd, options = {}) {
     // Scope-check the resolved absolute path, not the raw header, so
     // `a/../../escape.txt` is caught after path resolution.
     const fullPath = resolveEntryPath(basePath, headerName);
-    if (!isSafePath(fullPath)) {
-      plan.push({
-        ok: false,
-        index: i,
-        displayPath,
-        error: `${_isSafePathBlockReason(fullPath)} — ${displayPath}`,
-      });
-      continue;
-    }
-
     const { added, removed } = countHunkChanges(entry.hunks);
 
     if (kind === 'delete') {

@@ -16,6 +16,10 @@ Independent tool calls go in ONE message as multiple tool_use blocks — never s
 
 Work in **2 rounds max per sub-problem** (locate → confirm). Repeated retrieval → ask what NEW info the next call adds; enough evidence → stop probing, move to edit/answer.
 
+## Query brevity
+
+`recall` / `search` / `explore` queries and `bridge` briefs: one core question + coord hint when known + verb/intent. Drop version annotations, conditional branches ("if X then Y"), and rationale paragraphs — internal agents probe on their own. Long queries inflate cost and bias the agent toward surface keywords. Same compression applies to expected output: ask for the answer, not the search trace.
+
 ## Decision table
 
 Scan query for known scope and collapse to ONE targeted call: known identifier / path / regex → `find_symbol` / `read` / `grep`; known entry id / date / decision → `recall`; explicit URL / repo / domain → `search`.

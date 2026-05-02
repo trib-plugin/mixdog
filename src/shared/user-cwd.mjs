@@ -2,8 +2,7 @@
  * IMPORTANT — cwd model role:
  * pwd() resolves the user's working directory for RELATIVE PATH RESOLUTION only.
  * It is NOT a sandbox boundary. Sandbox decisions are governed by Claude Code's
- * settings.json permissions; mcp's isSafePath only hard-blocks dangerous patterns
- * (UNC paths, parent escapes, known system paths).
+ * settings.json permissions govern sandbox decisions.
  */
 
 /**
@@ -31,7 +30,7 @@ const _cwdOverride = new AsyncLocalStorage()
 
 // Hook payloads can deliver POSIX paths on Windows (e.g. `/c/Project`); Node's
 // path.resolve does not map MSYS-style drive prefixes, so the value must be
-// rewritten to the platform-native shape before isSafePath compares it.
+// rewritten to the platform-native shape before path resolution.
 function _normalizePlatformCwd(p) {
   if (!p || typeof p !== 'string') return p
   if (process.platform !== 'win32') return resolve(p)

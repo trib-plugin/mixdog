@@ -33,7 +33,7 @@
 // so a dangerous command can't hide in an earlier turn (we scan per call).
 // Same ANSI strip + smart middle-truncate applied to stdout/stderr.
 //
-// Not guarded by isSafePath: this tool takes a command, not a file path.
+// This tool takes a command, not a file path — no path-safety check applies.
 
 import { spawn } from 'node:child_process';
 import * as nodeUtil from 'node:util';

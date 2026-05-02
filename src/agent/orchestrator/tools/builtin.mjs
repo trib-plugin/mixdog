@@ -393,7 +393,12 @@ function extractGlobBaseDirectory(pattern) {
     );
     if (lastSep === -1) return { baseDir: null, relativePattern: pattern };
     let baseDir = staticPrefix.slice(0, lastSep);
-    const relativePattern = pattern.slice(lastSep + 1);
+    // Anchor remainder to baseDir with a leading '/'. rg's gitignore semantics
+    // treat a slash-less pattern (e.g. '*.mjs') as basename-anywhere, which
+    // silently recurses into subdirs and breaks directory-anchored intent
+    // (e.g. '<root>/src/shared/*.mjs' would also match files in 'src/shared/llm/').
+    const remainder = pattern.slice(lastSep + 1);
+    const relativePattern = remainder.startsWith('/') ? remainder : '/' + remainder;
     if (process.platform === 'win32' && /^[A-Za-z]:$/.test(baseDir)) {
         baseDir = baseDir + '\\';
     }
@@ -722,8 +727,8 @@ function parseLineLimitArg(value, defaultValue) {
 
 // G6: device path block list (Claude Code parity). Reading these paths
 // would either hang (waiting for stdin / tty) or produce infinite output
-// (/dev/zero, /dev/random). isSafePath already restricts scope, but a
-// user-allowed path can still hit these pseudo-files on POSIX hosts.
+// (/dev/zero, /dev/random). The device block list catches pseudo-files on
+// POSIX hosts that a user-allowed path can still hit.
 const BLOCKED_DEVICE_PATHS = new Set([
     '/dev/zero', '/dev/random', '/dev/urandom', '/dev/full',
     '/dev/stdin', '/dev/tty', '/dev/console',
@@ -737,13 +742,6 @@ function isBlockedDevicePath(p) {
     if (typeof p === 'string' && p.startsWith('/proc/')
         && (p.endsWith('/fd/0') || p.endsWith('/fd/1') || p.endsWith('/fd/2'))) return true;
     return false;
-}
-
-function isUncPath(p) {
-    // Windows UNC (\\\\server\\share) or POSIX-style equivalent (//server).
-    // Reading a UNC path can leak NTLM credentials to a remote SMB share
-    // because Windows automatically authenticates outbound SMB requests.
-    return typeof p === 'string' && (p.startsWith('\\\\') || p.startsWith('//'));
 }
 
 // CC parity: 2000-char threshold (was 520). Long lines that fit in 2K are
@@ -762,9 +760,9 @@ function renderReadLine(lineNo, line, { truncateLongLine = true } = {}) {
 // TODO: truncated-line edit-validation needs hint
 
 // Shared file-open prologue for read-flavoured tools (tail / wc / diff).
-// Consolidates the normalize → isSafePath → stat → findSimilarFile-hint →
+// Consolidates the normalize → stat → findSimilarFile-hint →
 // size-cap sequence so every consumer funnels through the same pipeline
-// (F9 / F12). Throws tagged errors (code=EARG/EOUTSIDE/ENOENT/ETOOBIG)
+// (F9 / F12). Throws tagged errors (code=EARG/ENOENT/ETOOBIG)
 // instead of returning strings so callers can branch on ETOOBIG for
 // large-file fallbacks without resorting to message regexes.
 //
@@ -776,11 +774,6 @@ async function openForRead(filePath, workDir, opts = {}) {
         throw Object.assign(new Error('path is required'), { code: 'EARG' });
     }
     const norm = normalizeInputPath(filePath);
-    if (!isSafePath(norm)) {
-        throw Object.assign(
-            new Error(_isSafePathReason(norm)),
-            { code: 'EOUTSIDE' });
-    }
     const fullPath = resolveAgainstCwd(norm, workDir);
     let st;
     try { st = statSync(fullPath); }
@@ -1849,71 +1842,6 @@ const SHELL_GLOBAL_MUTATORS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip
 // Dangerous absolute path prefixes that are hard-blocked regardless of
 // Claude Code permissions. Keep this list tight — only genuinely dangerous
 // system roots, not workspace-boundary decisions (those are CC's concern).
-const DANGEROUS_ABS_ROOTS = process.platform === 'win32'
-    ? [
-        normalize('C:\\Windows\\System32'),
-        normalize('C:\\Windows\\SysWOW64'),
-        normalize('C:\\Windows\\System'),
-      ]
-    : [
-        '/etc/shadow',
-        '/etc/passwd',
-        '/proc/sys',
-        '/sys',
-      ];
-
-// Returns a human-readable reason string when a path is hard-blocked,
-// or null when the path is safe. Used by _isSafePathReason and isSafePath.
-function _isSafePathCheck(filePath) {
-    if (typeof filePath !== 'string' || !filePath) return null;
-    // UNC path: \\server\share or //server/share
-    if (isUncPath(filePath)) return 'UNC path blocked';
-    const normalized = normalize(resolve(filePath));
-    // Parent escape: resolved path escapes via `..` segments
-    // (normalize collapses them; if input had `..` that crossed a root,
-    // the resolved path will start with a different prefix than expected).
-    if (filePath.includes('..')) {
-        const inputNorm = normalize(filePath);
-        if (inputNorm !== normalized) return 'parent escape blocked';
-    }
-    // Dangerous absolute roots
-    const cmp = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-    for (const root of DANGEROUS_ABS_ROOTS) {
-        const r = process.platform === 'win32' ? root.toLowerCase() : root;
-        if (cmp === r || cmp.startsWith(r.endsWith(sep) ? r : r + sep)) {
-            return `system path blocked: ${normalized}`;
-        }
-    }
-    // Symlink escape: if realpath exists and resolves to a UNC or dangerous root
-    try {
-        const real = normalize(realpathSync(normalized));
-        if (isUncPath(real)) return 'symlink escape blocked (UNC)';
-        const realCmp = process.platform === 'win32' ? real.toLowerCase() : real;
-        for (const root of DANGEROUS_ABS_ROOTS) {
-            const r = process.platform === 'win32' ? root.toLowerCase() : root;
-            if (realCmp === r || realCmp.startsWith(r.endsWith(sep) ? r : r + sep)) {
-                return `symlink escape blocked (system path: ${real})`;
-            }
-        }
-    } catch { /* path does not exist yet — no escape possible */ }
-    return null;
-}
-
-// Returns a human-readable block reason string (for error messages).
-// Returns a generic safe message when not blocked.
-export function _isSafePathReason(filePath) {
-    return _isSafePathCheck(filePath) ?? `path blocked: ${filePath}`;
-}
-
-// isSafePath — hard-block dangerous patterns only.
-// Sandbox / workspace boundary decisions are governed by Claude Code's
-// settings.json permissions (mcp__* allow). This function only blocks
-// UNC paths, parent escapes, known dangerous system roots, and symlink
-// escapes into those roots.
-// Returns: true = safe to proceed, false = hard-blocked.
-export function isSafePath(filePath) {
-    return _isSafePathCheck(filePath) === null;
-}
 function resolveAgainstCwd(filePath, cwd) {
     return resolve(cwd, filePath);
 }
@@ -2846,7 +2774,6 @@ async function _runMultiEdit(args, workDir, readStateScope, _pathOpts, options =
     const edits = Array.isArray(args.edits) ? args.edits : [];
     if (!filePath) return 'Error: path is required';
     if (edits.length === 0) return 'Error: edits array is required';
-    if (!isSafePath(filePath)) return `Error: ${_isSafePathReason(filePath)} — ${normalizeOutputPath(filePath)}`;
     const fullPath = resolveAgainstCwd(filePath, workDir);
     let mEditStat;
     try { mEditStat = statSync(fullPath); }
@@ -2979,8 +2906,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
     const executeChildBuiltinTool = (childName, childArgs, childCwd = workDir) =>
         executeBuiltinTool(childName, childArgs, childCwd, options);
     // Path policy: Claude Code's settings.json permissions (mcp__* allow) are the
-    // sole arbiter for workspace-boundary decisions. isSafePath only hard-blocks
-    // dangerous patterns (UNC, parent escape, system paths). No pathOpts needed.
+    // sole arbiter for workspace-boundary decisions.
     switch (name) {
         case 'bash': {
             // P2 fix: route persistent / session_id BEFORE the command-required
@@ -3273,7 +3199,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 });
                 if (entries.length === 0) return 'Error: path array must not be empty';
                 // Parallel dispatch of the individual reads via the same case
-                // above — reuses size cap, isSafePath, line-number formatting.
+                // above — reuses size cap, line-number formatting.
                 // Per-file errors come back as their own string and are pasted
                 // into the aggregate rather than aborting the whole batch.
                 const results = await Promise.all(entries.map(async (entry) => {
@@ -3304,13 +3230,11 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             }
             // W1 H: device-file / UNC / scope guards must run BEFORE mode
             // dispatches so head/tail/wc internal readers can't bypass the
-            // /dev/* and UNC blocks that the default-mode branch enforces.
+            // /dev/* block that the default-mode branch enforces.
             if (typeof args.path === 'string' && args.path) {
                 const _modeProbePath = normalizeInputPath(args.path);
                 if (isBlockedDevicePath(_modeProbePath))
                     return `Error: cannot read device file (would block or produce infinite output): ${normalizeOutputPath(_modeProbePath)}`;
-                if (isUncPath(_modeProbePath))
-                    return `Error: UNC paths are not supported (NTLM credential leak risk): ${normalizeOutputPath(_modeProbePath)}`;
             }
             if (args.mode === 'head') return executeChildBuiltinTool('head', { path: args.path, n: args.n }, workDir);
             if (args.mode === 'tail') return executeChildBuiltinTool('tail', { path: args.path, n: args.n }, workDir);
@@ -3319,14 +3243,9 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             const filePath = args.path;
             if (!filePath)
                 return 'Error: path is required';
-            // G6: block device pseudo-files (would hang / produce infinite
-            // output) and UNC paths (NTLM credential leak risk on Windows).
+            // G6: block device pseudo-files (would hang / produce infinite output).
             if (isBlockedDevicePath(filePath))
                 return `Error: cannot read device file (would block or produce infinite output): ${normalizeOutputPath(filePath)}`;
-            if (isUncPath(filePath))
-                return `Error: UNC paths are not supported (NTLM credential leak risk): ${normalizeOutputPath(filePath)}`;
-            if (!isSafePath(filePath))
-                return `Error: ${_isSafePathReason(filePath)} — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             // Pre-read size cap (Anthropic FileReadTool/limits.ts pattern):
             // throw a small error response when the file is too big rather
@@ -3575,10 +3494,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 for (const entry of items) {
                     const filePath = entry.path;
                     const content = entry.content;
-                    if (!isSafePath(filePath)) {
-                        results.push(`FAIL ${normalizeOutputPath(filePath)}: ${_isSafePathReason(filePath)}`);
-                        continue;
-                    }
                     {
                         const fullPath = resolveAgainstCwd(filePath, workDir);
                         // W1 H: read-before-overwrite gate + per-path mutex (CAS guard).
@@ -3635,8 +3550,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 return 'Error: path is required';
             if (content === undefined)
                 return 'Error: content is required';
-            if (!isSafePath(filePath))
-                return `Error: ${_isSafePathReason(filePath)} — ${normalizeOutputPath(filePath)}`;
             {
                 const fullPath = resolveAgainstCwd(filePath, workDir);
                 return _withPathLock(fullPath, async () => {
@@ -3752,8 +3665,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // Surface a precise error instead.
             if (/^\s*\d+\t/.test(oldStr))
                 return `Error: old_string starts with a Read line-number prefix (\"<n>\\t\") — strip the prefix before Edit: ${filePath}`;
-            if (!isSafePath(filePath))
-                return `Error: ${_isSafePathReason(filePath)} — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             // F2 fix: single stat syscall replaces existsSync + statSync pair.
             // ENOENT -> Error [code 4] with similar-file hint; mtime drift ->
@@ -3940,9 +3851,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             if (patterns.length === 0)
                 return 'Error: pattern is required';
             const searchPath = args.path || '.';
-            if (!isSafePath(searchPath)) {
-                return `Error: ${_isSafePathReason(searchPath)} — ${normalizeOutputPath(searchPath)}`;
-            }
             const rawGlob = args.glob;
             const rawGlobs = (Array.isArray(rawGlob)
                 ? rawGlob.filter(g => typeof g === 'string' && g)
@@ -4086,11 +3994,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     addToGroup(basePath, p);
                 }
             }
-            for (const root of groups.keys()) {
-                if (!isSafePath(root)) {
-                    return `Error: ${_isSafePathReason(root)} — ${normalizeOutputPath(root)}`;
-                }
-            }
             const cacheKey = buildGlobCacheKey({ patterns, basePath, headLimit, offset });
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
@@ -4101,8 +4004,13 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 for (const ex of DEFAULT_IGNORE_GLOBS) rgArgs.push('--glob', ex);
                 for (const rel of rels) rgArgs.push('--glob', rel);
                 rgArgs.push(root);
+                // rg evaluates --glob patterns relative to its cwd, so anchor
+                // each group's rg pass at its own search root. Without this,
+                // a relative pattern like 'src/shared/*.mjs' silently misses
+                // when the search root differs from the caller's workDir.
+                const rgCwd = isAbsolute(root) ? root : resolveAgainstCwd(root, workDir);
                 try {
-                    const stdout = await runRg(rgArgs, { cwd: workDir, timeout: 10000 });
+                    const stdout = await runRg(rgArgs, { cwd: rgCwd, timeout: 10000 });
                     for (const line of stdout.split('\n')) {
                         const trimmed = line.trim();
                         if (trimmed) allFiles.push(trimmed);
@@ -4179,9 +4087,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 headLimit,
                 offset,
             });
-            if (!isSafePath(inputPath)) {
-                return `Error: ${_isSafePathReason(inputPath)} — ${normalizeOutputPath(inputPath)}`;
-            }
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
             const fullPath = resolveAgainstCwd(inputPath, workDir);
@@ -4264,9 +4169,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 headLimit,
                 offset,
             });
-            if (!isSafePath(inputPath)) {
-                return `Error: ${_isSafePathReason(inputPath)} — ${normalizeOutputPath(inputPath)}`;
-            }
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
             const fullPath = resolveAgainstCwd(inputPath, workDir);
@@ -4374,9 +4276,6 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                 modifiedAfter: args.modified_after || '',
                 modifiedBefore: args.modified_before || '',
             });
-            if (!isSafePath(inputPath)) {
-                return `Error: ${_isSafePathReason(inputPath)} — ${normalizeOutputPath(inputPath)}`;
-            }
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
 
@@ -4490,7 +4389,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
         // child dispatch (see case 'read' above). Use read({ mode: 'tail', ... }).
         case 'tail': {
             const n = Math.max(1, Math.min(parseInt(args.n ?? 20, 10) || 20, 2000));
-            // F9: share normalize/isSafePath/stat/similar-hint with wc/diff
+            // F9: share normalize/stat/similar-hint with wc/diff
             // via openForRead. ETOOBIG escapes to the large-file fallback
             // so behaviour is unchanged for files past READ_MAX_SIZE_BYTES.
             let opened;
@@ -4538,7 +4437,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
         // INTERNAL ONLY — not exposed in tools.json. Reached via read mode='count'
         // child dispatch (see case 'read' above). Use read({ mode: 'count', ... }).
         case 'wc': {
-            // F9: share normalize/isSafePath/stat/similar-hint with tail/diff
+            // F9: share normalize/stat/similar-hint with tail/diff
             // via openForRead. ETOOBIG escapes to the streaming fallback so
             // files past READ_MAX_SIZE_BYTES still report lines + bytes.
             let opened;

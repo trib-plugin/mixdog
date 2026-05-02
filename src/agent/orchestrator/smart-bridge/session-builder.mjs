@@ -32,6 +32,7 @@ import { traceBridgePreset } from '../bridge-trace.mjs';
  * @param {string}  [opts.permission]  — 'read' | 'read-write' | null (preset/full default when unset)
  * @param {string|null} [opts.cwd]     — absolute working dir; null is the fixed bridge sentinel meaning "no caller workspace context"
  * @param {string}  [opts.owner='bridge']
+ * @param {string}  [opts.permissionMode] — Claude Code permissionMode forwarded from the MCP payload ('bypassPermissions', 'acceptEdits', 'plan', 'dontAsk', 'default')
  * @param {string}  [opts.sourceType]
  * @param {string}  [opts.sourceName]
  * @param {string}  [opts.taskType]
@@ -47,6 +48,7 @@ export function prepareBridgeSession({
     permission,
     cwd,
     owner = 'bridge',
+    permissionMode,
     sourceType,
     sourceName,
     taskType,
@@ -71,6 +73,7 @@ export function prepareBridgeSession({
         sourceName: sourceName || undefined,
     };
     if (permission) sessionOpts.permission = permission;
+    if (permissionMode) sessionOpts.permissionMode = permissionMode;
     if (skipRoleReminder) sessionOpts.skipRoleReminder = true;
     if (cacheKeyOverride) sessionOpts.cacheKeyOverride = cacheKeyOverride;
     const session = createSession(sessionOpts);

@@ -1,4 +1,5 @@
 import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
 import { existsSync, statSync } from 'fs';
 import { join, resolve as pathResolve } from 'path';
@@ -780,6 +781,37 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     return null;
 }
 
+// ── Prefetch permission guard ─────────────────────────────────────────────────
+// Mirrors _checkWorkerPermission in loop.mjs for tool calls that originate
+// in the prefetch path (outside the agent loop). Returns an error string if
+// blocked, or null if allowed.
+const _permEvalForPrefetch = (() => {
+    const _req = createRequire(import.meta.url);
+    try {
+        const { dirname: _pdir, resolve: _pres } = _req('path');
+        const _hooksLib = _pres(_pdir(fileURLToPath(import.meta.url)), '../../../../hooks/lib/permission-evaluator.cjs');
+        return _req(_hooksLib).evaluatePermission;
+    } catch { return null; }
+})();
+function _guardedPrefetchTool(toolName, toolArgs, session) {
+    if (!_permEvalForPrefetch) return null;
+    const permissionMode = session?.permissionMode ?? null;
+    if (!permissionMode) return null;
+    const projectDir = session?.cwd || undefined;
+    const userCwd = session?.cwd || undefined;
+    const MCP_PFX = 'mcp__plugin_mixdog_mixdog__';
+    const fullName = toolName.startsWith(MCP_PFX) || toolName.startsWith('mcp__') ? toolName : `${MCP_PFX}${toolName}`;
+    try {
+        const { decision, reason } = _permEvalForPrefetch({ toolName: fullName, toolInput: toolArgs || {}, permissionMode, projectDir, userCwd });
+        if (decision === 'deny' || decision === 'ask') {
+            return `Error: prefetch tool "${toolName}" blocked (decision=${decision}): ${reason}`;
+        }
+    } catch (e) {
+        process.stderr.write(`[prefetch-guard] evaluator error: ${e?.message}\n`);
+    }
+    return null;
+}
+
 async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
     if (!explicitPrefetch || typeof explicitPrefetch !== 'object') return null;
     if (session?.owner !== 'bridge') return null;
@@ -789,6 +821,10 @@ async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
     // files[]
     const files = Array.isArray(explicitPrefetch.files) ? explicitPrefetch.files.filter(f => typeof f === 'string' && f) : [];
     if (files.length > 0) {
+        const _pfGuard = _guardedPrefetchTool('read', { path: files }, session);
+        if (_pfGuard) {
+            process.stderr.write(`[bridge-prefetch] files read blocked: ${_pfGuard}\n`);
+        } else {
         const readOut = await executeInternalTool('read', { path: files, mode: 'head', n: 120 }).catch((e) => {
             process.stderr.write(`[bridge-prefetch] files read failed: ${e && e.message || e}\n`);
             failed.push(...files);
@@ -800,6 +836,7 @@ async function _tryBridgeExplicitPrefetch(session, explicitPrefetch) {
             failed.push(...files);
         }
         totalEntries.push(...files);
+        }
     }
     // callers[]
     const callers = Array.isArray(explicitPrefetch.callers) ? explicitPrefetch.callers.filter(c => c && typeof c.symbol === 'string') : [];
@@ -883,6 +920,7 @@ async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCa
             sort: metadataRequest.sort,
         };
         const callerCwd = prefetchCwd;
+        if (_guardedPrefetchTool('list', listArgs, session)) return null;
         const listStartedAt = Date.now();
         const listOut = await executeBuiltinTool('list', listArgs, callerCwd, { sessionId: session.id }).catch(() => null);
         if (listOut && !String(listOut).startsWith('Error:')) {
@@ -898,6 +936,8 @@ async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCa
             const firstPath = _firstListedPath(listOut);
             if (firstPath && _metadataRequestNeedsSelectedFileRead(prompt)) {
                 const readArgs = { path: firstPath, mode: 'full', n: 20, offset: 0, limit: 2000, full: false };
+                if (_guardedPrefetchTool('read', readArgs, session)) { /* blocked — return list-only */ }
+                else {
                 const readStartedAt = Date.now();
                 const readOut = await executeBuiltinTool('read', readArgs, callerCwd, { sessionId: session.id }).catch(() => null);
                 if (readOut && !String(readOut).startsWith('Error:')) {
@@ -912,6 +952,7 @@ async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCa
                     });
                     return `Prefetched directory metadata and the selected file. The requested list/read work is complete. Answer from this evidence and do NOT call any tool again for this request.\n\n### list\n${listOut}\n\n### read ${firstPath}\n${readOut}`;
                 }
+                }
             }
             return `Prefetched directory metadata. Answer from this listing and do NOT call any tool again for this request.\n\n${listOut}`;
         }
@@ -919,6 +960,7 @@ async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCa
 
     if (knownFiles.length < 2) return null;
     const readArgs = { path: knownFiles, mode: 'head', n: 120 };
+    if (_guardedPrefetchTool('read', readArgs, session)) return null;
     const readOut = await executeInternalTool('read', readArgs).catch(() => null);
     if (!readOut || String(readOut).startsWith('Error:')) return null;
     onToolCall?.(1, [{ name: 'read', arguments: readArgs }]);
@@ -1180,6 +1222,7 @@ export function createSession(opts) {
         // Smart Bridge metadata — optional. Applied on every ask() to merge
         // profile-driven cache settings into provider sendOpts.
         profileId: profile?.id || null,
+        permissionMode: opts.permissionMode ?? null,
         providerCacheOpts: providerCacheOpts || null,
     };
     saveSession(session);

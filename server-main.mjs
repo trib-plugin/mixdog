@@ -614,8 +614,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
 
   if (def.module === 'builtin') {
     // Plugin builtin file tools exposed to external MCP clients (e.g. the
-    // Lead / Claude Code harness). Path validation (isSafePath) and write
-    // semantics live inside executeBuiltinTool.
+    // Lead / Claude Code harness). Write semantics live inside executeBuiltinTool.
     const { executeBuiltinTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/builtin.mjs')).href,
     )
@@ -656,7 +655,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
   if (def.module === 'patch') {
     // Unified-diff apply tool. One-turn multi-file
     // edits without Read-before-Edit (the patch's context lines are the
-    // read-proof). Scope-checked per file via isSafePath, mtime-guarded
+    // read-proof). Mtime-guarded
     // against concurrent writes. See src/agent/orchestrator/tools/patch.mjs.
     const { executePatchTool } = await import(
       pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/patch.mjs')).href,

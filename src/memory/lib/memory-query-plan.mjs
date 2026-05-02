@@ -44,12 +44,6 @@ export function getResultDayKey(item) {
   return ''
 }
 
-export function getExactHistoryTypePriority(item) {
-  if (item?.type === 'episode') return 0
-  if (item?.type === 'classification') return 1
-  return 4
-}
-
 export function buildMemoryQueryPlan(query, intent, options = {}) {
   const clean = cleanMemoryText(query)
   const temporal = options.temporal ?? parseTemporalHint(clean)

@@ -75,10 +75,8 @@ function discordApi(method, apiPath, token, body) {
 // B2: protected-path expansion. Previously only `/.claude/` triggered
 // Discord approval; now any Edit/Write landing inside HOME but OUTSIDE
 // the session's cwd is treated as protected. Matches the central path
-// policy in src/agent/orchestrator/tools/builtin.mjs#isSafePath — that
-// helper already rejects HOME targets by default for the main agent;
-// this hook applies the same principle to sub-agents by routing any
-// such target through Discord (whose Session Allow button is the
+// This hook applies the same HOME-outside-cwd policy to sub-agents by routing
+// any such target through Discord (whose Session Allow button is the
 // escape valve for workflows that actually need HOME writes).
 function isProtectedPath(filePath, cwd) {
   if (!filePath) return false;

@@ -13,6 +13,15 @@ import { maybeOffloadToolResult } from './tool-result-offload.mjs';
 import { compressToolResult, recordToolBatch } from '../tools/result-compression.mjs';
 import { isHiddenRole } from '../internal-roles.mjs';
 import { loadConfig } from '../config.mjs';
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import { dirname, resolve as resolvePath } from 'path';
+// Load the CJS permission evaluator. The hooks/ directory lives two levels
+// above src/agent/orchestrator/session/, so we walk up from __dirname.
+const _require = createRequire(import.meta.url);
+const _hooksLib = resolvePath(dirname(fileURLToPath(import.meta.url)), '../../../../hooks/lib/permission-evaluator.cjs');
+const { evaluatePermission: _evaluatePermission } = _require(_hooksLib);
+const MCP_TOOL_PREFIX = 'mcp__plugin_mixdog_mixdog__';
 const SAFETY_TRIM_PERCENT = 0.90;
 const SOFT_ITERATION_WARN_THRESHOLDS = Object.freeze([24, 48, 96]);
 const EMERGENCY_ITERATION_FUSE = 100;
@@ -161,6 +170,40 @@ const COMPLETION_HINT_TOOLS = new Set(['read', 'grep', 'glob', 'list', 'find_sym
 const EXPLICIT_TOOL_VERBS = String.raw`(?:use|call|run|invoke|prefer)`
 const EXPLICIT_TOOL_NEGATION = String.raw`(?:do\s+not|don't|never)\s+${EXPLICIT_TOOL_VERBS}`
 function isEagerDispatchable(name) { return EAGER_TOOLS.has(name); }
+// ── Bridge-worker permission enforcement ──────────────────────────────────────
+// Mirrors the PreToolUse hook evaluation for tool calls that originate inside a
+// bridge worker session. Worker dispatch previously bypassed the hook pipeline
+// entirely; this guard closes that gap by running the same evaluator inline.
+//
+// `ask` is treated as deny here — forwarding to the channel UI (server-main.mjs:230)
+// is out of scope; a TODO is left so the follow-up can wire the approval flow.
+// TODO(server-main.mjs:230): forward `ask` decisions to the channel UI approval flow instead of blocking.
+function _checkWorkerPermission(toolName, toolInput, sessionRef) {
+    const permissionMode = sessionRef?.permissionMode;
+    if (!permissionMode) return null;
+    // Prefix bare mixdog tool names so the evaluator path-logic handles them correctly.
+    const fullName = toolName.startsWith(MCP_TOOL_PREFIX) || toolName.startsWith('mcp__')
+        ? toolName
+        : `${MCP_TOOL_PREFIX}${toolName}`;
+    const projectDir = sessionRef?.cwd || undefined;
+    const userCwd = sessionRef?.cwd || undefined;
+    try {
+        const { decision, reason } = _evaluatePermission({
+            toolName: fullName,
+            toolInput: toolInput || {},
+            permissionMode,
+            projectDir,
+            userCwd,
+        });
+        if (decision === 'deny' || decision === 'ask') {
+            return `Error: tool "${toolName}" blocked by permission evaluator (decision=${decision}): ${reason}`;
+        }
+    } catch (err) {
+        // Evaluator errors must not crash the loop — log and allow.
+        try { process.stderr.write(`[permission-evaluator] error: ${err?.message}\n`); } catch {}
+    }
+    return null;
+}
 function withToolCompletionHint(name, result) {
     if (!COMPLETION_HINT_TOOLS.has(name)) return result;
     const text = String(result ?? '');
@@ -332,7 +375,9 @@ async function executeTool(name, args, cwd, callerSessionId, sessionRef) {
         return executeMcpTool(name, finalArgs);
     }
     if (isCodeGraphTool(name)) {
-        return executeCodeGraphTool(name, args, cwd);
+        // cwd chain: args.cwd (caller-explicit) → session cwd → undefined (handler throws)
+        const graphCwd = (typeof args?.cwd === 'string' && args.cwd.trim()) ? args.cwd.trim() : cwd;
+        return executeCodeGraphTool(name, args, graphCwd);
     }
     if (isInternalTool(name)) {
         // callerSessionId propagates into server.mjs dispatchTool so that
@@ -471,6 +516,8 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             const entry = { startedAt: Date.now(), endedAt: null };
             entry.promise = (async () => {
                 try {
+                    const permBlocked = _checkWorkerPermission(call.name, call.arguments, sessionRef);
+                    if (permBlocked !== null) return { ok: true, value: permBlocked };
                     return { ok: true, value: await executeTool(call.name, call.arguments, cwd, sessionId, sessionRef) };
                 } catch (error) {
                     return { ok: false, error };
@@ -653,8 +700,14 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                         result = `Error: tool "${call.name}" is not available on this session (permission=read). Use read/grep/glob/recall/search/explore or the read-only MCP tools instead.`;
                         toolEndedAt = Date.now();
                     } else {
-                        result = await executeTool(call.name, call.arguments, cwd, sessionId, sessionRef);
-                        toolEndedAt = Date.now();
+                        const permBlocked = _checkWorkerPermission(call.name, call.arguments, sessionRef);
+                        if (permBlocked !== null) {
+                            result = permBlocked;
+                            toolEndedAt = Date.now();
+                        } else {
+                            result = await executeTool(call.name, call.arguments, cwd, sessionId, sessionRef);
+                            toolEndedAt = Date.now();
+                        }
                     }
                 }
             }

@@ -5,7 +5,6 @@ import {
   normalizeInputPath,
   normalizeOutputPath,
   toDisplayPath,
-  isSafePath,
 } from './builtin.mjs';
 import { getPluginData } from '../config.mjs';
 import { getCapabilities } from '../../../shared/config.mjs';
@@ -112,7 +111,8 @@ function _codeGraphDiskPath() {
 }
 
 function _canonicalGraphCwd(cwd) {
-  return pathResolve(cwd || process.cwd());
+  if (!cwd) throw new Error('code_graph requires cwd — caller did not provide a working directory');
+  return pathResolve(cwd);
 }
 
 function _canonicalGraphPath(p) {
@@ -1614,7 +1614,7 @@ export const CODE_GRAPH_TOOL_DEFS = [
       properties: {
         symbol: { type: 'string', description: 'Symbol or identifier. Required for default/callers/references modes; optional for impact.' },
         mode: { type: 'string', enum: ['symbol', 'callers', 'references', 'imports', 'dependents', 'overview', 'symbols', 'related', 'impact'], description: 'Query mode. Omit or use "symbol" for declaration lookup. "callers"/"references" for usage. "imports"/"dependents" for module graph. "overview"/"symbols"/"related"/"impact" for file-level analysis.' },
-        file: { type: 'string', description: 'Target file path. Required for imports/dependents/related/impact/symbols. Optional for callers/references (narrows language).' },
+        file: { type: 'string', description: 'Target file path. Required for imports/dependents/related/impact/symbols. Optional for declaration mode (auto-derives graph cwd from the file\'s nearest project root) or callers/references (narrows language).' },
         language: { type: 'string', description: 'Optional language filter (e.g. javascript, typescript, python).' },
         limit: { type: 'number', description: 'Optional result cap. Default 20, max 50.' },
       },
@@ -1697,8 +1697,27 @@ function _stripEmptyArgs(args) {
   return a;
 }
 
+function _deriveCwdFromFile(file, currentCwd) {
+  if (!file || !currentCwd) return currentCwd;
+  const abs = pathResolve(file);
+  const rel = pathRelative(currentCwd, abs);
+  if (rel && !rel.startsWith('..') && !isAbsolute(rel)) return currentCwd;
+  let dir = dirname(abs);
+  while (dir && dir !== dirname(dir)) {
+    if (existsSync(join(dir, 'package.json')) || existsSync(join(dir, '.git'))) return dir;
+    dir = dirname(dir);
+  }
+  return dirname(abs);
+}
+
 export async function executeCodeGraphTool(name, args, cwd) {
-  const effectiveCwd = cwd || process.cwd();
+  if (!cwd) throw new Error('find_symbol/code_graph requires cwd — caller did not provide a working directory');
+  // When the caller passes an absolute `file` outside cwd, anchor the graph
+  // build at the file's project root (nearest package.json/.git ancestor).
+  // Lets find_symbol({symbol, file}) work cross-cwd without forcing the
+  // caller to also override cwd manually.
+  const fileArg = (args && typeof args.file === 'string' && args.file.trim()) ? args.file.trim() : '';
+  const effectiveCwd = fileArg ? _deriveCwdFromFile(fileArg, cwd) : cwd;
   switch (name) {
     case 'code_graph': return codeGraph(args, effectiveCwd);
     case 'find_symbol': {

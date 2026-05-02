@@ -8,6 +8,11 @@
  *
  * Orchestrator modules (session/manager.mjs, session/loop.mjs) import from
  * here instead of going through mcp/client.mjs for internal tools.
+ *
+ * Permission enforcement: bridge-worker tool calls (including internal tools)
+ * are gated by _checkWorkerPermission() in session/loop.mjs BEFORE reaching
+ * executeTool() → executeInternalTool(). No duplicate check is needed here;
+ * the loop is the single enforcement point for all dispatch paths.
  */
 
 let _executor = null;

@@ -162,6 +162,22 @@ const _bootLog = path.join(DATA_DIR, "boot.log");
 let config = loadConfig();
 const backend = createBackend(config);
 const INSTANCE_ID = makeInstanceId();
+// ── drop-trace instrumentation ──────────────────────────────────────────────
+const _dropTraceLog = path.join(DATA_DIR, "drop-trace.log");
+function preview(text) {
+  if (!text) return "";
+  const s = String(text).replace(/\n/g, "\\n");
+  return s.length > 120 ? s.slice(0, 120) + "…" : s;
+}
+function dropTrace(event, fields) {
+  try {
+    const ts = (/* @__PURE__ */ new Date()).toISOString();
+    const loc = `[${ts}][pid=${process.pid}] ${event}`;
+    const kv = fields ? " " + Object.entries(fields).map(([k, v]) => `${k}=${v}`).join(" ") : "";
+    fs.appendFileSync(_dropTraceLog, loc + kv + "\n");
+  } catch {}
+}
+// ────────────────────────────────────────────────────────────────────────────
 ensureRuntimeDirs();
 if (!_isWorkerMode) {
   killAllPreviousServers();
@@ -305,7 +321,9 @@ function pickUsableTranscriptPath(bound, previousPath) {
 }
 const forwarder = new OutputForwarder({
   send: async (ch, text) => {
-    if (!channelBridgeActive) return;
+    if (!channelBridgeActive) {
+      throw new Error("send() called while channel bridge is inactive");
+    }
     await backend.sendMessage(ch, text);
   },
   recordAssistantTurn: async () => {
@@ -325,7 +343,7 @@ forwarder.setOnIdle(() => {
 });
 function applyTranscriptBinding(channelId, transcriptPath, options = {}) {
   if (!transcriptPath) return;
-  forwarder.setContext(channelId, transcriptPath, { replayFromStart: options.replayFromStart });
+  forwarder.setContext(channelId, transcriptPath, { replayFromStart: options.replayFromStart, catchUpFromPersisted: options.catchUpFromPersisted });
   const boundTranscriptPath = forwarder.transcriptPath || transcriptPath;
   forwarder.startWatch();
   void memoryIngestTranscript(boundTranscriptPath);
@@ -356,9 +374,10 @@ async function rebindTranscriptContext(channelId, options = {}) {
     if (explicitExists) {
       applyTranscriptBinding(channelId, explicitTranscriptPath, {
         replayFromStart: Boolean(options.catchUp),
+        catchUpFromPersisted: options.catchUpFromPersisted,
         persistStatus: options.persistStatus
       });
-      if (options.catchUp) {
+      if (options.catchUp || options.catchUpFromPersisted) {
         await forwarder.forwardNewText();
       }
       return explicitTranscriptPath;
@@ -376,9 +395,10 @@ async function rebindTranscriptContext(channelId, options = {}) {
         );
         applyTranscriptBinding(channelId, bound.transcriptPath, {
           replayFromStart,
+          catchUpFromPersisted: options.catchUpFromPersisted,
           persistStatus: options.persistStatus
         });
-        if (replayFromStart) {
+        if (replayFromStart || options.catchUpFromPersisted) {
           await forwarder.forwardNewText();
         }
         return bound.transcriptPath;
@@ -389,7 +409,14 @@ async function rebindTranscriptContext(channelId, options = {}) {
     }
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
-  return previousPath;
+  if (previousPath) {
+    applyTranscriptBinding(channelId, previousPath, { catchUpFromPersisted: true });
+    await forwarder.forwardNewText();
+    process.stderr.write(`mixdog: rebind fallback: bound previous transcript ${previousPath}\n`);
+    return previousPath;
+  }
+  process.stderr.write(`mixdog: rebind failed: no transcript found and no previous path to fall back to\n`);
+  return "";
 }
 const scheduler = new Scheduler(
   config.nonInteractive ?? [],
@@ -422,6 +449,14 @@ let bridgeOwnershipTimer = null;
 let lastOwnershipNote = "";
 const ACTIVE_OWNER_STALE_MS = 1e4;
 // Owner gating here is multi-process runtime coordination: only the active
+// bindingReady gates all send paths until the boot-time refreshBridgeOwnership
+// ({ restoreBinding: true }) call completes. Without this, scheduler/webhook
+// emissions fired within the first ~few hundred ms after restart drop because
+// the Discord backend binding has not yet been established.
+let bindingReadyStatus = "pending";
+let _bindingReadyResolve;
+const bindingReady = new Promise((r) => { _bindingReadyResolve = r; });
+dropTrace("bindingReady.create", { status: bindingReadyStatus });
 // owner runs webhook/event ticks. It is not webhook HTTP authentication.
 let proxyMode = false;
 let ownerHttpPort = 0;
@@ -927,7 +962,8 @@ async function bindPersistedTranscriptIfAny() {
   if (!currentStatus.channelId) return;
   const bound = await rebindTranscriptContext(currentStatus.channelId, {
     previousPath: getPersistedTranscriptPath(),
-    persistStatus: true
+    persistStatus: true,
+    catchUpFromPersisted: true
   });
   if (bound) {
     process.stderr.write(`mixdog: initial transcript bind: ${bound}
@@ -1029,7 +1065,7 @@ async function startOwnedRuntime(options = {}) {
   scheduler.start();
   startSnapshotWriter(scheduler);
   syncOwnedWebhookAndEventRuntime();
-  if (options.restoreBinding !== false) void bindPersistedTranscriptIfAny();
+  if (options.restoreBinding !== false) await bindPersistedTranscriptIfAny();
   process.stderr.write(`mixdog: running with ${backend.name} backend
 `);
   logOwnership(`active owner pid=${process.pid}`);
@@ -1180,15 +1216,29 @@ function injectAndRecord(channelId, name, content, options) {
 function forwardLifecycleToDiscord(channelId, content) {
   try {
     const target = channelId || statusState?.read?.().channelId || null;
+    dropTrace("send.lifecycle.entry", { channelId: target || "(none)", bindingReadyStatus, backendPresent: !!backend?.sendMessage, preview: preview(content) });
     if (!target || !backend?.sendMessage) return;
-    void backend.sendMessage(target, content).catch(() => {});
+    void bindingReady.then(() =>
+      backend.sendMessage(target, content)
+        .then(() => dropTrace("send.lifecycle.ok", { channelId: target }))
+        .catch((err) => dropTrace("send.lifecycle.err", { channelId: target, err: String(err) }))
+    ).catch(() => {});
   } catch { /* best-effort */ }
 }
 scheduler.setInjectHandler((channelId, name, content, options) => {
   injectAndRecord(channelId, name, content, options);
 });
 scheduler.setSendHandler(async (channelId, text) => {
-  await backend.sendMessage(channelId, text);
+  dropTrace("send.scheduler.entry", { channelId, preview: preview(text) });
+  await bindingReady;
+  dropTrace("send.scheduler.ready", { channelId });
+  try {
+    await backend.sendMessage(channelId, text);
+    dropTrace("send.scheduler.ok", { channelId });
+  } catch (err) {
+    dropTrace("send.scheduler.err", { channelId, err: String(err) });
+    throw err;
+  }
 });
 function wireWebhookHandlers() {
   if (!webhookServer) return;
@@ -1237,7 +1287,16 @@ function wireEventQueueHandlers(eventQueue) {
     injectAndRecord(channelId, name, content, options);
   });
   eventQueue.setSendHandler(async (channelId, text) => {
-    await backend.sendMessage(channelId, text);
+    dropTrace("send.eventQueue.entry", { channelId, preview: preview(text) });
+    await bindingReady;
+    dropTrace("send.eventQueue.ready", { channelId });
+    try {
+      await backend.sendMessage(channelId, text);
+      dropTrace("send.eventQueue.ok", { channelId });
+    } catch (err) {
+      dropTrace("send.eventQueue.err", { channelId, err: String(err) });
+      throw err;
+    }
   });
   eventQueue.setSessionStateGetter(() => scheduler.getSessionState());
   // Defensive ownership probe: the queue tick should only run in the active
@@ -2508,7 +2567,19 @@ async function stop() {
   if (channelBridgeActive) {
     claimBridgeOwnership("server start");
   }
-  void refreshBridgeOwnership({ restoreBinding: true });
+  const _bindingReadyStart = Date.now();
+  void refreshBridgeOwnership({ restoreBinding: true }).then(
+    (v) => {
+      bindingReadyStatus = "resolved";
+      dropTrace("bindingReady.resolve", { elapsedMs: Date.now() - _bindingReadyStart, status: bindingReadyStatus });
+      _bindingReadyResolve(v);
+    },
+    (e) => {
+      bindingReadyStatus = "rejected";
+      dropTrace("bindingReady.reject", { elapsedMs: Date.now() - _bindingReadyStart, status: bindingReadyStatus, err: String(e) });
+      _bindingReadyResolve(e);
+    }
+  );
   bridgeOwnershipTimer = setInterval(() => {
     void refreshBridgeOwnership();
   }, 3e4);

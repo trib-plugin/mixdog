@@ -1,9 +1,25 @@
-import { readFileSync, readdirSync, existsSync, statSync, watch, openSync, readSync, closeSync } from "fs";
+import { readFileSync, readdirSync, existsSync, statSync, watch, openSync, readSync, closeSync, appendFileSync } from "fs";
 import { execFileSync } from "child_process";
 import { basename, join, resolve } from "path";
 import { homedir } from "os";
 import { createHash } from "crypto";
 import { formatForDiscord, chunk, safeCodeBlock } from "./format.mjs";
+// ── drop-trace (output-forwarder) ───────────────────────────────────────────
+const _dtDataDir = process.env.CLAUDE_PLUGIN_DATA || join(homedir(), ".mixdog-data");
+const _dtLog = join(_dtDataDir, "drop-trace.log");
+function _dtPreview(text) {
+  if (!text) return "";
+  const s = String(text).replace(/\n/g, "\\n");
+  return s.length > 120 ? s.slice(0, 120) + "…" : s;
+}
+function dropTrace(event, fields) {
+  try {
+    const ts = new Date().toISOString();
+    const kv = fields ? " " + Object.entries(fields).map(([k, v]) => `${k}=${v}`).join(" ") : "";
+    appendFileSync(_dtLog, `[${ts}][pid=${process.pid}] ${event}${kv}\n`);
+  } catch {}
+}
+// ────────────────────────────────────────────────────────────────────────────
 function cwdToProjectSlug(cwd) {
   return resolve(cwd).replace(/\\/g, "/").replace(/^([A-Za-z]):/, "$1-").replace(/\//g, "-");
 }
@@ -295,6 +311,7 @@ class OutputForwarder {
     }
     if (this.transcriptPath !== transcriptPath) {
       this.closeWatcher();
+      dropTrace("context.transcriptPath.change", { sessionId: this.mainSessionId || "(none)", oldPath: this.transcriptPath || "(none)", newPath: transcriptPath });
       this.transcriptPath = transcriptPath;
       this.mainSessionId = "";
       this.sentCount = 0;
@@ -302,7 +319,22 @@ class OutputForwarder {
       this.turnTextBuffer = "";
     }
     try {
-      const fileSize = options.replayFromStart ? 0 : existsSync(this.transcriptPath) ? statSync(this.transcriptPath).size : 0;
+      const stat = existsSync(this.transcriptPath) ? statSync(this.transcriptPath) : null;
+      const currentSize = stat?.size ?? 0;
+      let fileSize;
+      if (options.replayFromStart) {
+        fileSize = 0;
+      } else if (options.catchUpFromPersisted) {
+        const persisted = this.statusState?.read?.();
+        const persistedSize = typeof persisted?.lastFileSize === "number" ? persisted.lastFileSize : -1;
+        const sameTranscript = persisted?.transcriptPath &&
+          sameResolvedPath(persisted.transcriptPath, this.transcriptPath);
+        fileSize = (sameTranscript && persistedSize >= 0)
+          ? Math.min(Math.max(persistedSize, 0), currentSize)
+          : currentSize;
+      } else {
+        fileSize = currentSize;
+      }
       this.lastFileSize = fileSize;
       this.readFileSize = fileSize;
     } catch {
@@ -470,9 +502,12 @@ class OutputForwarder {
       return;
     }
     const chunks = chunk(formatted, 2e3);
-    for (const c of chunks) {
+    for (let _ci = 0; _ci < chunks.length; _ci++) {
+      const c = chunks[_ci];
+      dropTrace("discord.send.entry", { channelId: this.channelId, chunkIndex: _ci, chunkSize: c.length, preview: _dtPreview(c) });
       try {
         await this.cb.send(this.channelId, c);
+        dropTrace("discord.send.ok", { channelId: this.channelId, chunkIndex: _ci });
       } catch (err) {
         // Discord 429 carries Retry-After (seconds, sometimes ms). Honour
         // it by stalling the queue instead of hammering the API. The send
@@ -481,6 +516,7 @@ class OutputForwarder {
         const status = err?.status ?? err?.code ?? err?.httpStatus;
         const retryAfter = err?.retryAfter ?? err?.retry_after
           ?? err?.headers?.["retry-after"] ?? err?.response?.headers?.["retry-after"];
+        dropTrace("discord.send.err", { channelId: this.channelId, chunkIndex: _ci, status, retryAfter: retryAfter ?? "(none)", err: String(err) });
         if (status === 429 && retryAfter != null) {
           const ms = Number(retryAfter) > 1000 ? Number(retryAfter) : Number(retryAfter) * 1000;
           if (Number.isFinite(ms) && ms > 0) {
@@ -503,6 +539,7 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
   }
   scheduleRetry() {
     if (this.sendRetryTimer) return;
+    dropTrace("drain.retry.schedule", { queueLen: this.sendQueue.length });
     this.sendRetryTimer = setTimeout(() => {
       this.sendRetryTimer = null;
       void this.drainQueue();
@@ -577,6 +614,7 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
         } catch (err) {
           process.stderr.write(`mixdog: send failed: ${err}
 `);
+          dropTrace("drain.send.err", { queueLen: this.sendQueue.length, itemType: item?.type, err: String(err) });
           this.scheduleRetry();
           break;
         }
@@ -613,6 +651,7 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
       if (retries < 5) {
         setTimeout(() => void this.forwardFinalText(retries + 1), 300);
       } else {
+        dropTrace("drain.finalText.exhausted", { retries, queueLen: this.sendQueue.length, sending: this.sending });
         // Past the short-retry budget: schedule a longer-tail drain wait so
         // the final frame still ships once the queue empties, instead of
         // silently giving up.
@@ -790,13 +829,26 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
   /** Start watching transcript file for changes (runs once, never stops) */
   startWatch() {
     if (!this.transcriptPath) return;
-    if (this.watchingPath === this.transcriptPath && this.watcher) return;
+    if (this.watchingPath === this.transcriptPath && this.watcher) {
+      dropTrace("watch.start.skip", { reason: "already_watching", path: this.watchingPath });
+      return;
+    }
     this.closeWatcher();
     this.watchingPath = this.transcriptPath;
+    dropTrace("watch.start.install", { path: this.watchingPath });
     try {
       this.watcher = watch(this.transcriptPath, () => this.scheduleWatchFlush());
-      this.watcher.on("error", () => this.closeWatcher());
-    } catch {
+      this.watcher.on("error", (err) => {
+        dropTrace("watch.error", { path: this.watchingPath, err: String(err) });
+        this.closeWatcher();
+      });
+      this.watcher.on("close", () => {
+        dropTrace("watch.close.event", { path: this.watchingPath });
+      });
+      // Cover bytes written between the stat in setContext() and watch install.
+      this.scheduleWatchFlush();
+    } catch (e) {
+      dropTrace("watch.start.catch", { path: this.watchingPath, err: String(e) });
       this.closeWatcher();
     }
   }
@@ -812,6 +864,7 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
     }, 1e3);
   }
   closeWatcher() {
+    dropTrace("watch.close.call", { watcher: !!this.watcher, watchDebounce: !!this.watchDebounce, sendRetryTimer: !!this.sendRetryTimer, path: this.watchingPath || "(none)" });
     if (this.watchDebounce) {
       clearTimeout(this.watchDebounce);
       this.watchDebounce = null;
@@ -828,6 +881,7 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
   }
   scheduleWatchFlush() {
     if (this.watchDebounce) clearTimeout(this.watchDebounce);
+    dropTrace("watch.flush.schedule", { transcriptPath: this.transcriptPath || "(none)", watchingPath: this.watchingPath || "(none)" });
     this.watchDebounce = setTimeout(() => {
       this.watchDebounce = null;
       if (this.transcriptPath && !existsSync(this.transcriptPath)) {
@@ -835,6 +889,7 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
         if (relocated && relocated !== this.transcriptPath) {
           process.stderr.write(`mixdog: watched transcript gone during flush, relocated to ${relocated}
 `);
+          dropTrace("watch.flush.relocate", { from: this.transcriptPath, to: relocated });
           this.closeWatcher();
           this.transcriptPath = relocated;
           this.mainSessionId = "";
@@ -843,6 +898,7 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
         return;
       }
       void this.forwardNewText().then((hadText) => {
+        dropTrace("watch.flush.forward", { hadText, transcriptPath: this.transcriptPath || "(none)" });
         if (hadText) {
           this.resetIdleTimer();
         }
