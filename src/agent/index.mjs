@@ -791,6 +791,7 @@ export async function handleToolCall(name, args, opts = {}) {
         // worker uses absolute paths under the originally-requested cwd.
         const _rawBridgeCwd = args.cwd ? normalizeInputPath(args.cwd) : (callerCwd || null);
         const _safeBridgeCwd = _safeCwdForSpawn(_rawBridgeCwd);
+        const _permissionMode = args.permission_mode || args.permissionMode || undefined;
         if (_rawBridgeCwd && _safeBridgeCwd !== _rawBridgeCwd) {
           prompt = `# Working directory note\nThe authoritative working directory is \`${_rawBridgeCwd}\`. Use absolute paths starting with this prefix in every tool call. The host process is running from \`${_safeBridgeCwd}\` because the original cwd contains characters that node's child_process spawn cannot reliably handle on this platform.\n\n${prompt}`;
         }
@@ -803,6 +804,7 @@ export async function handleToolCall(name, args, opts = {}) {
           sourceType: 'lead',
           sourceName: role,
           parentSessionId: callerSessionId,
+          permissionMode: _permissionMode,
           cacheKeyOverride: args.cacheKey || undefined,
         });
 
@@ -938,6 +940,7 @@ export async function handleToolCall(name, args, opts = {}) {
                     sourceType: 'lead',
                     sourceName: role,
                     parentSessionId: callerSessionId,
+                    permissionMode: _permissionMode,
                     cacheKeyOverride: args.cacheKey || undefined,
                   });
                   activeSession = retryBuilt.session;
@@ -1003,8 +1006,10 @@ export async function handleToolCall(name, args, opts = {}) {
               try { process.stderr.write(`[bridge] empty-content fallback for sessionId=${activeSession?.id ?? 'unknown'} shape=${JSON.stringify(shape)}\n`); } catch {}
               content = '(empty response)';
             }
-            const footer = `${modelLabel} · ${ctxTok} ctx · cache ${lastPct}% · ${outTok} out · ${loopNote} · ${elapsed}s`;
-            emit(`${modelTag}[${role}] ${content}\n\n${footer}`);
+            // Footer (model/ctx/cache/out/loops/elapsed) dropped per user spec
+            // — caller (Lead) wants core content only, no diagnostic noise. Stats
+            // remain available via session telemetry / list_sessions for debugging.
+            emit(`${modelTag}[${role}] ${content}`);
             updateSessionStatus(activeSession.id, 'idle');
           } catch (err) {
             completed = false;

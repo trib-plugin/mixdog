@@ -64,6 +64,36 @@ const EXPLORE_OUTPUT_CHAR_CAP = 50_000_000
 const EXPLORE_PER_PIECE_CHAR_CAP = 5_000_000
 const EXPLORE_TRUNCATION_MARKER = '\n\n[explore: output truncated at 50MB cap; narrow cwd or split queries to see more]'
 
+// search-agent output validator. Reviewer-recommended (gpt-5.5):
+// prompt polishing alone hits diminishing returns against LLM phrasing
+// drift; line-allowlist post-filter enforces the output contract
+// deterministically.
+const SEARCH_ALLOWED_LINE_PREFIXES = [
+  '- ',
+  '[unverified]',
+  '[search-config-error]',
+  '## Q',
+]
+
+function _isSearchAllowedLine(line) {
+  const trimmed = line.trim()
+  if (trimmed === '') return true
+  return SEARCH_ALLOWED_LINE_PREFIXES.some(p => trimmed.startsWith(p))
+}
+
+function filterSearchOutput(raw) {
+  if (typeof raw !== 'string' || !raw) return raw
+  const lines = raw.split('\n')
+  const kept = lines.filter(_isSearchAllowedLine)
+  while (kept.length > 0 && kept[kept.length - 1].trim() === '') kept.pop()
+  while (kept.length > 0 && kept[0].trim() === '') kept.shift()
+  if (kept.length === 0) {
+    const today = new Date().toLocaleString('sv-SE').slice(0, 10)
+    return `[unverified] no usable output (accessed ${today})`
+  }
+  return kept.join('\n')
+}
+
 // Clamp a raw subagent body (or error string) to the per-piece cap
 // BEFORE it gets wrapped with header / separator. Returns the (possibly
 // truncated) string; truncation reuses the existing marker so callers
@@ -101,10 +131,11 @@ function mergeExploreSettled(settled, queries, label, partialInfo) {
   let total = 0
   let truncated = false
   let truncatedAtPiece = -1
-  const sep = '\n\n---\n\n'
+  const sep = '\n\n'
   for (let i = 0; i < settled.length; i++) {
     const r = settled[i]
-    const header = `### Query ${i + 1}: ${queries[i]}`
+    // Short header (## Q1) — query text already in caller context.
+    const header = `## Q${i + 1}`
     const rawBody = r.status === 'fulfilled'
       ? (r.value || '(no response)')
       : `[${label} error] ${r.reason?.message || String(r.reason)}`
@@ -151,10 +182,11 @@ function _mergeRecallSearchSettled(settled, queries, label, partialInfo) {
         ? (settled[0].value || '(no response)')
         : `[${label} error] ${settled[0].reason?.message || String(settled[0].reason)}`)
     : settled.map((r, i) => {
-        const header = `### Query ${i + 1}: ${queries[i]}`
+        // Short header (## Q1) for all retrieval tools — query text already in caller context.
+        const header = `## Q${i + 1}`
         if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
         return `${header}\n[${label} error] ${r.reason?.message || String(r.reason)}`
-      }).join('\n\n---\n\n')
+      }).join('\n\n')
   return _appendPartialFooter(merged, partialInfo)
 }
 
@@ -723,14 +755,10 @@ export function getDispatchResult(id) {
   return _dispatchResults.get(String(id)) || null
 }
 
-function appendRetrievalCompleteHint(tool, body, queryCount) {
-  const text = typeof body === 'string' ? body : String(body ?? '')
-  const plural = queryCount === 1 ? 'this query' : 'these queries'
-  return [
-    text,
-    '',
-    `[${tool}: synthesize from result; do not re-call ${plural} unless result explicitly returns no hits.]`,
-  ].join('\n')
+function appendRetrievalCompleteHint(_tool, body, _queryCount) {
+  // Trailer (`[tool: synthesize ...]`) dropped per user spec for all retrieval
+  // tools (search/recall/explore) — caller wants core facts only, no noise.
+  return typeof body === 'string' ? body : String(body ?? '')
 }
 
 export async function dispatchAiWrapped(name, args, ctx) {
@@ -844,7 +872,8 @@ export async function dispatchAiWrapped(name, args, ctx) {
           parentSessionId: ctx?.callerSessionId || null,
           parentSignal: subSignal,
         })
-        return llm({ prompt: spec.build(q, resolvedCwd) })
+        const raw = await llm({ prompt: spec.build(q, resolvedCwd) })
+        return name === 'search' ? filterSearchOutput(raw) : raw
       })
       p.then(
         (val) => { _escapedSettled[i] = { status: 'fulfilled', value: val } },
@@ -1006,7 +1035,8 @@ export async function dispatchAiWrapped(name, args, ctx) {
           parentSessionId: ctx?.callerSessionId || null,
           parentSignal: subSig,
         })
-        return llm({ prompt: spec.build(q, resolvedCwd) })
+        const raw = await llm({ prompt: spec.build(q, resolvedCwd) })
+        return name === 'search' ? filterSearchOutput(raw) : raw
       })
       p.then(
         (val) => { _bgEscapedSettled[i] = { status: 'fulfilled', value: val } },
@@ -1141,8 +1171,27 @@ function buildRecallPrompt(query, _cwd) {
 }
 
 function buildSearchPrompt(query, _cwd) {
-  const today = new Date().toISOString().slice(0, 10)
-  return `<current_date>${today}</current_date>\n<query>${_escapeXml(query)}</query>`
+  // Local-date anchor (recall pattern) — UTC slice off-by-one near KST midnight.
+  const today = new Date().toLocaleString('sv-SE').slice(0, 10)
+  return `<current_date>${today}</current_date>
+<query>${_escapeXml(query)}</query>
+<final_pass>
+**POSITIVE OUTPUT SPEC** — your answer MUST start with one of:
+  (a) '- ' (bullet marker, hyphen+space) — for fact-bullet list
+  (b) '[unverified] ' — for unverified-prefixed bullet or single-line scrape no-content
+  (c) '[search-config-error]' — for terminal config-error line
+Any other first character ('I', 'B', 'W', 'H', 'F', 'T', 'O', '이', '검', '다', '웹' etc.) = VIOLATION. REWRITE the answer to start with (a)/(b)/(c).
+
+Before emitting, scan your draft and DELETE any line matching these patterns:
+- preamble: "Based on the search results...", "Here's what I found", "검색 결과에서...", "다음과 같습니다"
+- process narration (English): "Let me verify...", "Let me check...", "Let me synthesize...", "I'll search...", "I'll answer based on...", "I'll synthesize...", "I've queried...", "I have sufficient information...", "I've hit the soft-warn threshold...", "What I found:", "From the results so far...", "The snippet doesn't include..." — never narrate steps; just emit the final answer
+- process narration (Korean): "이미 충분한 정보를 확보했습니다", "정보를 확보했습니다", "웹 검색 결과를 바탕으로 답변하겠습니다", "다음과 같이 답변드립니다", "확인된 내용은 다음과 같습니다" — 단계 설명 금지, 답변만 emit
+- redirect: "For [more/complete/detailed] X, visit/see...", "you would need to visit", "official announcement is available at", "자세한 내용은 ...에서 확인", "권장합니다", "Recommendation: ... visit the official ... directly", "scroll to or search within that section"
+- closer: "Would you like...", "If you need...", "Let me know...", "please provide ... and I can search again", "추가로 ... 알려드릴까요"
+- URL scrape with no extractable content → emit ONE line: "[unverified] scrape returned empty content (<the actual URL from <query>>, accessed ${today})". The phrase 'scrape returned empty content' is fixed; the parenthetical MUST contain the actual URL string from <query>, not the literal token 'URL'. DO NOT add redirect, DO NOT explain the scrape mechanism.
+Each fact-bullet: inline (URL, accessed ${today}); bare claim → prefix "[unverified]" before content. ≤5 bullets per query, ≤4 per array sub-query. Sparse / no-result is NOT an exception — emit anchored facts only, mark rest [unverified], STOP.
+After the last bullet, STOP. NO trailing summary sentence (e.g. "In summary...", "Your actual X depends on...", "AWS Bedrock does not publicly document...", "실제 X는 ...에 따라 다릅니다"). Only the 3 allowed shapes from the system prompt — anything else (closing prose, qualifier paragraph, dependency note) is a violation.
+</final_pass>`
 }
 
 /**

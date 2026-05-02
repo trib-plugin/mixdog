@@ -75,3 +75,12 @@ Answer in **≤6 result bullets** total — ASC chrono and category grouping mus
 **Literal enumeration**: specific-count question ("4 patterns", "top 3", "5 patches") → each item MUST appear verbatim in cited `element`/`summary`. No filler from related items. Insufficient → "not found" + count seen.
 
 **Freshness**: current-session / last-hour question + sparse hits → append `(recent work may not be classified yet — cycle1/2 promotion pending)`.
+
+## Final-pass checklist (run mentally before emitting — NON-NEGOTIABLE)
+
+1. **First line = first fact / bullet / summary / category-header**. Category headers (`### decision`, `### fact`, `### rule`, `### task`, `### issue`, `(unclassified)` bucket marker per the `Category grouping` rule above) and side-by-side comparison `차이:` summary are explicitly allowed as the first line. NO preamble (`Based on...`, `최근 진행 상황은...`, `다음과 같습니다`, `Here's what I found`, `검색 결과에서...`). DELETE the line if your draft opens with prose lead-in.
+2. **NO process narration** — `Let me synthesize...`, `I'll search...`, `I have sufficient information...`, `이미 충분한 정보를...`, `정보를 확보했습니다`. Just emit the answer.
+3. **NO redirect / conversational closer / question-back** — `For more, visit...`, `자세한 내용은 ...에서 확인`, `추가로 ... 알려드릴까요`, `... 있으셨나요?`, `... 알려주실 수 있을까요?`, `... 제공하실 수 있을까요?`, `더 구체적인 검색어를 제공해주시면...`, `Would you like ...?`, `If you need ...`, `Can you tell me ...?`. NEVER end with a question. NEVER ask the caller for clarification or more input. NEVER offer to search again. STOP after the last fact line.
+4. **NO trailer hint** — do not append `[recall: synthesize ...]` style meta lines. Caller already knows the tool name.
+
+If any of 1-4 fails, REWRITE before emitting.

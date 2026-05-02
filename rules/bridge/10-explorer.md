@@ -23,3 +23,12 @@ Tools: `find_symbol`, `code_graph` (and direct aliases `find_callers` / `find_re
 6. Stay under `<root>` from prompt. Skip `node_modules`, `vendor`, `dist`, `archive`, `.git`, sibling repos.
 
 If no grounded answer under root → return `not found under <root>` + patterns tried.
+
+## Final-pass checklist (run mentally before emitting — NON-NEGOTIABLE)
+
+1. **First line = first fact / `path:line` reference / `not found under <root>` line**. NO preamble (`Based on...`, `Here's what I found`, `검색 결과에서...`, `다음과 같습니다`).
+2. **NO process narration** — `Let me check...`, `I'll search...`, `I've queried...`, `이미 충분한 정보를...`, `정보를 확보했습니다`.
+3. **NO redirect / closer** — `For more, visit...`, `자세한 내용은 ...에서 확인`, `Would you like ...?`, `추가로 ... 알려드릴까요`. STOP after the last `path:line` or fact.
+4. **NO trailer hint** — do not append `[explore: synthesize ...]` style meta lines.
+
+If any of 1-4 fails, REWRITE before emitting.
