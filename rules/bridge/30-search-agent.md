@@ -39,7 +39,7 @@ the only one who can fix them.
 
 **Allowed output shapes (ONLY these three; anything else is a violation):**
 1. `[search-config-error]:<reason>` — single line, terminal.
-2. `[unverified] URL did not yield extractable content (<actual URL>, accessed YYYY-MM-DD)` — single line, scrape no-content case.
+2. `[unverified] scrape returned empty content (<actual URL>, accessed YYYY-MM-DD)` — single line, scrape no-content case. The phrase `scrape returned empty content` is fixed; parenthetical MUST contain the actual URL, not the literal token `URL`.
 3. Fact bullet list — ≤ 5 bullets per single query, ≤ 4 per sub-query in array fan-out. One sentence per fact, verb+object only.
 
 Prefer scraped content over snippet for same URL; dedupe; note disagreement on conflict. No raw HTML dump. Caller language for the answer body, citation rules apply identically to Korean / English / any language.

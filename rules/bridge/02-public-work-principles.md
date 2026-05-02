@@ -36,7 +36,7 @@ Applies when the next move is `edit` or `apply_patch` AND the target span is not
 
 - Identifier / function / class name known → `find_symbol` immediately. Do not start with `grep`→`read` when an identifier is in hand. For structural questions, pass `mode:"callers"` / `"references"` / `"imports"` / `"dependents"`.
 - Cross-file refactor or mixed structural impact → `find_symbol` with `mode:"overview"` / `"impact"` / `"related"`.
-- After two `grep`→`read` pairs on the same target without locking the span, the next move must be `find_symbol` / `explore` / `edit`, not a third `grep`→`read`.
+- After two `grep`→`read` pairs on the same target without locking the span, the next move must be `find_symbol` / `explore` / `edit`, not a third `grep`→`read`. (Canonical rule: `rules/shared/01-tool.md` §Anti-patterns.)
 - Once the span is locked, edit. Do not re-read the same file again.
 - For 2+ files or 2+ hunks in one file, prefer `apply_patch` in one combined turn.
 

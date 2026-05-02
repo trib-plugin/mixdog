@@ -746,7 +746,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read file(s). `path` accepts a single string or array (`[\"a.mjs\",\"b.mjs\"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead.",
+    "description": "Read file(s). `path` accepts a single string or array (`[\"a.mjs\",\"b.mjs\"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead. For per-file differing offset/limit/mode, use `reads:[{path,offset,limit,mode?,n?},…]` instead of separate `path` array calls.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -794,6 +794,39 @@
         "pages": {
           "type": "string",
           "description": "PDF only: page range to extract, e.g. \"1-5\", \"3\", \"10-20\". Max 20 pages."
+        },
+        "reads": {
+          "type": "array",
+          "description": "Per-file read with independent offset/limit/mode. Use this OR `path`, not both.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "offset": {
+                "type": "number"
+              },
+              "limit": {
+                "type": "number"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "head",
+                  "tail",
+                  "count"
+                ]
+              },
+              "n": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
         }
       },
       "required": [
