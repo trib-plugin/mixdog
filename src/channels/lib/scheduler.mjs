@@ -57,6 +57,22 @@ function isCronExpression(time) {
   if (tokens.length !== 5 && tokens.length !== 6) return false;
   try { return cron.validate(time); } catch { return false; }
 }
+/** Validate a cron expression and throw a descriptive error if invalid.
+ *  Used by schedule_control / schedules POST before accepting input. */
+export function validateCronExpression(time) {
+  if (typeof time !== "string" || !time) throw new Error(`invalid cron expression: ${JSON.stringify(time)}`);
+  if (LEGACY_TIME_RE.test(time)) return; // legacy format — always valid
+  if (!cron) throw new Error(`cron expression "${time}" rejected: node-cron is not available (install node-cron to use cron expressions)`);
+  const tokens = time.trim().split(/\s+/);
+  if (tokens.length !== 5 && tokens.length !== 6) {
+    throw new Error(`invalid cron expression "${time}": expected 5 or 6 fields, got ${tokens.length}`);
+  }
+  let valid = false;
+  try { valid = cron.validate(time); } catch (e) {
+    throw new Error(`invalid cron expression "${time}": ${e?.message || e}`);
+  }
+  if (!valid) throw new Error(`invalid cron expression "${time}": failed node-cron validation`);
+}
 // Build a {hhmm, dateStr, dow} snapshot in the given IANA TZ. Falls
 // back to local Date math when tz is absent.
 function tzSnapshot(now, tz) {
@@ -218,10 +234,20 @@ class Scheduler {
   }
   /** Defer a schedule by N minutes from now */
   defer(name, minutes) {
-    this.deferred.set(name, Date.now() + minutes * 6e4);
+    const mins = Number(minutes);
+    if (!Number.isFinite(mins) || mins <= 0) {
+      throw new Error(`defer: minutes must be a positive number, got ${JSON.stringify(minutes)}`);
+    }
+    const allSchedules = [...this.nonInteractive, ...this.interactive];
+    const exists = allSchedules.some(s => s.name === name) || name === "proactive:chat";
+    if (!exists) throw new Error(`defer: unknown schedule "${name}" — use schedule_status to list valid names`);
+    this.deferred.set(name, Date.now() + mins * 6e4);
   }
   /** Skip a schedule for the rest of today */
   skipToday(name) {
+    const allSchedules = [...this.nonInteractive, ...this.interactive];
+    const exists = allSchedules.some(s => s.name === name) || name === "proactive:chat";
+    if (!exists) throw new Error(`skip_today: unknown schedule "${name}" — use schedule_status to list valid names`);
     this.rolloverSkippedTodayIfNeeded();
     this.skippedToday.add(name);
   }

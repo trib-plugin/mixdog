@@ -100,9 +100,19 @@ export async function buildBridgeStatus(dataDir, options = {}) {
       if (snap && typeof snap.writtenAt === 'number' && (now - snap.writtenAt) <= SNAPSHOT_STALE_MS) {
         snapshotFresh = true;
         const cfg = readSection('channels');
+        // cfg shape can be either flat (cfg.nonInteractive / cfg.interactive)
+        // or nested under cfg.schedules.items (setup-server writes sections.schedules).
+        // Normalise both so scheduleActive is always correct.
+        const schedItems = cfg.schedules?.items;
+        const nonInteractive = Array.isArray(schedItems)
+          ? schedItems.filter(s => s.type !== 'interactive')
+          : (cfg.nonInteractive || []);
+        const interactive = Array.isArray(schedItems)
+          ? schedItems.filter(s => s.type === 'interactive')
+          : (cfg.interactive || []);
         const allSchedules = [
-          ...(cfg.nonInteractive || []),
-          ...(cfg.interactive || []),
+          ...nonInteractive,
+          ...interactive,
         ].filter(s => s.enabled !== false && s.name);
         scheduleActive = allSchedules.length;
         scheduleDeferred = snap.schedules?.deferredCount ?? 0;
@@ -125,9 +135,16 @@ export async function buildBridgeStatus(dataDir, options = {}) {
   if (!snapshotFresh) {
     try {
       const cfg = readSection('channels');
+      const schedItems2 = cfg.schedules?.items;
+      const nonInteractive2 = Array.isArray(schedItems2)
+        ? schedItems2.filter(s => s.type !== 'interactive')
+        : (cfg.nonInteractive || []);
+      const interactive2 = Array.isArray(schedItems2)
+        ? schedItems2.filter(s => s.type === 'interactive')
+        : (cfg.interactive || []);
       const allSchedules = [
-        ...(cfg.nonInteractive || []),
-        ...(cfg.interactive || []),
+        ...nonInteractive2,
+        ...interactive2,
       ].filter(s => s.enabled !== false && s.name);
       scheduleActive = allSchedules.length;
 

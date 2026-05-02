@@ -76,18 +76,17 @@ function discordApi(method, apiPath, token, body) {
 // Discord approval; now any Edit/Write landing inside HOME but OUTSIDE
 // the session's cwd is treated as protected. Matches the central path
 // This hook applies the same HOME-outside-cwd policy to sub-agents by routing
-// any such target through Discord (whose Session Allow button is the
-// escape valve for workflows that actually need HOME writes).
+// any such target through Discord. Extended policy: any path outside cwd —
+// not just HOME — is protected (covers /etc, C:\Windows, and other system paths).
 function isProtectedPath(filePath, cwd) {
   if (!filePath) return false;
   const norm = path.resolve(filePath).replace(/\\/g, '/').toLowerCase();
-  const homeNorm = (process.env.HOME || process.env.USERPROFILE || '').replace(/\\/g, '/').toLowerCase();
   const cwdNorm = (cwd || process.cwd()).replace(/\\/g, '/').toLowerCase();
-  if (!homeNorm) return false;
-  // Inside HOME but outside cwd → protected (requires Discord approval).
-  const insideHome = norm === homeNorm || norm.startsWith(homeNorm.endsWith('/') ? homeNorm : homeNorm + '/');
+  // Any path outside cwd is protected (requires Discord approval).
+  // This covers HOME-outside-cwd (original policy) plus system paths like
+  // /etc, C:\Windows, and any other location outside the session sandbox.
   const insideCwd = cwdNorm && (norm === cwdNorm || norm.startsWith(cwdNorm.endsWith('/') ? cwdNorm : cwdNorm + '/'));
-  return insideHome && !insideCwd;
+  return !insideCwd;
 }
 
 // Scan RUNTIME_ROOT for a signal file whose payload (toolName, filePath,

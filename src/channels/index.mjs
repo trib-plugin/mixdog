@@ -1911,82 +1911,7 @@ function createHttpMcpServer() {
   s.setRequestHandler(CallToolRequestSchema, async (req) => {
     const toolName = req.params.name;
     const args = req.params.arguments ?? {};
-    try {
-      switch (toolName) {
-        case "reply": {
-          // Pre-send bump blocks proactive chat during the await.
-          scheduler.noteActivity();
-          const sendResult = await backend.sendMessage(
-            args.chat_id,
-            args.text,
-            { replyTo: args.reply_to, files: args.files ?? [], embeds: args.embeds ?? [], components: args.components ?? [] }
-          );
-          // Lead-originated reply via MCP — bump activity.
-          scheduler.noteActivity();
-          return { content: [{ type: "text", text: JSON.stringify({ sentIds: sendResult.sentIds }) }] };
-        }
-        case "react": {
-          await backend.react(args.chat_id, args.message_id, args.emoji);
-          return { content: [{ type: "text", text: "ok" }] };
-        }
-        case "edit_message": {
-          const editId = await backend.editMessage(args.chat_id, args.message_id, args.text, { embeds: args.embeds ?? [], components: args.components ?? [] });
-          return { content: [{ type: "text", text: JSON.stringify({ id: editId }) }] };
-        }
-        case "fetch": {
-          const _fetchChannelId = resolveChannelLabel(config.channelsConfig, args.channel);
-          const msgs = await backend.fetchMessages(_fetchChannelId, args.limit ?? 20);
-          recordFetchedMessages(_fetchChannelId, args.channel !== _fetchChannelId ? args.channel : labelForChannelId(_fetchChannelId), msgs);
-          return { content: [{ type: "text", text: JSON.stringify({ messages: msgs }) }] };
-        }
-        case "download_attachment": {
-          const files = await backend.downloadAttachment(args.chat_id, args.message_id);
-          return { content: [{ type: "text", text: JSON.stringify({ files }) }] };
-        }
-        case "schedule_status": {
-          const statuses = scheduler.getStatus();
-          return { content: [{ type: "text", text: statuses.length ? statuses.map((st) => {
-            let line = `${st.name} ${st.time} ${st.days} (${st.type})`;
-            if (st.lastFired) {
-              try { line += ` last=${new Date(st.lastFired).toLocaleTimeString()}`; } catch {}
-            }
-            if (st.running) line += " [RUNNING]";
-            return line;
-          }).join("\n") : "no schedules configured" }] };
-        }
-        case "trigger_schedule": {
-          const triggerResult = await scheduler.triggerManual(args.name);
-          return { content: [{ type: "text", text: triggerResult }] };
-        }
-        case "schedule_control": {
-          const action = args.action;
-          if (action === "defer") {
-            scheduler.defer(args.name, args.minutes ?? 30);
-            return { content: [{ type: "text", text: `deferred "${args.name}" for ${args.minutes ?? 30} minutes` }] };
-          } else if (action === "skip_today") {
-            scheduler.skipToday(args.name);
-            return { content: [{ type: "text", text: `skipped "${args.name}" for today` }] };
-          }
-          return { content: [{ type: "text", text: `unknown action: ${action}` }], isError: true };
-        }
-        case "activate_channel_bridge": {
-          const active = args.active === true;
-          channelBridgeActive = active;
-          writeBridgeState(active);
-          if (active) void refreshBridgeOwnership({ restoreBinding: true });
-          return { content: [{ type: "text", text: `channel bridge ${active ? "activated" : "deactivated"}` }] };
-        }
-        case "reload_config": {
-          reloadRuntimeConfig();
-          return { content: [{ type: "text", text: "config reloaded \u2014 schedules, webhooks, and events re-registered" }] };
-        }
-        default:
-          return { content: [{ type: "text", text: `unknown tool: ${toolName}` }], isError: true };
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { content: [{ type: "text", text: `${toolName} failed: ${msg}` }], isError: true };
-    }
+    return handleToolCallWithBridgeRetry(toolName, args);
   });
   return s;
 }
@@ -2191,8 +2116,19 @@ ${lines.join("\n")}` }]
         case "schedule_control": {
           const scName = args.name;
           const action = args.action;
+          // Validate that the named schedule actually exists.
+          const _scAll = [...(scheduler.nonInteractive || []), ...(scheduler.interactive || [])];
+          const _scKnown = _scAll.some(s => s.name === scName) || scName === "proactive:chat";
+          if (!_scKnown) {
+            result = { content: [{ type: "text", text: `schedule_control: unknown schedule "${scName}" — use schedule_status to list valid names` }], isError: true };
+            break;
+          }
           if (action === "defer") {
             const minutes = args.minutes ?? 30;
+            if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes <= 0) {
+              result = { content: [{ type: "text", text: `schedule_control: minutes must be a positive number, got ${JSON.stringify(minutes)}` }], isError: true };
+              break;
+            }
             scheduler.defer(scName, minutes);
             result = { content: [{ type: "text", text: `deferred "${scName}" for ${minutes} minutes` }] };
           } else if (action === "skip_today") {

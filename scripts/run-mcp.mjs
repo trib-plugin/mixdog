@@ -431,6 +431,7 @@ function spawnChild() {
 }
 
 function killChild() {
+  if (shuttingDown) return;
   shuttingDown = true;
   if (!proc) return;
   if (isWin && proc.pid) {

@@ -1458,13 +1458,6 @@ function requestClose() {
   }
 }
 
-async function saveAndClose() {
-  await saveAll();
-  isDirty = false;
-  navigator.sendBeacon('/close', '');
-  window.close();
-}
-
 function discardAndClose() {
   isDirty = false;
   navigator.sendBeacon('/close', '');
@@ -2659,6 +2652,7 @@ async function saveAll() {
     run('general',  () => genSavePanel()),
   ]);
   return errs;
+}
 async function saveAndClose() {
   const errs = await saveAll();
   if (errs.length) {
@@ -3858,19 +3852,6 @@ async function savePanel() {
 }
 
 async function saveConfig() { await savePanel(); }
-
-// Save every module regardless of which panel is active.
-async function saveAll() {
-  const errs = [];
-  const run = async (label, fn) => { try { await fn(); } catch (e) { errs.push(label + ': ' + (e?.message || e)); } };
-  await Promise.all([
-    run('channels', () => savePanel()),
-    run('agent',    () => agDoSave({ providers: (() => { const p = {}; for (const pr of AG_API_PROVIDERS) { const k = document.getElementById('ag-key-'+pr.id)?.value.trim(); if (k) p[pr.id] = { apiKey: k, enabled: true }; } for (const pr of AG_LOCAL_PROVIDERS) { const u = document.getElementById('ag-url-'+pr.id)?.value.trim(); p[pr.id] = { enabled: !!agAuth[pr.id], baseURL: u || pr.url }; } return p; })() }, 'agent-providers')),
-    run('memory',   () => memSaveConfig()),
-    run('search',   () => srSavePanel()),
-  ]);
-  if (errs.length) console.warn('[mixdog] saveAll errors:', errs);
-}
 
 // ============================================================
 // AGENT MODULE

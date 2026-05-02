@@ -207,7 +207,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Show configured schedules with next fire time and running state.",
+    "description": "List all configured schedules (nonInteractive + interactive) with next fire time, last fired time, deferred/skipped state, and whether currently running. This is the schedule list tool — use it to see what schedules exist and when they fire next.",
     "inputSchema": {
       "type": "object",
       "properties": {}
@@ -249,7 +249,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Defer or skip a schedule. action: \"defer\" suppresses for N minutes (default 30) or \"skip_today\" for the rest of the day.",
+    "description": "Defer or skip a named schedule. action: \"defer\" suppresses for N minutes (default 30, must be > 0); \"skip_today\" skips for the rest of the calendar day. The schedule name must match an existing configured schedule (use schedule_status to list names). Returns an error for unknown names or invalid arguments.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -676,6 +676,20 @@
     "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json — see your workflow file for the active set. Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early. Exactly one of prompt, ref, or file must be provided. Pass `prefetch:{files,callers,references}` to prepend Lead-specified context (paths, code-graph caller/reference sites) into the worker prompt and skip heuristic prefetch.",
     "inputSchema": {
       "type": "object",
+      "oneOf": [
+        {
+          "required": ["role", "prompt"],
+          "not": { "anyOf": [{ "required": ["ref"] }, { "required": ["file"] }] }
+        },
+        {
+          "required": ["role", "ref"],
+          "not": { "anyOf": [{ "required": ["prompt"] }, { "required": ["file"] }] }
+        },
+        {
+          "required": ["role", "file"],
+          "not": { "anyOf": [{ "required": ["prompt"] }, { "required": ["ref"] }] }
+        }
+      ],
       "properties": {
         "prompt": {
           "type": "string",

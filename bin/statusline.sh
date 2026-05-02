@@ -424,7 +424,10 @@ unset _WORK_COUNT _WORK_ORDER _MAINT_HAS_CYCLE1 _MAINT_HAS_CYCLE2
 unset _SYS_HAS_SCHED _SYS_HAS_PROACTIVE _SYS_HAS_WEBHOOK
 unset _RET_HAS_EXPLORER _RET_HAS_RECALL _RET_HAS_SEARCH
 
-# Jobs / Schedule / Roster / Discord / Recall segments remain removed.
+# Schedule next — ⏰ <name> HH:MM — only when next fire is known.
+if [ -n "$B_SCHED_NEXT_NAME" ] && [ -n "$SCHED_NEXT_HHMM" ]; then
+  add_l2 "${_ANSI_YELLOW}⏰${_ANSI_RESET} ${_ANSI_BOLD}${B_SCHED_NEXT_NAME}${_ANSI_RESET} ${_ANSI_DIM}${SCHED_NEXT_HHMM}${_ANSI_RESET}"
+fi
 
 
 # If L2 is just "Idle", suppress — runtime line already conveys idle state.

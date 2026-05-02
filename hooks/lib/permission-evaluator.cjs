@@ -11,6 +11,7 @@
  */
 
 const fs   = require('fs');
+const os   = require('os');
 const path = require('path');
 
 const { loadPermissions }               = require('./settings-loader.cjs');
@@ -24,6 +25,54 @@ const MCP_PREFIX = 'mcp__plugin_mixdog_mixdog__';
 const EDIT_WRITE_TOOLS = new Set([
   'edit', 'write', 'apply_patch',
 ]);
+
+// ── hard-deny patterns (bypass-proof) ────────────────────────────────────────
+// These patterns are evaluated BEFORE mode checks, including bypassPermissions.
+// They cover UNC paths and dangerous absolute system locations.
+
+const HARD_DENY_PATH_PATTERNS = [
+  // UNC network paths (\\server\share)
+  /^\\\\/,
+  // Unix system sensitive dirs
+  /^\/etc\//i,
+  /^\/etc$/i,
+  /^\/proc\//i,
+  /^\/proc$/i,
+  /^\/sys\//i,
+  /^\/sys$/i,
+  /^\/boot\//i,
+  /^\/boot$/i,
+  /^\/dev\//i,
+  /^\/dev$/i,
+  // Windows system dirs (various drive letters)
+  /^[a-z]:[/\\]windows[/\\]/i,
+  /^[a-z]:[/\\]windows$/i,
+  /^[a-z]:[/\\]program files[/\\]/i,
+  /^[a-z]:[/\\]program files \(x86\)[/\\]/i,
+  /^[a-z]:[/\\]system32/i,
+];
+
+/**
+ * Returns true if any extracted path matches a hard-deny pattern.
+ * Called before mode checks — bypass-proof.
+ */
+function isHardDenyPath(rawPaths) {
+  for (const p of rawPaths) {
+    if (!p || typeof p !== 'string') continue;
+    // UNC check on raw value (before normalization strips leading slashes)
+    if (/^\\\\/.test(p)) return true;
+    // Normalize for platform-independent matching
+    let norm;
+    try { norm = path.resolve(p); } catch { norm = p; }
+    norm = norm.replace(/\\/g, '/');
+    for (const re of HARD_DENY_PATH_PATTERNS) {
+      if (re.test(p) || re.test(norm)) return true;
+    }
+  }
+  return false;
+}
+
+module.exports._isHardDenyPath = isHardDenyPath; // exported for tests
 
 // ── path helpers ──────────────────────────────────────────────────────────────
 
@@ -150,6 +199,13 @@ function evaluatePermission({ toolName, toolInput, permissionMode, projectDir, u
   const name  = typeof toolName  === 'string' ? toolName  : '';
   const input = (toolInput && typeof toolInput === 'object') ? toolInput : {};
   const cwd   = (typeof userCwd === 'string' && userCwd) ? userCwd : process.cwd();
+
+  // 0. Hard-deny: bypass-proof path check (UNC, dangerous system paths).
+  //    Evaluated before any mode check — even bypassPermissions cannot override.
+  const rawPathsHard = extractPaths(name, input);
+  if (isHardDenyPath(rawPathsHard)) {
+    return { decision: 'deny', reason: `Tool '${name}' targets a protected system path.` };
+  }
 
   // Plugin source tree: read-only exemption.
   // Paths inside CLAUDE_PLUGIN_ROOT are always allowed for read-class tools.

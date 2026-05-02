@@ -38,10 +38,11 @@ function _acquireLock() {
     return // success — fast path
   } catch (err) {
     if (err?.code !== 'EEXIST') {
-      // Unexpected error — best-effort write and continue.
+      // Unexpected error — log and abort. Continuing without a valid lock risks
+      // two concurrent instances sharing the same data directory.
       try { if (_lockFd !== null) { fs.closeSync(_lockFd); _lockFd = null } } catch {}
-      try { fs.writeFileSync(LOCK_PATH, String(process.pid)) } catch {}
-      return
+      process.stderr.write(`[server] failed to create server.lock (${err?.code ?? err?.message}); exiting.\n`)
+      process.exit(1)
     }
   }
 
@@ -65,10 +66,10 @@ function _acquireLock() {
       return // atomic re-acquire succeeded
     } catch (retryErr) {
       if (retryErr?.code !== 'EEXIST') {
-        // Unexpected error on retry — best-effort and continue.
+        // Unexpected error on retry — log and abort.
         try { if (_lockFd !== null) { fs.closeSync(_lockFd); _lockFd = null } } catch {}
-        try { fs.writeFileSync(LOCK_PATH, String(process.pid)) } catch {}
-        return
+        process.stderr.write(`[server] unexpected lock error on retry (${retryErr?.code ?? retryErr?.message}); exiting.\n`)
+        process.exit(1)
       }
       // Another process beat us to 'wx' — wait and retry.
       if (attempt < _LOCK_RETRIES) {

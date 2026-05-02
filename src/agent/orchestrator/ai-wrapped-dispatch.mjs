@@ -983,14 +983,9 @@ export async function dispatchAiWrapped(name, args, ctx) {
   // Starting a bridge dispatch counts as session activity — keeps
   // proactive chat suppressed while long-running work is in flight.
   notifyActivity()
-  // Emit a channel notification mirroring the bridge worker UX — a short
-  // "<tool> started" banner that lets both Lead and user terminal see the
-  // lifecycle begin. Non-silent so the MCP notification reaches the terminal
-  // (silent forwarding skips MCP and only hits the external channel IPC).
-  // The merged result itself still arrives later via pushDispatchResult.
-  if (typeof ctx?.notifyFn === 'function') {
-    try { ctx.notifyFn(`${name} started`) } catch { /* best-effort */ }
-  }
+  // (start banner removed — notifyFn takes no opts so silent_to_agent is
+  //  not available; pushing "X started" to the channel is channel noise.
+  //  The merged result arrives later via pushDispatchResult.)
   // Wire caller abort: when the caller session aborts (ESC, new prompt),
   // mark the dispatch handle cancelled so a later result push doesn't echo
   // a stale answer back to a session that already moved on. Best-effort:

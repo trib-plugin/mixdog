@@ -96,15 +96,14 @@ function main() {
     process.env.CLAUDE_PROJECT_DIR || userCwd;
   const permissionMode = payload?.permissionMode || payload?.permission_mode || undefined;
 
-  // Fast-path: auto-approval modes bypass the sandbox gate entirely.
-  // Check settings-derived mode as well, so a user-level bypassPermissions
-  // in settings.json is respected even when payload carries no permissionMode.
   const { loadPermissions } = require('./lib/settings-loader.cjs');
   const settingsPerms = loadPermissions(projectDir);
   const effectiveMode = permissionMode || settingsPerms.defaultMode;
-  if (effectiveMode === 'bypassPermissions' || effectiveMode === 'auto') process.exit(0);
 
-  // 4. Delegate to shared evaluator
+  // 4. Delegate to shared evaluator.
+  //    bypass/auto modes still run the evaluator so that hard-deny rules
+  //    (UNC paths, dangerous system paths) are enforced. Only 'ask' decisions
+  //    are auto-approved under bypass; 'deny' is always respected.
   const evalResult = evaluatePermission({
     toolName,
     toolInput,
@@ -113,6 +112,18 @@ function main() {
     userCwd,
   });
   const { decision, reason, updatedInput } = evalResult;
+
+  // Fast-path for bypass/auto mode AFTER evaluator (deny already returned above
+  // if hard-deny matched; safe to skip ask/allow handling here).
+  if (effectiveMode === 'bypassPermissions' || effectiveMode === 'auto') {
+    if (decision === 'deny') {
+      emitDecision('deny', reason);
+      return;
+    }
+    // ask/allow → auto-approve under bypass
+    process.exit(0);
+    return;
+  }
 
   if (decision === 'allow') {
     process.exit(0);

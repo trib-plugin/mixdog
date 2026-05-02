@@ -153,9 +153,13 @@ seedDefaults();
 
 // jobId → current activeSession.id registry. Populated by detached bridge
 // workers so close_session can reach the *latest* session after a retry
-// replaced the original. Cleared when the job finishes (finally block).
-// Map<jobId, sessionId>
+// replaced the original. Also maintains a reverse map (sessionId → jobId)
+// so close_session can resolve any session id — original or replacement —
+// back to the job and close its current active session. Both maps are
+// cleared when the job finishes (finally block).
+// Map<jobId, sessionId> + Map<sessionId, jobId>
 const _jobSessionRegistry = new Map();
+const _sessionJobRegistry = new Map(); // reverse: sessionId → jobId
 
 // Seed plugin-owned scaffolding files (memory-config.json, etc.) so
 // first-time installs land with the Pool B surface populated and the Config
@@ -660,13 +664,18 @@ export async function handleToolCall(name, args, opts = {}) {
         // stopped. If no retry replacement exists the current==requested and
         // both closeSession calls are idempotent no-ops on the same id.
         closeSession(args.sessionId, 'manual');
-        // Forward close to the retry-replacement session of the specific job
-        // whose currentSessionId matches the requested args.sessionId.
-        // Only that job's replacement is closed — other detached jobs are left alone.
-        for (const [jobId, currentId] of _jobSessionRegistry) {
-          if (currentId === args.sessionId) {
-            try { closeSession(currentId, 'manual'); } catch {}
-            break;
+        // Bidirectional lookup: resolve the job that owns args.sessionId (whether
+        // it is the original session or a retry replacement) then close the job's
+        // current active session. _sessionJobRegistry maps any session id that has
+        // ever been registered for a job back to its jobId, so both the original
+        // sessionId supplied to the caller and any retry-replacement id work here.
+        {
+          const owningJobId = _sessionJobRegistry.get(args.sessionId);
+          if (owningJobId != null) {
+            const currentId = _jobSessionRegistry.get(owningJobId);
+            if (currentId && currentId !== args.sessionId) {
+              try { closeSession(currentId, 'manual'); } catch {}
+            }
           }
         }
         return ok({ ok: true, sessionId: args.sessionId });
@@ -751,6 +760,11 @@ export async function handleToolCall(name, args, opts = {}) {
 
       case 'bridge': {
         let prompt = args.prompt;
+        // Enforce exactly-one-of: prompt | file | ref. Schema is the first
+        // gate; this handler is the second defence for clients that bypass
+        // JSON Schema validation.
+        const _inputCount = [args.prompt, args.file, args.ref].filter(Boolean).length;
+        if (_inputCount > 1) return fail('bridge: provide exactly one of prompt|ref|file');
         if (!prompt && args.file) {
           try {
             prompt = readFileSync(args.file, 'utf-8');
@@ -924,6 +938,7 @@ export async function handleToolCall(name, args, opts = {}) {
         // Register initial mapping so close_session can resolve the job's current
         // session before the IIFE has had a chance to update it.
         _jobSessionRegistry.set(jobId, activeSession.id);
+        _sessionJobRegistry.set(activeSession.id, jobId);
         // Wrap the detached async IIFE in runWithCwdOverride so all builtin tool
         // calls inside this worker's async context resolve paths against workerCwd
         // via pwd() — no manual callerCwd propagation through nested calls needed.
@@ -987,6 +1002,7 @@ export async function handleToolCall(name, args, opts = {}) {
                   // (called by the Lead with the original sessionId or jobId)
                   // can forward the close to the replacement worker.
                   _jobSessionRegistry.set(jobId, activeSession.id);
+                  _sessionJobRegistry.set(activeSession.id, jobId);
                   updateSessionStatus(activeSession.id, 'running');
                   emit(`${modelTag}${role} retry attempt=${attempt}`, { silent_to_agent: true });
                 }
@@ -1101,6 +1117,7 @@ export async function handleToolCall(name, args, opts = {}) {
             // Idempotent: removePending is a no-op if the entry is already gone.
             try { removePending(process.env.CLAUDE_PLUGIN_DATA, jobId); } catch {}
             try { _jobSessionRegistry.delete(jobId); } catch {}
+            try { _sessionJobRegistry.delete(activeSession.id); } catch {}
             try {
               const cfg = loadConfig();
               if (cfg.trajectory?.enabled !== false) {
@@ -1124,6 +1141,7 @@ export async function handleToolCall(name, args, opts = {}) {
         }))().catch((err) => {
           try { removePending(process.env.CLAUDE_PLUGIN_DATA, jobId); } catch {}
           try { _jobSessionRegistry.delete(jobId); } catch {}
+          try { _sessionJobRegistry.delete(activeSession?.id ?? session.id); } catch {}
           const msg = err instanceof Error ? (err.stack || err.message) : String(err);
           const crashSessionId = activeSession?.id ?? session.id;
           try {

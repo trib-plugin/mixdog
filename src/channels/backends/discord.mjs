@@ -23,7 +23,7 @@ import {
 import { join, sep } from "path";
 import { chunk } from "../lib/format.mjs";
 import { withConfigLock } from "../lib/config-lock.mjs";
-import { updateSection } from "../../shared/config.mjs";
+import { readSection, updateSection } from "../../shared/config.mjs";
 const MAX_CHUNK_LIMIT = 2e3;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const RECENT_SENT_CAP = 200;
@@ -389,9 +389,7 @@ class DiscordBackend {
   // ── Access control ─────────────────────────────────────────────────
   readConfigAccess() {
     try {
-      if (!this.configFile) return this.initialAccess;
-      const raw = readFileSync(this.configFile, "utf8");
-      const parsed = JSON.parse(raw);
+      const parsed = readSection("channels");
       const access = normalizeAccess(parsed.access ?? this.initialAccess);
       if (parsed.channelsConfig) {
         for (const entry of Object.values(parsed.channelsConfig)) {
@@ -411,8 +409,7 @@ class DiscordBackend {
   persistAccessFromChannelsConfig() {
     if (this.isStatic || !this.configFile) return;
     try {
-      const raw = readFileSync(this.configFile, "utf8");
-      const parsed = JSON.parse(raw);
+      const parsed = readSection("channels");
       if (!parsed.channelsConfig) return;
       const access = normalizeAccess(parsed.access);
       let changed = false;
@@ -438,13 +435,6 @@ class DiscordBackend {
     if (!this.configFile) return;
     return withConfigLock(() => {
       mkdirSync(this.stateDir, { recursive: true, mode: 448 });
-      const current = (() => {
-        try {
-          return JSON.parse(readFileSync(this.configFile, "utf8"));
-        } catch {
-          return {};
-        }
-      })();
       const access = {
         dmPolicy: a.dmPolicy,
         allowFrom: a.allowFrom,
@@ -460,13 +450,6 @@ class DiscordBackend {
         ...channels,
         access
       }));
-      const next = {
-        ...current,
-        access
-      };
-      const tmp = this.configFile + ".tmp";
-      writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n", { mode: 384 });
-      renameSync(tmp, this.configFile);
     });
   }
   pruneExpired(a) {

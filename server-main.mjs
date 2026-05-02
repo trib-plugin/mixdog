@@ -135,7 +135,14 @@ const PLUGIN_VERSION = JSON.parse(
 
 // ── Logging ──────────────────────────────────────────────────────────
 const LOG_FILE = join(PLUGIN_DATA, 'mcp-debug.log')
-const log = msg => appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`)
+const log = msg => {
+  const line = `[${new Date().toISOString()}] ${msg}\n`
+  try {
+    appendFileSync(LOG_FILE, line)
+  } catch (e) {
+    process.stderr.write(`[log-fallback] ${line}`)
+  }
+}
 
 // ── Crash handlers ──────────────────────────────────────────────────
 // Leave a trace on silent hangs. Previously only child workers

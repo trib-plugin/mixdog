@@ -13,6 +13,7 @@ import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memor
 import { runFullBackfill } from '../src/memory/lib/memory-ops-policy.mjs';
 import { cleanMemoryText } from '../src/memory/lib/memory.mjs';
 import { readSection, writeSection } from '../src/shared/config.mjs';
+import { updateSection } from '../src/shared/config.mjs';
 import { applyDefaults as applyChannelsDefaults } from '../src/channels/lib/config.mjs';
 
 // C2 — Origin/Referer guard for mutating routes.
@@ -1260,6 +1261,12 @@ const server = http.createServer(async (req, res) => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify(sc, null, 2));
     writeFileSync(join(dir, 'prompt.md'), prompt);
     console.log('  Schedule saved:', name);
+    // Sync schedules section in mixdog-config.json (legacy file-based store kept above)
+    updateSection('schedules', current => {
+      const items = Array.isArray(current?.items) ? current.items.filter(i => i.name !== name) : [];
+      items.push({ name, ...sc });
+      return { ...current, items };
+    });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -1270,6 +1277,11 @@ const server = http.createServer(async (req, res) => {
     if (!name) { res.writeHead(400); res.end('name required'); return; }
     const dir = join(SCHEDULES_DIR, name);
     if (existsSync(dir)) { rmSync(dir, { recursive: true }); console.log('  Schedule deleted:', name); }
+    // Sync schedules section in mixdog-config.json
+    updateSection('schedules', current => {
+      const items = Array.isArray(current?.items) ? current.items.filter(i => i.name !== name) : [];
+      return { ...current, items };
+    });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -2545,8 +2557,28 @@ const server = http.createServer(async (req, res) => {
     next.promptInjection = merged;
     writeConfig(next);
     console.log('  Config saved: general/promptInjection');
+    // Update CLAUDE.md managed block when mode is claude_md
+    let claudeMdResult = null;
+    if (merged.mode === 'claude_md') {
+      try {
+        const { upsertManagedBlock } = await import('../lib/claude-md-writer.cjs');
+        // Re-generate the block content the same way the main plugin does at startup
+        const chConfig = readConfig();
+        const { generateClaudeMdBlock } = await import('../src/channels/lib/claude-md.mjs').catch(() => ({ generateClaudeMdBlock: null }));
+        if (generateClaudeMdBlock) {
+          const blockContent = generateClaudeMdBlock(chConfig);
+          upsertManagedBlock(merged.targetPath, blockContent);
+          claudeMdResult = { ok: true };
+        } else {
+          claudeMdResult = { ok: false, error: 'generateClaudeMdBlock not available' };
+        }
+      } catch (e) {
+        claudeMdResult = { ok: false, error: e.message };
+        console.error('  [general/save] CLAUDE.md update failed:', e.message);
+      }
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, promptInjection: merged }));
+    res.end(JSON.stringify({ ok: true, promptInjection: merged, claudeMd: claudeMdResult }));
     return;
   }
 
@@ -2797,7 +2829,7 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
-server.listen(PORT, 'localhost', () => { // loopback-only: local config UI; never expose to LAN
+server.listen(PORT, () => { // bind to all interfaces (dual-stack); loopback access via localhost/127.0.0.1
   console.log(`\n  MIXDOG CONFIG`);
   console.log(`  http://localhost:${PORT}\n`);
   if (process.env.MIXDOG_SETUP_OPEN_ON_START === '1') {
