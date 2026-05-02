@@ -44,10 +44,11 @@ Scan query for known scope and collapse to ONE targeted call: known identifier /
 ## Anti-patterns
 
 - `find_symbol` ↔ `grep` serial fallback for the same identifier — they answer different questions (declaration vs usage). Genuinely need both → call in parallel.
+- `find_symbol` `mode:"callers"`/`"references"`/`"dependents"` returning empty for a recently-created or recently-edited file is **inconclusive**, not authoritative — the code graph cache may be stale. Confirm with one targeted `grep` on the symbol name before reporting `not found`.
 - `read` a whole large file when `find_symbol` / `grep` can narrow the line window first.
 - `grep` → `read` past two pairs on same target without locking file+line span — switch tool family (`find_symbol` / `explore`) or commit to edit; third same-target pair = violation.
-- Same file, multiple chunks (different `offset`/`limit` on the same path) → MUST use `read({reads:[…]})`, not N parallel `read` tool_use blocks. Splitting same-file chunks across separate tool_use slots inflates iter accounting and is a violation.
-- 2+ files in one turn with shared opts → `read({path:[a,b,c]})`. Per-file different `offset`/`limit`/`mode` → `read({reads:[{path,offset,limit,mode?,n?}, …]})`. Same parallelism rule applies to `edit` (`edits` array), `write` (`writes` array), `grep`/`glob` (pattern array).
+- Same file, multiple chunks (different `offset`/`limit` on the same path) → widen with a single `offset`+`limit` covering both ranges. mixdog `read` schema does **not** expose a `reads` array — use `reads` only when a future schema lists it. Splitting same-file chunks across separate parallel tool_use blocks inflates iter accounting and is a violation; one widened call is the supported path.
+- 2+ files in one turn with shared opts → `read({path:[a,b,c]})`. Per-file different `offset`/`limit`/`mode` → separate sequential `read` calls (current schema) until a `reads` array option is exposed. Same parallelism rule applies to `edit` (`edits` array), `write` (`writes` array), `grep`/`glob` (pattern array).
 - Tool family consistency — when editing with `mixdog edit` / `apply_patch`, the matching `read` must come from mixdog too. Mixing built-in `Read` with mixdog `edit` (or vice versa) fails the second call's snapshot check because the two stores do not share state.
 
 ## Soft-warn handling
