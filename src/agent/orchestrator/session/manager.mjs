@@ -140,7 +140,7 @@ function _getMcpToolsCached() {
     if (!_mcpToolsCache || now - _mcpToolsCacheTime > MCP_CACHE_TTL) {
         // Merge externally-connected MCP tools with the plugin's in-process
         // tools (registered by agent's toolExecutor bridge). Internal tools
-        // are exposed to LLMs under their bare names (search, search_memories,
+        // are exposed to LLMs under their bare names (search, memory_search,
         // reply, ...) — no mcp__ prefix, since the dispatcher in server.mjs
         // handles them directly without a transport.
         const mcp = getMcpTools() || [];
@@ -208,8 +208,7 @@ function resolveSessionTools(toolSpec, skills, { ownerIsBridge = false } = {}) {
 
 // Dedup by name, first occurrence wins. BUILTIN_TOOLS is passed in ahead
 // of the MCP-registered internal tools so plugin-side definitions take
-// precedence when both surfaces declare the same name (e.g. read / grep /
-// glob, which v0.6.173 also exposed via tools.json with module:'builtin').
+// precedence when both surfaces declare the same name (e.g. read / grep / glob).
 // Without this merge, Anthropic rejected the request with
 // "tools: Tool names must be unique" and the orchestrator burned up to
 // 20 iterations retrying before the final answer landed.
@@ -231,7 +230,7 @@ function _dedupByName(tools) {
 // KEEP (bridge agents can call):
 //   - core file / shell: read, edit, write, bash (persistent:true), grep, glob
 //   - IO helpers: read (mode:head|tail|count), list (mode:tree|find)
-//   - Code graph / refactors: code_graph
+//   - Code graph / refactors: find_symbol (with mode parameter)
 //   - memory read: recall (hidden recall-agent gets memory_search directly)
 //   - information retrieval: search, explore
 //     (hidden search-agent gets web_search directly)
@@ -254,7 +253,7 @@ export const BRIDGE_DENY_TOOLS = Object.freeze([
     // avoids exposing chain-spawn adjacent control planes.
     'get_workflow', 'get_workflows', 'set_prompt',
     // Main-session convenience aliases. Bridge roles already know to use
-    // `code_graph` / `find_symbol` directly, so carrying alias-only tools
+    // `find_symbol (with mode parameter)` directly, so carrying alias-only tools
     // here just bloats the shared BP_1 shard without adding capability.
     'find_imports', 'find_dependents', 'find_references', 'find_callers',
     // External `mixdog-memory` MCP server duplicates internal memory_search /
@@ -382,12 +381,12 @@ function providerCacheKey(provider, override) {
     return `mixdog-${PROVIDER_ALIAS[provider] || provider}`;
 }
 
-// Fast-path eligibility gate. The bridge fast paths (find_symbol / env-grep /
-// code_graph direct) skip the LLM and return a synthesized one-liner. That's
-// great for "where is X defined?" but catastrophic when the prompt is a long
-// multi-step instruction that merely mentions an identifier — the agent then
-// answers with a random symbol match and 0 LLM output. Require short,
-// non-imperative prompts before any fast path may fire.
+// Fast-path eligibility gate. The bridge fast paths (find_symbol / code_graph /
+// env-grep) skip the LLM and return a synthesized one-liner. That's great for
+// "where is X defined?" but catastrophic when the prompt is a long multi-step
+// instruction that merely mentions an identifier — the agent then answers with
+// a random symbol match and 0 LLM output. Require short, non-imperative
+// prompts before any fast path may fire.
 function _isSimpleIdentifierLookup(prompt) {
     const text = String(prompt || '').trim();
     if (!text) return false;
@@ -648,11 +647,12 @@ function _firstListedPath(listText) {
 async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     if (session?.owner !== 'bridge') return null;
     // Hidden roles (recall-agent / search-agent / explorer / cycle1-agent /
-    // cycle2-agent) own their retrieval tools — memory_search,
-    // web_search, glob/grep/read fan-out — and must not be intercepted by the
-    // generic bridge classifier. Without this guard, an identifier in the
-    // recall prompt routes to code_graph(references) and returns the graph's
-    // "file not found" string in place of an actual memory hit.
+    // cycle2-agent) own their retrieval tools — memory_search, web_search,
+    // glob/grep/read fan-out — and must not be intercepted by the generic bridge
+    // classifier. Without this guard, an identifier in the recall prompt routes
+    // to the internal code_graph helper and returns "file not found" in place of
+    // an actual memory hit. External surface exposed to agents is find_symbol;
+    // the fast-path branches below call code_graph internally via executeInternalTool.
     if (isHiddenRole(session?.role)) return null;
     // Fix 3: pass null cwd through — `_extractKnownFilePaths` returns [] when
     // there is no project cwd, so filesystem-existence checks never leak the
@@ -1487,6 +1487,9 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
         try {
             const session = preSession;
             const provider = getProvider(session.provider);
+            // Register the live session object into runtime so closeSession()
+            // can read allBashSessionIds that loop.mjs appends mid-turn.
+            runtime.session = session;
             if (!provider)
                 throw new Error(`Provider "${session.provider}" not available`);
             // Cap caller-supplied / prefetched context so an oversized
@@ -1702,6 +1705,8 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
         const entry = _runtimeState.get(sessionId);
         if (entry && entry.generation === askGeneration) {
             entry.controller = null;
+            // Detach the live session reference; ask is over.
+            entry.session = null;
         }
         unlock();
     }
@@ -1797,7 +1802,10 @@ export function updateSessionStatus(id, status) {
  */
 export function closeSession(id, reason = 'manual') {
     if (!id) return false;
-    const persisted = loadSession(id);
+    // Prefer in-memory runtime session — allBashSessionIds may not be persisted
+    // yet for shells opened in the current turn (BL-bash-disk-sync).
+    const inMemory = _runtimeState.get(id)?.session;
+    const persisted = inMemory || loadSession(id);
     const bashSessionId = persisted?.implicitBashSessionId || null;
     // Collect all persistent bash shells created during this session.
     const allBashIds = Array.isArray(persisted?.allBashSessionIds)

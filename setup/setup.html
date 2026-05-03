@@ -1468,6 +1468,13 @@ function cancelClose() {
   document.getElementById('close-modal').style.display = 'none';
 }
 
+async function saveAndClose() {
+  await savePanel();
+  isDirty = false;
+  navigator.sendBeacon('/close', '');
+  window.close();
+}
+
 // Shared data containers
 let chConfig = null;
 let chExtraData = { bot: {} };
@@ -1969,7 +1976,9 @@ function makeChannelSelect(selected) {
   const opts = getChannelOptions();
   let html = '<select class="r-select" data-f="channel" style="width:110px;flex:none;">';
   opts.forEach(o => {
-    html += '<option value="' + o + '"' + (o === selected ? ' selected' : '') + '>' + o + '</option>';
+    const opt = document.createElement('option');
+    opt.value = o; opt.textContent = o; if (o === selected) opt.selected = true;
+    html += opt.outerHTML;
   });
   if (!opts.length) html += '<option value="">--</option>';
   html += '</select>';
@@ -2058,14 +2067,26 @@ function populateProactiveFeedback(cfg) {
       div.style.flexDirection = 'column';
       div.style.alignItems = 'stretch';
       div.style.padding = '8px 14px';
-      div.innerHTML = `
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-          <span style="font-size:11px;color:var(--text-4)">#${i + 1}</span>
-          <span style="flex:1"></span>
-          <span class="card-remove" style="cursor:pointer;color:var(--text-4);font-size:14px" data-fi="${i}" onclick="removeFeedback(${i})">&times;</span>
-        </div>
-        <textarea class="r-input" data-fi="${i}" style="height:60px;resize:vertical;font-size:11px">${entry}</textarea>
-      `;
+      const hdr = document.createElement('div');
+      hdr.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:4px';
+      const numSpan = document.createElement('span');
+      numSpan.style.cssText = 'font-size:11px;color:var(--text-4)';
+      numSpan.textContent = '#' + (i + 1);
+      const spacer = document.createElement('span');
+      spacer.style.flex = '1';
+      const rmSpan = document.createElement('span');
+      rmSpan.className = 'card-remove';
+      rmSpan.style.cssText = 'cursor:pointer;color:var(--text-4);font-size:14px';
+      rmSpan.dataset.fi = String(i);
+      rmSpan.onclick = () => removeFeedback(i);
+      rmSpan.textContent = '\u00d7';
+      hdr.appendChild(numSpan); hdr.appendChild(spacer); hdr.appendChild(rmSpan);
+      const ta = document.createElement('textarea');
+      ta.className = 'r-input';
+      ta.dataset.fi = String(i);
+      ta.style.cssText = 'height:60px;resize:vertical;font-size:11px';
+      ta.textContent = entry;
+      div.appendChild(hdr); div.appendChild(ta);
       sec.appendChild(div);
     });
   }).catch(() => {
@@ -2125,14 +2146,14 @@ function addScheduleCard(data) {
   const nameVal = d.name || 'Untitled';
   card.innerHTML =
     '<div class="card-hdr" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
-      '<span class="card-title" data-f="sc-title">' + nameVal + '</span>' +
+      '<span class="card-title" data-f="sc-title"></span>' +
       '<div class="card-hdr-right">' +
         '<div class="r-toggle' + (d.enabled !== false ? ' on' : '') + '" onclick="event.stopPropagation();this.classList.toggle(\'on\')" data-f="sc-enabled"></div>' +
         '<span class="card-remove" onclick="event.stopPropagation();this.closest(\'.card\').remove()">&times;</span>' +
       '</div>' +
     '</div>' +
     '<div class="card-content">' +
-      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Schedule name" value="' + (d.name || '') + '" data-f="sc-name" style="flex:1;"></div>' +
+      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Schedule name" value="" data-f="sc-name" style="flex:1;"></div>' +
       '<div class="r"><span class="r-name-wide">Frequency</span>' +
         '<select class="r-select" data-f="sc-freq" onchange="onSchedFreqChange(this)">' +
         '<option value="interval"' + (['every5m','every10m','every30m','hourly'].includes(d.time) || !d.time ? ' selected' : '') + '>Interval</option>' +
@@ -2141,10 +2162,10 @@ function addScheduleCard(data) {
         '<option value="weekly"' + (daysVal === 'weekend' || (!['daily','weekday'].includes(daysVal) && daysVal !== 'daily') ? ' selected' : '') + '>Weekly</option>' +
         '</select></div>' +
       '<div class="r" data-interval-row><span class="r-name-wide">Every</span>' +
-        '<input class="r-input" type="text" placeholder="01:30" value="' + ({'every5m':'00:05','every10m':'00:10','every30m':'00:30','hourly':'01:00'}[d.time] || d.time || '01:00') + '" data-f="sc-interval" style="width:80px">' +
+        '<input class="r-input" type="text" placeholder="01:30" value="" data-f="sc-interval" style="width:80px">' +
         '<span style="font-size:11px;color:var(--text-4);margin-left:8px">HH:MM</span></div>' +
       '<div class="r" data-at-row style="display:none"><span class="r-name-wide">At</span>' +
-        '<input class="r-input" type="text" placeholder="09:00" value="' + (d.time && !['every5m','every10m','every30m','hourly'].includes(d.time) ? d.time : '09:00') + '" data-f="sc-at" style="width:80px"></div>' +
+        '<input class="r-input" type="text" placeholder="09:00" value="" data-f="sc-at" style="width:80px"></div>' +
       '<div class="r"><span class="r-name-wide">Type</span>' +
         '<select class="r-select" data-f="sc-type" onchange="onSchedTypeChange(this)">' +
         '<option value="interactive"' + (d.type === 'interactive' || !d.type ? ' selected' : '') + '>Interactive</option>' +
@@ -2152,28 +2173,40 @@ function addScheduleCard(data) {
         '</select>' +
         '<span style="flex:1;font-size:11px;color:var(--text-4);margin-left:8px" data-f="sc-type-hint">' + (d.type === 'non-interactive' ? 'Sends result to channel' : 'Injects into current session') + '</span></div>' +
       '<div class="r" data-channel-row style="' + (d.type === 'non-interactive' ? '' : 'display:none') + '"><span class="r-name-wide">Channel</span>' + makeChannelSelect(d.channel) + '</div>' +
-      '<div class="r"><span class="r-name-wide">Model</span><select class="r-select" data-f="sc-model" data-initial="' + (d.model || 'sonnet-mid') + '"></select></div>' +
+      '<div class="r"><span class="r-name-wide">Model</span><select class="r-select" data-f="sc-model" data-initial=""></select></div>' +
       '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
         '<div style="display:flex;align-items:center;margin-bottom:6px">' +
           '<span style="font-size:11px;color:var(--text-3)">Instructions</span>' +
-          '<span class="file-open" onclick="schedOpenPrompt(\'' + encodeURIComponent(d.name || '') + '\')">Open</span>' +
+          '<span class="file-open" data-f="sc-open">Open</span>' +
         '</div>' +
-        '<textarea class="r-input" data-f="sc-prompt" placeholder="Describe what the bot should do." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.prompt || '') + '</textarea>' +
+        '<textarea class="r-input" data-f="sc-prompt" placeholder="Describe what the bot should do." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5"></textarea>' +
       '</div>' +
     '</div>';
   list.appendChild(card);
   const nameInput = card.querySelector('[data-f="sc-name"]');
+  if (nameInput) nameInput.value = d.name || '';
   const titleEl = card.querySelector('[data-f="sc-title"]');
+  if (titleEl) titleEl.textContent = nameVal;
   nameInput?.addEventListener('input', () => { titleEl.textContent = nameInput.value || 'Untitled'; });
+  const scOpenBtn = card.querySelector('[data-f="sc-open"]');
+  if (scOpenBtn) scOpenBtn.addEventListener('click', () => schedOpenPrompt(encodeURIComponent(d.name || '')));
+  const promptTA = card.querySelector('[data-f="sc-prompt"]');
+  if (promptTA) promptTA.value = d.prompt || '';
   if (d.name) card.classList.add('collapsed');
   const freqSel = card.querySelector('[data-f="sc-freq"]');
   if (freqSel) onSchedFreqChange(freqSel);
+  const intervalInput = card.querySelector('[data-f="sc-interval"]');
+  if (intervalInput) intervalInput.value = ({'every5m':'00:05','every10m':'00:10','every30m':'00:30','hourly':'01:00'}[d.time] || d.time || '01:00');
+  const atInput = card.querySelector('[data-f="sc-at"]');
+  if (atInput) atInput.value = (d.time && !['every5m','every10m','every30m','hourly'].includes(d.time) ? d.time : '09:00');
   // Fill model dropdown immediately
   const modelSel = card.querySelector('[data-f="sc-model"]');
   if (modelSel) {
+    modelSel.setAttribute('data-initial', d.model || 'sonnet-mid');
     const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
-    const initial = modelSel.dataset.initial || 'sonnet-mid';
-    modelSel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (initial === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + '</option>').join('');
+    const initial = d.model || 'sonnet-mid';
+    modelSel.innerHTML = '';
+    presets.forEach(p => { const opt = document.createElement('option'); opt.value = p.id || p.name; opt.textContent = p.name || p.id; if (initial === opt.value) opt.selected = true; modelSel.appendChild(opt); });
   }
 }
 
@@ -2223,47 +2256,56 @@ function addEventCard(data) {
   card.dataset.originalName = d.name || '';
   card.innerHTML =
     '<div class="card-hdr" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
-      '<span class="card-title" data-f="ev-title">' + nameVal + '</span>' +
+      '<span class="card-title" data-f="ev-title"></span>' +
       '<div class="card-hdr-right">' +
         '<span class="card-remove" onclick="event.stopPropagation();deleteWebhook(this.closest(\'.card\'))">&times;</span>' +
       '</div>' +
     '</div>' +
     '<div class="card-content">' +
-      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Endpoint name (e.g. github-issues)" value="' + (d.name || '') + '" data-f="ev-name" style="flex:1;" oninput="this.closest(\'.card\').querySelector(\'[data-f=ev-title]\').textContent=this.value||\'Untitled\'">' + '</div>' +
-      '<div class="r"><span class="r-name-wide">Channel</span><input class="r-input" type="text" placeholder="main" value="' + (d.channel || 'main') + '" data-f="ev-channel" style="flex:1;"></div>' +
+      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Endpoint name (e.g. github-issues)" value="" data-f="ev-name" style="flex:1;" oninput="this.closest(\'.card\').querySelector(\'[data-f=ev-title]\').textContent=this.value||\'Untitled\'">' + '</div>' +
+      '<div class="r"><span class="r-name-wide">Channel</span><input class="r-input" type="text" placeholder="main" value="" data-f="ev-channel" style="flex:1;"></div>' +
       '<div class="r"><span class="r-name-wide">Mode</span>' +
         '<select class="r-select" data-f="ev-mode">' +
         '<option value="delegate"' + (d.mode === 'delegate' || !d.mode ? ' selected' : '') + '>Delegate (agent runs, result reports to Lead)</option>' +
         '<option value="interactive"' + (d.mode === 'interactive' ? ' selected' : '') + '>Interactive (Lead receives payload directly)</option>' +
         '</select></div>' +
       '<div class="r" data-f="ev-role-row"><span class="r-name-wide">Role</span>' +
-        '<select class="r-select" data-f="ev-role" data-initial="' + (d.role || 'reviewer') + '"></select>' +
+        '<select class="r-select" data-f="ev-role" data-initial=""></select>' +
         '<span style="font-size:11px;color:var(--text-3);margin-left:8px">(delegate mode only)</span></div>' +
-      '<div class="r"><span class="r-name-wide">Secret</span><input class="r-input" type="password" value="' + (d.secret || '') + '" placeholder="Optional" data-f="ev-secret"></div>' +
+      '<div class="r"><span class="r-name-wide">Secret</span><input class="r-input" type="password" value="" placeholder="Optional" data-f="ev-secret"></div>' +
       '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
         '<div style="display:flex;align-items:center;margin-bottom:6px">' +
           '<span style="font-size:11px;color:var(--text-3)">Instructions</span>' +
-          '<span class="file-open" onclick="webhookOpenInstructions(\'' + encodeURIComponent(d.name || '') + '\')">Open</span>' +
+          '<span class="file-open" data-f="ev-open">Open</span>' +
         '</div>' +
-        '<textarea class="r-input" data-f="ev-instructions" placeholder="Describe how to handle this webhook payload." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.instructions || '') + '</textarea>' +
+        '<textarea class="r-input" data-f="ev-instructions" placeholder="Describe how to handle this webhook payload." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5"></textarea>' +
       '</div>' +
     '</div>';
   list.appendChild(card);
   const evNameInput = card.querySelector('[data-f="ev-name"]');
   const evTitleEl = card.querySelector('[data-f="ev-title"]');
+  if (evTitleEl) evTitleEl.textContent = nameVal;
+  if (evNameInput) evNameInput.value = d.name || '';
+  const evChannelInput = card.querySelector('[data-f="ev-channel"]');
+  if (evChannelInput) evChannelInput.value = d.channel || 'main';
+  const evSecretInput = card.querySelector('[data-f="ev-secret"]');
+  if (evSecretInput) evSecretInput.value = d.secret || '';
+  const evInstrTA = card.querySelector('[data-f="ev-instructions"]');
+  if (evInstrTA) evInstrTA.value = d.instructions || '';
   evNameInput?.addEventListener('input', () => { evTitleEl.textContent = evNameInput.value || 'Untitled'; });
   if (isExisting) card.classList.add('collapsed');
   // Fill role dropdown from user-workflow roles; fall back to built-ins
   // when the workflow hasn't loaded yet.
   const evRoleSel = card.querySelector('[data-f="ev-role"]');
   if (evRoleSel) {
+    evRoleSel.setAttribute('data-initial', d.role || 'reviewer');
     const wfRoles = (wfConfig?.roles || []).map(r => r.name).filter(Boolean);
     const roleNames = wfRoles.length ? wfRoles : ['worker', 'reviewer', 'debugger', 'tester'];
     const initial = evRoleSel.dataset.initial || 'reviewer';
-    evRoleSel.innerHTML = roleNames.map(n =>
-      '<option value="' + n + '"' + (initial === n ? ' selected' : '') + '>' + n + '</option>'
-    ).join('');
+    roleNames.forEach(n => { const opt = document.createElement('option'); opt.value = n; opt.textContent = n; if (initial === n) opt.selected = true; evRoleSel.appendChild(opt); });
   }
+  const evOpenBtn = card.querySelector('[data-f="ev-open"]');
+  if (evOpenBtn) evOpenBtn.addEventListener('click', () => webhookOpenInstructions(encodeURIComponent(d.name || '')));
   // Dim the role row when mode is interactive (role is unused there).
   const evModeSel = card.querySelector('[data-f="ev-mode"]');
   const roleRow = card.querySelector('[data-f="ev-role-row"]');
@@ -2314,7 +2356,7 @@ function populatePresetDropdowns() {
   // Schedule cards — fill model dropdowns (webhook cards now use role, not model)
   document.querySelectorAll('#sched-tasks .card [data-f="sc-model"]').forEach(sel => {
     const current = sel.value || sel.dataset.initial || 'sonnet-mid';
-    sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + '</option>').join('');
+    sel.innerHTML = ''; presets.forEach(p => { const opt = document.createElement('option'); opt.value = p.id || p.name; opt.textContent = p.name || p.id; if (current === opt.value) opt.selected = true; sel.appendChild(opt); });
   });
 }
 
@@ -2354,10 +2396,12 @@ function renderVoiceSection() {
           '<span style="color:var(--text-1);font-size:13px;">Installed (whisper.cpp + turbo)</span>' +
           '<a href="#" onclick="installVoice();return false;" style="font-size:11px;color:var(--text-4);margin-left:12px;text-decoration:underline;">Reinstall</a>' +
         '</div>' +
-        (whisperPath ? '<div style="font-size:10px;color:var(--text-4);word-break:break-all;">\uD83D\uDD27 ' + whisperPath + '</div>' : '') +
-        (modelPath   ? '<div style="font-size:10px;color:var(--text-4);word-break:break-all;">\uD83E\uDDE0 ' + modelPath   + '</div>' : '') +
+        (whisperPath ? '<div id="voice-cmd-path" style="font-size:10px;color:var(--text-4);word-break:break-all;">\uD83D\uDD27 </div>' : '') +
+        (modelPath   ? '<div id="voice-model-path" style="font-size:10px;color:var(--text-4);word-break:break-all;">\uD83E\uDDE0 </div>' : '') +
         '<div id="voice-install-status" style="font-size:11px;color:var(--text-4);display:none;"></div>' +
       '</div>';
+    if (whisperPath) { const d = el.querySelector('#voice-cmd-path'); if (d) d.appendChild(document.createTextNode(whisperPath)); }
+    if (modelPath)   { const d = el.querySelector('#voice-model-path'); if (d) d.appendChild(document.createTextNode(modelPath)); }
   }
 }
 
@@ -2473,10 +2517,12 @@ function renderWebhookSection() {
     const w = chConfig?.webhook || {};
     el.innerHTML =
       '<div class="r"><span class="r-name-wide">Enabled</span><div class="r-toggle' + (w.enabled ? ' on' : '') + '" onclick="this.classList.toggle(\'on\')" id="ch-webhook-enabled"></div></div>' +
-      '<div class="r"><span class="r-name-wide">Auth Token</span><div class="input-group" style="flex:1;width:auto;"><input class="r-input" id="ch-webhook-authtoken" type="password" placeholder="2x..." value="' + (w.authtoken || '') + '"><button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button></div>' +
+      '<div class="r"><span class="r-name-wide">Auth Token</span><div class="input-group" style="flex:1;width:auto;"><input class="r-input" id="ch-webhook-authtoken" type="password" placeholder="2x..."><button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button></div>' +
         (!w.authtoken ? '<a href="https://dashboard.ngrok.com/get-started/your-authtoken" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;margin-left:8px;white-space:nowrap">Get &#8599;</a>' : '') + '</div>' +
-      '<div class="r"><span class="r-name-wide">Domain</span><input class="r-input" id="ch-webhook-domain" type="text" placeholder="your-name.ngrok-free.dev" value="' + (w.domain || '') + '">' +
+      '<div class="r"><span class="r-name-wide">Domain</span><input class="r-input" id="ch-webhook-domain" type="text" placeholder="your-name.ngrok-free.dev">' +
         (!w.domain ? '<a href="https://dashboard.ngrok.com/domains" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;margin-left:8px;white-space:nowrap">Get &#8599;</a>' : '') + '</div>';
+    document.getElementById('ch-webhook-authtoken').value = w.authtoken || '';
+    document.getElementById('ch-webhook-domain').value = w.domain || '';
   }
 }
 
@@ -2522,1272 +2568,6 @@ async function populateChannels(cfg) {
   setTagValues('ch-allowfrom', access.allowFrom);
   setTagValues('ch-mentionpatterns', access.mentionPatterns);
   if (access.ackReaction) document.getElementById('ch-ackreaction').classList.add('on');
-  if (access.replyToMode) document.getElementById('ch-replytomode').value = access.replyToMode;
-  if (access.textChunkLimit) document.getElementById('ch-textchunklimit').value = access.textChunkLimit;
-  if (access.chunkMode) document.getElementById('ch-chunkmode').value = access.chunkMode;
-
-  // DND: top-level cfg.quiet (server always populates default via applyChannelsDefaults)
-  const quiet = cfg?.quiet || {};
-  populateQuietHours(quiet.schedule);
-  if (quiet.holidays) document.getElementById('dnd-holidays').classList.add('on');
-  const setToggle = (id, on) => { const el = document.getElementById(id); if (!el) return; if (on) el.classList.add('on'); else el.classList.remove('on'); };
-  setToggle('dnd-respect-webhook', cfg?.webhook?.respectQuiet ?? false);
-  setToggle('dnd-respect-schedule', cfg?.schedules?.respectQuiet ?? true);
-  setToggle('dnd-respect-proactive', cfg?.proactive?.respectQuiet ?? true);
-
-  // Proactive (non-preset fields)
-  const proactive = cfg?.proactive || {};
-  if (proactive.interval) {
-    const sel = document.getElementById('proactive-interval');
-    const customInput = document.getElementById('proactive-interval-custom');
-    const val = String(proactive.interval);
-    if ([...sel.options].some(o => o.value === val)) {
-      sel.value = val;
-      customInput.style.display = 'none';
-    } else {
-      sel.value = 'custom';
-      customInput.value = val;
-      customInput.style.display = '';
-    }
-  }
-  populateProactiveFeedback(cfg);
-
-  // Schedules
-  const schedules = cfg?.schedules || {};
-  const allSchedules = [
-    ...(schedules.interactive || []).map(s => ({ ...s, type: 'interactive' })),
-    ...(schedules.nonInteractive || []).map(s => ({ ...s, type: 'non-interactive' })),
-    ...(schedules.items || []),
-  ];
-  allSchedules.forEach(s => addScheduleCard(s));
-
-  // Webhooks (folder-based)
-  try { const whs = await fetch('/webhooks').then(r => r.json()); whs.forEach(w => addEventCard(w)); } catch {}
-}
-
-function populateQuietHours(schedule) {
-  if (!schedule) return;
-  const presets = ['23:00-09:00', '23:00-07:00', '22:00-08:00', '00:00-09:00'];
-  const sel = document.getElementById('dnd-quiet-preset');
-  if (!sel) return;
-  if (presets.includes(schedule)) { sel.value = schedule; }
-  else { sel.value = 'custom'; document.getElementById('dnd-quiet-custom').classList.remove('hidden'); const parts = schedule.split('-'); if (parts.length === 2) { document.getElementById('dnd-quiet-start').value = parts[0]; document.getElementById('dnd-quiet-end').value = parts[1]; } }
-}
-
-// -- Channels build data --
-function buildChannelsData() {
-  const channelsConfig = {};
-  let mainChannel = null;
-  document.querySelectorAll('#ch-channel-list .dyn-item').forEach(item => {
-    const label = item.querySelector('[data-f="ch-label"]')?.value.trim() || 'main';
-    const chId = item.querySelector('[data-f="ch-id"]')?.value.trim();
-    const mode = item.querySelector('[data-f="ch-mode"]')?.value || 'interactive';
-    const isMain = item.querySelector('.r-radio')?.classList.contains('on');
-    if (chId) { channelsConfig[label] = { channelId: chId, mode }; if (isMain) mainChannel = label; }
-  });
-
-  const quietPreset = document.getElementById('dnd-quiet-preset').value;
-  let quietSchedule = '';
-  if (quietPreset === 'custom') { const s = document.getElementById('dnd-quiet-start').value.trim(); const e = document.getElementById('dnd-quiet-end').value.trim(); if (s && e) quietSchedule = s + '-' + e; }
-  else if (quietPreset !== 'none') { quietSchedule = quietPreset; }
-  const quietHolidays = document.getElementById('dnd-holidays').classList.contains('on');
-  const respectWebhook = document.getElementById('dnd-respect-webhook').classList.contains('on');
-  const respectSchedule = document.getElementById('dnd-respect-schedule').classList.contains('on');
-  const respectProactive = document.getElementById('dnd-respect-proactive').classList.contains('on');
-
-  const scheduleItems = [];
-  document.querySelectorAll('#sched-tasks .card').forEach(card => {
-    const freq = card.querySelector('[data-f="sc-freq"]')?.value || 'interval';
-    let time, days;
-    if (freq === 'interval') {
-      const iv = card.querySelector('[data-f="sc-interval"]')?.value.trim() || '01:00';
-      const m = iv.match(/^(\d+):(\d+)$/);
-      const mins = m ? parseInt(m[1]) * 60 + parseInt(m[2]) : 60;
-      if (mins <= 5) time = 'every5m'; else if (mins <= 10) time = 'every10m'; else if (mins <= 30) time = 'every30m'; else time = 'hourly';
-      days = 'daily';
-    } else { time = card.querySelector('[data-f="sc-at"]')?.value.trim() || '09:00'; days = freq === 'weekday' ? 'weekday' : freq === 'weekly' ? 'weekend' : 'daily'; }
-    scheduleItems.push({ name: card.querySelector('[data-f="sc-name"]')?.value.trim() || '', time, days, channel: card.querySelector('[data-f="channel"]')?.value || '', type: card.querySelector('[data-f="sc-type"]')?.value || 'interactive', model: card.querySelector('[data-f="sc-model"]')?.value || '', enabled: card.querySelector('[data-f="sc-enabled"]')?.classList.contains('on') ?? true, prompt: card.querySelector('[data-f="sc-prompt"]')?.value || '' });
-  });
-
-  const voice = {};
-  const voiceCmd = document.getElementById('voice-command');
-  if (voiceCmd) { voice.command = voiceCmd.value; voice.model = document.getElementById('voice-model')?.value || ''; voice.language = document.getElementById('voice-language')?.value || 'auto'; voice.pythonModel = document.getElementById('voice-python-model')?.value || ''; }
-
-  const webhook = { respectQuiet: respectWebhook };
-  const webhookAuthtoken = document.getElementById('ch-webhook-authtoken');
-  if (webhookAuthtoken) { webhook.enabled = document.getElementById('ch-webhook-enabled')?.classList.contains('on') || false; webhook.authtoken = webhookAuthtoken.value; webhook.domain = document.getElementById('ch-webhook-domain')?.value || undefined; webhook.port = parseInt(document.getElementById('ch-webhook-port')?.value) || undefined; webhook.batchInterval = parseInt(document.getElementById('ch-webhook-batch-interval')?.value) || undefined; }
-
-  const proactiveOut = buildProactiveData();
-  proactiveOut.respectQuiet = respectProactive;
-
-  return {
-    discord: { token: document.getElementById('ch-discord-token').value, applicationId: document.getElementById('ch-discord-appid').value },
-    channelsConfig, mainChannel,
-    access: { dmPolicy: document.getElementById('ch-dm-policy').value, allowFrom: getTagValues('ch-allowfrom'), mentionPatterns: getTagValues('ch-mentionpatterns'), ackReaction: document.getElementById('ch-ackreaction').classList.contains('on') },
-    voice, schedules: { items: scheduleItems, respectQuiet: respectSchedule },
-    proactive: proactiveOut,
-    webhook,
-    quiet: { schedule: quietSchedule, holidays: quietHolidays },
-  };
-}
-
-// -- Channels save --
-async function savePanel() {
-  const activePanel = document.querySelector('.panel.active');
-  const warnEl = activePanel?.querySelector('.warn-msg') || document.createElement('div');
-  const btn = activePanel?.querySelector('.save');
-  warnEl.textContent = '';
-  // DND custom quiet-hours validation. Runs regardless of which panel is
-  // active since buildChannelsData() reads the DND fields unconditionally.
-  const quietPresetEl = document.getElementById('dnd-quiet-preset');
-  if (quietPresetEl && quietPresetEl.value === 'custom') {
-    const hhmm = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
-    const s = (document.getElementById('dnd-quiet-start')?.value || '').trim();
-    const e = (document.getElementById('dnd-quiet-end')?.value || '').trim();
-    if (!hhmm.test(s) || !hhmm.test(e)) {
-      const dndWarn = document.getElementById('warn-dnd') || warnEl;
-      dndWarn.textContent = 'Invalid quiet hours. Use HH:MM (00:00 - 23:59) for both start and end.';
-      if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
-      return;
-    }
-  }
-  if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
-  try {
-    // Save webhooks individually
-    const whCards = document.querySelectorAll('#event-rules .card');
-    for (const card of whCards) {
-      const modeVal = card.querySelector('[data-f="ev-mode"]')?.value || 'delegate';
-      const wh = {
-        name: card.querySelector('[data-f="ev-name"]')?.value.trim() || '',
-        channel: card.querySelector('[data-f="ev-channel"]')?.value || 'main',
-        mode: modeVal,
-        secret: card.querySelector('[data-f="ev-secret"]')?.value || undefined,
-        instructions: card.querySelector('[data-f="ev-instructions"]')?.value || ''
-      };
-      if (modeVal === 'delegate') wh.role = card.querySelector('[data-f="ev-role"]')?.value || 'reviewer';
-      if (wh.name) { await fetch('/webhooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wh) }); card.dataset.originalName = wh.name; }
-    }
-    // Save schedules individually
-    const scCards = document.querySelectorAll('#sched-tasks .card');
-    for (const card of scCards) {
-      const name = card.querySelector('[data-f="sc-name"]')?.value.trim() || '';
-      if (name) {
-        const sc = { name, time: '', days: 'daily', channel: card.querySelector('[data-f="channel"]')?.value || '', type: card.querySelector('[data-f="sc-type"]')?.value || 'interactive', model: card.querySelector('[data-f="sc-model"]')?.value || '', enabled: card.querySelector('[data-f="sc-enabled"]')?.classList.contains('on') ?? true, prompt: card.querySelector('[data-f="sc-prompt"]')?.value || '' };
-        const freq = card.querySelector('[data-f="sc-freq"]')?.value || 'interval';
-        if (freq === 'interval') { const iv = card.querySelector('[data-f="sc-interval"]')?.value.trim() || '01:00'; const m = iv.match(/^(\d+):(\d+)$/); const mins = m ? parseInt(m[1]) * 60 + parseInt(m[2]) : 60; if (mins <= 5) sc.time = 'every5m'; else if (mins <= 10) sc.time = 'every10m'; else if (mins <= 30) sc.time = 'every30m'; else sc.time = 'hourly'; }
-        else { sc.time = card.querySelector('[data-f="sc-at"]')?.value.trim() || '09:00'; sc.days = freq === 'weekday' ? 'weekday' : freq === 'weekly' ? 'weekend' : 'daily'; }
-        await fetch('/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sc) });
-      }
-    }
-    // Save config
-    const data = buildChannelsData();
-    const cfgRes = await fetch('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-    if (!cfgRes.ok) { let msg = 'HTTP ' + cfgRes.status; try { const j = await cfgRes.json(); msg = j.error || j.message || msg; } catch { try { msg = await cfgRes.text() || msg; } catch {} } throw new Error(msg); }
-    isDirty = false;
-    if (btn) { btn.textContent = '\u2713 Saved'; btn.classList.add('done'); setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('done'); btn.disabled = false; }, 1500); }
-  } catch (e) { console.error('[mixdog] save error:', e); warnEl.textContent = 'Save failed: ' + (e?.message || e); if (btn) { btn.textContent = 'Save'; btn.disabled = false; } throw e; }
-}
-
-async function saveConfig() { await savePanel(); }
-
-// Save every module regardless of which panel is active.
-async function saveAll() {
-  const errs = [];
-  const run = async (label, fn) => { try { await fn(); } catch (e) { errs.push(label + ': ' + (e?.message || e)); } };
-  await Promise.allSettled([
-    run('channels', () => savePanel()),
-    run('agent',    () => agDoSave({ providers: (() => { const p = {}; for (const pr of AG_API_PROVIDERS) { const k = document.getElementById('ag-key-'+pr.id)?.value.trim(); if (k) p[pr.id] = { apiKey: k, enabled: true }; } for (const pr of AG_LOCAL_PROVIDERS) { const u = document.getElementById('ag-url-'+pr.id)?.value.trim(); p[pr.id] = { enabled: !!agAuth[pr.id], baseURL: u || pr.url }; } return p; })() }, 'agent-providers')),
-    run('memory',   () => memSaveConfig()),
-    run('search',   () => srSavePanel()),
-    run('general',  () => genSavePanel()),
-  ]);
-  return errs;
-}
-async function saveAndClose() {
-  const errs = await saveAll();
-  if (errs.length) {
-    let banner = document.getElementById('save-error-banner');
-    if (!banner) {
-      banner = document.createElement('div');
-      banner.id = 'save-error-banner';
-      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#c0392b;color:#fff;font-size:13px;font-weight:600;padding:10px 16px;display:flex;align-items:center;gap:12px;';
-      document.body.prepend(banner);
-    }
-    banner.textContent = 'Save failed \u2014 ' + errs.join(' | ') + '. Fix errors before closing.';
-    return;
-  }
-  isDirty = false;
-  navigator.sendBeacon('/close', '');
-  window.close();
-}
-
-function discardAndClose() {
-  isDirty = false;
-  navigator.sendBeacon('/close', '');
-  window.close();
-}
-
-function cancelClose() {
-  document.getElementById('close-modal').style.display = 'none';
-}
-
-// Shared data containers
-let chConfig = null;
-let chExtraData = { bot: {} };
-let cliStatus = { whisper: { installed: false }, ngrok: { installed: false } };
-
-let agConfig = {}, agAuth = {}, agPresets = [];
-let agEditingPresetId = null;
-
-let memConfig = {}, memAuth = {};
-
-let srConfig = null;
-let srSaveCounter = 0;
-
-// ============================================================
-// SHARED UTILITIES
-// ============================================================
-
-function switchCat(el) {
-  document.querySelectorAll('.cat-item').forEach(c => c.classList.remove('active'));
-  el.classList.add('active');
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.getElementById('panel-' + el.dataset.panel).classList.add('active');
-}
-
-function togglePw(el) {
-  const inp = el.previousElementSibling;
-  inp.type = inp.type === 'password' ? 'text' : 'password';
-}
-
-function toggleVis(btn) {
-  const inp = btn.parentElement.querySelector('.r-input');
-  if (inp.type === 'password') { inp.type = 'text'; btn.innerHTML = '&#128065;&#8205;&#128488;'; }
-  else { inp.type = 'password'; btn.innerHTML = '&#128065;'; }
-}
-
-function toggleAdvanced(el) {
-  const arrow = el.querySelector('.arrow');
-  const content = el.nextElementSibling;
-  arrow.classList.toggle('open');
-  content.classList.toggle('open');
-}
-
-function escapeAttr(v) {
-  return String(v ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
-}
-
-function escapeHtml(v) {
-  return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-document.addEventListener('click', (e) => {
-  if (e.target.closest('.r-toggle, .r-radio, .dyn-add, .dyn-remove, .card-remove, .tag-x, .mode, .r-check')) {
-    isDirty = true;
-  }
-});
-
-// ============================================================
-// INIT
-// ============================================================
-
-// ============================================================
-// GENERAL MODULE — Prompt Injection
-// ============================================================
-
-let genConfig = { mode: 'claude_md', targetPath: '~/.claude/CLAUDE.md' };
-
-async function genLoadConfig() {
-  try {
-    const r = await fetch('/general/config').then(r => r.json());
-    const pi = (r && r.promptInjection) || {};
-    genConfig.mode = (pi.mode === 'hook') ? 'hook' : 'claude_md';
-    genConfig.targetPath = pi.targetPath || '~/.claude/CLAUDE.md';
-  } catch {
-    genConfig.mode = 'claude_md';
-    genConfig.targetPath = '~/.claude/CLAUDE.md';
-  }
-  genRenderRadios();
-  const tp = document.getElementById('gen-target-path');
-  if (tp) tp.textContent = genConfig.targetPath;
-}
-
-function genSelectMode(mode) {
-  genConfig.mode = mode;
-  isDirty = true;
-  genRenderRadios();
-}
-
-function genRenderRadios() {
-  const rh = document.getElementById('gen-radio-hook');
-  const rc = document.getElementById('gen-radio-claude-md');
-  if (rh) rh.classList.toggle('on', genConfig.mode === 'hook');
-  if (rc) rc.classList.toggle('on', genConfig.mode === 'claude_md');
-}
-
-async function genSavePanel() {
-  const btn = document.querySelector('#panel-general-injection .save');
-  const warnEl = document.getElementById('warn-general-injection');
-  warnEl.textContent = '';
-  btn.textContent = 'Saving...';
-  btn.disabled = true;
-  try {
-    const res = await fetch('/general/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: genConfig.mode, targetPath: genConfig.targetPath }),
-    });
-    if (!res.ok) throw new Error('save failed');
-    btn.textContent = '\u2713 Saved';
-    btn.classList.add('done');
-    isDirty = false;
-    setTimeout(() => {
-      btn.textContent = 'Save';
-      btn.classList.remove('done');
-      btn.disabled = false;
-    }, 1500);
-  } catch (e) {
-    warnEl.textContent = 'Save failed';
-    btn.textContent = 'Save';
-    btn.disabled = false;
-  }
-}
-
-// ============================================================
-// GENERAL MODULES (B6) — enable/disable per-module
-// ============================================================
-async function loadModulesConfig() {
-  try {
-    const r = await fetch('/modules').then(r => r.json());
-    for (const name of ['channels', 'memory', 'search', 'agent']) {
-      const el = document.getElementById('mod-' + name + '-enabled');
-      if (el) el.checked = !(r && r[name] && r[name].enabled === false);
-    }
-  } catch {
-    // On load failure, leave all toggles at their default (checked).
-  }
-}
-
-async function saveModulesConfig() {
-  const warnEl = document.getElementById('warn-general-modules');
-  if (warnEl) warnEl.textContent = '';
-  const payload = {};
-  for (const name of ['channels', 'memory', 'search', 'agent']) {
-    const el = document.getElementById('mod-' + name + '-enabled');
-    payload[name] = { enabled: el ? !!el.checked : true };
-  }
-  try {
-    const res = await fetch('/modules', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error('save failed');
-    isDirty = false;
-  } catch (e) {
-    if (warnEl) warnEl.textContent = 'Save failed — check setup-server log.';
-  }
-}
-
-// ============================================================
-// GENERAL SECURITY (B2) — capability toggles
-// ============================================================
-async function loadSecurityConfig() {
-  try {
-    const r = await fetch('/capabilities').then(r => r.json());
-    const el = document.getElementById('sec-home-access');
-    if (el) el.checked = !!(r && r.homeAccess === true);
-  } catch {
-    // On load failure, leave toggle at default (off).
-  }
-}
-
-async function saveSecurityConfig() {
-  const warnEl = document.getElementById('warn-general-security');
-  if (warnEl) warnEl.textContent = '';
-  const el = document.getElementById('sec-home-access');
-  const payload = { homeAccess: el ? !!el.checked : false };
-  try {
-    const res = await fetch('/capabilities', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error('save failed');
-    isDirty = false;
-  } catch (e) {
-    if (warnEl) warnEl.textContent = 'Save failed — check setup-server log.';
-  }
-}
-
-// MD Library module removed — role MD editing is now in the Custom
-// Workflow panel, Common MD is plugin-fixed (rules/agent.md) and not
-// user-editable, and Project MDs are no longer part of the UI.
-
-// ============================================================
-// CUSTOM WORKFLOW MODULE
-// ============================================================
-
-let wfConfig = { roles: [] };
-let wfMdContent = "";
-
-async function wfLoadConfig() {
-  try {
-    const [jsonRes, mdRes, rolesMdRes] = await Promise.all([
-      fetch('/workflow/load'),
-      fetch('/workflow/md'),
-      fetch('/md/role'),
-      agPresets.length ? Promise.resolve() : agLoadPresets(),
-    ]);
-    const data = await jsonRes.json();
-    wfConfig.roles = Array.isArray(data.roles) ? data.roles : [];
-    wfMdContent = mdRes.ok ? await mdRes.text() : "";
-    const rolesMdData = rolesMdRes.ok ? await rolesMdRes.json() : { items: [] };
-    const mdByName = {};
-    for (const it of (rolesMdData.items || [])) mdByName[it.name] = it.body || '';
-    for (const r of wfConfig.roles) {
-      r.md = mdByName[(r.name || '').trim().toLowerCase()] || '';
-    }
-  } catch {
-    wfConfig.roles = [];
-    wfMdContent = "";
-  }
-  document.getElementById('wf-description').value = wfMdContent;
-  wfRenderRoles();
-}
-
-function wfRenderRoles() {
-  const host = document.getElementById('wf-roles');
-  host.innerHTML = '';
-  wfConfig.roles.forEach((role, idx) => {
-    const card = document.createElement('div');
-    card.style.cssText = 'border:1px solid var(--border);border-radius:6px;background:rgba(255,255,255,0.02);';
-
-    const header = document.createElement('div');
-    header.style.cssText = 'display:flex;gap:6px;align-items:center;padding:6px;';
-
-    const toggleBtn = document.createElement('button');
-    toggleBtn.textContent = role._open ? '▼' : '▶';
-    toggleBtn.style.cssText = 'width:24px;height:30px;background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text-3);cursor:pointer;font-size:10px;';
-
-    const nameInput = document.createElement('input');
-    nameInput.type = 'text';
-    nameInput.value = role.name || '';
-    nameInput.placeholder = 'role name';
-    nameInput.className = 'r-input';
-    nameInput.style.cssText = 'flex:1;height:30px;';
-    nameInput.oninput = (e) => { wfConfig.roles[idx].name = e.target.value; isDirty = true; };
-
-    const presetSelect = document.createElement('select');
-    presetSelect.className = 'r-select md';
-    presetSelect.style.cssText = 'width:160px;height:30px;';
-    agPresets.forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.name || p.id;
-      if (p.id === role.preset || p.name === role.preset) opt.selected = true;
-      presetSelect.appendChild(opt);
-    });
-    presetSelect.onchange = (e) => { wfConfig.roles[idx].preset = e.target.value; isDirty = true; };
-
-    const delBtn = document.createElement('button');
-    delBtn.textContent = '×';
-    delBtn.style.cssText = 'width:30px;height:30px;background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text-3);cursor:pointer;font-size:14px;';
-    delBtn.onclick = () => wfDeleteRole(idx);
-
-    header.appendChild(toggleBtn);
-    header.appendChild(nameInput);
-    header.appendChild(presetSelect);
-    header.appendChild(delBtn);
-
-    const body = document.createElement('div');
-    body.style.cssText = 'padding:0 6px 6px 6px;display:' + (role._open ? 'block' : 'none') + ';';
-    const mdTextarea = document.createElement('textarea');
-    mdTextarea.className = 'r-input';
-    mdTextarea.placeholder = 'Role-specific MD (injected into Tier 3 # agent-role slot)';
-    mdTextarea.style.cssText = 'width:100%;min-height:120px;font-family:monospace;font-size:12px;resize:vertical;';
-    mdTextarea.value = role.md || '';
-    mdTextarea.oninput = (e) => { wfConfig.roles[idx].md = e.target.value; isDirty = true; };
-    body.appendChild(mdTextarea);
-
-    toggleBtn.onclick = () => {
-      wfConfig.roles[idx]._open = !wfConfig.roles[idx]._open;
-      wfRenderRoles();
-    };
-
-    card.appendChild(header);
-    card.appendChild(body);
-    host.appendChild(card);
-  });
-}
-
-function wfAddRole() {
-  wfConfig.roles.push({ name: '', preset: agPresets[0]?.id || 'opus-max', md: '', _open: true });
-  isDirty = true;
-  wfRenderRoles();
-}
-
-function wfDeleteRole(idx) {
-  const name = (wfConfig.roles[idx].name || '').trim().toLowerCase();
-  wfConfig.roles.splice(idx, 1);
-  isDirty = true;
-  // Best-effort: remove the role MD file on disk too.
-  if (name) {
-    fetch('/md/role?name=' + encodeURIComponent(name), { method: 'DELETE' }).catch(() => {});
-  }
-  wfRenderRoles();
-}
-
-async function wfSavePanel() {
-  const btn = document.querySelector('#panel-workflow-custom .save');
-  const warnEl = document.getElementById('warn-workflow-custom');
-  warnEl.textContent = '';
-  const mdText = document.getElementById('wf-description').value;
-  try {
-    // Drop blank-name rows entirely so nothing partially persists:
-    // user-workflow.json gets only named roles, and per-role MD posts
-    // only run for the same set. This avoids silent data loss where a
-    // user typed an MD body before naming the role.
-    const validRoles = wfConfig.roles.filter(r => (r.name || '').trim());
-    const rolesPayload = validRoles.map(r => {
-      const { _open, md, ...rest } = r;
-      return rest;
-    });
-    const roleMdPosts = validRoles.map(r => fetch('/md/role', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: r.name, body: r.md || '' }),
-    }));
-    const [r1, r2, ...mdResults] = await Promise.all([
-      fetch('/workflow/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roles: rolesPayload })
-      }),
-      fetch('/workflow/md', {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: mdText
-      }),
-      ...roleMdPosts,
-    ]);
-    if (!r1.ok) throw new Error(await r1.text());
-    if (!r2.ok) throw new Error(await r2.text());
-    for (const mr of mdResults) {
-      if (!mr.ok) throw new Error(await mr.text());
-    }
-    wfMdContent = mdText;
-    btn.classList.add('done');
-    btn.textContent = 'Saved';
-    setTimeout(() => { btn.classList.remove('done'); btn.textContent = 'Save'; }, 1500);
-    isDirty = false;
-  } catch (e) {
-    warnEl.textContent = 'Save failed: ' + (e.message || e);
-  }
-}
-
-async function wfOpenDescription() {
-  try {
-    await fetch('/workflow/md', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: document.getElementById('wf-description').value });
-    await fetch('/workflow/file');
-  } catch (e) {
-    alert('Open failed: ' + (e.message || e));
-  }
-}
-
-window.addEventListener('load', async () => {
-  try {
-    const g = await fetch('/generation').then(r => r.json());
-    myGeneration = g.generation || 0;
-  } catch {}
-
-  // Init channels UI helpers
-  initTagInputs();
-  initSliders();
-
-  // Load all configs in parallel
-  const results = await Promise.allSettled([
-    loadChannelsConfig(),
-    loadChannelsCliCheck(),
-    loadAgentData(),
-    loadMemoryData(),
-    loadSearchConfig(),
-    genLoadConfig(),
-    loadModulesConfig(),
-    loadSecurityConfig(),
-    wfLoadConfig(),
-  ]);
-  const LOADER_NAMES = ['channels', 'cli-check', 'agent', 'memory', 'search', 'general', 'modules', 'security', 'workflow'];
-  let criticalFailed = false;
-  results.forEach((r, i) => {
-    if (r.status === 'rejected') {
-      console.error('[mixdog] loader', LOADER_NAMES[i] || i, 'failed:', r.reason);
-      if (i === 0 || i === 2) criticalFailed = true; // channels or agent
-    }
-  });
-  if (criticalFailed) {
-    const banner = document.createElement('div');
-    banner.id = 'load-error-banner';
-    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#c0392b;color:#fff;font-size:13px;font-weight:600;padding:10px 16px;display:flex;align-items:center;gap:12px;';
-    banner.innerHTML = '<span style="font-size:16px;">&#9888;</span><span>Failed to load configuration from server. Some settings may be missing or incorrect \u2014 check that setup-server is running and reload.</span><button onclick="location.reload()" style="margin-left:auto;padding:4px 12px;background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.4);border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">Reload</button><button onclick="this.closest(\'#load-error-banner\').remove()" style="padding:4px 10px;background:transparent;border:1px solid rgba(255,255,255,0.3);border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">Dismiss</button>';
-    document.body.prepend(banner);
-  }
-
-  // Post-load init — populate preset dropdowns after agConfig is ready
-  populatePresetDropdowns();
-  renderAdvanced();
-  isDirty = false;
-
-  // Poll for newer window
-  setInterval(async () => {
-    try {
-      const g = await fetch('/generation').then(r => r.json());
-      if (g.generation > myGeneration) { isDirty = false; window.close(); }
-    } catch {}
-  }, 2000);
-});
-
-// ============================================================
-// CHANNELS MODULE
-// ============================================================
-
-// -- Tag input system --
-function initTagInputs() {
-  document.querySelectorAll('.tag-container').forEach(container => {
-    if (container.querySelector('.tag-input')) return;
-    const inp = document.createElement('input');
-    inp.className = 'tag-input';
-    inp.placeholder = 'Type and press Enter';
-    inp.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && inp.value.trim()) {
-        e.preventDefault();
-        addTag(container, inp.value.trim());
-        inp.value = '';
-      } else if (e.key === 'Backspace' && !inp.value) {
-        const last = container.querySelector('.tag-item:last-of-type');
-        if (last) last.remove();
-      }
-    });
-    container.appendChild(inp);
-    container.addEventListener('click', () => inp.focus());
-  });
-}
-
-function addTag(container, text) {
-  const tag = document.createElement('span');
-  tag.className = 'tag-item';
-  tag.dataset.value = text;
-  const textNode = document.createTextNode(text);
-  const x = document.createElement('span');
-  x.className = 'tag-x';
-  x.textContent = '\u00d7';
-  x.addEventListener('click', function() { this.parentElement.remove(); });
-  tag.appendChild(textNode);
-  tag.appendChild(x);
-  const inp = container.querySelector('.tag-input');
-  container.insertBefore(tag, inp);
-}
-
-function getTagValues(containerId) {
-  return Array.from(document.getElementById(containerId).querySelectorAll('.tag-item'))
-    .map(t => t.dataset.value);
-}
-
-function setTagValues(containerId, values) {
-  const container = document.getElementById(containerId);
-  container.querySelectorAll('.tag-item').forEach(t => t.remove());
-  (values || []).forEach(v => addTag(container, v));
-}
-
-// -- Slider init --
-function initSliders() {
-  document.querySelectorAll('.r-slider').forEach(slider => {
-    const valEl = document.getElementById(slider.id + '-val');
-    if (valEl) {
-      slider.addEventListener('input', () => { valEl.textContent = slider.value; });
-    }
-  });
-}
-
-// -- Quiet hours (DND tab) --
-function onQuietPresetChange() {
-  const sel = document.getElementById('dnd-quiet-preset');
-  const custom = document.getElementById('dnd-quiet-custom');
-  if (sel.value === 'custom') custom.classList.remove('hidden');
-  else custom.classList.add('hidden');
-}
-
-
-// -- Channel list --
-function getChannelOptions() {
-  const opts = [];
-  document.querySelectorAll('#ch-channel-list .dyn-item').forEach(item => {
-    const label = item.querySelector('[data-f="ch-label"]')?.value.trim();
-    if (label) opts.push(label);
-  });
-  return opts;
-}
-
-function makeChannelSelect(selected) {
-  const opts = getChannelOptions();
-  let html = '<select class="r-select" data-f="channel" style="width:110px;flex:none;">';
-  opts.forEach(o => {
-    html += '<option value="' + o + '"' + (o === selected ? ' selected' : '') + '>' + o + '</option>';
-  });
-  if (!opts.length) html += '<option value="">--</option>';
-  html += '</select>';
-  return html;
-}
-
-function addChannel(label, channelId, mode, isMain) {
-  const list = document.getElementById('ch-channel-list');
-  const item = document.createElement('div');
-  item.className = 'dyn-item';
-
-  const radio = document.createElement('div');
-  radio.className = 'r-radio' + (isMain ? ' on' : '');
-  radio.title = 'Main channel';
-  radio.addEventListener('click', function() { setMainChannel(this); });
-
-  const labelInp = document.createElement('input');
-  labelInp.className = 'r-input';
-  labelInp.type = 'text';
-  labelInp.placeholder = 'label';
-  labelInp.value = label || '';
-  labelInp.style.cssText = 'width:90px;flex:none;';
-  labelInp.dataset.f = 'ch-label';
-
-  const idInp = document.createElement('input');
-  idInp.className = 'r-input';
-  idInp.type = 'text';
-  idInp.placeholder = 'Channel ID';
-  idInp.value = channelId || '';
-  idInp.style.cssText = 'min-width:140px;';
-  idInp.dataset.f = 'ch-id';
-
-  const sel = document.createElement('select');
-  sel.className = 'r-select';
-  sel.style.cssText = 'width:110px;flex:none;';
-  sel.dataset.f = 'ch-mode';
-  ['interactive', 'monitor'].forEach(val => {
-    const opt = document.createElement('option');
-    opt.value = val;
-    opt.textContent = val;
-    if (mode === val) opt.selected = true;
-    sel.appendChild(opt);
-  });
-
-  const tip = document.createElement('span');
-  tip.className = 'tip';
-  tip.style.cssText = 'margin:0 2px;';
-  tip.textContent = '?';
-  const tipText = document.createElement('span');
-  tipText.className = 'tip-text';
-  tipText.textContent = 'interactive: listen and reply / monitor: listen only and report to main';
-  tip.appendChild(tipText);
-
-  const remove = document.createElement('span');
-  remove.className = 'dyn-remove';
-  remove.textContent = '\u00d7';
-  remove.addEventListener('click', function() { this.parentElement.remove(); });
-
-  item.appendChild(radio);
-  item.appendChild(labelInp);
-  item.appendChild(idInp);
-  item.appendChild(sel);
-  item.appendChild(tip);
-  item.appendChild(remove);
-  list.appendChild(item);
-}
-
-function setMainChannel(radio) {
-  document.querySelectorAll('#ch-channel-list .r-radio').forEach(r => r.classList.remove('on'));
-  radio.classList.add('on');
-}
-
-function populateProactiveFeedback(cfg) {
-  const sec = document.getElementById('proactive-feedback');
-  const feedbackPath = cfg?.promptsDir ? cfg.promptsDir + '/proactive-feedback.md' : null;
-  // Feedback is loaded from server if available
-  fetch('/proactive-feedback').then(r => r.json()).then(data => {
-    if (!data.entries || !data.entries.length) {
-      sec.innerHTML = '<div style="padding:12px 14px;color:var(--text-4);font-size:12px">No feedback entries yet</div>';
-      return;
-    }
-    sec.innerHTML = '';
-    data.entries.forEach((entry, i) => {
-      const div = document.createElement('div');
-      div.className = 'r';
-      div.style.flexDirection = 'column';
-      div.style.alignItems = 'stretch';
-      div.style.padding = '8px 14px';
-      div.innerHTML = `
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-          <span style="font-size:11px;color:var(--text-4)">#${i + 1}</span>
-          <span style="flex:1"></span>
-          <span class="card-remove" style="cursor:pointer;color:var(--text-4);font-size:14px" data-fi="${i}" onclick="removeFeedback(${i})">&times;</span>
-        </div>
-        <textarea class="r-input" data-fi="${i}" style="height:60px;resize:vertical;font-size:11px">${entry}</textarea>
-      `;
-      sec.appendChild(div);
-    });
-  }).catch(() => {
-    sec.innerHTML = '<div style="padding:12px 14px;color:var(--text-4);font-size:12px">Could not load feedback</div>';
-  });
-}
-
-function removeFeedback(index) {
-  fetch('/proactive-feedback', {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ index }),
-  }).then(() => {
-    const cfg = config || {};
-    populateProactiveFeedback(cfg);
-  });
-}
-
-function getProactiveInterval() {
-  const sel = document.getElementById('proactive-interval');
-  if (sel.value === 'custom') {
-    return parseInt(document.getElementById('proactive-interval-custom').value) || 60;
-  }
-  return parseInt(sel.value) || 60;
-}
-
-function proactiveIntervalChanged() {
-  const sel = document.getElementById('proactive-interval');
-  const customInput = document.getElementById('proactive-interval-custom');
-  if (sel.value === 'custom') {
-    customInput.style.display = '';
-    customInput.focus();
-  } else {
-    customInput.style.display = 'none';
-  }
-}
-
-function buildProactiveData() {
-  const interval = getProactiveInterval();
-  return {
-    interval,
-    model: document.getElementById('proactive-model').value || undefined,
-    feedback: true,
-    frequency: Math.max(1, Math.min(5, Math.round(1440 / interval))),
-  };
-}
-
-// -- Schedule cards --
-function addScheduleCard(data) {
-  const list = document.getElementById('sched-tasks');
-  const emptyEl = document.getElementById('sched-empty');
-  if (emptyEl) emptyEl.style.display = 'none';
-  const card = document.createElement('div');
-  card.className = 'card';
-  const d = data || {};
-  const daysVal = d.days || 'daily';
-  const nameVal = d.name || 'Untitled';
-  card.innerHTML =
-    '<div class="card-hdr" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
-      '<span class="card-title" data-f="sc-title">' + nameVal + '</span>' +
-      '<div class="card-hdr-right">' +
-        '<div class="r-toggle' + (d.enabled !== false ? ' on' : '') + '" onclick="event.stopPropagation();this.classList.toggle(\'on\')" data-f="sc-enabled"></div>' +
-        '<span class="card-remove" onclick="event.stopPropagation();this.closest(\'.card\').remove()">&times;</span>' +
-      '</div>' +
-    '</div>' +
-    '<div class="card-content">' +
-      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Schedule name" value="' + (d.name || '') + '" data-f="sc-name" style="flex:1;"></div>' +
-      '<div class="r"><span class="r-name-wide">Frequency</span>' +
-        '<select class="r-select" data-f="sc-freq" onchange="onSchedFreqChange(this)">' +
-        '<option value="interval"' + (['every5m','every10m','every30m','hourly'].includes(d.time) || !d.time ? ' selected' : '') + '>Interval</option>' +
-        '<option value="daily"' + (daysVal === 'daily' && d.time && !['every5m','every10m','every30m','hourly'].includes(d.time) ? ' selected' : '') + '>Daily</option>' +
-        '<option value="weekday"' + (daysVal === 'weekday' ? ' selected' : '') + '>Weekdays</option>' +
-        '<option value="weekly"' + (daysVal === 'weekend' || (!['daily','weekday'].includes(daysVal) && daysVal !== 'daily') ? ' selected' : '') + '>Weekly</option>' +
-        '</select></div>' +
-      '<div class="r" data-interval-row><span class="r-name-wide">Every</span>' +
-        '<input class="r-input" type="text" placeholder="01:30" value="' + ({'every5m':'00:05','every10m':'00:10','every30m':'00:30','hourly':'01:00'}[d.time] || d.time || '01:00') + '" data-f="sc-interval" style="width:80px">' +
-        '<span style="font-size:11px;color:var(--text-4);margin-left:8px">HH:MM</span></div>' +
-      '<div class="r" data-at-row style="display:none"><span class="r-name-wide">At</span>' +
-        '<input class="r-input" type="text" placeholder="09:00" value="' + (d.time && !['every5m','every10m','every30m','hourly'].includes(d.time) ? d.time : '09:00') + '" data-f="sc-at" style="width:80px"></div>' +
-      '<div class="r"><span class="r-name-wide">Type</span>' +
-        '<select class="r-select" data-f="sc-type" onchange="onSchedTypeChange(this)">' +
-        '<option value="interactive"' + (d.type === 'interactive' || !d.type ? ' selected' : '') + '>Interactive</option>' +
-        '<option value="non-interactive"' + (d.type === 'non-interactive' ? ' selected' : '') + '>Non-interactive</option>' +
-        '</select>' +
-        '<span style="flex:1;font-size:11px;color:var(--text-4);margin-left:8px" data-f="sc-type-hint">' + (d.type === 'non-interactive' ? 'Sends result to channel' : 'Injects into current session') + '</span></div>' +
-      '<div class="r" data-channel-row style="' + (d.type === 'non-interactive' ? '' : 'display:none') + '"><span class="r-name-wide">Channel</span>' + makeChannelSelect(d.channel) + '</div>' +
-      '<div class="r"><span class="r-name-wide">Model</span><select class="r-select" data-f="sc-model" data-initial="' + (d.model || 'sonnet-mid') + '"></select></div>' +
-      '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
-        '<div style="display:flex;align-items:center;margin-bottom:6px">' +
-          '<span style="font-size:11px;color:var(--text-3)">Instructions</span>' +
-          '<span class="file-open" onclick="schedOpenPrompt(\'' + encodeURIComponent(d.name || '') + '\')">Open</span>' +
-        '</div>' +
-        '<textarea class="r-input" data-f="sc-prompt" placeholder="Describe what the bot should do." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.prompt || '') + '</textarea>' +
-      '</div>' +
-    '</div>';
-  list.appendChild(card);
-  const nameInput = card.querySelector('[data-f="sc-name"]');
-  const titleEl = card.querySelector('[data-f="sc-title"]');
-  nameInput?.addEventListener('input', () => { titleEl.textContent = nameInput.value || 'Untitled'; });
-  if (d.name) card.classList.add('collapsed');
-  const freqSel = card.querySelector('[data-f="sc-freq"]');
-  if (freqSel) onSchedFreqChange(freqSel);
-  // Fill model dropdown immediately
-  const modelSel = card.querySelector('[data-f="sc-model"]');
-  if (modelSel) {
-    const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
-    const initial = modelSel.dataset.initial || 'sonnet-mid';
-    modelSel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (initial === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + '</option>').join('');
-  }
-}
-
-function webhookOpenInstructions(encodedName) {
-  const name = decodeURIComponent(encodedName);
-  if (!name) { alert('Save the webhook first.'); return; }
-  fetch('/webhooks/file/' + encodedName);
-}
-
-function schedOpenPrompt(encodedName) {
-  const name = decodeURIComponent(encodedName);
-  if (!name) { alert('Save the schedule first.'); return; }
-  fetch('/schedules/file/' + encodedName);
-}
-
-function onSchedFreqChange(sel) {
-  const card = sel.closest('.card');
-  const intervalRow = card.querySelector('[data-interval-row]');
-  const atRow = card.querySelector('[data-at-row]');
-  if (sel.value === 'interval') { intervalRow.style.display = ''; atRow.style.display = 'none'; }
-  else { intervalRow.style.display = 'none'; atRow.style.display = ''; }
-}
-
-function onSchedTypeChange(sel) {
-  const card = sel.closest('.card');
-  const channelRow = card.querySelector('[data-channel-row]');
-  const hint = card.querySelector('[data-f="sc-type-hint"]');
-  if (sel.value === 'interactive') {
-    if (channelRow) channelRow.style.display = 'none';
-    if (hint) hint.textContent = 'Injects into current session';
-  } else {
-    if (channelRow) channelRow.style.display = '';
-    if (hint) hint.textContent = 'Sends result to channel';
-  }
-}
-
-// -- Event cards --
-function addEventCard(data) {
-  const list = document.getElementById('event-rules');
-  const emptyEl = document.getElementById('webhook-empty');
-  if (emptyEl) emptyEl.style.display = 'none';
-  const card = document.createElement('div');
-  card.className = 'card';
-  const d = data || {};
-  const nameVal = d.name || 'Untitled';
-  const isExisting = !!d.name;
-  card.dataset.originalName = d.name || '';
-  card.innerHTML =
-    '<div class="card-hdr" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
-      '<span class="card-title" data-f="ev-title">' + nameVal + '</span>' +
-      '<div class="card-hdr-right">' +
-        '<span class="card-remove" onclick="event.stopPropagation();deleteWebhook(this.closest(\'.card\'))">&times;</span>' +
-      '</div>' +
-    '</div>' +
-    '<div class="card-content">' +
-      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Endpoint name (e.g. github-issues)" value="' + (d.name || '') + '" data-f="ev-name" style="flex:1;" oninput="this.closest(\'.card\').querySelector(\'[data-f=ev-title]\').textContent=this.value||\'Untitled\'">' + '</div>' +
-      '<div class="r"><span class="r-name-wide">Channel</span><input class="r-input" type="text" placeholder="main" value="' + (d.channel || 'main') + '" data-f="ev-channel" style="flex:1;"></div>' +
-      '<div class="r"><span class="r-name-wide">Mode</span>' +
-        '<select class="r-select" data-f="ev-mode">' +
-        '<option value="delegate"' + (d.mode === 'delegate' || !d.mode ? ' selected' : '') + '>Delegate (agent runs, result reports to Lead)</option>' +
-        '<option value="interactive"' + (d.mode === 'interactive' ? ' selected' : '') + '>Interactive (Lead receives payload directly)</option>' +
-        '</select></div>' +
-      '<div class="r" data-f="ev-role-row"><span class="r-name-wide">Role</span>' +
-        '<select class="r-select" data-f="ev-role" data-initial="' + (d.role || 'reviewer') + '"></select>' +
-        '<span style="font-size:11px;color:var(--text-3);margin-left:8px">(delegate mode only)</span></div>' +
-      '<div class="r"><span class="r-name-wide">Secret</span><input class="r-input" type="password" value="' + (d.secret || '') + '" placeholder="Optional" data-f="ev-secret"></div>' +
-      '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
-        '<div style="display:flex;align-items:center;margin-bottom:6px">' +
-          '<span style="font-size:11px;color:var(--text-3)">Instructions</span>' +
-          '<span class="file-open" onclick="webhookOpenInstructions(\'' + encodeURIComponent(d.name || '') + '\')">Open</span>' +
-        '</div>' +
-        '<textarea class="r-input" data-f="ev-instructions" placeholder="Describe how to handle this webhook payload." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.instructions || '') + '</textarea>' +
-      '</div>' +
-    '</div>';
-  list.appendChild(card);
-  const evNameInput = card.querySelector('[data-f="ev-name"]');
-  const evTitleEl = card.querySelector('[data-f="ev-title"]');
-  evNameInput?.addEventListener('input', () => { evTitleEl.textContent = evNameInput.value || 'Untitled'; });
-  if (isExisting) card.classList.add('collapsed');
-  // Fill role dropdown from user-workflow roles; fall back to built-ins
-  // when the workflow hasn't loaded yet.
-  const evRoleSel = card.querySelector('[data-f="ev-role"]');
-  if (evRoleSel) {
-    const wfRoles = (wfConfig?.roles || []).map(r => r.name).filter(Boolean);
-    const roleNames = wfRoles.length ? wfRoles : ['worker', 'reviewer', 'debugger', 'tester'];
-    const initial = evRoleSel.dataset.initial || 'reviewer';
-    evRoleSel.innerHTML = roleNames.map(n =>
-      '<option value="' + n + '"' + (initial === n ? ' selected' : '') + '>' + n + '</option>'
-    ).join('');
-  }
-  // Dim the role row when mode is interactive (role is unused there).
-  const evModeSel = card.querySelector('[data-f="ev-mode"]');
-  const roleRow = card.querySelector('[data-f="ev-role-row"]');
-  const syncRoleRow = () => { if (roleRow) roleRow.style.opacity = (evModeSel?.value === 'delegate') ? '1' : '0.5'; };
-  evModeSel?.addEventListener('change', syncRoleRow);
-  syncRoleRow();
-}
-
-async function deleteWebhook(card) {
-  const name = card.querySelector('[data-f="ev-name"]')?.value;
-  if (name) { await fetch('/webhooks?name=' + encodeURIComponent(name), { method: 'DELETE' }); }
-  card.remove();
-  const list = document.getElementById('event-rules');
-  const emptyEl = document.getElementById('webhook-empty');
-  if (emptyEl && !list.querySelector('.card')) emptyEl.style.display = '';
-}
-
-// -- Advanced --
-async function loadChannelsCliCheck() {
-  try {
-    const data = await fetch('/cli-check').then(r => r.json());
-    cliStatus = data;
-    // Attach voice config paths for the installed-state display.
-    if (data.whisper?.installed && data.voice) {
-      cliStatus._tribCfgVoice = data.voice;
-    }
-  } catch {}
-}
-
-function populatePresetDropdowns() {
-  const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
-  console.log('[mixdog] populatePresetDropdowns:', presets.length, 'presets');
-  if (!presets.length) return;
-  ['proactive-model'].forEach(selId => {
-    const sel = document.getElementById(selId);
-    if (!sel) return;
-    sel.innerHTML = '';
-    presets.forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p.id || p.name;
-      opt.textContent = (p.name || p.id);
-      sel.appendChild(opt);
-    });
-  });
-  const proactive = chConfig?.proactive || {};
-  document.getElementById('proactive-model').value = proactive.model || 'sonnet-mid';
-
-  // Schedule cards — fill model dropdowns (webhook cards now use role, not model)
-  document.querySelectorAll('#sched-tasks .card [data-f="sc-model"]').forEach(sel => {
-    const current = sel.value || sel.dataset.initial || 'sonnet-mid';
-    sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + '</option>').join('');
-  });
-}
-
-function renderAdvanced() {
-  renderVoiceSection();
-  renderWebhookSection();
-}
-
-function renderVoiceSection() {
-  const el = document.getElementById('voice-section');
-  if (!cliStatus.whisper?.installed) {
-    el.innerHTML =
-      '<div class="cli-status warn" style="flex-direction:column;align-items:flex-start;gap:10px;">' +
-        '<div style="display:flex;align-items:center;gap:8px;width:100%">' +
-          '<span style="font-size:16px;">&#9888;</span>' +
-          '<div>' +
-            '<strong style="color:var(--text-1)">Voice (whisper.cpp)</strong><br>' +
-            '<span style="font-size:11px;color:var(--text-4)">One-click install — downloads whisper.cpp + turbo model (~1.5 GB)</span>' +
-          '</div>' +
-          '<button class="save" id="btn-install-voice" onclick="installVoice()" style="width:auto;height:30px;padding:0 14px;margin-left:auto;font-size:11px;flex-shrink:0">Install</button>' +
-        '</div>' +
-        '<div id="voice-install-status" style="font-size:11px;color:var(--text-4);display:none;padding-left:24px;"></div>' +
-        '<div id="voice-progress-wrap" class="voice-progress-wrap" style="display:none;width:100%">' +
-          '<div class="voice-progress-label" id="voice-stage-label"></div>' +
-          '<div class="voice-progress-bar"><div class="voice-progress-fill" id="voice-progress-fill"></div></div>' +
-          '<div class="voice-progress-speed" id="voice-progress-speed"></div>' +
-        '</div>' +
-      '</div>';
-  } else {
-    const tribCfg = cliStatus._tribCfgVoice || {};
-    const whisperPath = tribCfg.commandName || '';
-    const modelPath   = tribCfg.modelName   || '';
-    el.innerHTML =
-      '<div class="r" style="flex-direction:column;align-items:flex-start;gap:6px;">' +
-        '<div style="display:flex;align-items:center;gap:8px;">' +
-          '<span style="color:var(--green);font-size:14px;">&#10003;</span>' +
-          '<span style="color:var(--text-1);font-size:13px;">Installed (whisper.cpp + turbo)</span>' +
-          '<a href="#" onclick="installVoice();return false;" style="font-size:11px;color:var(--text-4);margin-left:12px;text-decoration:underline;">Reinstall</a>' +
-        '</div>' +
-        (whisperPath ? '<div style="font-size:10px;color:var(--text-4);word-break:break-all;">\uD83D\uDD27 ' + whisperPath + '</div>' : '') +
-        (modelPath   ? '<div style="font-size:10px;color:var(--text-4);word-break:break-all;">\uD83E\uDDE0 ' + modelPath   + '</div>' : '') +
-        '<div id="voice-install-status" style="font-size:11px;color:var(--text-4);display:none;"></div>' +
-      '</div>';
-  }
-}
-
-function installVoice() {
-  const btn = document.getElementById('btn-install-voice');
-  const statusEl = document.getElementById('voice-install-status');
-  const progressWrap = document.getElementById('voice-progress-wrap');
-  const stageLabel = document.getElementById('voice-stage-label');
-  const progressFill = document.getElementById('voice-progress-fill');
-  const progressSpeed = document.getElementById('voice-progress-speed');
-
-  const setStatus = (msg, color) => {
-    if (!statusEl) return;
-    statusEl.style.display = 'block';
-    statusEl.style.color = color || 'var(--text-4)';
-    statusEl.textContent = msg;
-  };
-  const showProgress = (show) => { if (progressWrap) progressWrap.style.display = show ? 'flex' : 'none'; };
-  const setStage = (msg) => { if (stageLabel) stageLabel.textContent = msg; };
-  const setProgressPct = (pct) => { if (progressFill) progressFill.style.width = Math.min(100, Math.max(0, pct)) + '%'; };
-  const setSpeed = (msg) => { if (progressSpeed) progressSpeed.textContent = msg; };
-
-  const STAGE_LABELS = {
-    'platform-check': 'Platform check', 'purfview-lookup': 'Looking up Purfview release',
-    'purfview-fallback': 'Purfview fallback (GitHub API unreachable)',
-    'purfview-download': 'Downloading Purfview binary', 'purfview-extract': 'Extracting binary',
-    'download-binary': 'Downloading binary', 'extract-binary': 'Extracting binary',
-    'download-model': 'Downloading model (~1.5 GB)', 'smoke-test': 'Smoke test',
-    'write-config': 'Writing config',
-    'brew-check': 'Homebrew check', 'brew-install': 'brew install whisper-cpp',
-    'brew-prefix': 'Resolving brew path', 'brew-binary': 'Locating binary',
-    'build-tools-check': 'Build tools check', 'git-clone': 'Cloning source', 'build': 'Building from source',
-  };
-
-  const fmtBytes = (b) => b >= 1e9 ? (b/1e9).toFixed(2)+' GB' : b >= 1e6 ? (b/1e6).toFixed(1)+' MB' : b >= 1e3 ? (b/1e3).toFixed(0)+' KB' : b+' B';
-
-  if (btn) { btn.textContent = 'Installing\u2026'; btn.disabled = true; }
-  showProgress(true);
-  setStage('Starting\u2026');
-  setProgressPct(0);
-  setStatus('');
-
-  const es = new EventSource('/install/voice?stream=1');
-
-  es.addEventListener('stage', (e) => {
-    try {
-      const d = JSON.parse(e.data);
-      setStage(STAGE_LABELS[d.stage] || d.message || d.stage);
-      if (d.stage !== 'download-model') { setProgressPct(0); setSpeed(''); }
-    } catch {}
-  });
-
-  es.addEventListener('progress', (e) => {
-    try {
-      const d = JSON.parse(e.data);
-      if (d.stage === 'download-model' && d.total > 0) {
-        setProgressPct((d.bytes / d.total) * 100);
-        setSpeed(fmtBytes(d.bytes) + ' / ' + fmtBytes(d.total) + (d.speed > 0 ? ' \u00b7 ' + fmtBytes(d.speed) + '/s' : ''));
-      }
-    } catch {}
-  });
-
-  es.addEventListener('done', (e) => {
-    es.close();
-    try {
-      const d = JSON.parse(e.data);
-      showProgress(false);
-      if (d.ok) {
-        setStatus('\u2713 Done', 'var(--green)');
-        loadChannelsCliCheck().then(() => renderAdvanced());
-      }
-    } catch { setStatus('\u2713 Done', 'var(--green)'); loadChannelsCliCheck().then(() => renderAdvanced()); }
-  });
-
-  es.addEventListener('error', (e) => {
-    es.close();
-    showProgress(false);
-    try {
-      const d = JSON.parse(e.data);
-      const sl = STAGE_LABELS[d.stage] || d.stage || 'Install';
-      setStatus('\u2717 ' + sl + ' failed: ' + (d.error || 'Unknown error'), 'var(--red)');
-    } catch { setStatus('\u2717 Connection error', 'var(--red)'); }
-    if (btn) { btn.textContent = 'Retry'; btn.disabled = false; }
-  });
-
-  // Fallback: if EventSource itself fires onerror with no data (network issue)
-  es.onerror = () => {
-    if (es.readyState === EventSource.CLOSED) return; // already handled
-    es.close();
-    showProgress(false);
-    setStatus('\u2717 Connection lost during install', 'var(--red)');
-    if (btn) { btn.textContent = 'Retry'; btn.disabled = false; }
-  };
-}
-
-function toggleCollapsible(toggleEl) {
-  toggleEl.classList.toggle('open');
-  const body = toggleEl.nextElementSibling;
-  body.classList.toggle('open');
-}
-
-function renderWebhookSection() {
-  const el = document.getElementById('webhook-section');
-  if (!cliStatus.ngrok?.installed) {
-    el.innerHTML =
-      '<div class="cli-status warn">' +
-        '<span style="font-size:16px;">&#9888;</span>' +
-        '<div>ngrok not found<br>' +
-        '<span style="font-size:11px;color:var(--text-4)">Receives external events (GitHub, Sentry, etc.)</span></div>' +
-        '<button class="save" id="btn-install-ngrok" onclick="installTool(\'ngrok\')" style="width:auto;height:30px;padding:0 14px;margin-left:auto;font-size:11px">Install</button>' +
-      '</div>';
-  } else {
-    const w = chConfig?.webhook || {};
-    el.innerHTML =
-      '<div class="r"><span class="r-name-wide">Enabled</span><div class="r-toggle' + (w.enabled ? ' on' : '') + '" onclick="this.classList.toggle(\'on\')" id="ch-webhook-enabled"></div></div>' +
-      '<div class="r"><span class="r-name-wide">Auth Token</span><div class="input-group" style="flex:1;width:auto;"><input class="r-input" id="ch-webhook-authtoken" type="password" placeholder="2x..." value="' + (w.authtoken || '') + '"><button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button></div>' +
-        (!w.authtoken ? '<a href="https://dashboard.ngrok.com/get-started/your-authtoken" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;margin-left:8px;white-space:nowrap">Get &#8599;</a>' : '') + '</div>' +
-      '<div class="r"><span class="r-name-wide">Domain</span><input class="r-input" id="ch-webhook-domain" type="text" placeholder="your-name.ngrok-free.dev" value="' + (w.domain || '') + '">' +
-        (!w.domain ? '<a href="https://dashboard.ngrok.com/domains" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;margin-left:8px;white-space:nowrap">Get &#8599;</a>' : '') + '</div>';
-  }
-}
-
-async function installTool(tool) {
-  const btn = document.getElementById('btn-install-' + tool);
-  if (!btn) return;
-  btn.textContent = 'Installing...'; btn.disabled = true;
-  try {
-    const r = await fetch('/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool }) }).then(r => r.json());
-    if (r.ok) { btn.textContent = '\u2713 Done'; btn.classList.add('done'); await loadChannelsCliCheck(); renderAdvanced(); }
-    else { btn.textContent = 'Failed'; setTimeout(() => { btn.textContent = 'Install'; btn.disabled = false; }, 3000); }
-  } catch { btn.textContent = 'Failed'; setTimeout(() => { btn.textContent = 'Install'; btn.disabled = false; }, 3000); }
-}
-
-// -- Channels load / populate --
-async function loadChannelsConfig() {
-  const cfgRes = await fetch('/config').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
-  chConfig = cfgRes;
-  if (cfgRes._bot) { chExtraData.bot = cfgRes._bot; delete cfgRes._bot; }
-  await populateChannels(cfgRes);
-}
-
-async function populateChannels(cfg) {
-  // Connection
-  const discord = cfg?.discord || {};
-  if (discord.token) document.getElementById('ch-discord-token').value = discord.token;
-  if (discord.applicationId) document.getElementById('ch-discord-appid').value = discord.applicationId;
-
-  // Channels
-  const chCfg = cfg?.channelsConfig || {};
-  const mainCh = cfg?.mainChannel;
-  let first = true;
-  for (const [name, ch] of Object.entries(chCfg)) {
-    const isMain = mainCh ? (name === mainCh) : first;
-    addChannel(name, ch.channelId, ch.mode || 'interactive', isMain);
-    first = false;
-  }
-  if (Object.keys(chCfg).length === 0) addChannel('main', '', 'interactive', true);
-
-  // Access
-  const access = cfg?.access || {};
-  if (access.dmPolicy) document.getElementById('ch-dm-policy').value = access.dmPolicy;
-  setTagValues('ch-allowfrom', access.allowFrom);
-  setTagValues('ch-mentionpatterns', access.mentionPatterns);
-  if (access.ackReaction) document.getElementById('ch-ackreaction').classList.add('on');
-  if (access.replyToMode) document.getElementById('ch-replytomode').value = access.replyToMode;
-  if (access.textChunkLimit) document.getElementById('ch-textchunklimit').value = access.textChunkLimit;
-  if (access.chunkMode) document.getElementById('ch-chunkmode').value = access.chunkMode;
 
   // DND: top-level cfg.quiet (server always populates default via applyChannelsDefaults)
   const quiet = cfg?.quiet || {};
@@ -4700,13 +3480,29 @@ function renderAgMaintenance() {
     // option silently.
     const matched = agPresets.find(p => p.id === stored) || agPresets.find(p => (p.name || '') === stored);
     const currentId = matched ? matched.id : '';
-    container.innerHTML += `<div class="r">
-      <span class="r-name">${task.label}</span>
-      <select class="r-select" id="ag-maint-${task.id}" style="width:200px;flex:0 0 200px">
-        ${agPresets.map(p => `<option value="${escapeAttr(p.id)}"${p.id === currentId ? ' selected' : ''}>${p.name || p.id}</option>`).join('')}
-      </select>
-      <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">${task.desc}</span>
-    </div>`;
+    const row = document.createElement('div');
+    row.className = 'r';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'r-name';
+    nameSpan.textContent = task.label;
+    const sel = document.createElement('select');
+    sel.className = 'r-select';
+    sel.id = 'ag-maint-' + task.id;
+    sel.style.cssText = 'width:200px;flex:0 0 200px';
+    const descSpan = document.createElement('span');
+    descSpan.style.cssText = 'flex:1;font-size:11px;color:var(--text-4);margin-left:10px';
+    descSpan.textContent = task.desc;
+    row.appendChild(nameSpan);
+    row.appendChild(sel);
+    row.appendChild(descSpan);
+    container.appendChild(row);
+    agPresets.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name || p.id;
+      if (p.id === currentId) opt.selected = true;
+      sel.appendChild(opt);
+    });
   }
 }
 

@@ -302,4 +302,4 @@ function evaluatePermission({ toolName, toolInput, permissionMode, projectDir, u
   return { decision: 'allow', reason: 'default mode: tool is inside project sandbox.' };
 }
 
-module.exports = { evaluatePermission };
+module.exports.evaluatePermission = evaluatePermission;

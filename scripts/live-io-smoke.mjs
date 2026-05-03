@@ -24,7 +24,8 @@ function isSearchProviderConfigured() {
     try {
         const dataRoot = process.env.CLAUDE_PLUGIN_DATA;
         if (!dataRoot) return false;
-        const raw = readJsonIfExists(join(dataRoot, 'search-config.json'));
+        const unified = readJsonIfExists(join(dataRoot, 'mixdog-config.json'));
+        const raw = unified?.search ?? null;
         const creds = raw?.rawSearch?.credentials || {};
         for (const entry of Object.values(creds)) {
             if (!entry || typeof entry !== 'object') continue;

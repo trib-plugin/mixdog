@@ -21,7 +21,7 @@
  * Output: <plugin-root>/tools.json
  */
 
-import { writeFileSync, mkdtempSync } from 'fs'
+import { writeFileSync, mkdtempSync, rmSync } from 'fs'
 import { dirname, join } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath, pathToFileURL } from 'url'
@@ -32,13 +32,15 @@ const OUTPUT = join(PLUGIN_ROOT, 'tools.json')
 
 globalThis.__tribFastEntry = true
 process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT
+let _tempDataDir = null
 if (!process.env.CLAUDE_PLUGIN_DATA) {
   // Module imports below (channels / memory / search / agent) touch DATA_DIR
   // during init (boot.log, caches, sqlite warm-up). Route those writes to a
   // throwaway OS temp dir so the manifest build never pollutes the plugin
   // source tree with a shadow `.data/` next to the real one under
   // ~/.claude/plugins/data/<plugin>-<marketplace>.
-  process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(tmpdir(), 'mixdog-tools-'))
+  _tempDataDir = mkdtempSync(join(tmpdir(), 'mixdog-tools-'))
+  process.env.CLAUDE_PLUGIN_DATA = _tempDataDir
 }
 
 // `key` names the export each module uses for its tool list. Most modules
@@ -95,4 +97,7 @@ for (const tool of unique) {
 writeFileSync(OUTPUT, JSON.stringify(unique, null, 2) + '\n')
 console.error(`[build-tools] wrote ${unique.length} tools → ${OUTPUT}`)
 console.error(`[build-tools] done in ${Date.now() - t0} ms`)
+if (_tempDataDir) {
+  try { rmSync(_tempDataDir, { recursive: true, force: true }) } catch {}
+}
 process.exit(0)

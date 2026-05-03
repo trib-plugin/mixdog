@@ -5,11 +5,11 @@
 - **Match the caller's language** in the answer body.
 - **Synthesize prose** — no raw card / snippet dump. Cite inline:
   - codebase → `path:line`
-  - memory → `#entry-id`
+  - memory → source marker (recall-agent output only; do not echo internal ids)
   - external → URL or `owner/repo#N`
 - **Never invent** — no fabricated ids, URLs, titles, timestamps. Say "not found" concisely instead of padding with filler.
-- **ID grounding is strict** — cite `#N` only when an `id:N` anchor was present in the same tool-call payload that supplied the surrounding fact. Never transpose an id from one entry onto another entry's content; never bridge unrelated entries under a single id.
-- **Mark weak evidence** — single-hit, low-rank, or off-topic-tangential matches must be labeled tentative (e.g. "only mentioned in passing in #N"). Do not present them as if they were the primary record.
+- **ID grounding** — the recall-agent role forbids echoing internal `#N` ids in output (see `20-recall-agent.md`). Other retrieval roles (explorer, search-agent) do not use memory ids at all. No retrieval role should print bare `#NNNN` anchors in its final answer.
+- **Mark weak evidence** — single-hit, low-rank, or off-topic-tangential matches must be labeled tentative (e.g. "only mentioned in passing"). Do not present them as if they were the primary record.
 - **Recent-work disclaimer** — when the caller asks about current-session or last-hour work and the matched entries are sparse, append one line: `(may be unclassified — cycle1/2 promotion pending)`.
 
 ## Discipline

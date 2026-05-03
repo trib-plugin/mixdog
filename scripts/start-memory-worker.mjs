@@ -1,9 +1,8 @@
 #!/usr/bin/env bun
 // Standalone memory worker launcher for benchmark / dev use.
-// Imports src/memory/index.mjs (so the import.meta.url mainline guard does
-// NOT fire) and calls init() — HTTP transport binds to 127.0.0.1:<port>
-// and writes the port file under tmpdir/mixdog-memory/memory-port. Process
-// stays alive on the http server's open socket; SIGINT to stop.
+// Mirrors the mainline init contract in src/memory/index.mjs:
+//   acquireLock → register exit handler → call init() → keep alive.
+// Signal handlers call the exported stop() for clean shutdown before exit.
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -13,8 +12,18 @@ const PLUGIN_ROOT = resolve(HERE, '..');
 process.env.CLAUDE_PLUGIN_ROOT ??= PLUGIN_ROOT;
 process.env.CLAUDE_PLUGIN_DATA ??= join(homedir(), '.claude', 'plugins', 'data', 'mixdog-trib-plugin');
 
-const mod = await import('../src/memory/index.mjs');
-await mod.init();
+// Import memory module — import.meta.url guard in index.mjs does NOT fire
+// because this file's URL differs from process.argv[1].
+const { init, stop, acquireLock, releaseLock, isExistingServerHealthy, runProxyMode } = await import('../src/memory/index.mjs');
+
+const existing = await isExistingServerHealthy();
+if (existing) {
+  await runProxyMode(existing);
+  process.exit(0);
+}
+acquireLock();
+process.on('exit', releaseLock);
+process.on('SIGINT', () => { stop().finally(() => process.exit(0)); });
+process.on('SIGTERM', () => { stop().finally(() => process.exit(0)); });
+await init();
 process.stderr.write(`[start-memory-worker] init complete; HTTP listening\n`);
-process.on('SIGINT', () => { process.exit(0); });
-process.on('SIGTERM', () => { process.exit(0); });

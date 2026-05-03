@@ -393,10 +393,9 @@ export async function init() {
   // External MCP servers only. Self-MCP loopback (mcpServers.mixdog /
   // mcpServers["trib-plugin"])
   // is rejected — agent exposes the plugin's own tools (search,
-  // search_memories, ...) in-process via the context injected by server.mjs;
-  // no network round-trip, no self-spawn. search/search_memories are
-  // guaranteed by the static tools.json manifest, so the prior FATAL check
-  // is obsolete.
+  // memory_search, ...) in-process via the context injected by server.mjs;
+  // no network round-trip, no self-spawn. The static tools.json manifest
+  // guarantees the tool surface, so the prior FATAL check is obsolete.
   const rawServers = (config.mcpServers && typeof config.mcpServers === 'object') ? config.mcpServers : {};
   const externalServers = {};
   for (const [name, cfg] of Object.entries(rawServers)) {
@@ -790,6 +789,7 @@ export async function handleToolCall(name, args, opts = {}) {
         const config = loadConfig();
         let preset;
         let presetName;
+        let _roleConfig = null;
         if (args.provider && args.model) {
           preset = {
             id: '__bench__',
@@ -812,7 +812,7 @@ export async function handleToolCall(name, args, opts = {}) {
           // every entry and _roleConfigCache is populated with full RoleConfig objects
           // (including permission). getRoleConfig() then returns the validated record.
           loadUserWorkflowRoles();
-          const _roleConfig = getRoleConfig(args.role);
+          _roleConfig = getRoleConfig(args.role);
           presetName = args.preset || _roleConfig?.preset;
           if (!presetName) return fail(`role "${args.role}" not found in user-workflow.json (and no preset override given)`);
 
@@ -975,6 +975,7 @@ export async function handleToolCall(name, args, opts = {}) {
               abort: (reason) => {
                 const rt = getSessionRuntime(activeSession.id);
                 rt?.controller?.abort?.(reason);
+                try { closeSession(activeSession.id, String(reason?.message || reason || 'stall-watchdog')); } catch {}
               },
               notify: emit,
               modelTag,
@@ -999,6 +1000,7 @@ export async function handleToolCall(name, args, opts = {}) {
                     parentSessionId: callerSessionId,
                     permissionMode: _permissionMode,
                     cacheKeyOverride: args.cacheKey || undefined,
+                    permission: _roleConfig?.permission || undefined,
                   });
                   activeSession = retryBuilt.session;
                   // Keep jobId→sessionId registry current so close_session

@@ -150,3 +150,11 @@ foreach ($k in $report.Keys) {
     $v = $report[$k]
     "{0,-26} : {1}" -f $k, $v
 }
+
+if ($report.Verdict -eq 'FAILS') {
+    Write-Error "FAIL: inject-input verification failed (Verdict=FAILS)"
+    exit 1
+} elseif ($report.Verdict -eq 'PARTIAL') {
+    Write-Error "FAIL: inject-input worked on retry only (Verdict=PARTIAL)"
+    exit 1
+}

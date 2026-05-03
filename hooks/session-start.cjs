@@ -8,6 +8,7 @@ const net = require('net');
 const { spawn } = require('child_process');
 const { DatabaseSync } = require('../lib/sqlite-bridge.cjs');
 const { resolvePluginData } = require(path.join(__dirname, '..', 'lib', 'plugin-paths.cjs'));
+const { readSection } = require(path.join(__dirname, '..', 'lib', 'config-cjs.cjs'));
 
 // Mirror selected stderr lines to a plugin-data log file so cycle1 traces
 // remain inspectable after the host shell scrolls past. Best-effort: any
@@ -216,21 +217,6 @@ const skipMemoryInject = _event.source === 'resume' || _event.source === 'compac
 // the rules block. Static .md content only; cycle1 is triggered by
 // core/recap slots (dedupe coalesces concurrent calls into one run).
 // ---------------------------------------------------------------------------
-function ensurePromptInjectionConfig() {
-  const cfgPath = path.join(DATA_DIR, 'config.json');
-  if (fs.existsSync(cfgPath)) return;
-  try {
-    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-    fs.writeFileSync(cfgPath, JSON.stringify({
-      promptInjection: {
-        mode: 'claude_md',
-        targetPath: '~/.claude/CLAUDE.md',
-      },
-    }, null, 2) + '\n');
-  } catch (e) {
-    process.stderr.write(`[session-start] config seed failed: ${e.message}\n`);
-  }
-}
 
 function hasManagedClaudeMdBlock(targetPath) {
   if (!targetPath) return false;
@@ -718,12 +704,12 @@ async function runRulesPart() {
     if (fs.existsSync(stalePending)) fs.unlinkSync(stalePending);
   } catch {}
 
-  ensurePromptInjectionConfig();
   injectStatusLine(PLUGIN_ROOT);
   rebindActiveInstance();
 
-  const mainConfig = readJson(path.join(DATA_DIR, 'config.json'));
-  const injection = mainConfig && typeof mainConfig.promptInjection === 'object' ? mainConfig.promptInjection : {};
+  let _channelsConfig = {};
+  try { _channelsConfig = readSection('channels'); } catch {}
+  const injection = _channelsConfig && typeof _channelsConfig.promptInjection === 'object' ? _channelsConfig.promptInjection : {};
   const claudeMdMode = injection.mode === 'claude_md';
   const claudeMdTargetPath = typeof injection.targetPath === 'string' && injection.targetPath
     ? injection.targetPath

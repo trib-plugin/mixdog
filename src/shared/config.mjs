@@ -2,7 +2,7 @@
  * Unified config reader/writer.
  * Single file: mixdog-config.json with sections: channels, agent, memory, search.
  */
-import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, statSync } from 'fs'
 import { join, dirname } from 'path'
 import { resolvePluginData } from './plugin-paths.mjs'
 
@@ -24,7 +24,7 @@ export function stripGeneratedMarker(data) {
 }
 
 // Legacy file paths for one-time migration
-const LEGACY_FILES = {
+export const LEGACY_FILES = {
   channels: 'config.json',
   agent: 'agent-config.json',
   memory: 'memory-config.json',
@@ -64,33 +64,46 @@ function writeJsonFile(path, data) {
 function readAll() {
   const existing = readJsonFile(CONFIG_PATH)
   if (!existing) {
-    // First run: migrate every legacy file at once.
+    // First run or quarantined config: migrate every legacy file at once,
+    // then rename legacy files so they don't re-trigger migration.
     const merged = {}
     for (const [section, filename] of Object.entries(LEGACY_FILES)) {
-      const legacy = readJsonFile(join(DATA_DIR, filename))
-      if (legacy) merged[section] = stripGeneratedMarker(legacy)
+      const legacyPath = join(DATA_DIR, filename)
+      const legacy = readJsonFile(legacyPath)
+      if (legacy) {
+        merged[section] = stripGeneratedMarker(legacy)
+        // Rename to .legacy-migrated-<ts>.json so it never re-triggers.
+        try {
+          renameSync(legacyPath, `${legacyPath}.legacy-migrated-${Date.now()}.json`)
+        } catch {}
+      }
     }
     if (Object.keys(merged).length > 0) {
       writeJsonFile(CONFIG_PATH, merged)
     }
     return merged
   }
-  // Backfill: mixdog-config.json exists but one or more sections are missing
-  // or empty (early-fork configs migrated only `channels`, leaving `agent` etc.
-  // stranded in their legacy files). Pull each empty section from its legacy
-  // counterpart so single-source readers don't see a hollow config.
+  // Backfill: mixdog-config.json exists but one or more sections are missing or
+  // empty AND a legacy file is still present (not yet renamed). Migrate those
+  // remaining sections, then rename the legacy file. Idempotent: once renamed,
+  // the legacy file is gone and this loop is a no-op on subsequent boots.
   let touched = false
   for (const [section, filename] of Object.entries(LEGACY_FILES)) {
     const cur = existing[section]
     const empty = cur == null
       || (isPlainObject(cur) && Object.keys(cur).length === 0)
     if (!empty) continue
-    const legacy = readJsonFile(join(DATA_DIR, filename))
+    const legacyPath = join(DATA_DIR, filename)
+    const legacy = readJsonFile(legacyPath)
     if (!legacy) continue
     const stripped = stripGeneratedMarker(legacy)
     if (isPlainObject(stripped) && Object.keys(stripped).length === 0) continue
     existing[section] = stripped
     touched = true
+    // Rename legacy file after absorbing its content.
+    try {
+      renameSync(legacyPath, `${legacyPath}.legacy-migrated-${Date.now()}.json`)
+    } catch {}
   }
   if (touched) writeJsonFile(CONFIG_PATH, existing)
   return existing
@@ -101,7 +114,7 @@ function writeAll(data) {
 }
 
 export function readSection(section) {
-  return stripGeneratedMarker(readAll()[section] || {})
+  return stripGeneratedMarker(readAll()[section] ?? null) ?? {}
 }
 
 export function writeSection(section, data) {

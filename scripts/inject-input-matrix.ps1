@@ -117,3 +117,9 @@ if ($targetPidB -gt 0) {
 "  ConPTY matrix"
 "=========================================="
 $cases | Format-List
+
+$fails = ($cases | Where-Object { -not $_.Pass }).Count
+if ($fails -gt 0) {
+    Write-Error "FAIL: $fails of $($cases.Count) cases failed"
+    exit 1
+}

@@ -2536,7 +2536,7 @@ async function stop() {
   // (conversational session kickoff) with real topic selection + source
   // scoring instead of a canned template. See
   // rules/bridge/50-proactive-decision.md.
-  const configPath = path.join(DATA_DIR, "config.json");
+  const configPath = path.join(DATA_DIR, "mixdog-config.json");
   let reloadDebounce = null;
   let configWatcher = null;
   try {

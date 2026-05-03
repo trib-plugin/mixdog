@@ -32,6 +32,7 @@ const crypto = require('crypto');
 const { shouldRoutePermissionToDiscord } = require('./lib/permission-route.cjs');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
+const { readSection } = require('../lib/config-cjs.cjs');
 if (!DATA_DIR) process.exit(0);
 
 const RUNTIME_ROOT = path.join(os.tmpdir(), 'mixdog');
@@ -47,9 +48,14 @@ function readActiveInstance() {
   try { return JSON.parse(fs.readFileSync(ACTIVE_INSTANCE_FILE, 'utf8')); } catch { return null; }
 }
 
+// Read Discord config — tries mixdog-config.json, falls back to legacy config.json.
+function readDiscordConfig() {
+  try { return readSection('channels'); } catch { return {}; }
+}
+
 // Fast bailout: no Discord config → skip
 try {
-  const cfg = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'config.json'), 'utf8'));
+  const cfg = readDiscordConfig();
   const hasToken = !!(cfg && cfg.discord && cfg.discord.token);
   const mainCh = cfg && cfg.channelsConfig && cfg.channelsConfig.main;
   const channelId = mainCh && (typeof mainCh === 'string' ? null : mainCh.channelId);
@@ -149,11 +155,10 @@ process.stdin.on('end', async () => {
     const route = shouldRoutePermissionToDiscord();
     if (route.route !== 'discord') process.exit(0);
 
-    const configPath = path.join(DATA_DIR, 'config.json');
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const token = config.discord && config.discord.token;
+    const cfg = readDiscordConfig();
+    const token = cfg && cfg.discord && cfg.discord.token;
     if (!token) process.exit(0);
-    const mainCh = config.channelsConfig && config.channelsConfig.main;
+    const mainCh = cfg && cfg.channelsConfig && cfg.channelsConfig.main;
     const channelId = mainCh && (typeof mainCh === 'string' ? null : mainCh.channelId);
     if (!channelId) process.exit(0);
 

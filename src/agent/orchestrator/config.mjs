@@ -1,5 +1,5 @@
 import { readFileSync, existsSync, renameSync } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { homedir } from 'os';
 import { resolvePluginData } from '../../shared/plugin-paths.mjs';
 import { readSection, updateSection, stripGeneratedMarker } from '../../shared/config.mjs';
@@ -115,15 +115,6 @@ function hasKeys(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
 }
 
-function readLegacyAgentConfig(configPath) {
-    try {
-        return stripGeneratedMarker(JSON.parse(readFileSync(configPath, 'utf-8')));
-    }
-    catch {
-        return null;
-    }
-}
-
 function persistAgentConfig(config) {
     updateSection('agent', () => config);
 }
@@ -133,17 +124,12 @@ function persistAgentConfig(config) {
  * merge its `mcpServers` into config.json and rename the legacy file to .bak.
  * Skipped silently if config.json already has `mcpServers`.
  */
-function migrateMcpToolsFile(configPath) {
-    const dir = dirname(configPath);
-    const legacyPath = join(dir, 'mcp-tools.json');
+function migrateMcpToolsFile() {
+    const legacyPath = join(getPluginData(), 'mcp-tools.json');
     if (!existsSync(legacyPath))
         return;
     let configRaw = readSection('agent');
-    if (!hasKeys(configRaw)) {
-        configRaw = readLegacyAgentConfig(configPath);
-        // config.json malformed; bail without touching legacy file
-        if (!configRaw) return;
-    }
+    if (!hasKeys(configRaw)) return;
     if (configRaw.mcpServers && Object.keys(configRaw.mcpServers).length > 0) {
         // Already migrated — leave the legacy file alone for the user to clean up
         return;
@@ -169,16 +155,12 @@ function migrateMcpToolsFile(configPath) {
         process.stderr.write(`[mixdog-agent] mcp-tools.json migration failed: ${err}\n`);
     }
 }
-function getConfigPath() {
-    return join(getPluginData(), 'agent-config.json');
-}
 export function loadConfig() {
-    const configPath = getConfigPath();
-    migrateMcpToolsFile(configPath);
+    migrateMcpToolsFile();
     const sectionRaw = readSection('agent');
-    if (hasKeys(sectionRaw) || existsSync(configPath)) {
+    if (hasKeys(sectionRaw)) {
         try {
-            let raw = hasKeys(sectionRaw) ? sectionRaw : readLegacyAgentConfig(configPath);
+            let raw = sectionRaw;
             // If config has an 'agent' section, use it (unified config format)
             if (raw.agent && raw.agent.providers) {
                 raw = raw.agent;
@@ -265,9 +247,8 @@ export function loadConfig() {
  * next load.
  */
 export function saveConfig(config) {
-    const path = getConfigPath();
     let existingRaw = readSection('agent');
-    if (!hasKeys(existingRaw)) existingRaw = readLegacyAgentConfig(path) || {};
+    if (!hasKeys(existingRaw)) existingRaw = {};
     // Strip ephemeral defaults from providers but preserve any unknown
     // per-provider subkey so future schema additions round-trip through
     // the setup UI without changes here.

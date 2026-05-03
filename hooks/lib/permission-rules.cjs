@@ -20,6 +20,7 @@
 const READ_ONLY_TOOLS = new Set([
   'read', 'list', 'glob', 'grep', 'find_symbol', 'explore',
   'recall', 'search', 'fetch', 'code_graph',
+  'schedule_status', 'list_sessions', 'list_models', 'job_wait', 'download_attachment',
 ]);
 
 /**

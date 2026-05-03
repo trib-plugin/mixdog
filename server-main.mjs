@@ -26,6 +26,7 @@ import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import { resolvePluginData } from './src/shared/plugin-paths.mjs'
 import { ensureDataSeeds } from './src/shared/seed.mjs'
+import { readSection } from './src/shared/config.mjs'
 import { resolveDefaultUserCwd as _resolveDefaultUserCwd, captureOriginalUserCwd, pwd } from './src/shared/user-cwd.mjs'
 
 // ── Environment ──────────────────────────────────────────────────────
@@ -43,47 +44,6 @@ try { ensureDataSeeds(PLUGIN_DATA) } catch {}
 // in server.mjs. server-main.mjs assumes the lock is already held.
 
 globalThis.__tribFastEntry = true
-
-// ── Unified config sync ────────────────────────────────────────────
-// mixdog-config.json is the single source. On boot, split into individual
-// files so each module can read its own file without changes.
-const GENERATED_CONFIG_MARKER = 'from mixdog-config.json — edits will be overwritten on next boot'
-
-function stripGeneratedMarker(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  if (!Object.prototype.hasOwnProperty.call(value, '_generated')) return value
-  const { _generated, ...rest } = value
-  return rest
-}
-
-function withGeneratedMarker(value) {
-  const section = stripGeneratedMarker(value)
-  if (!section || typeof section !== 'object' || Array.isArray(section)) return section
-  return {
-    _generated: GENERATED_CONFIG_MARKER,
-    ...section,
-  }
-}
-
-try {
-  const mixdogCfgPath = join(PLUGIN_DATA, 'mixdog-config.json')
-  const SECTION_FILES = { channels: 'config.json', agent: 'agent-config.json', memory: 'memory-config.json', search: 'search-config.json' }
-  let tribCfg
-  try { tribCfg = JSON.parse(readFileSync(mixdogCfgPath, 'utf8')) } catch { tribCfg = null }
-  if (tribCfg) {
-    for (const [section, file] of Object.entries(SECTION_FILES)) {
-      const generated = withGeneratedMarker(tribCfg[section])
-      if (generated) writeFileSync(join(PLUGIN_DATA, file), JSON.stringify(generated, null, 2) + '\n')
-    }
-  } else {
-    // First run: merge individual files into mixdog-config.json
-    const merged = {}
-    for (const [section, file] of Object.entries(SECTION_FILES)) {
-      try { merged[section] = stripGeneratedMarker(JSON.parse(readFileSync(join(PLUGIN_DATA, file), 'utf8'))) } catch {}
-    }
-    if (Object.keys(merged).length > 0) writeFileSync(mixdogCfgPath, JSON.stringify(merged, null, 2) + '\n')
-  }
-} catch (e) { process.stderr.write(`[boot] config sync: ${e?.message ?? e}\n`) }
 
 // ── Module enable flags (B6 General toggles) ──────────────────────
 // Snapshotted once at boot — toggling in the setup UI requires a full
@@ -953,9 +913,7 @@ setImmediate(() => {
 //   mode === 'hook' (default or missing) → remove any stale managed block
 function reconcileClaudeMd() {
   try {
-    const cfgPath = join(PLUGIN_DATA, 'config.json')
-    let mainConfig = {}
-    try { mainConfig = JSON.parse(readFileSync(cfgPath, 'utf8')) } catch {}
+    const mainConfig = readSection('channels')
     const injection = (mainConfig && mainConfig.promptInjection) || {}
     const targetPath = injection.targetPath || '~/.claude/CLAUDE.md'
     const req = createRequire(import.meta.url)
@@ -988,9 +946,7 @@ function reconcileClaudeMd() {
 // so watcher setup failure never crashes the MCP server.
 setImmediate(() => {
   try {
-    const cfgPath = join(PLUGIN_DATA, 'config.json')
-    let mainConfig = {}
-    try { mainConfig = JSON.parse(readFileSync(cfgPath, 'utf8')) } catch {}
+    const mainConfig = readSection('channels')
     const injection = (mainConfig && mainConfig.promptInjection) || {}
     if (injection.mode !== 'claude_md') return
 
@@ -1016,8 +972,7 @@ setImmediate(() => {
     }
 
     const DATA_ALLOWLIST = new Set([
-      'mixdog-config.json', 'config.json', 'memory-config.json', 'search-config.json',
-      'agent-config.json', 'user-workflow.json', 'user-workflow.md',
+      'mixdog-config.json', 'user-workflow.json', 'user-workflow.md',
     ])
 
     const makeHandler = root => {

@@ -25,7 +25,7 @@ Before free-form planning, map the request to the most decisive first tool:
 
 Beyond these, follow the Decision Table in `rules/shared/01-tool.md` — the single source of truth for query-shape → first-tool mapping, including direct-alias preference for imports / callers / references / dependents.
 
-If a direct alias (`find_imports` / `find_dependents` / `find_callers` / `find_references`) is not exposed in the current bridge tool list, use `code_graph(mode='imports'|'dependents'|'callers'|'references')` instead — same backend.
+If a direct alias (`find_imports` / `find_dependents` / `find_callers` / `find_references`) is not exposed in the current bridge tool list, use `find_symbol (with mode parameter, e.g. mode='imports'|'dependents'|'callers'|'references')` instead — same backend.
 
 Do not spend a turn "thinking about which tool to use" when the query already matches one of the cases above.
 

@@ -176,11 +176,22 @@ class Scheduler {
     // Restore proactive baseline across restarts: a cold start would
     // otherwise reset proactiveLastFireAt to 0 and let the next tick
     // fire immediately if proactiveStartAt + period has already elapsed.
+    // Also restore timed slot keys so the dedupe check at tick-time
+    // (lastFired.get(s.name) !== slotKey) sees prior fires across restarts.
     try {
       const persisted = readScheduleState();
       const prev = Number(persisted?.proactive?.lastFireAt);
       if (Number.isFinite(prev) && prev > 0 && prev <= Date.now()) {
         this.proactiveLastFireAt = prev;
+      }
+      const timed = persisted?.timed;
+      if (timed && typeof timed === "object") {
+        for (const [name, entry] of Object.entries(timed)) {
+          const key = entry?.snapKey;
+          if (typeof key === "string" && key) {
+            this.lastFired.set(name, key);
+          }
+        }
       }
     } catch {}
   }
@@ -634,13 +645,16 @@ ${Scheduler.INSTANCE_UUID}`;
         }
       } else {
         shouldFire = s.time === snap.hhmm && this.lastFired.get(s.name) !== snapKey;
-        if (!shouldFire && /^\d{2}:\d{2}$/.test(s.time) && this.lastFired.get(s.name) !== `${snap.dateStr}T${s.time}`) {
+        if (!shouldFire && /^\d{2}:\d{2}$/.test(s.time)) {
           // Catch-up: tick fell after the exact HH:MM minute. If we are still
           // within the grace window relative to that scheduled wall time AND
           // we have not yet fired for this slot today, fire once.
+          // Guard uses the slot ISO key (dateT{s.time}) so any tick within the
+          // 90s window that persists the same slot key is correctly deduplicated.
+          const slotKey = `${snap.dateStr}T${s.time}`;
           const slotMs = new Date(`${snap.dateStr}T${s.time}:00`).getTime();
           const now2 = Date.now();
-          if (Number.isFinite(slotMs) && now2 >= slotMs && now2 - slotMs <= HHMM_GRACE_MS) {
+          if (Number.isFinite(slotMs) && now2 >= slotMs && now2 - slotMs <= HHMM_GRACE_MS && this.lastFired.get(s.name) !== slotKey) {
             shouldFire = true;
           }
         }
@@ -663,9 +677,14 @@ ${Scheduler.INSTANCE_UUID}`;
       // gates across restarts.
       try {
         const state = readScheduleState();
-        state.timed = { ...(state.timed || {}), [s.name]: { snapKey, ts: now.toISOString() } };
+        // For HH:MM schedules use the slot key (dateT{s.time}) so catch-up
+        // deduplication within the 90s grace window is consistent across ticks.
+        const fireKey = /^\d{2}:\d{2}$/.test(s.time)
+          ? `${snap.dateStr}T${s.time}`
+          : snapKey;
+        state.timed = { ...(state.timed || {}), [s.name]: { snapKey: fireKey, ts: now.toISOString() } };
         writeScheduleState(state);
-        this.lastFired.set(s.name, now.toISOString());
+        this.lastFired.set(s.name, fireKey);
       } catch (persistErr) {
         logSchedule(`skipping "${s.name}" — persist failed: ${persistErr?.message || persistErr}`);
         continue;
@@ -982,7 +1001,8 @@ ${preferredTopicText}`;
         this.proactiveFiredToday++;
         if (this.injectFn) {
           this.injectFn("", `proactive:${result.sourcePicked || "chat"}`, " ", {
-            instruction: result.message
+            instruction: result.message,
+            type: 'proactive'
           });
         }
       } catch (err) {

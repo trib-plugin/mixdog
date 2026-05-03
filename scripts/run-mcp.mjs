@@ -243,6 +243,7 @@ const CRASH_BACKOFF_MS   = 500;
 
 let proc = null;
 let shuttingDown = false;
+let respawnTimer = null;
 const recentRestarts = [];
 
 let cachedInitRequest    = null; // { id, params } from client's first initialize
@@ -376,6 +377,9 @@ function spawnChild() {
   });
 
   proc.on('exit', (code, signal) => {
+    // Clear proc immediately so SIGTERM / killChild sees proc=null and exits
+    // cleanly rather than sending SIGTERM to a dead process handle.
+    proc = null;
     if (shuttingDown) {
       process.exit(code || 0);
       return;
@@ -400,7 +404,8 @@ function spawnChild() {
       process.stderr.write(
         `[run-mcp] child crash loop (${recentRestarts.length} restarts in ${CRASH_WINDOW_MS}ms) — backing off ${CRASH_BACKOFF_MS}ms; supervisor stays up\n`,
       );
-      setTimeout(() => {
+      respawnTimer = setTimeout(() => {
+        if (shuttingDown) return;
         spawnChild();
         // Re-handshake the fresh child after crash-loop backoff.
         if (!cachedInitRequest) {
@@ -416,7 +421,8 @@ function spawnChild() {
       return;
     }
     process.stderr.write(`[run-mcp] child exit code=${code} signal=${signal} — respawning (#${recentRestarts.length})\n`);
-    setTimeout(() => {
+    respawnTimer = setTimeout(() => {
+      if (shuttingDown) return;
       spawnChild();
       // Silent re-handshake against the fresh child.
       replayInitToChild();
@@ -433,7 +439,12 @@ function spawnChild() {
 function killChild() {
   if (shuttingDown) return;
   shuttingDown = true;
-  if (!proc) return;
+  clearTimeout(respawnTimer);
+  respawnTimer = null;
+  if (!proc) {
+    process.exit(0);
+    return;
+  }
   if (isWin && proc.pid) {
     try {
       execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: 'ignore', windowsHide: true, timeout: 5000 });
@@ -441,6 +452,7 @@ function killChild() {
   } else {
     proc.kill('SIGTERM');
   }
+  // process.exit is called by proc's 'exit' handler once the child terminates.
 }
 
 process.on('SIGTERM', killChild);

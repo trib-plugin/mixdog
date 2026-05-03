@@ -15,6 +15,7 @@ import { cleanMemoryText } from '../src/memory/lib/memory.mjs';
 import { readSection, writeSection } from '../src/shared/config.mjs';
 import { updateSection } from '../src/shared/config.mjs';
 import { applyDefaults as applyChannelsDefaults } from '../src/channels/lib/config.mjs';
+import { validateCronExpression } from '../src/channels/lib/scheduler.mjs';
 
 // C2 — Origin/Referer guard for mutating routes.
 // Returns true when the request is safe to handle (same-origin loopback UI,
@@ -50,13 +51,11 @@ const home = homedir();
 
 // -- Channels paths --
 const DATA_DIR = resolvePluginData();
-const CONFIG_PATH = join(DATA_DIR, 'config.json');
 const MIXDOG_CONFIG_PATH = join(DATA_DIR, 'mixdog-config.json');
 const STATUS_SNAPSHOT_PATH = join(DATA_DIR, 'channels', 'status-snapshot.json');
 
 // -- Agent paths (same data dir after unification) --
-const AGENT_DATA_DIR = DATA_DIR;
-const AGENT_CONFIG_PATH = join(AGENT_DATA_DIR, 'agent-config.json');
+// AGENT_DATA_DIR / AGENT_CONFIG_PATH removed — legacy agent-config.json absorbed into mixdog-config.json
 
 // -- Workflow paths --
 const USER_WORKFLOW_PATH = join(DATA_DIR, 'user-workflow.json');
@@ -107,15 +106,7 @@ const DEFAULT_USER_WORKFLOW_MD = `# User Workflow
 - Use lower-level manual lookup only when the retrieval path clearly does not fit or the scope is already narrowed.
 `;
 
-// -- Memory paths --
-const MEMORY_DATA_DIR = DATA_DIR;
-const MEMORY_CONFIG_PATH = join(MEMORY_DATA_DIR, 'memory-config.json');
-const MEMORY_FILES_DIR = join(MEMORY_DATA_DIR, 'history');
-const MEMORY_DB_PATH = join(MEMORY_DATA_DIR, 'memory.sqlite');
-
-// -- Search paths --
-const SEARCH_DATA_DIR = DATA_DIR;
-const SEARCH_CONFIG_PATH = join(SEARCH_DATA_DIR, 'search-config.json');
+const MEMORY_DB_PATH = join(DATA_DIR, 'memory.sqlite');
 
 const PORT = 3458;
 const APP_WIDTH = 950;
@@ -1282,6 +1273,29 @@ const server = http.createServer(async (req, res) => {
     const sc = await readBody(req);
     const name = sanitizeName(sc.name);
     if (!name) { res.writeHead(400); res.end('name required or invalid'); return; }
+    if (!sc.time) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'time required' }));
+      return;
+    }
+    const isCronLike = sc.time.trim().split(/\s+/).length >= 5;
+    const isHHMM = /^([01]?\d|2[0-3]):[0-5]\d$/.test(sc.time);
+    const isLegacy = /^(every\d+m|hourly|daily)$/.test(sc.time);
+    if (isCronLike) {
+      try { validateCronExpression(sc.time); } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+        return;
+      }
+    } else if (!isHHMM && !isLegacy) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'invalid time format: must be HH:MM, cron expression, or every<N>m|hourly|daily' }));
+      return;
+    }
+    if (isHHMM) {
+      const [h, m] = sc.time.split(':');
+      sc.time = `${h.padStart(2, '0')}:${m.padStart(2, '0')}`;
+    }
     const dir = join(SCHEDULES_DIR, name);
     mkdirSync(dir, { recursive: true });
     const prompt = sc.prompt || '';
@@ -1302,6 +1316,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'DELETE' && path === '/schedules') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const name = sanitizeName(url.searchParams.get('name'));
     if (!name) { res.writeHead(400); res.end('name required or invalid'); return; }
     const dir = join(SCHEDULES_DIR, name);
@@ -1317,6 +1336,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && path.startsWith('/schedules/file/')) {
+    if (!isAllowedOrigin(req)) { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' })); return; }
     const name = sanitizeName(decodeURIComponent(path.slice('/schedules/file/'.length)));
     if (!name) { res.writeHead(400); res.end('invalid schedule name'); return; }
     const filePath = join(SCHEDULES_DIR, name, 'prompt.md');
@@ -1369,6 +1389,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'DELETE' && path === '/webhooks') {
+    if (!isAllowedOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+      return;
+    }
     const name = sanitizeName(url.searchParams.get('name'));
     if (!name) { res.writeHead(400); res.end('name required or invalid'); return; }
     const dir = join(WEBHOOKS_DIR, name);
@@ -1379,6 +1404,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && path.startsWith('/webhooks/file/')) {
+    if (!isAllowedOrigin(req)) { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' })); return; }
     const name = sanitizeName(decodeURIComponent(path.slice('/webhooks/file/'.length)));
     if (!name) { res.writeHead(400); res.end('invalid webhook name'); return; }
     const filePath = join(WEBHOOKS_DIR, name, 'instructions.md');

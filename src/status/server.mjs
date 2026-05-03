@@ -59,8 +59,8 @@ export async function startStatusServer({ dataDir, advertisePath, log = () => {}
     const remote = req.socket?.remoteAddress || '';
     const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
     if (!isLoopback) {
-      res.writeHead(403, { 'Content-Type': 'text/plain' });
-      res.end('forbidden');
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden' }));
       return;
     }
 

@@ -60,8 +60,8 @@ run `npm install`, and register the MCP server declared in
    You can re-open it any time with `/mixdog:config`.
 
 5. **Optional external web search.** Add a Brave / Serper / Tavily / etc.
-   key in the config UI (or edit `search-config.json` directly in the
-   data directory).
+   key in the config UI (or edit the `search` section of `mixdog-config.json`
+   directly in the data directory).
 
 6. **Optional Discord backend.** Copy `config/bot.example.json` to the
    data directory as `bot.json`, fill in the token and channel IDs, then
@@ -126,7 +126,7 @@ and formatted for model consumption, not browser consumption.
 
 ### AST-based code tools
 
-`code_graph`, `references`, `rename_symbol_refs`, and
+`find_symbol (with mode parameter)`, `references`, `rename_symbol_refs`, and
 `rename_file_refs` sit on top of `@ast-grep/cli`, so refactors
 stay syntax-correct across large trees without dumping whole files
 into the context window.
@@ -149,12 +149,14 @@ The following files are managed in the data directory:
 
 | File                  | How it gets there       | Purpose                                       |
 | --------------------- | ----------------------- | --------------------------------------------- |
-| `agent-config.json`   | Auto-seeded on install  | Provider presets and maintenance role bindings |
+| `mixdog-config.json`  | Auto-seeded on install  | All user-configurable settings under named sections (`channels`, `memory`, `agent`, `search`, plus UI-managed extras). See `src/shared/seed.mjs` for the default structure. |
 | `user-workflow.json`  | Auto-seeded on install  | Role → preset bindings for delegated agents   |
-| `config.json`         | Auto-seeded on install  | Channels, quiet hours, proactive, schedules, webhook defaults, and prompt injection mode |
-| `memory-config.json`  | Auto-seeded on install  | Memory pipeline toggles and cycle intervals    |
-| `search-config.json`  | Auto-seeded on install  | Web search providers and API credentials       |
+| `user-workflow.md`    | Auto-generated on first launch | Human-readable workflow description derived from `user-workflow.json`; used by the Lead as a role reference |
 | `bot.json`            | Manual copy (see below) | Discord credentials (required for channels)   |
+| `schedules/<id>/`     | Created via config UI   | Per-schedule directory: `metadata.json` and `prompt.md` for each scheduled task |
+| `webhooks/<id>/`      | Created via config UI   | Per-webhook directory: `metadata.json` and `prompt.md` for each webhook handler |
+
+Legacy files (`config.json`, `agent-config.json`, `memory-config.json`, `search-config.json`) are auto-migrated into `mixdog-config.json` sections on first boot and renamed to `.legacy-migrated-<ts>.json` (preserved for recovery).
 
 The repository ships matching `.example.json` files under `config/` that
 mirror the exact seed defaults — useful as a reference or for diffing

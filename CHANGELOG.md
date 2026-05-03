@@ -4,7 +4,22 @@ All notable changes to mixdog are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.423] - Unreleased
+
+### Fixed
+
+- **Memory lock/kill safety** — `acquireLock` / `releaseLock` / `isExistingServerHealthy` / `runProxyMode` exported from `src/memory/index.mjs` so the standalone launcher can mirror the mainline lock/proxy contract exactly.
+- **Bridge role permission threading + persistent bash cleanup** — default permission seeded as `full` in `config/user-workflow.example.json` to match `DEFAULT_USER_WORKFLOW`.
+- **Setup-server localhost-only + reflective CORS + CSRF + sanitizeName** — hardened server-side validation.
+- **Setup.html addTag/addChannel XSS** — input sanitization applied before DOM insertion.
+- **Shared config corrupt rename + rules-builder unified** — atomic rename guards prevent partial-write corruption; rules-builder consolidates duplicate build paths.
+- **Hard-deny exact roots** — path traversal guard rejects requests targeting exact plugin/data roots, not just paths that escape them.
+- **Default permission** — role permission defaults to `full` when not specified, matching seeded workflow behavior.
+- **bump-version --dry-run** — dry-run flag added; no-op run no longer writes files.
+- **rules: code_graph → find_symbol(mode) sync** — `code_graph` references replaced with `find_symbol (with mode parameter)` across `rules/bridge/00-common.md`, `rules/bridge/10-explorer.md`, and `rules/shared/01-tool.md`; `tools.json` line cites refreshed (`:1274` → `:1367`); entry-id citation policy harmonized; explorer mode list aligned to `tools.json` enum.
+
 ## [0.1.420] - 2026-05-02
+- **Unified config migration** — legacy `config.json`, `agent-config.json`, `memory-config.json`, and `search-config.json` are auto-migrated into the unified `mixdog-config.json` (all config sections previously stored in legacy per-section files) on first boot; each legacy file is renamed to `.legacy-migrated-<ts>.json` and preserved in the data directory for recovery.
 
 ### Changed
 

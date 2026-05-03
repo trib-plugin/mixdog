@@ -19,6 +19,7 @@ import { homedir } from 'os'
 import { resolve as resolvePath, isAbsolute, join, relative } from 'path'
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs'
 import { loadConfig, getPluginData } from './config.mjs'
+import { readSection } from '../../shared/config.mjs'
 import { resolvePresetName } from './smart-bridge/bridge-llm.mjs'
 import { smartReadTruncate } from './tools/builtin.mjs'
 import { executeBuiltinTool } from './tools/builtin.mjs'
@@ -226,14 +227,29 @@ function checkBroadCwdBlock(resolvedCwd, rawCwdInput) {
 // no external credentials.
 function searchProviderKeysMissing() {
   try {
-    const path = join(getPluginData(), 'search-config.json')
-    if (!existsSync(path)) return true
-    const raw = JSON.parse(readFileSync(path, 'utf8'))
+    const raw = readSection('search')
     const creds = raw?.rawSearch?.credentials || {}
     for (const entry of Object.values(creds)) {
       if (!entry || typeof entry !== 'object') continue
-      const v = entry.apiKey ?? entry.token ?? ''
+      const v = entry.apiKey ?? ''
       if (typeof v === 'string' && v.trim().length > 0) return false
+    }
+    // Legacy top-level firecrawlApiKey field (mirrors getFirecrawlApiKey at
+    // src/search/lib/config.mjs:190 which checks cfg.firecrawlApiKey).
+    const legacyFirecrawl = raw?.firecrawlApiKey
+    if (typeof legacyFirecrawl === 'string' && legacyFirecrawl.trim().length > 0) return false
+    // Config has no credentials — also accept env-var credentials.
+    // Mirrors the lookup table in src/search/lib/config.mjs:162.
+    const envKeyByProvider = {
+      serper: ['SERPER_API_KEY'],
+      brave: ['BRAVE_API_KEY'],
+      perplexity: ['PERPLEXITY_API_KEY'],
+      firecrawl: ['FIRECRAWL_API_KEY'],
+      tavily: ['TAVILY_API_KEY'],
+      xai: ['XAI_API_KEY', 'GROK_API_KEY'],
+    }
+    for (const keys of Object.values(envKeyByProvider)) {
+      if (keys.some(k => process.env[k]?.trim())) return false
     }
     return true
   } catch {

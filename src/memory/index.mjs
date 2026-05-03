@@ -87,13 +87,12 @@ const MEMORY_INSTRUCTIONS_TEXT = (() => {
 
 const PROXY_TOOL_DEFS = [
   { name: 'memory', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
-  { name: 'search_memories', description: 'Search past context and memory.', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: [] } },
 ]
 
 function readPortFile() {
   try {
     const port = Number(fs.readFileSync(PORT_FILE, 'utf8').trim())
-    return (port >= BASE_PORT && port <= MAX_PORT) ? port : null
+    return (port >= 1024 && port <= 65535) ? port : null
   } catch { return null }
 }
 
@@ -175,10 +174,30 @@ function killPreviousServer(pid) {
       process.stderr.write(`[memory-service] Killed previous server PID ${pid}\n`)
       return true
     } catch (e) {
+      // Exit code 128 = process not found; treat stale lock as already-dead = success.
+      // Status 128 reliably means "process not found" regardless of locale; no text match needed.
+      // Status 1 with English text match handles edge cases on some Windows versions.
+      const notFoundText = /not found|no running instance/i.test(e.stdout || '')
+        || /not found|no running instance/i.test(e.stderr || '')
+        || /not found|no running instance/i.test(e.message || '')
+      const alreadyDead = e.status === 128 || (e.status === 1 && notFoundText)
+      if (alreadyDead) {
+        process.stderr.write(`[memory-service] PID ${pid} already dead (stale lock), proceeding\n`)
+        return true
+      }
       process.stderr.write(`[memory-service] taskkill failed for PID ${pid}: ${e.message}\n`)
       return false
     }
   } else {
+    // Pre-flight: if the process is already gone, treat stale lock as success.
+    try {
+      process.kill(pid, 0)
+    } catch (e) {
+      if (e.code === 'ESRCH') {
+        process.stderr.write(`[memory-service] PID ${pid} already dead (stale lock), proceeding\n`)
+        return true
+      }
+    }
     try { process.kill(pid, 'SIGTERM') } catch {}
     try { process.kill(pid, 'SIGKILL') } catch {}
     // Poll for death up to 2s
@@ -236,18 +255,10 @@ function releaseLock() {
   } catch {}
 }
 
+import { readSection } from '../shared/config.mjs'
+
 function readMainConfig() {
-  const memoryConfigPath = path.join(DATA_DIR, 'memory-config.json')
-  try {
-    const raw = JSON.parse(fs.readFileSync(memoryConfigPath, 'utf8'))
-    if (raw.enabled !== undefined || raw.cycle1 || raw.cycle2) return raw
-  } catch {}
-  const mainConfigPath = path.join(DATA_DIR, 'config.json')
-  try {
-    const raw = JSON.parse(fs.readFileSync(mainConfigPath, 'utf8'))
-    if (raw.memory && (raw.memory.cycle1 || raw.memory.enabled !== undefined)) return raw.memory
-    return raw
-  } catch { return {} }
+  return readSection('memory')
 }
 
 let db = null
@@ -1634,6 +1645,7 @@ const httpServer = http.createServer(async (req, res) => {
 
 export { TOOL_DEFS, handleToolCall }
 export { MEMORY_INSTRUCTIONS_TEXT as instructions }
+export { acquireLock, releaseLock, isExistingServerHealthy, runProxyMode }
 
 export async function init() {
   if (_initialized) return
@@ -1673,9 +1685,11 @@ function _startHttpServer() {
   return new Promise((resolve, reject) => {
     function tryListen() {
       httpServer.listen(activePort, '127.0.0.1', () => {
-        writePortFile(activePort)
-        process.stderr.write(`[memory-service] HTTP listening on 127.0.0.1:${activePort}\n`)
-        resolve(activePort)
+        // Use actual bound port (important when activePort=0, OS assigns a free port).
+        const boundPort = httpServer.address().port
+        writePortFile(boundPort)
+        process.stderr.write(`[memory-service] HTTP listening on 127.0.0.1:${boundPort}\n`)
+        resolve(boundPort)
       })
     }
     httpServer.on('error', (err) => {
@@ -1683,6 +1697,7 @@ function _startHttpServer() {
         activePort++
         tryListen()
       } else if (err.code === 'EADDRINUSE') {
+        // All fixed ports exhausted; let OS pick a free port.
         activePort = 0
         tryListen()
       } else {

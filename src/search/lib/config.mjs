@@ -103,15 +103,6 @@ function hasKeys(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0
 }
 
-function readSplitConfig() {
-  let config = stripGeneratedMarker(readJson(CONFIG_PATH, null))
-  // If config has a 'search' section, use it (unified config format)
-  if (config && config.search && config.search.rawSearch) {
-    config = config.search
-  }
-  return stripGeneratedMarker(config)
-}
-
 export function saveConfig(config) {
   updateSection('search', () => stripGeneratedMarker(config) || {})
 }
@@ -119,7 +110,6 @@ export function saveConfig(config) {
 export function loadConfig() {
   ensureDataDir()
   let config = readSection('search')
-  if (!hasKeys(config)) config = readSplitConfig()
   if (!hasKeys(config)) {
     saveConfig(DEFAULT_CONFIG)
     config = DEFAULT_CONFIG

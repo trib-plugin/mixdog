@@ -22,8 +22,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
 const GIT_DIR = path.join(ROOT, '.git');
-const HOOKS_DIR = path.join(GIT_DIR, 'hooks');
-const HOOK_PATH = path.join(HOOKS_DIR, 'pre-commit');
 
 // The guard snippet we insert/check for
 const GUARD_MARKER = 'check-version.mjs';
@@ -35,6 +33,23 @@ if (!fs.existsSync(GIT_DIR)) {
   process.stdout.write('Not a git repository (no .git dir found) — skipping hook install.\n');
   process.exit(0);
 }
+
+// Resolve the actual git directory: worktrees use a `.git` file containing
+// "gitdir: <path>" instead of a directory.
+let resolvedGitDir = GIT_DIR;
+const gitStat = fs.statSync(GIT_DIR);
+if (gitStat.isFile()) {
+  const content = fs.readFileSync(GIT_DIR, 'utf8').trim();
+  const match = content.match(/^gitdir:\s*(.+)$/);
+  if (!match) {
+    process.stderr.write(`Cannot parse .git file: "${content}" — skipping hook install.\n`);
+    process.exit(0);
+  }
+  resolvedGitDir = path.resolve(ROOT, match[1].trim());
+}
+
+const HOOKS_DIR = path.join(resolvedGitDir, 'hooks');
+const HOOK_PATH = path.join(HOOKS_DIR, 'pre-commit');
 
 // 2. Ensure hooks dir exists
 if (!fs.existsSync(HOOKS_DIR)) {

@@ -365,13 +365,13 @@ class WebhookServer {
               if (!signature) {
                 logWebhook(`${name}: rejected \u2014 no signature header found`);
                 res.writeHead(403, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ error: "missing signature" }));
+                res.end(JSON.stringify({ ok: false, error: "missing signature" }));
                 return;
               }
               if (!verifySignature(secret, body, signature, parser)) {
                 logWebhook(`${name}: rejected \u2014 signature mismatch`);
                 res.writeHead(403, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ error: "invalid signature" }));
+                res.end(JSON.stringify({ ok: false, error: "invalid signature" }));
                 return;
               }
             } else {

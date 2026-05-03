@@ -4,22 +4,26 @@
     {
       "__comment": "Code implementation role. Runs with high reasoning effort to handle complex edits.",
       "name": "worker",
-      "preset": "SONNET HIGH"
+      "preset": "SONNET HIGH",
+      "permission": "full"
     },
     {
       "__comment": "Code review role. Uses the highest-quality model for accurate critique.",
       "name": "reviewer",
-      "preset": "OPUS XHIGH"
+      "preset": "OPUS XHIGH",
+      "permission": "full"
     },
     {
       "__comment": "Bug investigation role. Uses the highest-quality model for deep root-cause analysis.",
       "name": "debugger",
-      "preset": "OPUS XHIGH"
+      "preset": "OPUS XHIGH",
+      "permission": "full"
     },
     {
       "__comment": "Test execution and verification role. High-effort Sonnet balances speed and accuracy.",
       "name": "tester",
-      "preset": "SONNET HIGH"
+      "preset": "SONNET HIGH",
+      "permission": "full"
     }
   ]
 }

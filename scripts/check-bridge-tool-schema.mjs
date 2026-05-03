@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { initProviders } from '../src/agent/orchestrator/providers/registry.mjs';
 import { createSession, closeSession } from '../src/agent/orchestrator/session/manager.mjs';
 import { setInternalToolsProvider, addInternalTools } from '../src/agent/orchestrator/internal-tools.mjs';
@@ -16,7 +17,9 @@ function diff(left, right) {
 }
 
 async function main() {
-  const cwd = new URL('..', import.meta.url).pathname;
+  const cwd = fileURLToPath(new URL('..', import.meta.url));
+
+  let failed = false;
 
   await initProviders({
     openai: { enabled: true, apiKey: 'schema-check-only' },
@@ -50,13 +53,19 @@ async function main() {
     console.log(JSON.stringify(bNames, null, 2));
     console.log('Pool C(role=explorer) final tool manifest:');
     console.log(JSON.stringify(cNames, null, 2));
-    console.log(`same set (order-insensitive): ${missingInB.length === 0 && missingInC.length === 0}`);
-    console.log(`same definitions: ${definitionMismatches.length === 0}`);
+    const sameSet = missingInB.length === 0 && missingInC.length === 0;
+    const sameDefs = definitionMismatches.length === 0;
+    if (!sameSet) failed = true;
+    if (!sameDefs) failed = true;
+    console.log(`same set (order-insensitive): ${sameSet}`);
+    console.log(`same definitions: ${sameDefs}`);
     console.log(`definition mismatches: ${JSON.stringify(definitionMismatches)}`);
     console.log(`missing in Pool B: ${JSON.stringify(missingInB)}`);
     console.log(`missing in Pool C: ${JSON.stringify(missingInC)}`);
     for (const name of forbidden) {
-      console.log(`${name} included: ${bNames.includes(name) || cNames.includes(name)}`);
+      const included = bNames.includes(name) || cNames.includes(name);
+      if (included) failed = true;
+      console.log(`${name} included: ${included}`);
     }
 
     const required = [
@@ -68,14 +77,47 @@ async function main() {
     ];
     const bSet = new Set(bNames);
     const cSet = new Set(cNames);
-    console.log(`required missing in Pool B: ${JSON.stringify(required.filter((name) => !bSet.has(name)))}`);
-    console.log(`required missing in Pool C: ${JSON.stringify(required.filter((name) => !cSet.has(name)))}`);
+    const requiredMissingB = required.filter((name) => !bSet.has(name));
+    const requiredMissingC = required.filter((name) => !cSet.has(name));
+    if (requiredMissingB.length > 0) failed = true;
+    if (requiredMissingC.length > 0) failed = true;
+    console.log(`required missing in Pool B: ${JSON.stringify(requiredMissingB)}`);
+    console.log(`required missing in Pool C: ${JSON.stringify(requiredMissingC)}`);
     const leadOnly = ['get_workflow', 'get_workflows', 'set_prompt'];
-    console.log(`lead-only helper tools included: ${JSON.stringify(leadOnly.filter((name) => bSet.has(name) || cSet.has(name)))}`);
+    const leadOnlyIncluded = leadOnly.filter((name) => bSet.has(name) || cSet.has(name));
+    if (leadOnlyIncluded.length > 0) failed = true;
+    console.log(`lead-only helper tools included: ${JSON.stringify(leadOnlyIncluded)}`);
+
+    // Validate bridge tool inputSchema oneOf/anyOf prompt/ref/file structure.
+    const allTools = [...(poolB.tools || [])];
+    const schemaIssues = [];
+    for (const tool of allTools) {
+      const schema = tool?.inputSchema;
+      if (!schema) continue;
+      const oneOfFields = schema.oneOf || schema.anyOf;
+      if (oneOfFields) {
+        for (const branch of oneOfFields) {
+          const props = branch?.properties || {};
+          const hasPromptLike = 'prompt' in props || 'ref' in props || 'file' in props;
+          if (!hasPromptLike) {
+            schemaIssues.push(`${tool.name}: oneOf/anyOf branch missing prompt/ref/file property`);
+          }
+        }
+      }
+      for (const field of ['prompt', 'ref', 'file']) {
+        if (schema.properties?.[field] && !schema.properties[field].type && !schema.properties[field].anyOf && !schema.properties[field].oneOf) {
+          schemaIssues.push(`${tool.name}: property "${field}" lacks type/anyOf/oneOf`);
+        }
+      }
+    }
+    if (schemaIssues.length > 0) failed = true;
+    console.log(`inputSchema oneOf prompt/ref/file issues: ${JSON.stringify(schemaIssues)}`);
   } finally {
     closeSession(poolB.id);
     closeSession(poolC.id);
   }
+
+  if (failed) process.exit(1);
 }
 
 main().catch((err) => {
