@@ -2,7 +2,7 @@
  * Unified config reader/writer.
  * Single file: mixdog-config.json with sections: channels, agent, memory, search.
  */
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { resolvePluginData } from './plugin-paths.mjs'
 
@@ -32,8 +32,26 @@ const LEGACY_FILES = {
 }
 
 function readJsonFile(path) {
-  try { return JSON.parse(readFileSync(path, 'utf8')) }
-  catch { return null }
+  let raw
+  try {
+    raw = readFileSync(path, 'utf8')
+  } catch (err) {
+    if (err.code === 'ENOENT') return null  // file missing — normal first-run
+    process.stderr.write(`[config] readJsonFile: unexpected read error for ${path}: ${err.message}\n`)
+    return null
+  }
+  try {
+    return JSON.parse(raw)
+  } catch (err) {
+    // Parse failure on mixdog-config.json: quarantine and abort merge.
+    if (path === CONFIG_PATH) {
+      const corrupt = `${path}.corrupt-${Date.now()}`
+      try { renameSync(path, corrupt) } catch {}
+      process.stderr.write(`[config] mixdog-config.json is malformed (${err.message}). Renamed to ${corrupt}. Restore it or delete to start fresh.\n`)
+      return null  // readAll will fall through to legacy migration on next read
+    }
+    return null
+  }
 }
 
 function writeJsonFile(path, data) {

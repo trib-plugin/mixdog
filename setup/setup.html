@@ -1913,8 +1913,14 @@ function initTagInputs() {
 function addTag(container, text) {
   const tag = document.createElement('span');
   tag.className = 'tag-item';
-  tag.innerHTML = text + '<span class="tag-x" onclick="this.parentElement.remove()">&times;</span>';
   tag.dataset.value = text;
+  const textNode = document.createTextNode(text);
+  const x = document.createElement('span');
+  x.className = 'tag-x';
+  x.textContent = '\u00d7';
+  x.addEventListener('click', function() { this.parentElement.remove(); });
+  tag.appendChild(textNode);
+  tag.appendChild(x);
   const inp = container.querySelector('.tag-input');
   container.insertBefore(tag, inp);
 }
@@ -1974,16 +1980,60 @@ function addChannel(label, channelId, mode, isMain) {
   const list = document.getElementById('ch-channel-list');
   const item = document.createElement('div');
   item.className = 'dyn-item';
-  item.innerHTML =
-    '<div class="r-radio' + (isMain ? ' on' : '') + '" title="Main channel" onclick="setMainChannel(this)"></div>' +
-    '<input class="r-input" type="text" placeholder="label" value="' + (label || '') + '" style="width:90px;flex:none;" data-f="ch-label">' +
-    '<input class="r-input" type="text" placeholder="Channel ID" value="' + (channelId || '') + '" style="min-width:140px;" data-f="ch-id">' +
-    '<select class="r-select" style="width:110px;flex:none;" data-f="ch-mode">' +
-    '  <option value="interactive"' + (mode === 'interactive' ? ' selected' : '') + '>interactive</option>' +
-    '  <option value="monitor"' + (mode === 'monitor' ? ' selected' : '') + '>monitor</option>' +
-    '</select>' +
-    '<span class="tip" style="margin:0 2px;">?<span class="tip-text">interactive: listen and reply / monitor: listen only and report to main</span></span>' +
-    '<span class="dyn-remove" onclick="this.parentElement.remove()">&times;</span>';
+
+  const radio = document.createElement('div');
+  radio.className = 'r-radio' + (isMain ? ' on' : '');
+  radio.title = 'Main channel';
+  radio.addEventListener('click', function() { setMainChannel(this); });
+
+  const labelInp = document.createElement('input');
+  labelInp.className = 'r-input';
+  labelInp.type = 'text';
+  labelInp.placeholder = 'label';
+  labelInp.value = label || '';
+  labelInp.style.cssText = 'width:90px;flex:none;';
+  labelInp.dataset.f = 'ch-label';
+
+  const idInp = document.createElement('input');
+  idInp.className = 'r-input';
+  idInp.type = 'text';
+  idInp.placeholder = 'Channel ID';
+  idInp.value = channelId || '';
+  idInp.style.cssText = 'min-width:140px;';
+  idInp.dataset.f = 'ch-id';
+
+  const sel = document.createElement('select');
+  sel.className = 'r-select';
+  sel.style.cssText = 'width:110px;flex:none;';
+  sel.dataset.f = 'ch-mode';
+  ['interactive', 'monitor'].forEach(val => {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = val;
+    if (mode === val) opt.selected = true;
+    sel.appendChild(opt);
+  });
+
+  const tip = document.createElement('span');
+  tip.className = 'tip';
+  tip.style.cssText = 'margin:0 2px;';
+  tip.textContent = '?';
+  const tipText = document.createElement('span');
+  tipText.className = 'tip-text';
+  tipText.textContent = 'interactive: listen and reply / monitor: listen only and report to main';
+  tip.appendChild(tipText);
+
+  const remove = document.createElement('span');
+  remove.className = 'dyn-remove';
+  remove.textContent = '\u00d7';
+  remove.addEventListener('click', function() { this.parentElement.remove(); });
+
+  item.appendChild(radio);
+  item.appendChild(labelInp);
+  item.appendChild(idInp);
+  item.appendChild(sel);
+  item.appendChild(tip);
+  item.appendChild(remove);
   list.appendChild(item);
 }
 
@@ -3126,8 +3176,14 @@ function initTagInputs() {
 function addTag(container, text) {
   const tag = document.createElement('span');
   tag.className = 'tag-item';
-  tag.innerHTML = text + '<span class="tag-x" onclick="this.parentElement.remove()">&times;</span>';
   tag.dataset.value = text;
+  const textNode = document.createTextNode(text);
+  const x = document.createElement('span');
+  x.className = 'tag-x';
+  x.textContent = '\u00d7';
+  x.addEventListener('click', function() { this.parentElement.remove(); });
+  tag.appendChild(textNode);
+  tag.appendChild(x);
   const inp = container.querySelector('.tag-input');
   container.insertBefore(tag, inp);
 }
@@ -3187,16 +3243,60 @@ function addChannel(label, channelId, mode, isMain) {
   const list = document.getElementById('ch-channel-list');
   const item = document.createElement('div');
   item.className = 'dyn-item';
-  item.innerHTML =
-    '<div class="r-radio' + (isMain ? ' on' : '') + '" title="Main channel" onclick="setMainChannel(this)"></div>' +
-    '<input class="r-input" type="text" placeholder="label" value="' + (label || '') + '" style="width:90px;flex:none;" data-f="ch-label">' +
-    '<input class="r-input" type="text" placeholder="Channel ID" value="' + (channelId || '') + '" style="min-width:140px;" data-f="ch-id">' +
-    '<select class="r-select" style="width:110px;flex:none;" data-f="ch-mode">' +
-    '  <option value="interactive"' + (mode === 'interactive' ? ' selected' : '') + '>interactive</option>' +
-    '  <option value="monitor"' + (mode === 'monitor' ? ' selected' : '') + '>monitor</option>' +
-    '</select>' +
-    '<span class="tip" style="margin:0 2px;">?<span class="tip-text">interactive: listen and reply / monitor: listen only and report to main</span></span>' +
-    '<span class="dyn-remove" onclick="this.parentElement.remove()">&times;</span>';
+
+  const radio = document.createElement('div');
+  radio.className = 'r-radio' + (isMain ? ' on' : '');
+  radio.title = 'Main channel';
+  radio.addEventListener('click', function() { setMainChannel(this); });
+
+  const labelInp = document.createElement('input');
+  labelInp.className = 'r-input';
+  labelInp.type = 'text';
+  labelInp.placeholder = 'label';
+  labelInp.value = label || '';
+  labelInp.style.cssText = 'width:90px;flex:none;';
+  labelInp.dataset.f = 'ch-label';
+
+  const idInp = document.createElement('input');
+  idInp.className = 'r-input';
+  idInp.type = 'text';
+  idInp.placeholder = 'Channel ID';
+  idInp.value = channelId || '';
+  idInp.style.cssText = 'min-width:140px;';
+  idInp.dataset.f = 'ch-id';
+
+  const sel = document.createElement('select');
+  sel.className = 'r-select';
+  sel.style.cssText = 'width:110px;flex:none;';
+  sel.dataset.f = 'ch-mode';
+  ['interactive', 'monitor'].forEach(val => {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = val;
+    if (mode === val) opt.selected = true;
+    sel.appendChild(opt);
+  });
+
+  const tip = document.createElement('span');
+  tip.className = 'tip';
+  tip.style.cssText = 'margin:0 2px;';
+  tip.textContent = '?';
+  const tipText = document.createElement('span');
+  tipText.className = 'tip-text';
+  tipText.textContent = 'interactive: listen and reply / monitor: listen only and report to main';
+  tip.appendChild(tipText);
+
+  const remove = document.createElement('span');
+  remove.className = 'dyn-remove';
+  remove.textContent = '\u00d7';
+  remove.addEventListener('click', function() { this.parentElement.remove(); });
+
+  item.appendChild(radio);
+  item.appendChild(labelInp);
+  item.appendChild(idInp);
+  item.appendChild(sel);
+  item.appendChild(tip);
+  item.appendChild(remove);
   list.appendChild(item);
 }
 

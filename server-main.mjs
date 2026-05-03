@@ -228,7 +228,7 @@ const SERVER_INSTRUCTIONS = [
   '',
   'Agents: delegate via `bridge` with a `role` argument (roles defined in `user-workflow.json`; active set injected as the `# Roles` rule). `Agent` / `TaskCreate` / `TeamCreate` are NOT used — `bridge` is the single entry point.',
   '',
-  'Retrieval (HIGHEST PRIORITY): `recall` (past) → `search` (web) → `explore` (codebase, `cwd` authoritative) → `grep` + `read`. Order is mandatory. `bash` is shell-only (git, build, test, run); using it for file/code lookup is a violation — use `read` / `glob` / `list` / `grep` / `explore`.',
+  'Retrieval (HIGHEST PRIORITY): `recall` (past) → `search` (web) → `find_symbol` / `grep` / `read` when path/symbol/regex is known → `explore` (codebase, `cwd` authoritative) only for unknown coordinates. Order is mandatory. `bash` is shell-only (git, build, test, run); using it for file/code lookup is a violation — use `read` / `glob` / `list` / `grep` / `find_symbol`.',
   '',
   'Channels: schedule / webhook / queue / proactive events arrive in the Lead session via the built-in channel mechanism, each with its own event-class marker.',
 ].join('\n')

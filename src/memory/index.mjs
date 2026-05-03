@@ -168,15 +168,35 @@ async function runProxyMode(port) {
 }
 
 function killPreviousServer(pid) {
-  if (pid <= 0 || pid === process.pid) return
+  if (pid <= 0 || pid === process.pid) return false
   if (process.platform === 'win32') {
     try {
-      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { encoding: 'utf8', timeout: 5000, stdio: 'ignore' })
+      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { encoding: 'utf8', timeout: 5000 })
       process.stderr.write(`[memory-service] Killed previous server PID ${pid}\n`)
-    } catch {}
+      return true
+    } catch (e) {
+      process.stderr.write(`[memory-service] taskkill failed for PID ${pid}: ${e.message}\n`)
+      return false
+    }
   } else {
     try { process.kill(pid, 'SIGTERM') } catch {}
     try { process.kill(pid, 'SIGKILL') } catch {}
+    // Poll for death up to 2s
+    const deadline = Date.now() + 2000
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0)
+      } catch (e) {
+        if (e.code === 'ESRCH') {
+          process.stderr.write(`[memory-service] Killed previous server PID ${pid}\n`)
+          return true
+        }
+      }
+      // Synchronous 50ms sleep via shared buffer spin
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+    }
+    process.stderr.write(`[memory-service] PID ${pid} still alive after SIGKILL\n`)
+    return false
   }
 }
 
@@ -185,7 +205,12 @@ function acquireLock() {
     if (fs.existsSync(LOCK_FILE)) {
       const lockedPid = Number(fs.readFileSync(LOCK_FILE, 'utf8').trim())
       if (lockedPid > 0 && lockedPid !== process.pid) {
-        killPreviousServer(lockedPid)
+        const killed = killPreviousServer(lockedPid)
+        if (!killed) {
+          process.stderr.write(`[memory-service] Could not kill previous server PID ${lockedPid}, aborting\n`)
+          process.exit(1)
+        }
+        try { fs.unlinkSync(LOCK_FILE) } catch {}
       }
     }
     const fd = fs.openSync(LOCK_FILE, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600)
@@ -195,11 +220,12 @@ function acquireLock() {
       fs.closeSync(fd)
     }
   } catch (e) {
-    if (e.code !== 'EEXIST') {
-      process.stderr.write(`[memory-service] Lock acquisition failed: ${e.message}\n`)
-    } else {
-      process.stderr.write(`[memory-service] Lock file exists (EEXIST) — concurrent startup, skipping\n`)
+    if (e.code === 'EEXIST') {
+      process.stderr.write(`[memory-service] Lock file exists (EEXIST) — another instance is already running, exiting\n`)
+      process.exit(0)
     }
+    process.stderr.write(`[memory-service] Lock acquisition failed: ${e.message}\n`)
+    process.exit(1)
   }
 }
 

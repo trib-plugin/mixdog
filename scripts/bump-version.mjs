@@ -37,7 +37,12 @@ const USAGE = [
 const SEMVER_RE = /^\d+\.\d+\.\d+(-[\w.]+)?$/;
 const KEYWORDS = new Set(['patch', 'minor', 'major']);
 
-const arg = process.argv[2];
+// Parse --dry-run flag (order-tolerant: flag may appear before or after version arg)
+const _rawArgs = process.argv.slice(2);
+const dryRun = _rawArgs.includes('--dry-run');
+const _filteredArgs = _rawArgs.filter(a => a !== '--dry-run');
+const arg = _filteredArgs[0];
+
 if (!arg || !arg.trim()) {
   process.stderr.write('Error: version argument is required.\n' + USAGE);
   process.exit(1);
@@ -107,6 +112,29 @@ process.on('uncaughtException', (err) => {
 });
 process.on('SIGINT', () => { releaseLock(); process.exit(1); });
 process.on('SIGTERM', () => { releaseLock(); process.exit(1); });
+
+if (dryRun) {
+  // Dry-run: print current→new for each target file, then exit without writing.
+  const pkgPath = path.join(ROOT, 'package.json');
+  const pkgLockPath = path.join(ROOT, 'package-lock.json');
+  const pluginJsonPath = path.join(ROOT, '.claude-plugin', 'plugin.json');
+
+  const pkgCurrent = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version || '(unknown)';
+  process.stdout.write(`dry-run: package.json: ${pkgCurrent} → ${newVersion}\n`);
+
+  if (fs.existsSync(pkgLockPath)) {
+    const lockCurrent = JSON.parse(fs.readFileSync(pkgLockPath, 'utf8')).version || '(unknown)';
+    process.stdout.write(`dry-run: package-lock.json: ${lockCurrent} → ${newVersion}\n`);
+  }
+
+  if (fs.existsSync(pluginJsonPath)) {
+    const pluginCurrent = JSON.parse(fs.readFileSync(pluginJsonPath, 'utf8')).version || '(unknown)';
+    process.stdout.write(`dry-run: .claude-plugin/plugin.json: ${pluginCurrent} → ${newVersion}\n`);
+  }
+
+  process.stdout.write('dry-run complete (no files written).\n');
+  process.exit(0);
+}
 
 acquireLock();
 // ────────────────────────────────────────────────────────────────────────────

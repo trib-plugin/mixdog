@@ -3,6 +3,15 @@
   "hooks": {
     "SessionStart": [
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/clear-active-session.mjs\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "startup|clear",
         "hooks": [
           {

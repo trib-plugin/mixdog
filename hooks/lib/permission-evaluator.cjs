@@ -48,7 +48,9 @@ const HARD_DENY_PATH_PATTERNS = [
   /^[a-z]:[/\\]windows[/\\]/i,
   /^[a-z]:[/\\]windows$/i,
   /^[a-z]:[/\\]program files[/\\]/i,
+  /^[a-z]:[/\\]program files$/i,
   /^[a-z]:[/\\]program files \(x86\)[/\\]/i,
+  /^[a-z]:[/\\]program files \(x86\)$/i,
   /^[a-z]:[/\\]system32/i,
 ];
 

@@ -52,7 +52,7 @@ function _safeCwdForSpawn(rawCwd) {
 }
 
 function applyRoleDefaults(raw) {
-  const permission = raw.permission;
+  const permission = raw.permission ?? 'full';
   const desc_path = typeof raw.desc_path === 'string' ? raw.desc_path : null;
 
   return {
@@ -808,10 +808,12 @@ export async function handleToolCall(name, args, opts = {}) {
         } else {
           // Load role→preset mapping from user-workflow.json. Role primitives only —
           // no suffix variants, exact match required.
-          const wfPath = join(getPluginData(), 'user-workflow.json');
-          let rolePresets = {};
-          try { const wf = JSON.parse(readFileSync(wfPath, 'utf-8')); if (Array.isArray(wf.roles)) for (const r of wf.roles) rolePresets[r.name] = r.preset; } catch {}
-          presetName = args.preset || rolePresets[args.role];
+          // Route through loadUserWorkflowRoles() so validateRoleConfig runs on
+          // every entry and _roleConfigCache is populated with full RoleConfig objects
+          // (including permission). getRoleConfig() then returns the validated record.
+          loadUserWorkflowRoles();
+          const _roleConfig = getRoleConfig(args.role);
+          presetName = args.preset || _roleConfig?.preset;
           if (!presetName) return fail(`role "${args.role}" not found in user-workflow.json (and no preset override given)`);
 
           preset = config.presets?.find((x) => x.id === presetName || x.name === presetName);
@@ -852,6 +854,7 @@ export async function handleToolCall(name, args, opts = {}) {
           parentSessionId: callerSessionId,
           permissionMode: _permissionMode,
           cacheKeyOverride: args.cacheKey || undefined,
+          permission: _roleConfig?.permission || undefined,
         });
 
         // workerCwd: explicit Lead intent > inherited AsyncLocalStorage override > original user cwd.

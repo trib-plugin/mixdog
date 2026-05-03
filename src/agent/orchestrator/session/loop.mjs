@@ -6,7 +6,7 @@ import { executeCodeGraphTool, isCodeGraphTool } from '../tools/code-graph.mjs';
 import { executeInternalTool, isInternalTool } from '../internal-tools.mjs';
 import { collectSkillsCached, loadSkillContent } from '../context/collect.mjs';
 import { traceBridgeLoop, traceBridgeTool, traceBridgeTrim, traceToolLoopAborted, traceToolLoopDetected, traceToolLoopWarn, estimateProviderPayloadBytes, messagePrefixHash } from '../bridge-trace.mjs';
-import { markSessionToolCall, updateSessionStage, SessionClosedError } from './manager.mjs';
+import { markSessionToolCall, updateSessionStage, SessionClosedError, getSessionAbortSignal } from './manager.mjs';
 import { trimMessages } from './trim.mjs';
 import { createGuard, checkToolCall, ToolLoopAbortError } from '../tool-loop-guard.mjs';
 import { maybeOffloadToolResult } from './tool-result-offload.mjs';
@@ -402,9 +402,27 @@ async function executeTool(name, args, cwd, callerSessionId, sessionRef) {
         if (!routedArgs) {
             return executeBuiltinTool(name, args, cwd, { sessionId: callerSessionId });
         }
-        const result = await executeBashSessionTool('bash_session', routedArgs, cwd);
-        const sessionId = extractBashSessionId(result);
-        if (sessionId) sessionRef.implicitBashSessionId = sessionId;
+        // Thread the session's AbortSignal so close_session can interrupt the
+        // persistent child process. getSessionAbortSignal is imported at top of
+        // loop.mjs from manager.mjs; callerSessionId identifies the controller.
+        let _bashAbortSignal = null;
+        try { _bashAbortSignal = getSessionAbortSignal(callerSessionId); } catch { /* ignore */ }
+        const result = await executeBashSessionTool('bash_session', routedArgs, cwd, {
+            sessionId: callerSessionId,
+            abortSignal: _bashAbortSignal,
+        });
+        const bashSid = extractBashSessionId(result);
+        if (bashSid) {
+            sessionRef.implicitBashSessionId = bashSid;
+            // Track all persistent bash sessions for bulk teardown on close.
+            if (sessionRef.allBashSessionIds) {
+                if (!sessionRef.allBashSessionIds.includes(bashSid)) {
+                    sessionRef.allBashSessionIds.push(bashSid);
+                }
+            } else {
+                sessionRef.allBashSessionIds = [bashSid];
+            }
+        }
         return result;
     }
     if (name === 'apply_patch') {

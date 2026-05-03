@@ -17,13 +17,29 @@ import { updateSection } from '../src/shared/config.mjs';
 import { applyDefaults as applyChannelsDefaults } from '../src/channels/lib/config.mjs';
 
 // C2 — Origin/Referer guard for mutating routes.
-// Returns true when the request is safe to handle (no browser origin, or origin
-// matches our own loopback UI port).  Direct curl / native-client calls that
-// carry no Origin header are allowed through.
+// Returns true when the request is safe to handle (same-origin loopback UI,
+// or direct curl/native-client that sends no browser Origin or Referer).
+// Empty Origin alone is no longer trusted — browsers always send Origin on
+// cross-origin requests; same-origin browser requests may omit Origin but
+// will carry a matching Referer, handled by the loopback regex below.
 function isAllowedOrigin(req) {
-  const o = req.headers.origin || req.headers.referer || '';
-  if (!o) return true; // direct curl/native clients without browser origin
-  return /^http:\/\/(localhost|127\.0\.0\.1):3458(\/|$)/.test(o);
+  const origin = req.headers.origin || '';
+  const referer = req.headers.referer || '';
+  // No Origin AND no Referer → direct curl / native client → allow.
+  if (!origin && !referer) return true;
+  // Origin present → must match our loopback UI port.
+  if (origin) return /^http:\/\/(localhost|127\.0\.0\.1):3458(\/|$)/.test(origin);
+  // Origin absent but Referer present → allow only if Referer is loopback UI.
+  return /^http:\/\/(localhost|127\.0\.0\.1):3458(\/|$)/.test(referer);
+}
+
+// sanitizeName — reject path-traversal in user-supplied names used as
+// directory/filename components (schedules, webhooks, presets, etc.).
+function sanitizeName(n) {
+  if (!n || typeof n !== 'string') return null;
+  if (n !== basename(n)) return null;
+  if (n.includes('..') || n.startsWith('.')) return null;
+  return n;
 }
 
 import { DatabaseSync } from '../lib/sqlite-bridge.mjs';
@@ -48,10 +64,10 @@ const USER_WORKFLOW_MD_PATH = join(DATA_DIR, 'user-workflow.md');
 
 const DEFAULT_USER_WORKFLOW = {
   roles: [
-    { name: 'worker', preset: 'SONNET HIGH' },
-    { name: 'reviewer', preset: 'OPUS XHIGH' },
-    { name: 'debugger', preset: 'OPUS XHIGH' },
-    { name: 'tester', preset: 'SONNET HIGH' },
+    { name: 'worker', preset: 'SONNET HIGH', permission: 'full' },
+    { name: 'reviewer', preset: 'OPUS XHIGH', permission: 'full' },
+    { name: 'debugger', preset: 'OPUS XHIGH', permission: 'full' },
+    { name: 'tester', preset: 'SONNET HIGH', permission: 'full' },
   ],
 };
 
@@ -969,10 +985,23 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
 
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Reflective CORS — echo Origin only when it is our loopback UI port;
+  // otherwise omit the header so browsers block the cross-origin response.
+  const _reqOrigin = req.headers.origin || '';
+  if (_reqOrigin && /^http:\/\/(localhost|127\.0\.0\.1):3458(\/|$)/.test(_reqOrigin)) {
+    res.setHeader('Access-Control-Allow-Origin', _reqOrigin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+  // Global CSRF guard — POST/PUT/DELETE require an allowed origin.
+  if ((req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE') && !isAllowedOrigin(req)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
+    return;
+  }
 
   // Proactive feedback CRUD
   const FEEDBACK_PATH = join(DATA_DIR, 'proactive-feedback.json');
@@ -1251,12 +1280,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const sc = await readBody(req);
-    if (!sc.name) { res.writeHead(400); res.end('name required'); return; }
-    const dir = join(SCHEDULES_DIR, sc.name);
+    const name = sanitizeName(sc.name);
+    if (!name) { res.writeHead(400); res.end('name required or invalid'); return; }
+    const dir = join(SCHEDULES_DIR, name);
     mkdirSync(dir, { recursive: true });
     const prompt = sc.prompt || '';
     delete sc.prompt;
-    const name = sc.name;
     delete sc.name;
     writeFileSync(join(dir, 'config.json'), JSON.stringify(sc, null, 2));
     writeFileSync(join(dir, 'prompt.md'), prompt);
@@ -1273,8 +1302,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'DELETE' && path === '/schedules') {
-    const name = url.searchParams.get('name');
-    if (!name) { res.writeHead(400); res.end('name required'); return; }
+    const name = sanitizeName(url.searchParams.get('name'));
+    if (!name) { res.writeHead(400); res.end('name required or invalid'); return; }
     const dir = join(SCHEDULES_DIR, name);
     if (existsSync(dir)) { rmSync(dir, { recursive: true }); console.log('  Schedule deleted:', name); }
     // Sync schedules section in mixdog-config.json
@@ -1288,7 +1317,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && path.startsWith('/schedules/file/')) {
-    const name = decodeURIComponent(path.slice('/schedules/file/'.length));
+    const name = sanitizeName(decodeURIComponent(path.slice('/schedules/file/'.length)));
+    if (!name) { res.writeHead(400); res.end('invalid schedule name'); return; }
     const filePath = join(SCHEDULES_DIR, name, 'prompt.md');
     if (!existsSync(filePath)) { mkdirSync(join(SCHEDULES_DIR, name), { recursive: true }); writeFileSync(filePath, '', 'utf8'); }
     if (isWin) { spawn('cmd', ['/c', 'start', '""', filePath.replace(/[&^"<>|]/g, '^$&')], { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: false }).unref(); }
@@ -1323,12 +1353,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const wh = await readBody(req);
-    if (!wh.name) { res.writeHead(400); res.end('name required'); return; }
-    const dir = join(WEBHOOKS_DIR, wh.name);
+    const name = sanitizeName(wh.name);
+    if (!name) { res.writeHead(400); res.end('name required or invalid'); return; }
+    const dir = join(WEBHOOKS_DIR, name);
     mkdirSync(dir, { recursive: true });
     const instructions = wh.instructions || '';
     delete wh.instructions;
-    const name = wh.name;
     delete wh.name;
     writeFileSync(join(dir, 'config.json'), JSON.stringify(wh, null, 2));
     writeFileSync(join(dir, 'instructions.md'), instructions);
@@ -1339,8 +1369,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'DELETE' && path === '/webhooks') {
-    const name = url.searchParams.get('name');
-    if (!name) { res.writeHead(400); res.end('name required'); return; }
+    const name = sanitizeName(url.searchParams.get('name'));
+    if (!name) { res.writeHead(400); res.end('name required or invalid'); return; }
     const dir = join(WEBHOOKS_DIR, name);
     if (existsSync(dir)) { rmSync(dir, { recursive: true }); console.log('  Webhook deleted:', name); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1349,7 +1379,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && path.startsWith('/webhooks/file/')) {
-    const name = decodeURIComponent(path.slice('/webhooks/file/'.length));
+    const name = sanitizeName(decodeURIComponent(path.slice('/webhooks/file/'.length)));
+    if (!name) { res.writeHead(400); res.end('invalid webhook name'); return; }
     const filePath = join(WEBHOOKS_DIR, name, 'instructions.md');
     if (!existsSync(filePath)) { mkdirSync(join(WEBHOOKS_DIR, name), { recursive: true }); writeFileSync(filePath, '', 'utf8'); }
     if (isWin) { spawn('cmd', ['/c', 'start', '""', filePath.replace(/[&^"<>|]/g, '^$&')], { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: false }).unref(); }
@@ -2829,7 +2860,7 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
-server.listen(PORT, () => { // bind to all interfaces (dual-stack); loopback access via localhost/127.0.0.1
+server.listen(PORT, '127.0.0.1', () => { // localhost-only — config UI holds secrets
   console.log(`\n  MIXDOG CONFIG`);
   console.log(`  http://localhost:${PORT}\n`);
   if (process.env.MIXDOG_SETUP_OPEN_ON_START === '1') {

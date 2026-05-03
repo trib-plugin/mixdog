@@ -1088,7 +1088,36 @@ export function createSession(opts) {
         || roleTemplate?.permission
         || permissionFromToolSpec(toolPreset)
         || null;
-    const toolsForRouting = resolveSessionTools(toolSpec, skills, { ownerIsBridge: opts.owner === 'bridge' });
+    let toolsForRouting = resolveSessionTools(toolSpec, skills, { ownerIsBridge: opts.owner === 'bridge' });
+    // Fail-closed permission intersection: when a role declares an explicit
+    // permission (from user-workflow.json or the role template), intersect the
+    // resolved tool list with the permission's allow/deny lists. If the
+    // intersection produces an empty set the permission config is broken —
+    // fail closed (zero tools) rather than silently falling back to the full
+    // preset, which would grant the role more surface than declared.
+    if (toolPermission && typeof toolPermission === 'object') {
+        const allowSet = Array.isArray(toolPermission.allow) && toolPermission.allow.length > 0
+            ? new Set(toolPermission.allow.map(n => String(n).toLowerCase()))
+            : null;
+        const denySet = Array.isArray(toolPermission.deny) && toolPermission.deny.length > 0
+            ? new Set(toolPermission.deny.map(n => String(n).toLowerCase()))
+            : null;
+        if (allowSet || denySet) {
+            const filtered = toolsForRouting.filter(t => {
+                const name = String(t?.name || '').toLowerCase();
+                if (denySet && denySet.has(name)) return false;
+                if (allowSet && !allowSet.has(name)) return false;
+                return true;
+            });
+            // Fail-closed: an empty intersection means the permission config is
+            // misconfigured — do not silently fall back to the full preset.
+            toolsForRouting = filtered;
+            if (filtered.length === 0) {
+                process.stderr.write(`[session] WARN: role permission intersection produced 0 tools — failing closed (role=${opts.role || 'unknown'})
+`);
+            }
+        }
+    }
 
     const { baseRules, roleCatalog, sessionMarker, volatileTail } = composeSystemPrompt({
         userPrompt: opts.systemPrompt,
@@ -1233,6 +1262,10 @@ export function createSession(opts) {
         // `bash_session`), the minted bash_session id is stored here so later
         // opted-in `bash` calls can reuse the same shell state.
         implicitBashSessionId: null,
+        // Tracks every persistent bash session id minted during this
+        // orchestrator session so closeSession can kill them all, not just
+        // the most recently recorded one.
+        allBashSessionIds: [],
         // Smart Bridge metadata — optional. Applied on every ask() to merge
         // profile-driven cache settings into provider sendOpts.
         profileId: profile?.id || null,
@@ -1766,6 +1799,13 @@ export function closeSession(id, reason = 'manual') {
     if (!id) return false;
     const persisted = loadSession(id);
     const bashSessionId = persisted?.implicitBashSessionId || null;
+    // Collect all persistent bash shells created during this session.
+    const allBashIds = Array.isArray(persisted?.allBashSessionIds)
+        ? persisted.allBashSessionIds.filter(Boolean)
+        : (bashSessionId ? [bashSessionId] : []);
+    // Deduplicate: allBashIds already covers implicitBashSessionId, but guard
+    // against old session records that only have implicitBashSessionId.
+    if (bashSessionId && !allBashIds.includes(bashSessionId)) allBashIds.push(bashSessionId);
     // 1. Tombstone first — this wins the race against saveSession().
     const newGen = markSessionClosed(id, reason);
     // 2. Mark runtime as closed so post-await validation in askSession fires.
@@ -1792,8 +1832,8 @@ export function closeSession(id, reason = 'manual') {
         if (durationMs != null) parts.push(`duration=${durationMs}ms`);
         process.stderr.write(`[bridge-close] ${parts.join(' ')}\n`);
     } catch { /* best-effort */ }
-    if (bashSessionId) {
-        try { closeBashSession(bashSessionId, `bridge-close:${id}`); } catch { /* ignore */ }
+    for (const bsid of allBashIds) {
+        try { closeBashSession(bsid, `bridge-close:${id}`); } catch { /* ignore */ }
     }
     // 4. Defer runtime map clear to next tick so any settling askSession can
     //    observe `closed=true` / bumped generation before we yank the entry.
