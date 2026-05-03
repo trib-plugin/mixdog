@@ -50,6 +50,8 @@ import { computeEntryScore, freshnessFactor } from './lib/memory-score.mjs'
 import { runFullBackfill } from './lib/memory-ops-policy.mjs'
 import { listCore, addCore, editCore, deleteCore } from './lib/core-memory-store.mjs'
 import { resolveProjectId } from './lib/project-id-resolver.mjs'
+import { fetchRepoWhitelist, whitelistRepoMatch } from './lib/repo-whitelist.mjs'
+import { normalizePath } from './lib/path-normalize.mjs'
 
 import { resolvePluginData } from '../shared/plugin-paths.mjs'
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
@@ -70,6 +72,13 @@ if (!DATA_DIR) {
 process.stderr.write(`[memory-service] DATA_DIR=${DATA_DIR}\n`)
 
 import { execFileSync } from 'child_process'
+
+// Lazy whitelist promise — resolved once per process, shared across all ingest calls.
+let _wlPromise = null
+function getWl() {
+  if (!_wlPromise) _wlPromise = fetchRepoWhitelist({ cachePath: path.join(DATA_DIR, 'repo-whitelist.json') }).catch(() => null)
+  return _wlPromise
+}
 const LOCK_FILE = path.join(DATA_DIR, '.memory-service.lock')
 
 const RUNTIME_DIR = path.join(os.tmpdir(), 'mixdog-memory')
@@ -385,7 +394,7 @@ function readRawRowsInWindow(db, tsFromMs, tsToMs, hardLimit = 10, { projectScop
   } catch { return [] }
 }
 
-function ingestTranscriptFile(transcriptPath, { cwd } = {}) {
+async function ingestTranscriptFile(transcriptPath, { cwd } = {}) {
   if (!fs.existsSync(transcriptPath)) return 0
   const stat = fs.statSync(transcriptPath)
   const sessionUuid = path.basename(transcriptPath, '.jsonl')
@@ -403,9 +412,55 @@ function ingestTranscriptFile(transcriptPath, { cwd } = {}) {
   prev.bytes = stat.size
   const lines = buf.toString('utf8').split('\n').filter(Boolean)
 
-  // cwd 미지정 시 transcript 경로로부터 cwd 추론 시도; 그것도 없으면 null(COMMON)로 떨어짐.
+  // Whitelist for fast permission resolution (lazy, shared across all ingest calls)
+  const wl = await getWl()
+
+  // 1차: cwd 기반 project_id 결정
   const resolvedCwd = typeof cwd === 'string' && cwd ? cwd : cwdFromTranscriptPath(transcriptPath)
-  const projectId = resolvedCwd != null ? resolveProjectId(resolvedCwd) : null
+  let projectId = resolvedCwd != null ? resolveProjectId(normalizePath(resolvedCwd), { whitelist: wl }) : null
+
+  // 2차 fallback: jsonl 본문 1회 prepass로 path 빈도 tally
+  if (projectId == null) {
+    const _WIN_RE = /[A-Z]:[\\\/][^\s"'\)\]]+/g
+    const _HOME_RE = /(?:~|\$HOME|%USERPROFILE%)[\/\\][^\s"'\)\]]+/g
+    const tally = new Map()
+
+    const _tallyPath = (raw, weight) => {
+      const norm = normalizePath(raw)
+      const dir = path.dirname(norm)
+      const id = resolveProjectId(dir, { whitelist: wl }) ?? whitelistRepoMatch(wl, dir)
+      if (!id) return
+      tally.set(id, (tally.get(id) ?? 0) + weight)
+    }
+
+    for (const line of lines) {
+      let parsed
+      try { parsed = JSON.parse(line) } catch { continue }
+      const msgContent = parsed.message?.content
+      // text paths from content strings — 1pt each
+      const textStr = typeof msgContent === 'string' ? msgContent
+        : Array.isArray(msgContent)
+          ? msgContent.map(c => (c?.type === 'text' ? c.text : '') || '').join(' ')
+          : ''
+      for (const m of (textStr.match(_WIN_RE) ?? [])) _tallyPath(m, 1)
+      for (const m of (textStr.match(_HOME_RE) ?? [])) _tallyPath(m, 1)
+      // tool_use input paths — 6pt each
+      if (Array.isArray(msgContent)) {
+        for (const item of msgContent) {
+          if (item?.type !== 'tool_use') continue
+          const inp = item.input ?? {}
+          for (const key of ['file_path', 'path', 'cwd', 'base_path']) {
+            if (typeof inp[key] === 'string' && inp[key]) _tallyPath(inp[key], 6)
+          }
+        }
+      }
+    }
+
+    if (tally.size > 0) {
+      // top1 채택 (margin/threshold 없음 — V_wl_top1)
+      projectId = [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0]
+    }
+  }
 
   const insertStmt = db.prepare(`
     INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id, source_turn, project_id)
@@ -496,14 +551,14 @@ function _initTranscriptWatcher() {
     return true
   }
 
-  function ingestOne(fp) {
+  async function ingestOne(fp) {
     try {
       if (!fs.existsSync(fp)) return
       const mtime = fs.statSync(fp).mtimeMs
       const prev = watchedFiles.get(fp)
       if (prev && prev >= mtime) return
       watchedFiles.set(fp, mtime)
-      const n = ingestTranscriptFile(fp, { cwd: cwdFromTranscriptPath(fp) })
+      const n = await ingestTranscriptFile(fp, { cwd: cwdFromTranscriptPath(fp) })
       if (n > 0) {
         process.stderr.write(`[transcript-watch] ingested ${n} entries from ${path.basename(fp)}\n`)
       }
@@ -1287,9 +1342,21 @@ async function handleMemoryAction(args) {
   if (action === 'cycle2' || action === 'sleep') {
     const result = await runCycle2(db, config?.cycle2 || {})
     setCycleLastRun('cycle2', Date.now())
-    const promoted = result?.promoted ?? result?.merged ?? 0
-    const reviewed = result?.reviewed ?? result?.processed ?? 0
-    return { text: `cycle2 promoted=${promoted} reviewed=${reviewed}` }
+    const p1 = result?.phase1 || {}
+    const p2 = result?.phase2 || {}
+    const p3 = result?.phase3 || {}
+    const counts = {
+      promoted: (p1.added || 0) + (p2.promoted || 0),
+      demoted: p3.demoted || 0,
+      archived: p3.archived || 0,
+      merged: p3.merged || 0,
+      updated: p3.updated || 0,
+      kept: p2.kept || 0,
+      processed: p2.processed || 0,
+      pending: p1.pending || 0,
+    }
+    const parts = Object.entries(counts).filter(([, v]) => v > 0).map(([k, v]) => `${k}=${v}`)
+    return { text: `cycle2 ${parts.length ? parts.join(' ') : 'noop'}` }
   }
 
   if (action === 'flush') {
@@ -1789,7 +1856,7 @@ const httpServer = http.createServer(async (req, res) => {
       const filePath = body.filePath
       if (!filePath) { sendJson(res, { error: 'filePath required' }, 400); return }
       try {
-        const n = ingestTranscriptFile(filePath, { cwd: body.cwd })
+        const n = await ingestTranscriptFile(filePath, { cwd: body.cwd })
         sendJson(res, { ok: true, ingested: n })
       } catch (e) {
         sendJson(res, { error: e.message }, 500)

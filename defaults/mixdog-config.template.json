@@ -9,7 +9,12 @@
     "enabled": true,
     "user": { "name": "", "title": "" },
     "cycle1": { "interval": "10m" },
-    "cycle2": { "interval": "1h" }
+    "cycle2": { "interval": "1h" },
+    "project_id": {
+      "auto_fetch_whitelist": true,
+      "refresh_interval_h": 24,
+      "manual_repos": []
+    }
   },
   "search": {
     "enabled": true,

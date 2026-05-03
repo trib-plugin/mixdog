@@ -280,6 +280,31 @@ function migrateIfNeeded(db) {
     setMetaValue(db, 'boot.schema_version', '5')
     process.stderr.write(`[memory] schema migrated to v5 (project_id)\n`)
   }
+  if (current < 6) {
+    // v6: reviewed_at tracks when a root was last presented to cycle2 phase2/3,
+    // enabling sweep rotation so the same 50 rows are not repeated every cycle.
+    // ALTER TABLE … ADD COLUMN with DEFAULT NULL is safe on existing rows.
+    // SQLite does not support IF NOT EXISTS on ADD COLUMN; catch "duplicate
+    // column name" and treat it as a no-op so the migration is idempotent.
+    try {
+      db.exec(`ALTER TABLE entries ADD COLUMN reviewed_at INTEGER`)
+    } catch (e) {
+      if (!/duplicate column name/i.test(String(e?.message))) {
+        process.stderr.write(`[memory] schema v6 migration failed: ${e.message}\n`)
+        return
+      }
+    }
+    try {
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_entries_reviewed_at
+        ON entries(reviewed_at ASC)
+        WHERE is_root = 1`)
+    } catch (e) {
+      process.stderr.write(`[memory] schema v6 index failed: ${e.message}\n`)
+      return
+    }
+    setMetaValue(db, 'boot.schema_version', '6')
+    process.stderr.write(`[memory] schema migrated to v6 (reviewed_at)\n`)
+  }
 }
 
 export function isBootstrapComplete(db) {

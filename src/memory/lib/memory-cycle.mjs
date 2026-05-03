@@ -6,6 +6,19 @@ import { resolveMaintenancePreset } from '../../shared/llm/index.mjs'
 import { callBridgeLlm } from './agent-ipc.mjs'
 import { computeEntryScore } from './memory-score.mjs'
 import { embedText } from './embedding-provider.mjs'
+import { fetchRepoWhitelist, whitelistRepoMatch } from './repo-whitelist.mjs'
+import { normalizePath } from './path-normalize.mjs'
+import { DATA_DIR } from '../../shared/config.mjs'
+
+let _cycleWlPromise = null
+function getCycleWl() {
+  if (!_cycleWlPromise) {
+    _cycleWlPromise = fetchRepoWhitelist({
+      cachePath: join(DATA_DIR, 'repo-whitelist.json'),
+    }).catch(() => null)
+  }
+  return _cycleWlPromise
+}
 
 // Embedding dirty queue (#3/#4): cycle1 commits no longer await syncRootEmbedding
 // inline because a single LLM-side embedding hiccup must not block the rest of
@@ -19,17 +32,30 @@ const _WIN_PATH_RE = /[A-Z]:[\\\/][^\s"'\)]+/g
 const _POSIX_PATH_RE = /\/[^\s"'\)]+/g
 
 /**
- * Infer a project_id for a chunk by scanning member content + source_ref for
- * absolute path references, resolving each via resolveProjectId, and returning
- * the single converged id (or null when 0 or 2+ distinct ids are found).
+ * Resolve a project_id for a chunk. Stored project_id values on members take
+ * priority: collect all NOT NULL project_id values across members into a unique
+ * set. If exactly one distinct id is found, return it. If two or more distinct
+ * ids are found, return null (mixed-project chunk treated as unknown). Only when
+ * no stored ids exist does the function fall back to scanning member content and
+ * source_ref for absolute path references, resolving each via resolveProjectId,
+ * and returning the single converged id (or null when 0 or 2+ distinct ids found).
  */
-export function inferChunkProjectId(members) {
+export function inferChunkProjectId(members, whitelist = null) {
+  // 1st priority: use stored project_id values from member rows
+  const storedIds = new Set()
+  for (const m of members) {
+    if (m.project_id != null) storedIds.add(m.project_id)
+  }
+  if (storedIds.size === 1) return [...storedIds][0]
+  if (storedIds.size >= 2) return null
+
+  // Fallback: infer from absolute path references in content + source_ref
   const MEM_CAP = 8 * 1024 // 8KB per-member slice
   const MATCH_CAP = 32
 
-  // Collect unique dirs first (dedup before cap) to avoid evidence starvation
-  // from repeated paths in the same directory. source_ref is typically short
-  // so it is appended without truncation; only content is capped.
+  // Collect unique dirs (dedup before cap) to avoid evidence starvation from
+  // repeated paths in the same directory. source_ref is typically short so it
+  // is appended without truncation; only content is capped.
   const seenDirs = new Set()
   const uniqueDirs = []
 
@@ -55,7 +81,8 @@ export function inferChunkProjectId(members) {
 
   const ids = new Set()
   for (const dir of uniqueDirs) {
-    const resolved = resolveProjectId(dir)
+    const norm = normalizePath(dir)
+    const resolved = resolveProjectId(norm, { whitelist }) || (whitelist ? whitelistRepoMatch(whitelist, norm) : null)
     if (resolved != null) ids.add(resolved)
   }
 
@@ -225,7 +252,7 @@ const VALID_CATEGORIES = new Set([
   'rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue',
 ])
 
-const CYCLE2_ACTIVE_CAP = 50
+const CYCLE2_ACTIVE_CAP = 300
 
 function resourceDir() {
   if (process.env.CLAUDE_PLUGIN_ROOT) return process.env.CLAUDE_PLUGIN_ROOT
@@ -390,6 +417,7 @@ export async function runCycle1(db, config = {}, options = {}) {
 
 async function _runCycle1Impl(db, config = {}, options = {}) {
   const pendingRowsAtStart = countPendingRows(db)
+  const _wlForCycle = await getCycleWl()
   const batchSize = Math.max(1, Number(config.batch_size ?? 50))
   // Fallback chain handles BOTH call shapes:
   //   - periodic tick passes flat config: { interval, min_batch: 20 }
@@ -442,7 +470,7 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   // session-aligned, but the [sess:] markers + commit guard make that safe.
   const fetchLimit = sessionCap * batchSize
   const rowsDesc = db.prepare(`
-    SELECT id, ts, role, content, session_id, source_ref
+    SELECT id, ts, role, content, session_id, source_ref, project_id
     FROM entries
     WHERE chunk_root IS NULL AND session_id IS NOT NULL
     ORDER BY ts DESC, id DESC
@@ -622,7 +650,7 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
         continue
       }
 
-      const projectId = inferChunkProjectId(members)
+      const projectId = inferChunkProjectId(members, _wlForCycle)
 
       try {
         db.exec('BEGIN')
@@ -724,9 +752,15 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
 
 function formatEntriesForPromotePrompt(rows) {
   if (!rows || rows.length === 0) return '(none)'
-  return rows.map(r =>
-    `- entry_id:${r.id} project_id:${r.project_id ?? 'common'} category:${r.category} score:${r.score ?? 'null'} element:${r.element} summary:${String(r.summary || '').slice(0, 200)}`,
-  ).join('\n')
+  const pids = [...new Set(rows.map(r => r.project_id).filter(Boolean))]
+  const pidMap = new Map(pids.map((p, i) => [p, `P${i + 1}`]))
+  const lines = rows.map(r => {
+    const tag = r.project_id ? pidMap.get(r.project_id) : 'C'
+    return `- id:${r.id} ${tag} ${r.category} s:${r.score ?? 'n'} el:${r.element} sm:${String(r.summary || '').slice(0, 150)}`
+  })
+  if (pidMap.size === 0) return lines.join('\n')
+  const legend = [...pidMap.entries()].map(([p, t]) => `${t}=${p}`).concat('C=COMMON').join(', ')
+  return `# pid: ${legend}\n` + lines.join('\n')
 }
 
 function parseCycle2LineFormat(raw) {
@@ -948,20 +982,24 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   const loadActive = () => db.prepare(
     `SELECT id, element, category, summary, score, last_seen_at, project_id
      FROM entries WHERE is_root = 1 AND status = 'active'
-     ORDER BY project_id, score DESC LIMIT ?`,
+     ORDER BY score DESC LIMIT ?`,
   ).all(activeCap)
 
   const loadPhase3Candidates = () => db.prepare(
     `SELECT id, element, category, summary, score, last_seen_at, project_id
      FROM entries WHERE is_root = 1 AND status IN ('active', 'processed')
-     ORDER BY project_id, last_seen_at ASC, score DESC
+     ORDER BY COALESCE(reviewed_at, 0) ASC, last_seen_at ASC, score DESC
      LIMIT ?`,
   ).all(batchSize)
+
+  const touchReviewed = db.prepare(
+    `UPDATE entries SET reviewed_at = ? WHERE id = ?`,
+  )
 
   const phase1Rows = db.prepare(
     `SELECT id, element, category, summary, score, project_id
      FROM entries WHERE is_root = 1 AND status IS NULL
-     ORDER BY project_id, id DESC LIMIT ?`,
+     ORDER BY id DESC LIMIT ?`,
   ).all(batchSize)
 
   if (phase1Rows.length > 0) {
@@ -987,10 +1025,14 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   const phase2Rows = db.prepare(
     `SELECT id, element, category, summary, score, project_id
      FROM entries WHERE is_root = 1 AND status IN ('pending', 'demoted')
-     ORDER BY project_id, id DESC LIMIT ?`,
+     ORDER BY COALESCE(reviewed_at, 0) ASC, id DESC LIMIT ?`,
   ).all(batchSize)
 
   if (phase2Rows.length > 0) {
+    // Touch reviewed_at for all phase2 candidates so the sweep cursor advances.
+    for (const row of phase2Rows) {
+      try { touchReviewed.run(nowMs, row.id) } catch {}
+    }
     const { actions } = await runPromotePhase(db, 'phase2_reevaluate', phase2Rows, loadActive(), config, options)
     // #6: phase2 batch allow-list.
     const allowed = new Set(phase2Rows.map(r => Number(r.id)))
@@ -1013,10 +1055,30 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
 
   const phase3Rows = loadPhase3Candidates()
   if (phase3Rows.length > 0) {
+    // Touch reviewed_at for all phase3 candidates so the sweep cursor advances
+    // regardless of which action the LLM returns (including no-action keep).
+    for (const row of phase3Rows) {
+      try { touchReviewed.run(nowMs, row.id) } catch {}
+    }
     const activeContext = loadActive()
+    // ACTIVE_COUNT: use a precise COUNT(*) query rather than activeContext.length
+    // (which is capped by activeCap and may under-report on busy DBs). Also
+    // surface a per-project breakdown so the prompt has accurate context.
+    const activeCountRow = db.prepare(
+      `SELECT COUNT(*) AS total FROM entries WHERE is_root = 1 AND status = 'active'`,
+    ).get()
+    const activeCountTotal = activeCountRow?.total ?? 0
+    const projectBreakdown = db.prepare(
+      `SELECT COALESCE(project_id, '(none)') AS pid, COUNT(*) AS cnt
+       FROM entries WHERE is_root = 1 AND status = 'active'
+       GROUP BY pid ORDER BY cnt DESC LIMIT 10`,
+    ).all()
+    const activeCountLabel = projectBreakdown.length > 1
+      ? `${activeCountTotal} (${projectBreakdown.map(r => `${r.pid}:${r.cnt}`).join(', ')})`
+      : String(activeCountTotal)
     const { actions } = await runPromotePhase(
       db, 'phase3_active_review', phase3Rows, activeContext, config, options,
-      { ACTIVE_COUNT: activeContext.length, ACTIVE_CAP: activeCap },
+      { ACTIVE_COUNT: activeCountLabel, ACTIVE_CAP: activeCap },
     )
     // #6: phase3 sees both phase3Rows AND activeContext rows (the prompt
     // formats both). All entry_id/target_id/source_ids must fall in that union.

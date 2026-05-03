@@ -87,12 +87,16 @@ function fetchViewerPermission(slug) {
  *   2. .git root → parse origin url → gh CLI permission check → owner/repo slug
  *   3. null (COMMON)
  *
+ * Optional `whitelist` (from fetchRepoWhitelist) accelerates tier-2:
+ * if the owner is in whitelist.owners the gh permission check is skipped.
+ *
  * Result is memoized by git-root (or cwd when no .git found).
  *
  * @param {string} cwd - absolute or relative working directory
+ * @param {{ whitelist?: { repos: string[], owners: string[] } }} [opts]
  * @returns {string|null}
  */
-export function resolveProjectId(cwd) {
+export function resolveProjectId(cwd, { whitelist } = {}) {
   const absCwd = resolve(cwd);
 
   // --- Tier 1: .mixdog/project.id file ---
@@ -133,10 +137,17 @@ export function resolveProjectId(cwd) {
     return null;
   }
 
-  // --- Tier 4: gh CLI permission check ---
-  const permission = fetchViewerPermission(slug);
-  const WRITE_LEVEL = new Set(['WRITE', 'MAINTAIN', 'ADMIN']);
-  const projectId = (permission && WRITE_LEVEL.has(permission)) ? slug : null;
+  // --- Tier 4: gh CLI permission check (skip if owner is in whitelist) ---
+  let projectId;
+  const owner = slug.split('/')[0].toLowerCase();
+  if (whitelist?.owners?.includes(owner)) {
+    // Owner already verified via whitelist — adopt slug directly
+    projectId = slug;
+  } else {
+    const permission = fetchViewerPermission(slug);
+    const WRITE_LEVEL = new Set(['WRITE', 'MAINTAIN', 'ADMIN']);
+    projectId = (permission && WRITE_LEVEL.has(permission)) ? slug : null;
+  }
 
   cache.set(cacheKey, projectId);
 

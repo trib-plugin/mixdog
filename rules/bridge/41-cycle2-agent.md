@@ -18,24 +18,22 @@ Empty response (no action needed) is fine — emit nothing.
 - `phase2_reevaluate`: `promote` (pending/demoted → active), `keep` (still under evaluation — default), or `processed` (active core unfit). Only emit `promote` when active-core fitness is unambiguous; only `processed` when unambiguously not active-core.
 - `phase3_active_review`: `demote`, `archived`, `update` (with `element`/`summary`), or `merge` (with `target_id` + `source_ids` + unified `element`/`summary`). phase3 candidates include both `active` and `processed` roots; prefer `merge` to fold a `processed` root into a near-duplicate `active` target.
 
-## Promotion criteria (STRICT — `add` phase1, `promote` phase2)
+## Promotion criteria (`add` phase1, `promote` phase2)
 
-Single test: will this still matter a year from now in a completely different context? If no → do not promote.
+Promote durable knowledge — either project-specific OR common across projects. Skip transient session facts. project_id is shown as grouping context only; durable knowledge tied to one project is still promote-worthy within that project pool.
 
-Active core = **durable identity of the USER** — taste, style, habits, biography, operating mode. NOT session logs, NOT project rules / architecture / conventions, NOT task or incident board.
+Qualifies (→ `add` / `promote`) if ALL hold:
+1. Durable — still relevant after the current task / session ends. Architecture decisions, long-lived conventions, repeated workflows, durable tools/policies, user preferences, biographical facts.
+2. Confirmed — verified fact or explicit user statement; no speculation.
+3. Encodes the actual content (cause / decision / outcome / constraint), not just that something happened.
 
-Qualifies ONLY if ALL hold:
-1. About the user as a person — identity, taste, habits, preferences, biography. Not a project or technical system.
-2. Permanently valid — holds outside this session / any specific project; true a year later with different work.
-3. Confirmed — verified fact or explicit user statement; no speculation.
-
-Reject (→ `pending` in phase1, `keep` or `processed` in phase2):
-- Session progress, debug reports, task status, roadmap snapshots
-- Project-specific rules / conventions / architecture (transient — projects end, user persists)
-- Technical facts about systems / libraries / APIs / implementations
+Reject (→ `pending` in phase1, `keep` / `processed` in phase2):
+- Session progress logs, debug reports, task status, roadmap snapshots
+- Version bump / commit history / build run-throughs that CI or git already records
 - Recent-conversation summaries dressed up as decisions
-- One-time situational decisions without long-term personal reach
-- Incident post-mortems / bug fixes
+- One-off situational decisions without longer reach
+- Incident post-mortems / bug fixes that don't change a durable rule
+- Speculative future plans not yet acted on
 
 ## Field rules
 
