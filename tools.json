@@ -329,59 +329,74 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Run memory operations: cycle1, cycle2/sleep (promote+dedup), flush, prune, status, remember (store fact), forget (archive a root), backfill, rebuild, delete. Destructive ops (rebuild, prune, delete) require matching `confirm` string.",
+    "description": "Memory operations. User-curated core list (separate JSON, untouched by cycles): action:\"core\" with op:\"add\"|\"edit\"|\"delete\"|\"list\". Entries-table CRUD (cycle-managed): action:\"manage\" with op:\"add\"|\"edit\"|\"delete\". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "action": {
           "type": "string",
           "enum": [
+            "core",
+            "manage",
+            "status",
             "sleep",
+            "cycle1",
             "cycle2",
             "flush",
+            "backfill",
+            "prune",
             "rebuild",
             "rebuild_classifications",
-            "prune",
-            "cycle1",
-            "backfill",
-            "status",
-            "remember",
-            "forget",
-            "delete"
+            "purge"
           ],
-          "description": "Operation to run"
+          "description": "Operation. `core` = user-curated JSON list (merged into SessionStart Core Memory section). `manage` = entries-table per-row CRUD. Others = batch/maintenance."
         },
-        "topic": {
+        "op": {
           "type": "string",
-          "description": "Topic for remember"
+          "enum": ["add", "edit", "delete", "list"],
+          "description": "Required when action is core or manage. core supports add/edit/delete/list. manage supports add/edit/delete."
+        },
+        "id": {
+          "type": "number",
+          "description": "Entry id. Required for core/manage edit and delete (positive integer)."
         },
         "element": {
           "type": "string",
-          "description": "Content for remember; also accepted as a substring match target for forget"
+          "description": "Short headline / canonical name. Required for add ops (core/manage); optional for edit."
         },
-        "importance": {
+        "summary": {
           "type": "string",
-          "description": "Importance for remember (default: fact)"
+          "description": "Long-form description. Required for add ops (falls back to element if omitted); optional for edit."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["rule", "constraint", "decision", "fact", "goal", "preference", "task", "issue"],
+          "description": "Entry category. Default fact for add; optional for edit."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "archived"],
+          "description": "Lifecycle state. manage edit only (archive replaces the old `forget` action). Not used by core."
         },
         "maxDays": {
           "type": "number",
-          "description": "Age threshold in days for the `prune` action. Unclassified entries older than this are deleted. Default 30, minimum 1. Ignored by other actions."
+          "description": "Age threshold in days for the `prune` action. Default 30, minimum 1. Ignored elsewhere."
         },
         "window": {
           "type": "string",
-          "description": "Time window: 1d, 3d, 7d, 30d, all"
+          "description": "Time window for backfill: 1d, 3d, 7d, 30d, all"
         },
         "limit": {
           "type": "number",
           "description": "Max episodes to backfill (default 100)"
         },
-        "id": {
-          "type": "number",
-          "description": "Entry id for forget action."
-        },
         "confirm": {
           "type": "string",
-          "description": "Required for destructive actions: \"DELETE ALL MEMORY\" for delete, \"PRUNE OLD ENTRIES\" for prune, \"REBUILD MEMORY\" for rebuild. Must match exactly."
+          "description": "Required for destructive actions: \"DELETE ALL MEMORY\" for purge, \"PRUNE OLD ENTRIES\" for prune, \"REBUILD MEMORY\" for rebuild. Must match exactly."
+        },
+        "project_id": {
+          "type": "string",
+          "description": "Optional project pool selector for action='core'. Omit/null → COMMON (core-memory.json). Set to slug like 'tempest1033/GamerScroll' → project-memory/<safe>.json."
         }
       },
       "required": [
@@ -406,20 +421,6 @@
       "type": "object",
       "properties": {
         "query": {
-          "anyOf": [
-            {
-              "type": "string",
-              "minLength": 1
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
-              },
-              "minItems": 1
-            }
-          ],
           "description": "Single NL string, or array of strings for unrelated multi-question."
         },
         "cwd": {
@@ -447,20 +448,6 @@
       "type": "object",
       "properties": {
         "query": {
-          "anyOf": [
-            {
-              "type": "string",
-              "minLength": 1
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
-              },
-              "minItems": 1
-            }
-          ],
           "description": "Single NL string, or array of strings for unrelated multi-question."
         },
         "cwd": {
@@ -752,52 +739,7 @@
       "type": "object",
       "properties": {
         "path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "path": {
-                    "type": "string"
-                  },
-                  "offset": {
-                    "type": "number"
-                  },
-                  "limit": {
-                    "type": "number"
-                  },
-                  "mode": {
-                    "type": "string",
-                    "enum": [
-                      "full",
-                      "head",
-                      "tail",
-                      "count"
-                    ]
-                  },
-                  "n": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "path"
-                ]
-              },
-              "minItems": 1
-            }
-          ],
-          "description": "File path string, or array of paths for parallel multi-file read, or array of objects with per-file options."
+          "description": "File path string, or array of paths for parallel multi-file read, or array of objects with per-file options ({path, offset?, limit?, mode?, n?})."
         },
         "mode": {
           "type": "string",
@@ -1035,18 +977,6 @@
       "type": "object",
       "properties": {
         "pattern": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1
-            }
-          ],
           "description": "Regex string (use `|` for alternation) or array of patterns (OR-joined)."
         },
         "path": {
@@ -1054,18 +984,6 @@
           "description": "Search root. Default: cwd."
         },
         "glob": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1
-            }
-          ],
           "description": "Glob filter (`{a,b}` brace expansion supported) or array of filters."
         },
         "output_mode": {
@@ -1138,18 +1056,6 @@
       "type": "object",
       "properties": {
         "pattern": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1
-            }
-          ],
           "description": "Glob string (`{a,b}` brace expansion supported) or array of glob patterns."
         },
         "path": {

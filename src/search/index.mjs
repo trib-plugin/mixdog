@@ -787,7 +787,7 @@ const toolDefinitions = [
     inputSchema: {
       type: 'object',
       properties: {
-        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Single NL string, or array of strings for unrelated multi-question.' },
+        query: { description: 'Single NL string, or array of strings for unrelated multi-question.' },
         cwd: { type: 'string', description: 'Optional workspace hint. Rarely needed.' },
         background: { type: 'boolean', description: 'Default false (sync). Set true for heavy queries to dispatch async and receive answer via channel.' },
       },

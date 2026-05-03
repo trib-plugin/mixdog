@@ -1,0 +1,34 @@
+{
+  "channels": {
+    "promptInjection": {
+      "mode": "claude_md",
+      "targetPath": "~/.claude/CLAUDE.md"
+    }
+  },
+  "memory": {
+    "enabled": true,
+    "user": { "name": "", "title": "" },
+    "cycle1": { "interval": "10m" },
+    "cycle2": { "interval": "1h" }
+  },
+  "search": {
+    "enabled": true,
+    "rawSearch": {
+      "priority": ["serper", "brave", "perplexity", "firecrawl", "tavily", "xai"],
+      "maxResults": 10,
+      "credentials": {
+        "serper": { "apiKey": "" },
+        "brave": { "apiKey": "" },
+        "perplexity": { "apiKey": "" },
+        "firecrawl": { "apiKey": "" },
+        "tavily": { "apiKey": "" },
+        "xai": { "apiKey": "" }
+      }
+    },
+    "requestTimeoutMs": 15000,
+    "crawl": { "maxPages": 10, "maxDepth": 2, "sameDomainOnly": true },
+    "siteRules": {
+      "x.com": { "search": "xai.x_search", "scrape": "xai.x_search" }
+    }
+  }
+}

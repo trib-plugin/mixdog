@@ -37,6 +37,31 @@ function ping(timeoutMs = 1500) {
   });
 }
 
+// GET /api/plugin-path. Returns the absolute plugin root the running
+// setup-server identifies as, or null on any failure. Used to detect a
+// stale or wrong-plugin server still bound to PORT before we hand it the
+// /open call — otherwise a different version's setup window can pop up
+// when the user invokes this launcher.
+function fetchPluginPath(timeoutMs = 1500) {
+  return new Promise(resolve => {
+    const req = http.get(`http://localhost:${PORT}/api/plugin-path`, res => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(body);
+          resolve(typeof json?.path === 'string' ? json.path : null);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(null); });
+  });
+}
+
 // Walk up the process tree from our immediate parent (the shell wrapping
 // `node launch.mjs`) and skip past short-lived shell shims to find the
 // first long-lived ancestor — the Claude Code CLI (or MCP host) that
@@ -246,8 +271,29 @@ if (!alive) {
   }
 
   closeLog(launchLog.fd);
-} else if (!await requestOpen()) {
-  await exitWithError(`Failed to open config UI window for http://localhost:${PORT}\n`);
+} else {
+  // Server already running on PORT — confirm it belongs to THIS plugin
+  // install before reusing it. A stale or different-version setup-server
+  // would otherwise pop up the wrong config window.
+  const remoteRoot = await fetchPluginPath();
+  if (remoteRoot) {
+    // Normalize: trailing slash strip + backslash → forward slash + lowercase
+    // so `C:/x` and `C:\x` compare equal (lowercase only on Windows — POSIX is case-sensitive).
+    const normalize = p => { const s = p.replace(/[\\/]+$/, '').replace(/\\/g, '/'); return process.platform === 'win32' ? s.toLowerCase() : s; };
+    const expected = normalize(PLUGIN_ROOT);
+    const actual = normalize(remoteRoot);
+    if (expected !== actual) {
+      await exitWithError(
+        `Port ${PORT} is in use by a different mixdog plugin instance.\n` +
+        `  expected plugin root: ${PLUGIN_ROOT}\n` +
+        `  actual plugin root:   ${remoteRoot}\n` +
+        `Stop the other setup-server (or change PORT) and retry.\n`,
+      );
+    }
+  }
+  if (!await requestOpen()) {
+    await exitWithError(`Failed to open config UI window for http://localhost:${PORT}\n`);
+  }
 }
 
 process.stdout.write(`Config UI: http://localhost:${PORT}\n`, () => process.exit(0));

@@ -8,7 +8,11 @@ services/__pycache__/
 # Runtime state (user-specific, never commit)
 bot.json
 user-workflow.json
+!defaults/user-workflow.json
 agent-config.json
+
+# Project-id resolver cache (per-checkout, populated at runtime)
+.mixdog/
 config.json
 memory-config.json
 cycle-state.json

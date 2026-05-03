@@ -48,6 +48,8 @@ import { retrieveEntries } from './lib/memory-retrievers.mjs'
 import { resetEmbeddingIndex, pruneOldEntries } from './lib/memory-maintenance-store.mjs'
 import { computeEntryScore, freshnessFactor } from './lib/memory-score.mjs'
 import { runFullBackfill } from './lib/memory-ops-policy.mjs'
+import { listCore, addCore, editCore, deleteCore } from './lib/core-memory-store.mjs'
+import { resolveProjectId } from './lib/project-id-resolver.mjs'
 
 import { resolvePluginData } from '../shared/plugin-paths.mjs'
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
@@ -86,7 +88,7 @@ const MEMORY_INSTRUCTIONS_TEXT = (() => {
 })()
 
 const PROXY_TOOL_DEFS = [
-  { name: 'memory', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
+  { name: 'memory', description: 'Memory operations. User-curated core list (separate JSON, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
 ]
 
 function readPortFile() {
@@ -357,23 +359,33 @@ function setCycleLastRun(kind, ts) {
 // Raw-row priority lookup for narrow-window queries. Raw rows (is_root=0,
 // chunk_root IS NULL) are inserted immediately by ingestTranscriptFile before
 // cycle1 runs, so they always carry the freshest turns in the DB.
-function readRawRowsInWindow(db, tsFromMs, tsToMs, hardLimit = 10) {
+function readRawRowsInWindow(db, tsFromMs, tsToMs, hardLimit = 10, { projectScope } = {}) {
   try {
+    const params = [tsFromMs ?? 0, tsToMs ?? Date.now()]
+    let projectFilter = ''
+    if (projectScope === 'common') {
+      projectFilter = 'AND project_id IS NULL'
+    } else if (projectScope && projectScope !== 'all') {
+      projectFilter = 'AND (project_id IS NULL OR project_id = ?)'
+      params.push(projectScope)
+    }
+    params.push(hardLimit)
     const stmt = db.prepare(
       `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
-              element, category, summary, status, score, last_seen_at
+              element, category, summary, status, score, last_seen_at, project_id
        FROM entries
        WHERE chunk_root IS NULL AND is_root = 0
          AND ts >= ? AND ts <= ?
+         ${projectFilter}
        ORDER BY ts DESC
        LIMIT ?`
     )
-    return stmt.all(tsFromMs ?? 0, tsToMs ?? Date.now(), hardLimit)
+    return stmt.all(...params)
       .map(r => ({ ...r, retrievalScore: 0, rrf: 0 }))
   } catch { return [] }
 }
 
-function ingestTranscriptFile(transcriptPath) {
+function ingestTranscriptFile(transcriptPath, { cwd } = {}) {
   if (!fs.existsSync(transcriptPath)) return 0
   const stat = fs.statSync(transcriptPath)
   const sessionUuid = path.basename(transcriptPath, '.jsonl')
@@ -391,9 +403,13 @@ function ingestTranscriptFile(transcriptPath) {
   prev.bytes = stat.size
   const lines = buf.toString('utf8').split('\n').filter(Boolean)
 
+  // cwd 미지정 시 transcript 경로로부터 cwd 추론 시도; 그것도 없으면 null(COMMON)로 떨어짐.
+  const resolvedCwd = typeof cwd === 'string' && cwd ? cwd : cwdFromTranscriptPath(transcriptPath)
+  const projectId = resolvedCwd != null ? resolveProjectId(resolvedCwd) : null
+
   const insertStmt = db.prepare(`
-    INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id, source_turn)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id, source_turn, project_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `)
 
   let count = 0
@@ -411,7 +427,7 @@ function ingestTranscriptFile(transcriptPath) {
     const tsMs = parseTsToMs(parsed.timestamp ?? parsed.ts ?? Date.now())
     const sourceRef = `transcript:${sessionUuid}#${index}`
     try {
-      const result = insertStmt.run(tsMs, role, cleaned, sourceRef, sessionUuid, index)
+      const result = insertStmt.run(tsMs, role, cleaned, sourceRef, sessionUuid, index, projectId)
       if (result.changes > 0) count += 1
     } catch (e) {
       process.stderr.write(`[transcript-watch] insert error (${sourceRef}): ${e.message}\n`)
@@ -439,6 +455,33 @@ function parseTsToMs(value) {
   return Number.isFinite(parsed) ? parsed : Date.now()
 }
 
+// Extract cwd from the transcript file's JSONL rows. Claude Code embeds
+// the session cwd as a top-level `cwd` field on every message row, so
+// scanning the first few lines is reliable on all platforms (Windows/Linux)
+// without slug-decoding ambiguity. Returns undefined when no cwd is found
+// or the extracted path does not exist on disk (falls back to COMMON).
+function cwdFromTranscriptPath(fp) {
+  try {
+    const fd = fs.openSync(fp, 'r')
+    const buf = Buffer.alloc(Math.min(fs.fstatSync(fd).size, 100 * 1024))
+    fs.readSync(fd, buf, 0, buf.length, 0)
+    fs.closeSync(fd)
+    const lines = buf.toString('utf8').split('\n')
+    for (let i = 0; i < Math.min(lines.length, 5); i++) {
+      const line = lines[i].trim()
+      if (!line) continue
+      try {
+        const obj = JSON.parse(line)
+        if (typeof obj.cwd === 'string' && obj.cwd) {
+          const candidate = obj.cwd
+          try { if (fs.statSync(candidate).isDirectory()) return candidate } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+  return undefined
+}
+
 function _initTranscriptWatcher() {
   const projectsRoot = path.join(os.homedir(), '.claude', 'projects')
   const SAFETY_POLL_MS = 5 * 60_000
@@ -460,7 +503,7 @@ function _initTranscriptWatcher() {
       const prev = watchedFiles.get(fp)
       if (prev && prev >= mtime) return
       watchedFiles.set(fp, mtime)
-      const n = ingestTranscriptFile(fp)
+      const n = ingestTranscriptFile(fp, { cwd: cwdFromTranscriptPath(fp) })
       if (n > 0) {
         process.stderr.write(`[transcript-watch] ingested ${n} entries from ${path.basename(fp)}\n`)
       }
@@ -937,6 +980,18 @@ async function handleSearch(args) {
   const includeMembers = Boolean(args.includeMembers)
   const temporal = parsePeriod(period, Boolean(query))
 
+  // Derive projectScope from caller cwd (falls back to process.cwd()).
+  // Explicit args.projectScope (string) takes priority so callers can
+  // override to 'all', 'common', or a specific slug.
+  let projectScope
+  if (typeof args.projectScope === 'string' && args.projectScope) {
+    projectScope = args.projectScope
+  } else {
+    const cwd = typeof args.cwd === 'string' && args.cwd ? args.cwd : process.cwd()
+    const projectId = resolveProjectId(cwd)
+    projectScope = projectId !== null ? projectId : 'all'
+  }
+
   // R11 reviewer M4: calendar-bounded periods disable freshness decay
   // so within-period ranking doesn't downgrade Mon entries vs Sun.
   const CALENDAR_PERIODS = new Set(['yesterday', 'today', 'this_week', 'last_week'])
@@ -957,6 +1012,7 @@ async function handleSearch(args) {
       ts_from: temporal?.startMs,
       ts_to: temporal?.endMs,
       applyFreshness,
+      projectScope,
     })
     let filtered = results
     // Narrow-window fallback: caller asked for 'today / right now / just now
@@ -996,6 +1052,7 @@ async function handleSearch(args) {
         ts_from: temporal.startMs,
         ts_to: temporal.endMs,
         excludeStatuses: ['archived', 'demoted'],
+        projectScope,
       }
       if (includeMembers) baseFilters.includeMembers = true
       const rootHits = retrieveEntries(db, { ...baseFilters, is_root: true })
@@ -1024,6 +1081,7 @@ async function handleSearch(args) {
         temporal.startMs,
         temporal.endMs,
         Math.max(limit + offset, 6),
+        { projectScope },
       )
       if (rawEntries.length > 0) {
         const dedupKey = (r) => {
@@ -1076,6 +1134,7 @@ async function handleSearch(args) {
   if (temporal?.mode === 'last' && _bootTimestamp) {
     filters.ts_to = _bootTimestamp - 1
   }
+  filters.projectScope = projectScope
   if (includeMembers) filters.includeMembers = true
   const rows = retrieveEntries(db, filters)
   const sliced = rows.slice(offset, offset + limit)
@@ -1278,6 +1337,7 @@ async function handleMemoryAction(args) {
       limit,
       config,
       ingestTranscriptFile,
+      cwdFromTranscriptPath,
       runCycle1: (dbArg, cycle1Config = {}, options = {}) => _awaitCycle1Run(cycle1Config, options),
       runCycle2,
     })
@@ -1287,101 +1347,193 @@ async function handleMemoryAction(args) {
     }
   }
 
-  if (action === 'remember') {
-    const element = String(args.element ?? '').trim()
-    const category = String(args.category ?? args.importance ?? 'fact').trim().toLowerCase()
-    const summary = String(args.summary ?? args.element ?? '').trim()
-    if (!element || !summary) {
-      return { text: 'remember requires element and summary', isError: true }
+  if (action === 'manage') {
+    const op = String(args.op ?? '').trim().toLowerCase()
+    if (!['add', 'edit', 'delete'].includes(op)) {
+      return { text: 'manage requires op: "add" | "edit" | "delete"', isError: true }
     }
-    const VALID = new Set(['rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue'])
-    if (!VALID.has(category)) {
-      return { text: `remember: invalid category "${category}". Valid: ${[...VALID].join(', ')}`, isError: true }
+    const VALID_CAT = new Set(['rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue'])
+    const VALID_STATUS = new Set(['active', 'archived'])
+
+    if (op === 'add') {
+      const element = String(args.element ?? '').trim()
+      const summary = String(args.summary ?? args.element ?? '').trim()
+      const category = String(args.category ?? 'fact').trim().toLowerCase()
+      if (!element || !summary) {
+        return { text: 'manage add requires element and summary', isError: true }
+      }
+      if (!VALID_CAT.has(category)) {
+        return { text: `manage add: invalid category "${category}". Valid: ${[...VALID_CAT].join(', ')}`, isError: true }
+      }
+      const nowMs = Date.now()
+      const sourceRef = `manual:${nowMs}-${process.pid}`
+      const manageProjectId = resolveProjectId(typeof args.cwd === 'string' && args.cwd ? args.cwd : process.cwd())
+      db.exec('BEGIN')
+      try {
+        const result = db.prepare(`
+          INSERT INTO entries(ts, role, content, source_ref, session_id, project_id)
+          VALUES (?, 'system', ?, ?, NULL, ?)
+        `).run(nowMs, element + ' — ' + summary, sourceRef, manageProjectId)
+        const newId = Number(result.lastInsertRowid)
+        const score = computeEntryScore(category, nowMs, nowMs)
+        db.prepare(`
+          UPDATE entries
+          SET chunk_root = ?, is_root = 1, element = ?, category = ?, summary = ?,
+              status = 'active', score = ?, last_seen_at = ?
+          WHERE id = ?
+        `).run(newId, element, category, summary, score, nowMs, newId)
+        db.exec('COMMIT')
+        await syncRootEmbedding(db, newId)
+        return { text: `added (id=${newId}): [${category}] ${element} — ${summary.slice(0, 200)}` }
+      } catch (e) {
+        try { db.exec('ROLLBACK') } catch {}
+        return { text: `manage add failed: ${e.message}`, isError: true }
+      }
     }
-    const nowMs = Date.now()
-    const sourceRef = `manual:${nowMs}-${process.pid}`
-    db.exec('BEGIN')
-    try {
-      const result = db.prepare(`
-        INSERT INTO entries(ts, role, content, source_ref, session_id)
-        VALUES (?, 'system', ?, ?, NULL)
-      `).run(nowMs, element + ' — ' + summary, sourceRef)
-      const newId = Number(result.lastInsertRowid)
-      const score = computeEntryScore(category, nowMs, nowMs)
-      db.prepare(`
-        UPDATE entries
-        SET chunk_root = ?, is_root = 1, element = ?, category = ?, summary = ?,
-            status = 'active', score = ?, last_seen_at = ?
-        WHERE id = ?
-      `).run(newId, element, category, summary, score, nowMs, newId)
-      db.exec('COMMIT')
-      await syncRootEmbedding(db, newId)
-      return { text: `remembered (id=${newId}): [${category}] ${element} — ${summary.slice(0, 200)}` }
-    } catch (e) {
-      try { db.exec('ROLLBACK') } catch {}
-      return { text: `remember failed: ${e.message}`, isError: true }
+
+    if (op === 'edit') {
+      const id = Number(args.id)
+      if (!Number.isFinite(id) || id <= 0) {
+        return { text: 'manage edit requires numeric id', isError: true }
+      }
+      const existing = db.prepare(
+        `SELECT id, element, summary, category, status, ts, is_root FROM entries WHERE id = ?`,
+      ).get(id)
+      if (!existing) return { text: `manage edit: no entry with id=${id}`, isError: true }
+      if (existing.is_root !== 1) return { text: `manage edit: id=${id} is not a root`, isError: true }
+
+      const trimOrNull = v => {
+        if (v == null) return null
+        const s = String(v).trim()
+        return s === '' ? null : s
+      }
+      const newElement = trimOrNull(args.element)
+      const newSummary = trimOrNull(args.summary)
+      const newCategory = trimOrNull(args.category)?.toLowerCase() ?? null
+      const newStatus = trimOrNull(args.status)?.toLowerCase() ?? null
+
+      if (!newElement && !newSummary && !newCategory && !newStatus) {
+        return { text: 'manage edit requires at least one field: element, summary, category, status', isError: true }
+      }
+      if (newCategory && !VALID_CAT.has(newCategory)) {
+        return { text: `manage edit: invalid category "${newCategory}". Valid: ${[...VALID_CAT].join(', ')}`, isError: true }
+      }
+      if (newStatus && !VALID_STATUS.has(newStatus)) {
+        return { text: `manage edit: invalid status "${newStatus}". Valid: ${[...VALID_STATUS].join(', ')}`, isError: true }
+      }
+
+      const finalElement = newElement ?? existing.element
+      const finalSummary = newSummary ?? existing.summary
+      const finalCategory = newCategory ?? existing.category
+      const finalStatus = newStatus ?? existing.status
+      const nowMs = Date.now()
+      const score = computeEntryScore(finalCategory, existing.ts ?? nowMs, nowMs)
+      const textChanged = newElement != null || newSummary != null
+
+      db.exec('BEGIN')
+      try {
+        db.prepare(`
+          UPDATE entries
+          SET element = ?, summary = ?, category = ?, status = ?, score = ?,
+              last_seen_at = ?, content = ?
+          WHERE id = ?
+        `).run(
+          finalElement, finalSummary, finalCategory, finalStatus, score,
+          nowMs, finalElement + ' — ' + finalSummary, id,
+        )
+        db.exec('COMMIT')
+      } catch (e) {
+        try { db.exec('ROLLBACK') } catch {}
+        return { text: `manage edit failed: ${e.message}`, isError: true }
+      }
+      if (textChanged) {
+        try { await syncRootEmbedding(db, id) } catch (e) {
+          process.stderr.write(`[memory.manage] embedding resync failed (id=${id}): ${e.message}\n`)
+        }
+      }
+      return { text: `edited (id=${id}): [${finalCategory}/${finalStatus}] ${finalElement} — ${finalSummary.slice(0, 200)}` }
     }
+
+    if (op === 'delete') {
+      const id = Number(args.id)
+      if (!Number.isFinite(id) || id <= 0) {
+        return { text: 'manage delete requires numeric id', isError: true }
+      }
+      const info = db.prepare(
+        `SELECT id, category, element, is_root FROM entries WHERE id = ?`,
+      ).get(id)
+      if (!info) return { text: `manage delete: no entry with id=${id}`, isError: true }
+      db.exec('BEGIN')
+      try {
+        const result = info.is_root === 1
+          ? db.prepare(`DELETE FROM entries WHERE id = ? OR chunk_root = ?`).run(id, id)
+          : db.prepare(`DELETE FROM entries WHERE id = ?`).run(id)
+        db.exec('COMMIT')
+        return { text: `deleted (id=${id}, rows=${result.changes}): [${info.category ?? '-'}] ${info.element ?? ''}` }
+      } catch (e) {
+        try { db.exec('ROLLBACK') } catch {}
+        return { text: `manage delete failed: ${e.message}`, isError: true }
+      }
+    }
+
+    return { text: `manage: unhandled op "${op}"`, isError: true }
   }
 
-  if (action === 'delete') {
+  if (action === 'core') {
+    const op = String(args.op ?? '').trim().toLowerCase()
+    if (!['add', 'edit', 'delete', 'list'].includes(op)) {
+      return { text: 'core requires op: "add" | "edit" | "delete" | "list"', isError: true }
+    }
+    const dataDir = process.env.CLAUDE_PLUGIN_DATA || (typeof DATA_DIR === 'string' ? DATA_DIR : null)
+    if (!dataDir) return { text: 'core: CLAUDE_PLUGIN_DATA unset', isError: true }
+    // Local trim helper — the manage-block trimOrNull at :1403 is scoped to
+    // that branch and unreachable from here.
+    const rawProjectId = (() => {
+      if (args.project_id == null) return null
+      const s = String(args.project_id).trim()
+      return s === '' ? null : s
+    })()
+    const projectId = rawProjectId || null
+    try {
+      if (op === 'list') {
+        const entries = listCore(dataDir, projectId)
+        if (entries.length === 0) return { text: 'core: empty' }
+        return { text: entries.map(e => `id=${e.id} [${e.category}] ${e.element} — ${String(e.summary || '').slice(0, 200)}`).join('\n') }
+      }
+      if (op === 'add') {
+        const entry = addCore(dataDir, args, projectId)
+        return { text: `core added (id=${entry.id}): [${entry.category}] ${entry.element} — ${entry.summary.slice(0, 200)}` }
+      }
+      if (op === 'edit') {
+        const entry = editCore(dataDir, args.id, args, projectId)
+        return { text: `core edited (id=${entry.id}): [${entry.category}] ${entry.element} — ${entry.summary.slice(0, 200)}` }
+      }
+      if (op === 'delete') {
+        const removed = deleteCore(dataDir, args.id, projectId)
+        return { text: `core deleted (id=${removed.id}): [${removed.category}] ${removed.element}` }
+      }
+    } catch (e) {
+      return { text: `core ${op} failed: ${e.message}`, isError: true }
+    }
+    return { text: `core: unhandled op "${op}"`, isError: true }
+  }
+
+  if (action === 'purge') {
     if (args.confirm !== 'DELETE ALL MEMORY') {
-      return { text: 'delete requires confirm: "DELETE ALL MEMORY"', isError: true }
+      return { text: 'purge requires confirm: "DELETE ALL MEMORY"', isError: true }
     }
     const preCount = db.prepare(`SELECT COUNT(*) c FROM entries`).get().c
     db.exec('BEGIN')
     try {
       db.prepare(`DELETE FROM entries`).run()
-      // FTS + vec_entries are maintained via AFTER DELETE triggers on
-      // entries, so cascade happens automatically. Explicit safety net
-      // below in case a future migration drops a trigger.
       try { db.exec(`DELETE FROM entries_fts`) } catch {}
       try { db.exec(`DELETE FROM vec_entries`) } catch {}
       db.exec('COMMIT')
     } catch (e) {
       try { db.exec('ROLLBACK') } catch {}
-      return { text: `delete failed: ${e.message}`, isError: true }
+      return { text: `purge failed: ${e.message}`, isError: true }
     }
-    return { text: `deleted all memory entries (count=${preCount})` }
-  }
-
-  if (action === 'forget') {
-    const rawId = args.id
-    const rawElement = args.element
-    const id = rawId != null && rawId !== '' ? Number(rawId) : null
-    const elementQuery = rawElement != null ? String(rawElement).trim() : ''
-
-    if ((id == null || !Number.isFinite(id)) && !elementQuery) {
-      return { text: 'forget requires id or element', isError: true }
-    }
-
-    if (id != null && Number.isFinite(id) && id > 0) {
-      const info = db.prepare(
-        `SELECT category, element, status, is_root FROM entries WHERE id = ?`,
-      ).get(id)
-      if (!info) return { text: `forget: no entry with id=${id}`, isError: true }
-      if (info.is_root !== 1) return { text: `forget: id=${id} is not a root`, isError: true }
-      if (info.status !== 'active') return { text: `forget: id=${id} status=${info.status ?? 'NULL'} (not active)`, isError: true }
-      const result = db.prepare(
-        `UPDATE entries SET status = 'archived' WHERE id = ? AND is_root = 1 AND status = 'active'`,
-      ).run(id)
-      if (result.changes === 0) return { text: `forget: id=${id} no change`, isError: true }
-      return { text: `forgotten (id=${id}): [${info.category ?? '-'}] ${info.element ?? ''}` }
-    }
-
-    const matches = db.prepare(
-      `SELECT id, category, element FROM entries
-       WHERE is_root = 1 AND status = 'active' AND element LIKE ?
-       ORDER BY id ASC`,
-    ).all(`%${elementQuery}%`)
-    if (matches.length === 0) return { text: `forget: no active root matches "${elementQuery}"`, isError: true }
-    if (matches.length > 1) {
-      const preview = matches.slice(0, 10).map(r => `id=${r.id} "${r.element}"`).join(', ')
-      const extra = matches.length > 10 ? ` (+${matches.length - 10} more)` : ''
-      return { text: `forget: ${matches.length} candidates — ${preview}${extra}`, isError: true }
-    }
-    const target = matches[0]
-    db.prepare(`UPDATE entries SET status = 'archived' WHERE id = ?`).run(target.id)
-    return { text: `forgotten (id=${target.id}): [${target.category}] ${target.element}` }
+    return { text: `purged all memory entries (count=${preCount})` }
   }
 
   return { text: `unknown memory action: ${action}`, isError: true }
@@ -1397,19 +1549,22 @@ const TOOL_DEFS = [
     name: 'memory',
     title: 'Memory Cycle',
     annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    description: 'Run memory operations: cycle1, cycle2/sleep (promote+dedup), flush, prune, status, remember (store fact), forget (archive a root), backfill, rebuild, delete. Destructive ops (rebuild, prune, delete) require matching `confirm` string.',
+    description: 'Memory operations. User-curated core list (separate JSON, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['sleep','cycle2','flush','rebuild','rebuild_classifications','prune','cycle1','backfill','status','remember','forget','delete'], description: 'Operation to run' },
-        topic: { type: 'string', description: 'Topic for remember' },
-        element: { type: 'string', description: 'Content for remember; also accepted as a substring match target for forget' },
-        importance: { type: 'string', description: 'Importance for remember (default: fact)' },
-        maxDays: { type: 'number', description: 'Age threshold in days for the `prune` action. Unclassified entries older than this are deleted. Default 30, minimum 1. Ignored by other actions.' },
-        window: { type: 'string', description: 'Time window: 1d, 3d, 7d, 30d, all' },
+        action: { type: 'string', enum: ['core','manage','status','sleep','cycle1','cycle2','flush','backfill','prune','rebuild','rebuild_classifications','purge'], description: 'Operation. `core` = user-curated JSON list (merged into SessionStart Core Memory section). `manage` = entries-table per-row CRUD. Others = batch/maintenance.' },
+        op: { type: 'string', enum: ['add','edit','delete','list'], description: 'Required when action is core or manage. core supports add/edit/delete/list. manage supports add/edit/delete.' },
+        id: { type: 'number', description: 'Entry id. Required for core/manage edit and delete (positive integer).' },
+        element: { type: 'string', description: 'Short headline / canonical name. Required for add ops (core/manage); optional for edit.' },
+        summary: { type: 'string', description: 'Long-form description. Required for add ops (falls back to element if omitted); optional for edit.' },
+        category: { type: 'string', enum: ['rule','constraint','decision','fact','goal','preference','task','issue'], description: 'Entry category. Default fact for add; optional for edit.' },
+        status: { type: 'string', enum: ['active','archived'], description: 'Lifecycle state. manage edit only (archive replaces the old forget action). Not used by core.' },
+        maxDays: { type: 'number', description: 'Age threshold in days for the prune action. Default 30, minimum 1. Ignored elsewhere.' },
+        window: { type: 'string', description: 'Time window for backfill: 1d, 3d, 7d, 30d, all' },
         limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
-        id: { type: 'number', description: 'Entry id for forget action.' },
-        confirm: { type: 'string', description: 'Required for destructive actions: "DELETE ALL MEMORY" for delete, "PRUNE OLD ENTRIES" for prune, "REBUILD MEMORY" for rebuild. Must match exactly.' },
+        confirm: { type: 'string', description: 'Required for destructive actions: "DELETE ALL MEMORY" for purge, "PRUNE OLD ENTRIES" for prune, "REBUILD MEMORY" for rebuild. Must match exactly.' },
+        project_id: { type: 'string', description: 'Optional project pool selector for action=\'core\'. Omit/null → COMMON (core-memory.json). Set to slug like \'tempest1033/GamerScroll\' → project-memory/<safe>.json.' },
       },
       required: ['action'],
     },
@@ -1423,7 +1578,7 @@ const TOOL_DEFS = [
     inputSchema: {
       type: 'object',
       properties: {
-        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Single NL string, or array of strings for unrelated multi-question.' },
+        query: { description: 'Single NL string, or array of strings for unrelated multi-question.' },
         cwd: { type: 'string', description: 'Optional workspace hint.' },
         background: { type: 'boolean', description: 'Default false (sync). Set true for heavy queries to dispatch async and receive answer via channel.' },
       },
@@ -1461,7 +1616,12 @@ async function handleToolCall(name, args) {
     if (name === 'recall') {
       // recall is aiWrapped in the unified build; in standalone mode map it to
       // search_memories so the advertised tool name actually works.
-      const searchArgs = { query: args?.query, ...(args?.period ? { period: args.period } : {}) }
+      const searchArgs = {
+        query: args?.query,
+        ...(args?.period ? { period: args.period } : {}),
+        ...(args?.cwd ? { cwd: args.cwd } : {}),
+        ...(args?.projectScope ? { projectScope: args.projectScope } : {}),
+      }
       const result = await handleSearch(searchArgs)
       return { content: [{ type: 'text', text: result.text }], isError: result.isError || false }
     }
@@ -1612,11 +1772,12 @@ const httpServer = http.createServer(async (req, res) => {
         sendJson(res, { error: 'empty after clean' }, 400)
         return
       }
+      const entryProjectId = resolveProjectId(typeof body.cwd === 'string' && body.cwd ? body.cwd : process.cwd())
       try {
         const result = db.prepare(`
-          INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(tsMs, role, cleaned, sourceRef, sessionId)
+          INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id, project_id)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(tsMs, role, cleaned, sourceRef, sessionId, entryProjectId)
         sendJson(res, { ok: true, id: Number(result.lastInsertRowid), changes: Number(result.changes) })
       } catch (e) {
         sendJson(res, { error: e.message }, 500)
@@ -1628,7 +1789,7 @@ const httpServer = http.createServer(async (req, res) => {
       const filePath = body.filePath
       if (!filePath) { sendJson(res, { error: 'filePath required' }, 400); return }
       try {
-        const n = ingestTranscriptFile(filePath)
+        const n = ingestTranscriptFile(filePath, { cwd: body.cwd })
         sendJson(res, { ok: true, ingested: n })
       } catch (e) {
         sendJson(res, { error: e.message }, 500)
@@ -1646,7 +1807,7 @@ const httpServer = http.createServer(async (req, res) => {
 export { TOOL_DEFS, handleToolCall }
 export { MEMORY_INSTRUCTIONS_TEXT as instructions }
 export { acquireLock, releaseLock, isExistingServerHealthy, runProxyMode }
-
+export { cwdFromTranscriptPath }
 export async function init() {
   if (_initialized) return
   process.stderr.write(`[boot-time] tag=memory-init-start tMs=${Date.now()}\n`)

@@ -1,6 +1,9 @@
-import { existsSync, mkdirSync, writeFileSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs';
 import { dirname, join, basename } from 'path';
+import { fileURLToPath } from 'url';
 import { DEFAULT_PRESETS, DEFAULT_MAINTENANCE } from '../agent/orchestrator/config.mjs';
+
+const DEFAULTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'defaults');
 
 // Idempotent seed of the unified mixdog-config.json so first-time installs
 // land with the Config UI already populated with defaults (presets, search
@@ -29,44 +32,26 @@ const SEEDS = {
     // in the strongest path on first boot.
     // providers/mcpServers intentionally omitted from `agent` so runtime
     // auto-detect (buildDefaultConfig) decides based on env keys / OAuth.
-    'mixdog-config.json': () => JSON.stringify({
-        channels: {
-            promptInjection: {
-                mode: 'claude_md',
-                targetPath: '~/.claude/CLAUDE.md',
+    'mixdog-config.json': () => {
+        // Template carries the static channels/memory/search defaults; agent
+        // section is composed at seed time so DEFAULT_PRESETS picks up the
+        // ANTHROPIC_DEFAULT_*_MODEL env overrides resolved at boot. Top-level
+        // key order is rebuilt explicitly so seed output stays
+        // channels/memory/agent/search regardless of template author.
+        const template = JSON.parse(
+            readFileSync(join(DEFAULTS_DIR, 'mixdog-config.template.json'), 'utf8'),
+        );
+        const composed = {
+            channels: template.channels,
+            memory: template.memory,
+            agent: {
+                presets: DEFAULT_PRESETS.map((p) => ({ ...p })),
+                maintenance: { ...DEFAULT_MAINTENANCE },
             },
-        },
-        memory: {
-            enabled: true,
-            user: { name: '', title: '' },
-            cycle1: { interval: '10m' },
-            cycle2: { interval: '1h' },
-        },
-        agent: {
-            presets: DEFAULT_PRESETS.map((p) => ({ ...p })),
-            maintenance: { ...DEFAULT_MAINTENANCE },
-        },
-        search: {
-            enabled: true,
-            rawSearch: {
-                priority: ['serper', 'brave', 'perplexity', 'firecrawl', 'tavily', 'xai'],
-                maxResults: 10,
-                credentials: {
-                    serper: { apiKey: '' },
-                    brave: { apiKey: '' },
-                    perplexity: { apiKey: '' },
-                    firecrawl: { apiKey: '' },
-                    tavily: { apiKey: '' },
-                    xai: { apiKey: '' },
-                },
-            },
-            requestTimeoutMs: 15000,
-            crawl: { maxPages: 10, maxDepth: 2, sameDomainOnly: true },
-            siteRules: {
-                'x.com': { search: 'xai.x_search', scrape: 'xai.x_search' },
-            },
-        },
-    }, null, 2) + '\n',
+            search: template.search,
+        };
+        return JSON.stringify(composed, null, 2) + '\n';
+    },
 };
 
 export function ensureDataSeeds(dataDir) {
@@ -91,9 +76,16 @@ export function ensureDataSeeds(dataDir) {
             skipped.push(rel);
             continue;
         }
+        // Body composition (template read / config build) errors are fatal —
+        // a missing defaults/ file means the plugin install itself is
+        // incomplete, and silently skipping the seed would leave the user
+        // with an empty Config UI. Filesystem errors during the actual write
+        // are non-fatal and only logged so a transient mkdir/write failure
+        // does not block boot.
+        const body = bodyFn();
         try {
             mkdirSync(dirname(full), { recursive: true });
-            writeFileSync(full, bodyFn(), 'utf8');
+            writeFileSync(full, body, 'utf8');
             created.push(rel);
         } catch (e) {
             process.stderr.write(`[seed] ${rel} create failed: ${e.message}\n`);

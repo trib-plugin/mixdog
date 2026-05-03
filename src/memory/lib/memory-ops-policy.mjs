@@ -156,6 +156,7 @@ export async function runFullBackfill(db, {
   limit = null,
   config = {},
   ingestTranscriptFile,
+  cwdFromTranscriptPath,
   runCycle1,
   runCycle2,
   now = Date.now(),
@@ -180,7 +181,8 @@ export async function runFullBackfill(db, {
       const idx = cursor++
       const fp = selected[idx]
       try {
-        const n = Number(await ingestTranscriptFile(fp) ?? 0)
+        const cwd = typeof cwdFromTranscriptPath === 'function' ? cwdFromTranscriptPath(fp) : undefined
+        const n = Number(await ingestTranscriptFile(fp, { cwd }) ?? 0)
         ingested += n
       } catch (err) {
         process.stderr.write(`[backfill] ingest failed (${fp}): ${err.message}\n`)

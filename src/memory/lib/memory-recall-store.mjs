@@ -62,17 +62,40 @@ export async function searchRelevantHybrid(db, query, options = {}) {
   // makes Mon score 0.7 and Sun 1.4 within the same calendar week, which
   // misranks early-week decisions vs late-week chatter.
   const applyFreshness = options.applyFreshness !== false
+  // Project scope pre-filter applied to the candidate fetch SQL.
+  // 'common' → project_id IS NULL; specific slug → project_id IS NULL OR = slug;
+  // 'all' or undefined → no filter.
+  const projectScope = typeof options.projectScope === 'string' ? options.projectScope : null
 
   const candidateIds = new Map()
   let denseCount = 0
   let sparseCount = 0
 
+  // Build project scope SQL fragment and bind params for candidate SELECTs.
+  // Used in subquery forms (dense/FTS) and direct WHERE forms (LIKE).
+  // 'common' → project_id IS NULL
+  // slug     → project_id IS NULL OR project_id = ?
+  // 'all'/null → no filter
+  let projectScopeClause = ''
+  let projectScopeParams = []
+  if (projectScope === 'common') {
+    projectScopeClause = 'AND project_id IS NULL'
+    projectScopeParams = []
+  } else if (projectScope && projectScope !== 'all') {
+    projectScopeClause = 'AND (project_id IS NULL OR project_id = ?)'
+    projectScopeParams = [projectScope]
+  }
+
   if (Array.isArray(options.queryVector) && options.queryVector.length > 0) {
     try {
       const hex = vecToHex(options.queryVector)
       const knnRows = db.prepare(
-        `SELECT rowid, distance FROM vec_entries WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?`,
-      ).all(candidateWindow)
+        `SELECT v.rowid, v.distance
+         FROM vec_entries v
+         WHERE v.embedding MATCH X'${hex}'
+           AND v.rowid IN (SELECT id FROM entries WHERE 1=1 ${projectScopeClause})
+         ORDER BY v.distance LIMIT ?`,
+      ).all(...projectScopeParams, candidateWindow)
       knnRows.forEach((row, rank) => {
         const id = Number(row.rowid)
         setCandidateRank(candidateIds, id, 'denseRank', rank + 1)
@@ -84,14 +107,15 @@ export async function searchRelevantHybrid(db, query, options = {}) {
   if (clean.length >= 3) {
     try {
       const ftsStmt = db.prepare(
-        `SELECT rowid, bm25(entries_fts) AS bm25
-         FROM entries_fts
+        `SELECT f.rowid, bm25(entries_fts) AS bm25
+         FROM entries_fts AS f
          WHERE entries_fts MATCH ?
+           AND f.rowid IN (SELECT id FROM entries WHERE 1=1 ${projectScopeClause})
          ORDER BY bm25 LIMIT ?`,
       )
       const ftsQueries = [...new Set(generateQueryVariants(clean).map(variant => buildFtsQuery(variant)).filter(Boolean))]
       for (const [variantIndex, ftsQuery] of ftsQueries.entries()) {
-        const ftsRows = ftsStmt.all(ftsQuery, candidateWindow)
+        const ftsRows = ftsStmt.all(ftsQuery, ...projectScopeParams, candidateWindow)
         ftsRows.forEach((row, rank) => {
           const id = Number(row.rowid)
           setCandidateRank(candidateIds, id, 'sparseRank', rank + 1 + variantIndex)
@@ -104,9 +128,9 @@ export async function searchRelevantHybrid(db, query, options = {}) {
       const likePattern = `%${clean}%`
       const likeRows = db.prepare(
         `SELECT id FROM entries
-         WHERE content LIKE ? OR summary LIKE ? OR element LIKE ?
+         WHERE (content LIKE ? OR summary LIKE ? OR element LIKE ?) ${projectScopeClause}
          ORDER BY ts DESC LIMIT ?`,
-      ).all(likePattern, likePattern, likePattern, candidateWindow)
+      ).all(likePattern, likePattern, likePattern, ...projectScopeParams, candidateWindow)
       likeRows.forEach((row, rank) => {
         const id = Number(row.id)
         setCandidateRank(candidateIds, id, 'sparseRank', rank + 1)
@@ -122,9 +146,9 @@ export async function searchRelevantHybrid(db, query, options = {}) {
         const where = patterns.map(() => `(content LIKE ? OR summary LIKE ? OR element LIKE ?)`).join(' OR ')
         const likeRows = db.prepare(
           `SELECT id FROM entries
-           WHERE ${where}
+           WHERE (${where}) ${projectScopeClause}
            ORDER BY ts DESC LIMIT ?`,
-        ).all(...patterns.flatMap(pattern => [pattern, pattern, pattern]), candidateWindow)
+        ).all(...patterns.flatMap(pattern => [pattern, pattern, pattern]), ...projectScopeParams, candidateWindow)
         likeRows.forEach((row, rank) => {
           const id = Number(row.id)
           setCandidateRank(candidateIds, id, 'sparseRank', rank + 1 + Math.max(1, sparseCount))
@@ -155,10 +179,16 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     filterClauses.push(`(status IS NULL OR status NOT IN (${excludeStatuses.map(() => '?').join(',')}))`)
     filterParams.push(...excludeStatuses)
   }
+  if (projectScope === 'common') {
+    filterClauses.push(`project_id IS NULL`)
+  } else if (projectScope && projectScope !== 'all') {
+    filterClauses.push(`(project_id IS NULL OR project_id = ?)`)
+    filterParams.push(projectScope)
+  }
   const filterSql = filterClauses.length > 0 ? ` AND ${filterClauses.join(' AND ')}` : ''
   const rawRows = db.prepare(
     `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
-            element, category, summary, status, score, last_seen_at
+            element, category, summary, project_id, status, score, last_seen_at
      FROM entries WHERE id IN (${placeholders})${filterSql}`,
   ).all(...topIds, ...filterParams)
   const byId = new Map(rawRows.map(r => [Number(r.id), r]))
@@ -196,11 +226,20 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     if (row.is_root === 1) {
       targetRow = row
     } else if (row.chunk_root != null && row.chunk_root !== row.id) {
+      const rootScopeClauses = []
+      const rootScopeParams = []
+      if (projectScope === 'common') {
+        rootScopeClauses.push('project_id IS NULL')
+      } else if (projectScope && projectScope !== 'all') {
+        rootScopeClauses.push('(project_id IS NULL OR project_id = ?)')
+        rootScopeParams.push(projectScope)
+      }
+      const rootScopeExtra = rootScopeClauses.length > 0 ? ` AND ${rootScopeClauses.join(' AND ')}` : ''
       const r = db.prepare(
         `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
-                element, category, summary, status, score, last_seen_at
-         FROM entries WHERE id = ? AND is_root = 1`,
-      ).get(row.chunk_root)
+                element, category, summary, project_id, status, score, last_seen_at
+         FROM entries WHERE id = ? AND is_root = 1${rootScopeExtra}`,
+      ).get(row.chunk_root, ...rootScopeParams)
       if (!r) continue
       memberHitRootIds.add(r.id)
       targetRow = r
@@ -242,6 +281,7 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     if (includeMembers && root.is_root === 1) {
       out.members = db.prepare(
         `SELECT id, ts, role, content, session_id, source_turn
+         , project_id
          FROM entries WHERE chunk_root = ? AND is_root = 0
          ORDER BY ts ASC, id ASC`,
       ).all(root.id)

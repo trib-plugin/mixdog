@@ -7,6 +7,7 @@ export function retrieveEntries(db, filters = {}) {
   const where = []
   const params = []
 
+  // is_root filter (default: true)
   const isRoot = filters.is_root === undefined ? true : Boolean(filters.is_root)
   where.push(`is_root = ?`)
   params.push(isRoot ? 1 : 0)
@@ -15,6 +16,17 @@ export function retrieveEntries(db, filters = {}) {
     const sid = String(filters.session_id).trim()
     if (sid) { where.push(`session_id = ?`); params.push(sid) }
   }
+
+  // projectScope filter: 'common' → project_id IS NULL only;
+  // specific slug → project_id IS NULL OR project_id = slug;
+  // 'all' or undefined → no filter (full pool).
+  if (filters.projectScope === 'common') {
+    where.push(`project_id IS NULL`)
+  } else if (typeof filters.projectScope === 'string' && filters.projectScope && filters.projectScope !== 'all') {
+    where.push(`(project_id IS NULL OR project_id = ?)`)
+    params.push(filters.projectScope)
+  }
+  // projectScope === 'all' or undefined → no filter
 
   const tsFrom = Number(filters.ts_from)
   if (Number.isFinite(tsFrom)) { where.push(`ts >= ?`); params.push(tsFrom) }
@@ -61,7 +73,7 @@ export function retrieveEntries(db, filters = {}) {
   const orderBy = 'score DESC NULLS LAST, ts DESC, id DESC'
 
   const sql = `SELECT id, ts, role, content, source_ref, session_id, source_turn,
-                      chunk_root, is_root, element, category, summary,
+                      chunk_root, is_root, element, category, summary, project_id,
                       status, score, last_seen_at
                FROM entries
                WHERE ${where.join(' AND ')}
@@ -73,7 +85,7 @@ export function retrieveEntries(db, filters = {}) {
 
   if (filters.includeMembers && rows.length > 0) {
     const memberStmt = db.prepare(
-      `SELECT id, ts, role, content, session_id, source_turn
+      `SELECT id, ts, role, content, session_id, source_turn, project_id
        FROM entries WHERE chunk_root = ? AND is_root = 0
        ORDER BY ts ASC, id ASC`,
     )

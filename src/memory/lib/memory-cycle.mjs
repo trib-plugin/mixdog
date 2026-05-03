@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { cleanMemoryText } from './memory.mjs'
+import { resolveProjectId } from './project-id-resolver.mjs'
 import { resolveMaintenancePreset } from '../../shared/llm/index.mjs'
 import { callBridgeLlm } from './agent-ipc.mjs'
 import { computeEntryScore } from './memory-score.mjs'
@@ -12,6 +13,54 @@ import { embedText } from './embedding-provider.mjs'
 // the next cycle1/cycle2 tick drains it. The queue is bounded by however many
 // roots actually exist, so it cannot grow unbounded; duplicates are coalesced.
 const EMBED_DIRTY_KEY = 'embedding.dirty_ids'
+
+// Regex patterns for extracting absolute paths from text.
+const _WIN_PATH_RE = /[A-Z]:[\\\/][^\s"'\)]+/g
+const _POSIX_PATH_RE = /\/[^\s"'\)]+/g
+
+/**
+ * Infer a project_id for a chunk by scanning member content + source_ref for
+ * absolute path references, resolving each via resolveProjectId, and returning
+ * the single converged id (or null when 0 or 2+ distinct ids are found).
+ */
+export function inferChunkProjectId(members) {
+  const MEM_CAP = 8 * 1024 // 8KB per-member slice
+  const MATCH_CAP = 32
+
+  // Collect unique dirs first (dedup before cap) to avoid evidence starvation
+  // from repeated paths in the same directory. source_ref is typically short
+  // so it is appended without truncation; only content is capped.
+  const seenDirs = new Set()
+  const uniqueDirs = []
+
+  for (const m of members) {
+    const contentText = (m.content ?? '').slice(0, MEM_CAP)
+    const sourceText = m.source_ref ?? ''
+    for (const segment of [contentText, sourceText]) {
+      for (const re of [_WIN_PATH_RE, _POSIX_PATH_RE]) {
+        const hits = segment.match(re) ?? []
+        for (const h of hits) {
+          const dir = dirname(h)
+          if (seenDirs.has(dir)) continue
+          seenDirs.add(dir)
+          uniqueDirs.push(dir)
+          if (uniqueDirs.length >= MATCH_CAP) break
+        }
+        if (uniqueDirs.length >= MATCH_CAP) break
+      }
+      if (uniqueDirs.length >= MATCH_CAP) break
+    }
+    if (uniqueDirs.length >= MATCH_CAP) break
+  }
+
+  const ids = new Set()
+  for (const dir of uniqueDirs) {
+    const resolved = resolveProjectId(dir)
+    if (resolved != null) ids.add(resolved)
+  }
+
+  return ids.size === 1 ? [...ids][0] : null
+}
 
 function _readDirtyIds(db) {
   try {
@@ -393,7 +442,7 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   // session-aligned, but the [sess:] markers + commit guard make that safe.
   const fetchLimit = sessionCap * batchSize
   const rowsDesc = db.prepare(`
-    SELECT id, ts, role, content, session_id
+    SELECT id, ts, role, content, session_id, source_ref
     FROM entries
     WHERE chunk_root IS NULL AND session_id IS NOT NULL
     ORDER BY ts DESC, id DESC
@@ -442,11 +491,12 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   const updateRoot = db.prepare(`
     UPDATE entries
     SET chunk_root = ?, is_root = 1, element = ?, category = ?, summary = ?,
-        status = NULL, last_seen_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+        status = NULL, project_id = ?,
+        last_seen_at = CAST(strftime('%s','now') AS INTEGER) * 1000
     WHERE id = ?
   `)
   const updateMember = db.prepare(`
-    UPDATE entries SET chunk_root = ? WHERE id = ? AND id != ?
+    UPDATE entries SET chunk_root = ?, project_id = ? WHERE id = ? AND id != ?
   `)
 
   async function processWindow(rows, windowIdx) {
@@ -572,12 +622,14 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
         continue
       }
 
+      const projectId = inferChunkProjectId(members)
+
       try {
         db.exec('BEGIN')
-        updateRoot.run(rootId, element, category, summary, rootId)
+        updateRoot.run(rootId, element, category, summary, projectId, rootId)
         for (const mid of memberIds) {
           if (mid === rootId) continue
-          updateMember.run(rootId, mid, rootId)
+          updateMember.run(rootId, projectId, mid, rootId)
         }
         db.exec('COMMIT')
         committedChunks += 1
@@ -673,7 +725,7 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
 function formatEntriesForPromotePrompt(rows) {
   if (!rows || rows.length === 0) return '(none)'
   return rows.map(r =>
-    `- entry_id:${r.id} category:${r.category} score:${r.score ?? 'null'} element:${r.element} summary:${String(r.summary || '').slice(0, 200)}`,
+    `- entry_id:${r.id} project_id:${r.project_id ?? 'common'} category:${r.category} score:${r.score ?? 'null'} element:${r.element} summary:${String(r.summary || '').slice(0, 200)}`,
   ).join('\n')
 }
 
@@ -771,19 +823,26 @@ async function applyUpdate(db, entryId, element, summary) {
 
 function applyMerge(db, targetId, sourceIds) {
   if (!Number.isFinite(targetId)) return 0
-  const target = db.prepare(`SELECT id FROM entries WHERE id = ? AND is_root = 1`).get(targetId)
+  const target = db.prepare(`SELECT id, project_id FROM entries WHERE id = ? AND is_root = 1`).get(targetId)
   if (!target) return 0
   let moved = 0
   for (const src of sourceIds) {
     const sid = Number(src)
     if (!Number.isFinite(sid) || sid === targetId) continue
-    const srcRow = db.prepare(`SELECT id FROM entries WHERE id = ? AND is_root = 1`).get(sid)
+    const srcRow = db.prepare(`SELECT id, project_id FROM entries WHERE id = ? AND is_root = 1`).get(sid)
     if (!srcRow) continue
+    // Cross-pool merge guard: target and source must belong to the same pool.
+    if (target.project_id !== srcRow.project_id) {
+      process.stderr.write(
+        `[cycle2] merge rejected: cross-pool (target=${targetId} project_id=${target.project_id ?? 'COMMON'} src=${sid} project_id=${srcRow.project_id ?? 'COMMON'})\n`,
+      )
+      continue
+    }
     try {
       db.exec('BEGIN')
       db.prepare(
-        `UPDATE entries SET chunk_root = ? WHERE chunk_root = ? AND id != ? AND is_root = 0`,
-      ).run(targetId, sid, sid)
+        `UPDATE entries SET chunk_root = ?, project_id = ? WHERE chunk_root = ? AND id != ? AND is_root = 0`,
+      ).run(targetId, target.project_id, sid, sid)
       db.prepare(
         `UPDATE entries SET status = 'archived' WHERE id = ? AND is_root = 1`,
       ).run(sid)
@@ -887,22 +946,22 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   // existed only as a display value passed into the phase3 prompt; the SQL
   // pulled every active root, blowing up the prompt on busy DBs.
   const loadActive = () => db.prepare(
-    `SELECT id, element, category, summary, score, last_seen_at
+    `SELECT id, element, category, summary, score, last_seen_at, project_id
      FROM entries WHERE is_root = 1 AND status = 'active'
-     ORDER BY score DESC LIMIT ?`,
+     ORDER BY project_id, score DESC LIMIT ?`,
   ).all(activeCap)
 
   const loadPhase3Candidates = () => db.prepare(
-    `SELECT id, element, category, summary, score, last_seen_at
+    `SELECT id, element, category, summary, score, last_seen_at, project_id
      FROM entries WHERE is_root = 1 AND status IN ('active', 'processed')
-     ORDER BY last_seen_at ASC, score DESC
+     ORDER BY project_id, last_seen_at ASC, score DESC
      LIMIT ?`,
   ).all(batchSize)
 
   const phase1Rows = db.prepare(
-    `SELECT id, element, category, summary, score
+    `SELECT id, element, category, summary, score, project_id
      FROM entries WHERE is_root = 1 AND status IS NULL
-     ORDER BY id DESC LIMIT ?`,
+     ORDER BY project_id, id DESC LIMIT ?`,
   ).all(batchSize)
 
   if (phase1Rows.length > 0) {
@@ -926,9 +985,9 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   }
 
   const phase2Rows = db.prepare(
-    `SELECT id, element, category, summary, score
+    `SELECT id, element, category, summary, score, project_id
      FROM entries WHERE is_root = 1 AND status IN ('pending', 'demoted')
-     ORDER BY id DESC LIMIT ?`,
+     ORDER BY project_id, id DESC LIMIT ?`,
   ).all(batchSize)
 
   if (phase2Rows.length > 0) {

@@ -58,6 +58,7 @@ export async function appendEntry(data) {
     content: String(data.content ?? ''),
     sourceRef: String(data.sourceRef ?? `manual:${Date.now()}-${process.pid}`),
     sessionId: data.sessionId ?? null,
+    cwd: data.cwd ?? null,
   }
   try {
     return await memoryFetch('POST', '/entry', payload)
@@ -139,9 +140,9 @@ export async function flushBufferedEntries() {
   return { flushed, failed }
 }
 
-export async function ingestTranscript(filePath) {
+export async function ingestTranscript(filePath, { cwd } = {}) {
   try {
-    return await memoryFetch('POST', '/ingest-transcript', { filePath })
+    return await memoryFetch('POST', '/ingest-transcript', { filePath, ...(cwd ? { cwd } : {}) })
   } catch (e) {
     process.stderr.write(`[memory-client] ingestTranscript failed: ${e.message}\n`)
     return { ok: false }

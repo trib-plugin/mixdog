@@ -27,18 +27,14 @@ const TICK_MS = 30_000;
 // Default 600s aligns with stream-watchdog HARD_STALL_MS (600s / 10m).
 const DEFAULT_THRESHOLD_S = 600;
 
-// Role-aware thresholds. All roles default to 600s (10 min) to align with
-// stream-watchdog HARD_STALL_MS — the bridge-stall path then notifies lead
-// and aborts at the same wall-clock point as the global watchdog, instead
-// of cutting deep work short and forcing lead-side retries that themselves
-// create the hangs we're trying to prevent. Tighten via env STALL_TIMEOUT_S
-// per-session if needed; tighten the role map below only if a specific role
-// proves to spuriously consume the full budget without doing useful work.
+// Role-aware thresholds. User-configurable roles (worker / reviewer /
+// debugger / tester / any custom name from `user-workflow.json`) all fall
+// through to DEFAULT_THRESHOLD_S — hardcoding their names here would
+// silently break the moment a user renames a role. Only internal hidden
+// roles (fixed names owned by the plugin) get explicit overrides. Tighten
+// per-session via env STALL_TIMEOUT_S; tighten the map below only if a
+// specific hidden role proves to spuriously consume the full budget.
 const ROLE_THRESHOLDS_S = {
-    reviewer: 600,
-    debugger: 600,
-    tester: 600,
-    worker: 600,
     explorer: 240,
     'recall-agent': 240,
     'search-agent': 240,

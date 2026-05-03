@@ -27,6 +27,7 @@ export function init(db, dims) {
         content       TEXT    NOT NULL,
         source_ref    TEXT    NOT NULL,
         session_id    TEXT,
+        project_id    TEXT,
         -- Source jsonl turn index (1-based) so search_memories results can
         -- anchor to the originating Claude Code transcript turn. Roots have
         -- no direct turn (their range is derived from members); leaves carry
@@ -113,6 +114,8 @@ export function init(db, dims) {
       CREATE INDEX idx_roots_active_old
         ON entries(status, last_seen_at ASC, score DESC)
         WHERE is_root = 1 AND status IN ('active', 'processed');
+      CREATE INDEX idx_entries_project
+        ON entries(project_id) WHERE project_id IS NOT NULL;
 
       CREATE TABLE meta (
         key   TEXT PRIMARY KEY,
@@ -160,7 +163,7 @@ export function init(db, dims) {
 
     const metaInsert = db.prepare(`INSERT INTO meta(key, value) VALUES (?, ?)`)
     metaInsert.run('embedding.current_dims', String(dimCount))
-    metaInsert.run('boot.schema_version', '4')
+    metaInsert.run('boot.schema_version', '5')
     metaInsert.run('boot.schema_bootstrap_complete', '1')
 
     db.exec('COMMIT')
@@ -258,6 +261,24 @@ function migrateIfNeeded(db) {
     }
     setMetaValue(db, 'boot.schema_version', '4')
     process.stderr.write(`[memory] schema migrated to v4 (cycle hot-path indexes)\n`)
+  }
+  if (current < 5) {
+    try {
+      db.exec(`ALTER TABLE entries ADD COLUMN project_id TEXT`)
+    } catch (e) {
+      if (!/duplicate column name/i.test(String(e?.message))) {
+        process.stderr.write(`[memory] schema v5 migration failed: ${e.message}\n`)
+        return
+      }
+    }
+    try {
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_entries_project ON entries(project_id) WHERE project_id IS NOT NULL`)
+    } catch (e) {
+      process.stderr.write(`[memory] schema v5 migration failed: ${e.message}\n`)
+      return
+    }
+    setMetaValue(db, 'boot.schema_version', '5')
+    process.stderr.write(`[memory] schema migrated to v5 (project_id)\n`)
   }
 }
 

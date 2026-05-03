@@ -903,7 +903,7 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                path: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }, { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' }, mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'] }, n: { type: 'number' } }, required: ['path'] }, minItems: 1 }], description: 'File path string, or array of paths for parallel multi-file read, or array of objects with per-file options.' },
+                path: { description: 'File path string, or array of paths for parallel multi-file read, or array of objects with per-file options ({path, offset?, limit?, mode?, n?}).' },
                 mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'], description: 'full (default) | head | tail | count.' },
                 n: { type: 'number', description: 'Lines for head / tail mode. Default 20.' },
                 offset: { type: 'number', description: 'Start line for full mode (0-based; mixdog convention).' },
@@ -1010,9 +1010,9 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Regex string (use `|` for alternation) or array of patterns (OR-joined).' },
+                pattern: { description: 'Regex string (use `|` for alternation) or array of patterns (OR-joined).' },
                 path: { type: 'string', description: 'Search root. Default: cwd.' },
-                glob: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob filter (`{a,b}` brace expansion supported) or array of filters.' },
+                glob: { description: 'Glob filter (`{a,b}` brace expansion supported) or array of filters.' },
                 output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'] },
                 head_limit: { type: 'number', description: 'Default 250; 0 = unlimited.' },
                 offset: { type: 'number', description: 'Skip N entries before head_limit.' },
@@ -1036,7 +1036,7 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob string (`{a,b}` brace expansion supported) or array of glob patterns.' },
+                pattern: { description: 'Glob string (`{a,b}` brace expansion supported) or array of glob patterns.' },
                 path: { type: 'string', description: 'Base dir. Default: cwd. Result rows emitted as absolute paths.' },
                 head_limit: { type: 'number', description: 'Max file paths to return. Default 100; 0 = unlimited.' },
                 offset: { type: 'number', description: 'Skip N file paths before applying head_limit.' },

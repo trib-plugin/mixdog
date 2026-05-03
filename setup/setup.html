@@ -1346,7 +1346,7 @@
             <label class="opt" onclick="genSelectMode('hook')">
               <div class="r-radio" id="gen-radio-hook" style="margin-top:2px"></div>
               <div class="opt-body">
-                <div class="opt-title">Hook (default, immediate)</div>
+                <div class="opt-title">Hook (immediate)</div>
                 <div class="opt-sub">Injects via SessionStart hook. Applies immediately, no restart required. Lower enforcement strength.</div>
               </div>
             </label>
@@ -1355,7 +1355,7 @@
             <label class="opt" onclick="genSelectMode('claude_md')">
               <div class="r-radio" id="gen-radio-claude-md" style="margin-top:2px"></div>
               <div class="opt-body">
-                <div class="opt-title">CLAUDE.md (strong enforcement, next session)</div>
+                <div class="opt-title">CLAUDE.md (default, strong enforcement, next session)</div>
                 <div class="opt-sub">Writes a managed block into <code id="gen-target-path">~/.claude/CLAUDE.md</code>. Strongest enforcement; the first activation requires a Claude Code restart.</div>
               </div>
             </label>

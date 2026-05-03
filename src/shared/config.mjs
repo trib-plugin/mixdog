@@ -173,18 +173,20 @@ export function isModuleEnabled(name) {
 // enabled. Settings round-trip through the setup UI; the in-process
 // path gate reads them via `getCapabilities()`.
 //
-// homeAccess: when true (default), file tools may write anywhere under
-// $HOME. When false, file tools are cwd-scoped. This ONLY controls the
-// main-agent path gate — sub-agent Edit/Write to HOME paths always go
-// through Discord approval regardless (enforced in
-// hooks/pre-tool-subagent.cjs).
-const CAPABILITY_DEFAULTS = Object.freeze({ homeAccess: true })
+// homeAccess: when true, file tools may write anywhere under $HOME. When
+// false (default), file tools are cwd-scoped — matches the setup UI's
+// out-of-the-box "OFF" toggle so a fresh install is restrictive until the
+// user explicitly opts in. This ONLY controls the main-agent path gate —
+// sub-agent Edit/Write to HOME paths always go through Discord approval
+// regardless (enforced in hooks/pre-tool-subagent.cjs).
+const CAPABILITY_DEFAULTS = Object.freeze({ homeAccess: false })
 
 export function readCapabilities() {
   const raw = readAll().capabilities
   const out = { ...CAPABILITY_DEFAULTS }
   if (raw && typeof raw === 'object') {
-    if (raw.homeAccess === false) out.homeAccess = false
+    if (raw.homeAccess === true) out.homeAccess = true
+    else if (raw.homeAccess === false) out.homeAccess = false
   }
   return out
 }
@@ -192,7 +194,8 @@ export function readCapabilities() {
 export function writeCapabilities(caps) {
   const sanitized = { ...CAPABILITY_DEFAULTS }
   if (caps && typeof caps === 'object') {
-    if (caps.homeAccess === false) sanitized.homeAccess = false
+    if (caps.homeAccess === true) sanitized.homeAccess = true
+    else if (caps.homeAccess === false) sanitized.homeAccess = false
   }
   const all = readAll()
   all.capabilities = sanitized

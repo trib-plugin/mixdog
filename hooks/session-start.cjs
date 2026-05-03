@@ -132,18 +132,111 @@ function formatTsShort(ts) {
 // Single source of truth: lib/text-utils.cjs (also imported by memory-extraction.mjs).
 const { cleanMemoryText: cleanText } = require(path.join(PLUGIN_ROOT, 'lib', 'text-utils.cjs'));
 
-function buildContext(db) {
+// Returns a safe filename stem for projectId, or null if the value is
+// dangerous (path traversal or backslash injection).
+function safeFilenameOrNull(projectId) {
+  if (projectId === null || projectId === undefined) return null;
+  const s = String(projectId);
+  if (s.includes('..') || s.includes('\\')) return null;
+  return s.replace(/\//g, '__');
+}
+
+function readUserCoreMemoryLines(projectId = null) {
   try {
+    let filePath;
+    if (projectId !== null) {
+      const stem = safeFilenameOrNull(projectId);
+      if (stem === null) return [];
+      filePath = path.join(DATA_DIR, 'project-memory', stem + '.json');
+    } else {
+      filePath = path.join(DATA_DIR, 'core-memory.json');
+    }
+    if (!fs.existsSync(filePath)) return [];
+    const raw = fs.readFileSync(filePath, 'utf8');
+    if (!raw.trim()) return [];
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.entries)) return [];
+    return parsed.entries
+      .map(e => String(e.summary || '').trim())
+      .filter(Boolean);
+  } catch (e) {
+    process.stderr.write(`[session-start] core-memory.json read failed: ${e.message}\n`);
+    return [];
+  }
+}
+
+function readAllProjectMemoryLines() {
+  try {
+    const dir = path.join(DATA_DIR, 'project-memory');
+    if (!fs.existsSync(dir)) return [];
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+    const lines = [];
+    for (const f of files) {
+      // Prefer project_id stored in file; fall back to filename decode for old files.
+      let resolvedId = null;
+      try {
+        const raw = fs.readFileSync(path.join(dir, f), 'utf8');
+        const parsed = raw.trim() ? JSON.parse(raw) : null;
+        if (parsed && 'project_id' in parsed) {
+          resolvedId = parsed.project_id;
+        } else {
+          resolvedId = f.slice(0, -5).replace(/__/g, '/');
+        }
+      } catch {}
+      const entries = readUserCoreMemoryLines(resolvedId);
+      for (const l of entries) lines.push(l);
+    }
+    return lines;
+  } catch {
+    return [];
+  }
+}
+
+function resolveCwdScope(cwd) {
+  try {
+    let dir = path.resolve(cwd || process.cwd());
+    while (true) {
+      const candidate = path.join(dir, '.mixdog', 'project.id');
+      try {
+        const val = fs.readFileSync(candidate, 'utf8').trim();
+        if (val.toLowerCase() === 'common') return null;
+        if (val) {
+          // Validate slug before returning — reject path traversal attempts.
+          if (val.includes('..') || val.includes('\\')) return null;
+          return val;
+        }
+      } catch {}
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {}
+  return null;
+}
+
+function buildContext(db, cwd) {
+  try {
+    const projectId = resolveCwdScope(cwd || process.cwd());
     const rows = db.prepare(`
       SELECT element, category, summary
       FROM entries
-      WHERE is_root = 1 AND status = 'active'
+      WHERE is_root = 1 AND status = 'active'${projectId !== null ? " AND (project_id IS NULL OR project_id = ?)" : ''}
       ORDER BY score DESC, last_seen_at DESC
-    `).all();
-    if (rows.length === 0) return '';
-    const lines = rows
+    `).all(...(projectId !== null ? [projectId] : []));
+    const dbLines = rows
       .map(r => String(r.summary || '').trim())
       .filter(Boolean);
+    const userLines = projectId !== null
+      ? [...readUserCoreMemoryLines(), ...readUserCoreMemoryLines(projectId)]
+      : [...readUserCoreMemoryLines(), ...readAllProjectMemoryLines()];
+    const seen = new Set();
+    const lines = [];
+    for (const line of [...userLines, ...dbLines]) {
+      const key = line.toLowerCase().replace(/\s+/g, ' ').slice(0, 120);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      lines.push(line);
+    }
     if (lines.length === 0) return '';
     return `## Core Memory\n${lines.join('\n')}`;
   } catch (e) {
@@ -156,16 +249,25 @@ function buildContext(db) {
 // (oldest → newest), trimmed from the front so the rendered block fits the
 // SessionStart hook output cap (10,000 chars total — leaves margin for the
 // JSON wrapper around additionalContext; header "## Recap\n" reserved).
-function buildRecapData(db) {
+function buildRecapData(db, cwd) {
   const out = { lines: [] };
   try {
-    const rows = db.prepare(`
-      SELECT id, ts, summary
-      FROM entries
-      WHERE is_root = 1
-      ORDER BY ts DESC, id DESC
-      LIMIT 20
-    `).all();
+    const projectId = resolveCwdScope(cwd || process.cwd());
+    const rows = projectId !== null
+      ? db.prepare(`
+          SELECT id, ts, summary
+          FROM entries
+          WHERE is_root = 1 AND (project_id IS NULL OR project_id = ?)
+          ORDER BY ts DESC, id DESC
+          LIMIT 20
+        `).all(projectId)
+      : db.prepare(`
+          SELECT id, ts, summary
+          FROM entries
+          WHERE is_root = 1
+          ORDER BY ts DESC, id DESC
+          LIMIT 20
+        `).all();
     if (rows.length === 0) return out;
 
     const rendered = rows.map(r => {
@@ -751,7 +853,7 @@ async function runCorePart() {
   const db = openMemoryDb();
   if (!db) return;
   try {
-    const ctx = buildContext(db);
+    const ctx = buildContext(db, _event.cwd || process.cwd());
     if (ctx) emit(ctx);
   } finally {
     try { db.close(); } catch {}
@@ -771,7 +873,7 @@ async function runRecapPart() {
   const db = openMemoryDb();
   if (!db) return;
   try {
-    const recapData = buildRecapData(db);
+    const recapData = buildRecapData(db, _event.cwd || process.cwd());
     const lines = (recapData && recapData.lines) || [];
     if (lines.length > 0) emit(`## Recap\n${lines.join('\n')}`);
   } finally {

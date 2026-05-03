@@ -12,6 +12,8 @@ import { ensureDataSeeds } from '../src/shared/seed.mjs';
 import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memory-cycle.mjs';
 import { runFullBackfill } from '../src/memory/lib/memory-ops-policy.mjs';
 import { cleanMemoryText } from '../src/memory/lib/memory.mjs';
+import { cwdFromTranscriptPath } from '../src/memory/index.mjs';
+import { resolveProjectId } from '../src/memory/lib/project-id-resolver.mjs';
 import { readSection, writeSection } from '../src/shared/config.mjs';
 import { updateSection } from '../src/shared/config.mjs';
 import { applyDefaults as applyChannelsDefaults } from '../src/channels/lib/config.mjs';
@@ -61,50 +63,12 @@ const STATUS_SNAPSHOT_PATH = join(DATA_DIR, 'channels', 'status-snapshot.json');
 const USER_WORKFLOW_PATH = join(DATA_DIR, 'user-workflow.json');
 const USER_WORKFLOW_MD_PATH = join(DATA_DIR, 'user-workflow.md');
 
-const DEFAULT_USER_WORKFLOW = {
-  roles: [
-    { name: 'worker', preset: 'SONNET HIGH', permission: 'full' },
-    { name: 'reviewer', preset: 'OPUS XHIGH', permission: 'full' },
-    { name: 'debugger', preset: 'OPUS XHIGH', permission: 'full' },
-    { name: 'tester', preset: 'SONNET HIGH', permission: 'full' },
-  ],
-};
-
-const DEFAULT_USER_WORKFLOW_MD = `# User Workflow
-
-## Workflow Control
-
-- Workflow phases are Plan → Execute → Verify → Ship → Retro.
-- Moving to the next phase requires explicit user approval.
-- Once a phase is approved, ordinary actions inside that phase may proceed without repeated approval.
-- Destructive, irreversible, build, deploy, push, or similarly high-risk actions still require explicit approval.
-
-## Working Principle
-
-- The main session is primarily for orchestration, not for doing the work manually when a delegated path fits.
-- Prefer delegated retrieval through \`explore\`, \`search\`, and \`recall\`.
-- Prefer delegated execution through \`bridge\` using the role policy in \`user-workflow.json\`.
-
-## Role Policy
-
-- Prefer delegated paths over doing the work manually in the main session.
-- For retrieval, prefer \`explore\`, \`search\`, and \`recall\`.
-- For work, invoking an agent through \`bridge\` with a role from \`user-workflow.json\` is the default priority.
-- Follow the role policy defined in \`user-workflow.json\`.
-- When the scope is broad or the work splits cleanly, spawning multiple role-matched agents in parallel is allowed.
-- Default role usage:
-  - \`worker\` handles actual implementation work and routine state-changing execution.
-  - \`reviewer\` handles verification and code review.
-  - \`debugger\` handles debugging and root-cause investigation.
-  - \`tester\` handles the test phase, test execution, and runtime validation.
-
-## Retrieval Priority
-
-- Local codebase / file / config lookup → \`explore\` first.
-- Past session / memory lookup → \`recall\` first.
-- External web / docs / GitHub lookup → \`search\` first.
-- Use lower-level manual lookup only when the retrieval path clearly does not fit or the scope is already narrowed.
-`;
+// Plugin-shipped defaults loaded from <plugin-root>/defaults/. Keeps the
+// canonical user-facing seed templates editable as plain files instead of
+// inline string constants. See defaults/user-workflow.{json,md}.
+const DEFAULTS_DIR = join(__dirname, '..', 'defaults');
+const DEFAULT_USER_WORKFLOW = JSON.parse(readFileSync(join(DEFAULTS_DIR, 'user-workflow.json'), 'utf8'));
+const DEFAULT_USER_WORKFLOW_MD = readFileSync(join(DEFAULTS_DIR, 'user-workflow.md'), 'utf8');
 
 const MEMORY_DB_PATH = join(DATA_DIR, 'memory.sqlite');
 
@@ -133,10 +97,10 @@ try {
 } catch {}
 
 // Seed plugin-owned scaffolding files (memory-config.json, etc.).
-// Idempotent — ensureDataSeeds skips
+// Idempotent — ensureDataSeeds skips existing files; fatal throw propagates
 // anything that already exists, so the agent/index.mjs call and this one
 // can both run without colliding.
-try { ensureDataSeeds(DATA_DIR); } catch {}
+ensureDataSeeds(DATA_DIR);
 
 // -- Helpers --
 
@@ -640,15 +604,17 @@ function openMemoryDb(readonly = false) {
 
 let _backfillInProgress = false;
 
-function ingestTranscriptForBackfill(db, transcriptPath) {
+function ingestTranscriptForBackfill(db, transcriptPath, { cwd } = {}) {
   if (!existsSync(transcriptPath)) return 0;
   let content;
   try { content = readFileSync(transcriptPath, 'utf8'); } catch { return 0; }
   const parts = transcriptPath.split(/[\\/]/);
   const sessionUuid = (parts[parts.length - 1] || '').replace(/\.jsonl$/, '');
+  const resolvedCwd = typeof cwd === 'string' && cwd ? cwd : cwdFromTranscriptPath(transcriptPath);
+  const projectId = resolveProjectId(typeof resolvedCwd === 'string' && resolvedCwd ? resolvedCwd : process.cwd());
   const lines = content.split('\n').filter(Boolean);
   const insertStmt = db.prepare(
-    `INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id) VALUES (?, ?, ?, ?, ?)`
+    `INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id, project_id) VALUES (?, ?, ?, ?, ?, ?)`
   );
   let count = 0;
   for (let i = 0; i < lines.length; i++) {
@@ -678,7 +644,7 @@ function ingestTranscriptForBackfill(db, transcriptPath) {
     }
     const sourceRef = `transcript:${sessionUuid}#${i + 1}`;
     try {
-      const result = insertStmt.run(tsMs, role, cleaned, sourceRef, sessionUuid);
+      const result = insertStmt.run(tsMs, role, cleaned, sourceRef, sessionUuid, projectId);
       if (result.changes > 0) count += 1;
     } catch {}
   }
@@ -1838,7 +1804,8 @@ const server = http.createServer(async (req, res) => {
         window: requestedWindow,
         scope: 'all',
         config: memoryConfig,
-        ingestTranscriptFile: (fp) => ingestTranscriptForBackfill(db, fp),
+        ingestTranscriptFile: (fp, opts) => ingestTranscriptForBackfill(db, fp, opts),
+        cwdFromTranscriptPath,
         runCycle1,
         runCycle2,
       });
@@ -2216,6 +2183,19 @@ const server = http.createServer(async (req, res) => {
       // Idempotency
       const existingModelPath = join(modelDir, 'ggml-large-v3-turbo.bin');
       if (existsSync(whisperBinPath) && existsSync(existingModelPath)) {
+        // Install ffmpeg-static before skipping (best-effort; falls back to PATH ffmpeg).
+        emitStage('ffmpeg-install', 'Installing ffmpeg-static…');
+        try {
+          const bunExe = /[\\/]bun(\.exe)?$/i.test(process.execPath) ? process.execPath : 'bun';
+          const ffmpegResult = spawnSync(bunExe, ['add', 'ffmpeg-static'], { cwd: DATA_DIR, stdio: 'pipe', timeout: 120000 });
+          if (ffmpegResult.status !== 0) {
+            process.stderr.write(`[voice-install] ffmpeg-static install failed (non-fatal): ${(ffmpegResult.stderr || '').toString().slice(0, 300)}\n`);
+          } else {
+            console.log('  [voice-install] ffmpeg-static installed.');
+          }
+        } catch (e) {
+          process.stderr.write(`[voice-install] ffmpeg-static install error (non-fatal): ${e.message}\n`);
+        }
         const ok = await smokeTestWhisper(whisperBinPath);
         if (ok) {
           writeVoiceConfig(whisperBinPath, existingModelPath);
@@ -2342,6 +2322,21 @@ const server = http.createServer(async (req, res) => {
       if (aborted) return;
       emitStage('write-config', 'Writing voice config…');
       writeVoiceConfig(whisperBinPath, resolvedModelPath);
+
+      // Install ffmpeg-static for voice audio preprocessing (best-effort; falls back to PATH ffmpeg).
+      emitStage('ffmpeg-install', 'Installing ffmpeg-static…');
+      try {
+        const bunExe = /[\\/]bun(\.exe)?$/i.test(process.execPath) ? process.execPath : 'bun';
+        const ffmpegResult = spawnSync(bunExe, ['add', 'ffmpeg-static'], { cwd: DATA_DIR, stdio: 'pipe', timeout: 120000 });
+        if (ffmpegResult.status !== 0) {
+          process.stderr.write(`[voice-install] ffmpeg-static install failed (non-fatal): ${(ffmpegResult.stderr || '').toString().slice(0, 300)}\n`);
+        } else {
+          console.log('  [voice-install] ffmpeg-static installed.');
+        }
+      } catch (e) {
+        process.stderr.write(`[voice-install] ffmpeg-static install error (non-fatal): ${e.message}\n`);
+      }
+
       console.log(`  [voice-install] done. binary=${whisperBinPath} model=${resolvedModelPath}`);
       return send({ ok: true, whisperPath: whisperBinPath, modelPath: resolvedModelPath });
     }
@@ -2373,6 +2368,19 @@ const server = http.createServer(async (req, res) => {
       const existingBin = existingBrewPrefix ? join(existingBrewPrefix, 'bin', 'whisper-cli') : null;
       const existingModelPath = join(modelDir, 'ggml-large-v3-turbo.bin');
       if (existingBin && existsSync(existingBin) && existsSync(existingModelPath)) {
+        // Install ffmpeg-static before skipping (best-effort; falls back to PATH ffmpeg).
+        emitStage('ffmpeg-install', 'Installing ffmpeg-static…');
+        try {
+          const bunExe = /[\\/]bun(\.exe)?$/i.test(process.execPath) ? process.execPath : 'bun';
+          const ffmpegResult = spawnSync(bunExe, ['add', 'ffmpeg-static'], { cwd: DATA_DIR, stdio: 'pipe', timeout: 120000 });
+          if (ffmpegResult.status !== 0) {
+            process.stderr.write(`[voice-install] ffmpeg-static install failed (non-fatal): ${(ffmpegResult.stderr || '').toString().slice(0, 300)}\n`);
+          } else {
+            console.log('  [voice-install] ffmpeg-static installed.');
+          }
+        } catch (e) {
+          process.stderr.write(`[voice-install] ffmpeg-static install error (non-fatal): ${e.message}\n`);
+        }
         const ok = await smokeTestWhisper(existingBin);
         if (ok) {
           writeVoiceConfig(existingBin, existingModelPath);
@@ -2427,6 +2435,21 @@ const server = http.createServer(async (req, res) => {
       if (aborted) return;
       emitStage('write-config', 'Writing voice config…');
       writeVoiceConfig(whisperBinPath, resolvedModelPath);
+
+      // Install ffmpeg-static for voice audio preprocessing (best-effort; falls back to PATH ffmpeg).
+      emitStage('ffmpeg-install', 'Installing ffmpeg-static…');
+      try {
+        const bunExe = /[\\/]bun(\.exe)?$/i.test(process.execPath) ? process.execPath : 'bun';
+        const ffmpegResult = spawnSync(bunExe, ['add', 'ffmpeg-static'], { cwd: DATA_DIR, stdio: 'pipe', timeout: 120000 });
+        if (ffmpegResult.status !== 0) {
+          process.stderr.write(`[voice-install] ffmpeg-static install failed (non-fatal): ${(ffmpegResult.stderr || '').toString().slice(0, 300)}\n`);
+        } else {
+          console.log('  [voice-install] ffmpeg-static installed.');
+        }
+      } catch (e) {
+        process.stderr.write(`[voice-install] ffmpeg-static install error (non-fatal): ${e.message}\n`);
+      }
+
       console.log(`  [voice-install] done. binary=${whisperBinPath} model=${resolvedModelPath}`);
       return send({ ok: true, whisperPath: whisperBinPath, modelPath: resolvedModelPath });
     }
@@ -2498,6 +2521,19 @@ const server = http.createServer(async (req, res) => {
 
       // Idempotency
       if (existsSync(whisperBinPath) && existsSync(existingModelPath)) {
+        // Install ffmpeg-static before skipping (best-effort; falls back to PATH ffmpeg).
+        emitStage('ffmpeg-install', 'Installing ffmpeg-static…');
+        try {
+          const bunExe = /[\\/]bun(\.exe)?$/i.test(process.execPath) ? process.execPath : 'bun';
+          const ffmpegResult = spawnSync(bunExe, ['add', 'ffmpeg-static'], { cwd: DATA_DIR, stdio: 'pipe', timeout: 120000 });
+          if (ffmpegResult.status !== 0) {
+            process.stderr.write(`[voice-install] ffmpeg-static install failed (non-fatal): ${(ffmpegResult.stderr || '').toString().slice(0, 300)}\n`);
+          } else {
+            console.log('  [voice-install] ffmpeg-static installed.');
+          }
+        } catch (e) {
+          process.stderr.write(`[voice-install] ffmpeg-static install error (non-fatal): ${e.message}\n`);
+        }
         const ok = await smokeTestWhisper(whisperBinPath);
         if (ok) {
           writeVoiceConfig(whisperBinPath, existingModelPath);
@@ -2563,6 +2599,21 @@ const server = http.createServer(async (req, res) => {
       if (aborted) return;
       emitStage('write-config', 'Writing voice config…');
       writeVoiceConfig(whisperBinPath, resolvedModelPath);
+
+      // Install ffmpeg-static for voice audio preprocessing (best-effort; falls back to PATH ffmpeg).
+      emitStage('ffmpeg-install', 'Installing ffmpeg-static…');
+      try {
+        const bunExe = /[\\/]bun(\.exe)?$/i.test(process.execPath) ? process.execPath : 'bun';
+        const ffmpegResult = spawnSync(bunExe, ['add', 'ffmpeg-static'], { cwd: DATA_DIR, stdio: 'pipe', timeout: 120000 });
+        if (ffmpegResult.status !== 0) {
+          process.stderr.write(`[voice-install] ffmpeg-static install failed (non-fatal): ${(ffmpegResult.stderr || '').toString().slice(0, 300)}\n`);
+        } else {
+          console.log('  [voice-install] ffmpeg-static installed.');
+        }
+      } catch (e) {
+        process.stderr.write(`[voice-install] ffmpeg-static install error (non-fatal): ${e.message}\n`);
+      }
+
       console.log(`  [voice-install] done. binary=${whisperBinPath} model=${resolvedModelPath}`);
       return send({ ok: true, whisperPath: whisperBinPath, modelPath: resolvedModelPath });
     }

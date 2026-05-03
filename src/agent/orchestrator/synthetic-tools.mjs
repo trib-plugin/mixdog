@@ -23,10 +23,6 @@ export const SYNTHETIC_TOOL_DEFS = Object.freeze([
             type: 'object',
             properties: {
                 query: {
-                    anyOf: [
-                        { type: 'string', minLength: 1 },
-                        { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
-                    ],
                     description: 'NL query, or array of queries to fan out in one call. Hybrid text + vector search.',
                 },
                 limit: {
@@ -62,10 +58,6 @@ export const SYNTHETIC_TOOL_DEFS = Object.freeze([
             type: 'object',
             properties: {
                 keywords: {
-                    anyOf: [
-                        { type: 'string', minLength: 1 },
-                        { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
-                    ],
                     description: 'Query string, or array for parallel fan-out.'
                 },
                 site: {

@@ -1485,13 +1485,14 @@ async function seedRecallMemoryIfNeeded(cases) {
     recallSeedError = null;
     const summary = 'Live smoke recall marker for routing benchmark; safe to forget after the run.';
     const serviceResult = await callLiveMemoryTool('memory', {
-        action: 'remember',
+        action: 'manage',
+        op: 'add',
         element: RECALL_TARGET,
         summary,
         category: 'fact',
     });
     const serviceText = decodeToolText(serviceResult || {});
-    if (serviceResult && !serviceResult.isError && /remembered/i.test(serviceText)) {
+    if (serviceResult && !serviceResult.isError && /\badded\b/i.test(serviceText)) {
         const id = Number(serviceText.match(/\bid=(\d+)/)?.[1] || 0);
         return [{ id: Number.isFinite(id) && id > 0 ? id : null, element: RECALL_TARGET, via: 'service' }];
     }
@@ -1531,7 +1532,8 @@ async function cleanupRecallSeeds(seeds) {
     for (const seed of seeds) {
         if (seed?.via !== 'service') continue;
         try {
-            const args = seed.id ? { action: 'forget', id: seed.id } : { action: 'forget', element: seed.element || RECALL_TARGET };
+            if (!seed.id) continue;
+            const args = { action: 'manage', op: 'delete', id: seed.id };
             await callLiveMemoryTool('memory', args);
         } catch {
             // best-effort cleanup; benchmark result should not hinge on it

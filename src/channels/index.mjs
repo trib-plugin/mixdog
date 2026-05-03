@@ -346,7 +346,7 @@ function applyTranscriptBinding(channelId, transcriptPath, options = {}) {
   forwarder.setContext(channelId, transcriptPath, { replayFromStart: options.replayFromStart, catchUpFromPersisted: options.catchUpFromPersisted });
   const boundTranscriptPath = forwarder.transcriptPath || transcriptPath;
   forwarder.startWatch();
-  void memoryIngestTranscript(boundTranscriptPath);
+  void memoryIngestTranscript(boundTranscriptPath, { cwd: options.cwd });
   refreshActiveInstance(INSTANCE_ID, { channelId, transcriptPath: boundTranscriptPath });
   if (options.persistStatus !== false) {
     statusState.update((state) => {
@@ -357,6 +357,7 @@ function applyTranscriptBinding(channelId, transcriptPath, options = {}) {
       state.lastSentHash = forwarder.lastHash;
       state.lastSentTime = 0;
       state.sessionIdle = false;
+      state.sessionCwd = options.cwd ?? null;
     });
   }
 }
@@ -396,7 +397,8 @@ async function rebindTranscriptContext(channelId, options = {}) {
         applyTranscriptBinding(channelId, bound.transcriptPath, {
           replayFromStart,
           catchUpFromPersisted: options.catchUpFromPersisted,
-          persistStatus: options.persistStatus
+          persistStatus: options.persistStatus,
+          cwd: bound.sessionCwd,
         });
         if (replayFromStart || options.catchUpFromPersisted) {
           await forwarder.forwardNewText();
@@ -410,7 +412,7 @@ async function rebindTranscriptContext(channelId, options = {}) {
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
   if (previousPath) {
-    applyTranscriptBinding(channelId, previousPath, { catchUpFromPersisted: true });
+    applyTranscriptBinding(channelId, previousPath, { catchUpFromPersisted: true, cwd: statusState.read().sessionCwd });
     await forwarder.forwardNewText();
     process.stderr.write(`mixdog: rebind fallback: bound previous transcript ${previousPath}\n`);
     return previousPath;
@@ -2325,7 +2327,7 @@ backend.onMessage = (msg) => {
     transcriptPath = latestByMtime;
   }
   if (transcriptPath) {
-    applyTranscriptBinding(route.targetChatId, transcriptPath);
+    applyTranscriptBinding(route.targetChatId, transcriptPath, { cwd: boundTranscript?.sessionCwd });
   } else {
     refreshActiveInstance(INSTANCE_ID, { channelId: route.targetChatId });
   }
@@ -2342,6 +2344,7 @@ backend.onMessage = (msg) => {
       state.sessionIdle = false;
       if (transcriptPath) state.transcriptPath = transcriptPath;
       else delete state.transcriptPath;
+      state.sessionCwd = boundTranscript?.sessionCwd ?? null;
     });
     if (!boundTranscript?.exists) {
       await rebindTranscriptContext(route.targetChatId, {
@@ -2419,6 +2422,7 @@ ${messageBody}`;
     content: messageBody,
     sourceRef: `discord:${route.targetChatId}#${msg.messageId}`,
     sessionId: `discord:${route.targetChatId}`,
+    cwd: statusState.read().sessionCwd,
   });
 }
 async function init(_sharedMcp) {
