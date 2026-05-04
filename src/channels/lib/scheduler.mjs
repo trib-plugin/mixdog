@@ -46,12 +46,11 @@ try {
   process.stderr.write(`mixdog scheduler: node-cron unavailable, cron expressions disabled (${err?.code || err?.message || err})\n`);
 }
 const TICK_INTERVAL = 6e4;
-// Legacy time formats handled by the tick() path. Anything else is
-// forwarded to node-cron for parsing/scheduling.
-const LEGACY_TIME_RE = /^(?:\d{2}:\d{2}|every\d+m|hourly|daily)$/;
+// All schedule `time` values must be valid 5- or 6-field cron expressions
+// (node-cron format). Legacy formats (HH:MM, everyNm, hourly, daily) are
+// no longer accepted — migrate to cron: "MM HH * * *", "*/N * * * *", etc.
 function isCronExpression(time) {
   if (typeof time !== "string" || !time) return false;
-  if (LEGACY_TIME_RE.test(time)) return false;
   if (!cron) return false;
   const tokens = time.trim().split(/\s+/);
   if (tokens.length !== 5 && tokens.length !== 6) return false;
@@ -61,17 +60,16 @@ function isCronExpression(time) {
  *  Used by schedule_control / schedules POST before accepting input. */
 export function validateCronExpression(time) {
   if (typeof time !== "string" || !time) throw new Error(`invalid cron expression: ${JSON.stringify(time)}`);
-  if (LEGACY_TIME_RE.test(time)) return; // legacy format — always valid
   if (!cron) throw new Error(`cron expression "${time}" rejected: node-cron is not available (install node-cron to use cron expressions)`);
   const tokens = time.trim().split(/\s+/);
   if (tokens.length !== 5 && tokens.length !== 6) {
-    throw new Error(`invalid cron expression "${time}": expected 5 or 6 fields, got ${tokens.length}`);
+    throw new Error(`invalid cron expression "${time}": expected 5 or 6 fields, got ${tokens.length}. Legacy formats (HH:MM, everyNm, hourly, daily) are no longer supported — use a cron expression instead.`);
   }
   let valid = false;
   try { valid = cron.validate(time); } catch (e) {
     throw new Error(`invalid cron expression "${time}": ${e?.message || e}`);
   }
-  if (!valid) throw new Error(`invalid cron expression "${time}": failed node-cron validation`);
+  if (!valid) throw new Error(`invalid cron expression "${time}": failed node-cron validation. Legacy formats (HH:MM, everyNm, hourly, daily) are no longer supported — use a cron expression instead.`);
 }
 // Build a {hhmm, dateStr, dow} snapshot in the given IANA TZ. Falls
 // back to local Date math when tz is absent.
@@ -96,27 +94,9 @@ function tzSnapshot(now, tz) {
     dow: dowMap[parts.weekday] ?? now.getDay(),
   };
 }
-// Proactive frequency → period (idleMinutes) + daily cap.
-//
-// NEW SEMANTICS (D4): `idleMinutes` is the period between proactive
-// *opportunities* — the scheduler wakes every `idleMinutes` and, if the
-// 15-min idle guard also passes, fires. `daily` remains a soft cap used
-// for telemetry/reporting only; firing is period-gated, not slot-gated.
-//
-// Mapping: 1→180m (~3h), 2→120m (2h), 3→90m (1.5h), 4→60m (1h),
-// 5→30m (half-hour). Higher frequency = shorter period.
-const FREQUENCY_MAP = {
-  1: { daily: 3, idleMinutes: 180 },
-  // period ~3h
-  2: { daily: 5, idleMinutes: 120 },
-  // period 2h
-  3: { daily: 7, idleMinutes: 90 },
-  // period 1.5h
-  4: { daily: 10, idleMinutes: 60 },
-  // period 1h
-  5: { daily: 15, idleMinutes: 30 }
-  // period 30m
-};
+// Proactive period: read directly from proactive.periodMinutes (required).
+// The legacy 1..5 frequency integer mapping (FREQUENCY_MAP) has been removed.
+// Callers must set an explicit periodMinutes in the proactive config.
 class Scheduler {
   nonInteractive;
   interactive;
@@ -133,7 +113,7 @@ class Scheduler {
   // Activity tracking
   lastActivity = 0;
   // timestamp of last inbound message
-  // Proactive state (period-based — see FREQUENCY_MAP notes)
+  // Proactive state (period-based — period defined by proactive.periodMinutes)
   proactiveLastFireAt = 0;
   // timestamp of last proactive fire (0 = never in this session)
   proactiveStartAt = Date.now();
@@ -205,11 +185,12 @@ class Scheduler {
     const quietSrc = cfg?.quiet ?? null;
     const schedulesSrc = cfg?.schedules ?? null;
     const proactiveCfgSrc = cfg?.proactive ?? null;
-    // Holidays: read from topConfig.quiet.holidays only.
+    // Holidays: require explicit ISO country code in topConfig.quiet.holidays.
+    // Setting holidays: true (locale-guessing) is no longer supported — set
+    // an explicit country code string (e.g. "US", "KR") instead.
     const hol = quietSrc?.holidays;
     if (hol === true) {
-      const locale = Intl.DateTimeFormat().resolvedOptions().locale ?? "";
-      this.holidayCountry = locale.split("-")[1] || locale.toUpperCase().slice(0, 2);
+      throw new Error('quiet.holidays: true is no longer supported. Set an explicit ISO country code string (e.g. "US", "KR") to enable holiday awareness.');
     } else if (typeof hol === "string" && hol) {
       this.holidayCountry = hol;
     } else {
@@ -225,11 +206,10 @@ class Scheduler {
     // field lets future code call the shared isInQuietWindow(cfg, now)
     // without re-deriving the shape.
     this._quietCfg = quietSrc ? { quiet: quietSrc } : null;
-    // Raw boolean for `quiet.holidays === true` — surfaces weekend-quiet
-    // semantics that match webhook's isInQuietWindow (config.mjs). Kept
-    // separate from holidayCountry (which feeds schedule.skipHolidays /
-    // days==="weekday" public-holiday skips — a different feature).
-    this.weekendQuiet = quietSrc?.holidays === true;
+    // weekendQuiet: weekend-quiet semantics from quiet.holidays. Since holidays:true
+    // is no longer accepted (it threw above), this is only set when an explicit
+    // country code is provided — in that case weekend-quiet is not implied.
+    this.weekendQuiet = false;
   }
   setInjectHandler(fn) {
     this.injectFn = fn;
@@ -279,20 +259,25 @@ class Scheduler {
     if (until && Date.now() >= until) this.deferred.delete(name);
     return false;
   }
-  /** Get current session state based on activity */
+  /** Get current session activity state.
+   *  Returns { lastActivityMs, pendingWork } — callers apply their own
+   *  thresholds. pendingWork is true when pendingCheck() reports work in
+   *  flight. lastActivityMs is 0 when no activity has been recorded. */
   getSessionState() {
-    // External busy signal wins — a pending bridge dispatch or any other
-    // probe that reports "work in flight" keeps the state active even if
-    // the user hasn't typed in a while. Probe failures must never crash
-    // fireTimed / schedule logic, so wrap defensively.
+    let pendingWork = false;
     try {
-      if (this.pendingCheck && this.pendingCheck()) return "active";
-    } catch { /* probe failure is not fatal; fall through */ }
-    if (this.lastActivity === 0) return "idle";
-    const elapsed = Date.now() - this.lastActivity;
-    if (elapsed < 2 * 6e4) return "active";
-    if (elapsed < 15 * 6e4) return "recent";
-    return "idle";
+      if (this.pendingCheck) pendingWork = !!this.pendingCheck();
+    } catch { /* probe failure is not fatal */ }
+    return { lastActivityMs: this.lastActivity, pendingWork };
+  }
+  /** Returns true when the session is considered idle (no pending work and
+   *  lastActivityMs is either 0 or older than the given threshold).
+   *  threshold defaults to 15 minutes but callers should pass their own. */
+  isSessionIdle(thresholdMs = 15 * 6e4) {
+    const { lastActivityMs, pendingWork } = this.getSessionState();
+    if (pendingWork) return false;
+    if (lastActivityMs === 0) return true;
+    return Date.now() - lastActivityMs >= thresholdMs;
   }
   /** Get time context for prompt enrichment */
   getTimeContext() {
@@ -307,7 +292,8 @@ class Scheduler {
   }
   /** Wrap prompt with session context metadata */
   wrapPrompt(name, prompt, type) {
-    const state = this.getSessionState();
+    const { lastActivityMs, pendingWork } = this.getSessionState();
+    const state = pendingWork ? "active" : lastActivityMs === 0 ? "idle" : "recent";
     const time = this.getTimeContext();
     const header = [
       `[schedule: ${name} | type: ${type} | session: ${state}]`,
@@ -387,8 +373,9 @@ ${Scheduler.INSTANCE_UUID}`;
     this.tick();
     this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL);
   }
-  /** Register any cron-expression entries with node-cron. Legacy
-   *  HH:MM / everyNm / hourly / daily entries stay on the tick() path. */
+  /** Register cron-expression entries with node-cron. All schedule entries
+   *  must use cron expressions. Entries that fail cron validation are skipped
+   *  with a logged error. */
   registerCronJobs() {
     const all = [
       ...this.nonInteractive.map((s) => ({ schedule: s, type: "non-interactive" })),
@@ -520,17 +507,15 @@ ${Scheduler.INSTANCE_UUID}`;
       const nextLabel = Date.now() >= nextEligibleAt
         ? 'eligible-now (awaiting idle)'
         : new Date(nextEligibleAt).toLocaleTimeString();
-      const sessionState = this.getSessionState();
-      const freq = Math.max(1, Math.min(5, this.proactive.frequency ?? 3));
-      const periodMin = FREQUENCY_MAP[freq].idleMinutes;
+      const periodMin = (this.proactive.periodMinutes ?? null);
       result.push({
         name: 'proactive',
-        time: `period=${periodMin}m (freq=${freq}), next=${nextLabel}`,
+        time: `period=${periodMin}m, next=${nextLabel}`,
         days: "daily",
         type: "proactive",
         running: false,
         lastFired: this.proactiveLastFireAt > 0 ? new Date(this.proactiveLastFireAt).toISOString() : null,
-        meta: { session: sessionState, firedToday: this.proactiveFiredToday }
+        meta: { firedToday: this.proactiveFiredToday }
       });
     }
     return result;
@@ -574,11 +559,9 @@ ${Scheduler.INSTANCE_UUID}`;
   }
   async tickAsync() {
     const now = /* @__PURE__ */ new Date();
-    const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-    const key = `${dateStr}T${hhmm}`;
-    const dow = now.getDay();
-    const isWeekend = dow === 0 || dow === 6;
+    // All timed schedules are now handled exclusively by node-cron (registerCronJobs).
+    // tick() only drives proactive firing and holiday cache refresh.
     if (this.holidayCountry && this.holidayChecked !== dateStr) {
       this.holidayChecked = dateStr;
       try {
@@ -593,127 +576,25 @@ ${Scheduler.INSTANCE_UUID}`;
         this.todayIsHoliday = false;
       }
     }
-    const allTimed = [
-      ...this.nonInteractive.map((s) => ({ schedule: s, type: "non-interactive" })),
-      ...this.interactive.map((s) => ({ schedule: s, type: "interactive" }))
-    ];
-    for (const { schedule: s, type } of allTimed) {
-      // Cron-expression entries are handled by node-cron; skip here to avoid double-fire.
-      if (this.cronJobs.has(s.name)) continue;
-      const tz = s.timezone || null;
-      const snap = tz ? tzSnapshot(now, tz) : { hhmm, dateStr, dow };
-      const snapIsWeekend = snap.dow === 0 || snap.dow === 6;
-      const snapKey = `${snap.dateStr}T${snap.hhmm}`;
-      const days = s.days ?? "daily";
-      if (!this.matchesDays(days, snap.dow, snapIsWeekend)) continue;
-      if (this.todayIsHoliday && !tz && (s.skipHolidays || days === "weekday")) {
-        const skipKey = `holiday:${dateStr}:${s.name}`;
-        if (!this.lastFired.has(skipKey)) {
-          this.lastFired.set(skipKey, dateStr);
-          logSchedule(`skipping "${s.name}" \u2014 public holiday
-`);
-        }
-        continue;
-      }
-      if ((s.dnd || this.respectQuietSchedules) && this.isQuietHours(now, tz)) continue;
-      const intervalMatch = s.time.match(/^every(\d+)m$/);
-      let shouldFire = false;
-      // 90s catch-up grace window. The legacy minute-exact check meant a
-      // tick that landed at HH:MM:01 (e.g. after a long GC pause or because
-      // the queue interval drifted) would miss the slot entirely. Persisted
-      // lastFired (snapKey) still prevents double-fire within the same
-      // minute on the same date.
-      const HHMM_GRACE_MS = 90 * 1000;
-      if (intervalMatch) {
-        const intervalMs = parseInt(intervalMatch[1]) * 6e4;
-        const lastKey = this.lastFired.get(s.name);
-        const lastTime = lastKey ? new Date(lastKey).getTime() : 0;
-        shouldFire = Date.now() - lastTime >= intervalMs;
-      } else if (s.time === "hourly") {
-        const isHour = snap.hhmm.endsWith(":00");
-        const wasUnfiredThisSlot = this.lastFired.get(s.name) !== snapKey;
-        shouldFire = (isHour || (snap.hhmm.endsWith(":01"))) && wasUnfiredThisSlot && isHour;
-        if (!shouldFire && wasUnfiredThisSlot) {
-          // Catch-up: if minute drift caused us to miss :00, allow firing on
-          // the next tick within the grace window using the :00 snapKey.
-          const expectedKey = `${snap.dateStr}T${snap.hhmm.slice(0,3)}00`;
-          const now2 = Date.now();
-          const slotMs = new Date(`${snap.dateStr}T${snap.hhmm.slice(0,3)}00:00`).getTime();
-          if (Number.isFinite(slotMs) && now2 - slotMs <= HHMM_GRACE_MS && this.lastFired.get(s.name) !== expectedKey) {
-            shouldFire = true;
-          }
-        }
-      } else {
-        shouldFire = s.time === snap.hhmm && this.lastFired.get(s.name) !== snapKey;
-        if (!shouldFire && /^\d{2}:\d{2}$/.test(s.time)) {
-          // Catch-up: tick fell after the exact HH:MM minute. If we are still
-          // within the grace window relative to that scheduled wall time AND
-          // we have not yet fired for this slot today, fire once.
-          // Guard uses the slot ISO key (dateT{s.time}) so any tick within the
-          // 90s window that persists the same slot key is correctly deduplicated.
-          const slotKey = `${snap.dateStr}T${s.time}`;
-          const slotMs = new Date(`${snap.dateStr}T${s.time}:00`).getTime();
-          const now2 = Date.now();
-          if (Number.isFinite(slotMs) && now2 >= slotMs && now2 - slotMs <= HHMM_GRACE_MS && this.lastFired.get(s.name) !== slotKey) {
-            shouldFire = true;
-          }
-        }
-      }
-      if (!shouldFire) continue;
-      if (this.shouldSkip(s.name)) continue;
-      // TZ-specific holiday check for tz-bound schedules (local-TZ schedules use the cached todayIsHoliday above).
-      if (tz && this.holidayCountry && (s.skipHolidays || days === "weekday")) {
-        try {
-          const holiday = await isHoliday(this.tzDate(now, tz), this.holidayCountry);
-          if (holiday) {
-            logSchedule(`skipping "${s.name}" \u2014 public holiday\n`);
-            continue;
-          }
-        } catch {}
-      }
-      // Persist per-schedule fire key BEFORE dispatch so a process restart
-      // between fire-intent and next tick does not re-fire the same slot.
-      // In-memory map gates within the running process; the persisted key
-      // gates across restarts.
-      try {
-        const state = readScheduleState();
-        // For HH:MM schedules use the slot key (dateT{s.time}) so catch-up
-        // deduplication within the 90s grace window is consistent across ticks.
-        const fireKey = /^\d{2}:\d{2}$/.test(s.time)
-          ? `${snap.dateStr}T${s.time}`
-          : snapKey;
-        state.timed = { ...(state.timed || {}), [s.name]: { snapKey: fireKey, ts: now.toISOString() } };
-        writeScheduleState(state);
-        this.lastFired.set(s.name, fireKey);
-      } catch (persistErr) {
-        logSchedule(`skipping "${s.name}" — persist failed: ${persistErr?.message || persistErr}`);
-        continue;
-      }
-      this.fireTimed(s, type).catch(
-        (err) => process.stderr.write(`mixdog scheduler: ${s.name} failed: ${err}
-`)
-      );
-    }
     this.tickProactive(now, dateStr);
   }
-  // ── Proactive tick (period-based, D4) ───────────────────────────────
+  // ── Proactive tick (period-based) ─────────────────────────────────────
   //
-  // Period = FREQUENCY_MAP[freq].idleMinutes. On every scheduler tick we
-  // check two conditions:
+  // Period = proactive.periodMinutes (explicit config, required).
+  // On every scheduler tick two conditions are checked:
   //   (a) now - proactiveLastFireAt >= period  (period elapsed)
-  //   (b) getSessionState() === "idle"          (15-min idle guard)
-  // If both hold (plus dnd/quiet/shouldSkip), we fire and update
-  // proactiveLastFireAt. Cold start uses proactiveStartAt as the
-  // baseline so restarts don't trigger an immediate fire.
+  //   (b) isSessionIdle()                       (no pending work, no recent activity)
+  // Cold start uses proactiveStartAt as the baseline.
   proactivePeriodMs() {
-    const freq = Math.max(1, Math.min(5, this.proactive?.frequency ?? 3));
-    return FREQUENCY_MAP[freq].idleMinutes * 6e4;
+    const minutes = this.proactive?.periodMinutes;
+    if (!minutes || !Number.isFinite(Number(minutes)) || Number(minutes) <= 0) {
+      throw new Error(`proactive.periodMinutes must be a positive number (got ${JSON.stringify(minutes)}). The legacy frequency integer (1..5) is no longer supported.`);
+    }
+    return Number(minutes) * 6e4;
   }
   tickProactive(now, _dateStr) {
     if (!this.proactive) return;
     if (this.respectQuietProactive && this.isQuietHours(now)) {
-      // One-liner so operators can see the skip without flooding the log.
-      // Period-based cycle is preserved: we do NOT advance the baseline here.
       if (!this._quietSkipLogged) {
         logSchedule(`skipping proactive — quiet hours ${this.quietSchedule}
 `);
@@ -726,7 +607,7 @@ ${Scheduler.INSTANCE_UUID}`;
     const periodMs = this.proactivePeriodMs();
     const baseline = this.proactiveLastFireAt || this.proactiveStartAt;
     if (Date.now() - baseline < periodMs) return;
-    if (this.getSessionState() !== "idle") return;
+    if (!this.isSessionIdle()) return;
     this.fireProactiveTick();
   }
   /** Day abbreviation → JS day number (0=Sun...6=Sat) */
@@ -783,8 +664,6 @@ ${Scheduler.INSTANCE_UUID}`;
     }
     return false;
   }
-  // Legacy random-slot generator removed (D4). Proactive is now strictly
-  // period-based \u2014 see tickProactive() + FREQUENCY_MAP.idleMinutes.
   // ── Fire timed schedule ─────────────────────────────────────────────
   async fireTimed(schedule, type) {
     const execMode = schedule.exec ?? "prompt";
@@ -906,7 +785,7 @@ ${scriptResult}
       return;
     }
     // Pre-check: skip LLM call entirely if user is active (manual trigger with topic bypasses)
-    if (!preferredTopic && this.getSessionState() !== 'idle') {
+    if (!preferredTopic && !this.isSessionIdle()) {
       logSchedule('proactive: skip (session active, pre-check)\n');
       return;
     }

@@ -3,12 +3,14 @@ import os from 'node:os'
 const HOME = os.homedir()
 
 /**
- * Normalize a path string for cross-platform project-id resolution.
- * - Expands ~ / $HOME / %USERPROFILE% to os.homedir()
- * - Strips file:// scheme prefix
- * - Strips leading/trailing quotes and surrounding punctuation (", ', `, (, ))
- * - Converts backslashes to forward slashes
+ * Minimal path normalization for cross-platform project-id resolution.
+ * Keeps only objective corrections:
+ * - Expands leading ~ to os.homedir()
  * - Casefolds Windows drive letter (C:/ → c:/)
+ *
+ * Removed: file:// stripping, quote stripping, $HOME/%USERPROFILE% expansion,
+ * backslash conversion — these were heuristic guesses at malformed input that
+ * no longer belong in this layer.
  *
  * @param {string} p
  * @returns {string}
@@ -16,22 +18,11 @@ const HOME = os.homedir()
 export function normalizePath(p) {
   if (typeof p !== 'string') return p
 
-  // Strip file:// scheme
-  p = p.replace(/^file:\/\//, '')
-
-  // Strip surrounding quotes and common punctuation
-  p = p.replace(/^["'`(\[]+/, '').replace(/["'`)'\]]+$/, '')
-
-  // Expand ~ and $HOME / %USERPROFILE%
+  // Expand ~ to home directory
   p = p.replace(/^~(?=[\/\\]|$)/, HOME)
-  p = p.replace(/^\$HOME(?=[\/\\]|$)/, HOME)
-  p = p.replace(/^%USERPROFILE%(?=[\/\\]|$)/i, HOME)
 
-  // Backslash → forward slash
-  p = p.replace(/\\/g, '/')
-
-  // Casefold Windows drive letter
-  p = p.replace(/^([A-Z]):(\/)/i, (_, d, sep) => d.toLowerCase() + ':' + sep)
+  // Casefold Windows drive letter (handles both forward-slash and backslash)
+  p = p.replace(/^([A-Z]):([/\\])/i, (_, d, sep) => d.toLowerCase() + ':' + sep)
 
   return p
 }

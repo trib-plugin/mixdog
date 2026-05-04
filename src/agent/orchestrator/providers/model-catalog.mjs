@@ -22,6 +22,20 @@ const CATALOG_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/mode
 const CATALOG_CACHE_FILE = 'litellm-catalog.json';
 const CATALOG_TTL_MS = 24 * 60 * 60_000;
 
+// Provider prefix variants used for catalog key lookup. Named constants so
+// all three lookup sites (getModelMetadataSync, getModelMetadata, enrichModels)
+// stay in sync. A provider needing a new prefix adds it here.
+// Source: LiteLLM catalog key conventions (see CATALOG_URL above).
+const _CATALOG_SIMPLE_PREFIXES = [
+    'anthropic/', 'openai/', 'gemini/', 'google/', 'xai/', 'azure_ai/',
+    'openrouter/anthropic/', 'openrouter/openai/',
+];
+// Bedrock-style variants: catalog key = <prefix><id>-v1:0
+const _CATALOG_BEDROCK_PREFIXES = ['anthropic.', 'bedrock/anthropic.'];
+// Shorter prefix set for enrichModels (ids from /models endpoints are rarely
+// azure_ai- or openrouter-namespaced).
+const _CATALOG_ENRICH_PREFIXES = ['anthropic/', 'openai/', 'gemini/', 'google/', 'xai/'];
+
 // Polyfill for models the LiteLLM catalog does not list yet. Values mirror
 // the catalog row shape so _normalize works unchanged. Source: each provider's
 // official pricing page; do not extrapolate. Promotional discounts are
@@ -107,10 +121,10 @@ export function getModelMetadataSync(id) {
     if (!_memCache) return null;
     const catalog = _memCache;
     if (catalog[id]) return _normalize(catalog[id]);
-    for (const prefix of ['anthropic/', 'openai/', 'gemini/', 'google/', 'xai/', 'azure_ai/', 'openrouter/anthropic/', 'openrouter/openai/']) {
+    for (const prefix of _CATALOG_SIMPLE_PREFIXES) {
         if (catalog[prefix + id]) return _normalize(catalog[prefix + id]);
     }
-    for (const prefix of ['anthropic.', 'bedrock/anthropic.']) {
+    for (const prefix of _CATALOG_BEDROCK_PREFIXES) {
         const v1 = catalog[prefix + id + '-v1:0'];
         if (v1) return _normalize(v1);
     }
@@ -126,14 +140,11 @@ export async function getModelMetadata(id) {
     if (!id) return null;
     if (PRICING_OVERRIDES[id]) return _normalize(PRICING_OVERRIDES[id]);
     const catalog = await loadCatalog();
-    // Exact match
     if (catalog[id]) return _normalize(catalog[id]);
-    // Provider-prefixed variants
-    for (const prefix of ['anthropic/', 'openai/', 'gemini/', 'google/', 'xai/', 'azure_ai/', 'openrouter/anthropic/', 'openrouter/openai/']) {
+    for (const prefix of _CATALOG_SIMPLE_PREFIXES) {
         if (catalog[prefix + id]) return _normalize(catalog[prefix + id]);
     }
-    // AWS Bedrock variants (anthropic.claude-...-v1:0)
-    for (const prefix of ['anthropic.', 'bedrock/anthropic.']) {
+    for (const prefix of _CATALOG_BEDROCK_PREFIXES) {
         const v1 = catalog[prefix + id + '-v1:0'];
         if (v1) return _normalize(v1);
     }
@@ -170,12 +181,12 @@ export async function enrichModels(models) {
         // Same lookup logic as getModelMetadata but inlined for speed.
         let entry = catalog[id];
         if (!entry) {
-            for (const prefix of ['anthropic/', 'openai/', 'gemini/', 'google/', 'xai/']) {
+            for (const prefix of _CATALOG_ENRICH_PREFIXES) {
                 if (catalog[prefix + id]) { entry = catalog[prefix + id]; break; }
             }
         }
         if (!entry) {
-            for (const prefix of ['anthropic.', 'bedrock/anthropic.']) {
+            for (const prefix of _CATALOG_BEDROCK_PREFIXES) {
                 if (catalog[prefix + id + '-v1:0']) { entry = catalog[prefix + id + '-v1:0']; break; }
             }
         }

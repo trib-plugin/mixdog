@@ -5,7 +5,6 @@ import { spawn, spawnSync } from "child_process";
 import { DATA_DIR, isInQuietWindow } from "./config.mjs";
 import { appendFileSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, statSync, existsSync, watch as fsWatch } from "fs";
 import { randomUUID } from "crypto";
-import { homedir } from "os";
 const WEBHOOKS_DIR = join(DATA_DIR, "webhooks");
 const WEBHOOK_LOG = join(DATA_DIR, "webhook.log");
 function logWebhook(msg) {
@@ -21,15 +20,8 @@ function logWebhook(msg) {
   } catch {
   }
 }
-function isActionableEvent(event, action) {
-  if (!event) return true;
-  if (event === "push") return true;
-  if (event === "issues") return ["opened", "edited", "reopened"].includes(action);
-  if (event === "issue_comment") return action === "created";
-  if (event === "pull_request") return ["opened", "edited", "reopened", "synchronize"].includes(action);
-  if (event === "ping") return false;
-  return false;
-}
+// isActionableEvent removed: all webhook payloads are forwarded to the
+// LLM-driven handler which decides actionability via prompt rubric.
 const SIGNATURE_HEADERS = {
   github: { header: "x-hub-signature-256", prefix: "sha256=" },
   sentry: { header: "sentry-hook-signature", prefix: "" },
@@ -209,27 +201,15 @@ function listAllDeliveries({ endpoint = null, status = null, limit = 100 } = {})
 }
 export { listAllDeliveries };
 function resolveNgrokBin() {
-  const isWin = process.platform === "win32";
-  const cmd = isWin ? "where" : "which";
-  const target = isWin ? "ngrok.exe" : "ngrok";
-  try {
-    const r = spawnSync(cmd, [target], { encoding: "utf8", windowsHide: true, timeout: 5e3 });
-    const resolved = (r.stdout || "").trim().split(/\r?\n/)[0];
-    if (r.status === 0 && resolved) return resolved;
-  } catch {
+  // Require explicit NGROK_BIN env var. Common install path fallback removed.
+  const explicit = process.env.NGROK_BIN;
+  if (explicit) {
+    if (!existsSync(explicit)) {
+      throw new Error(`NGROK_BIN="${explicit}" does not exist. Set NGROK_BIN to the correct ngrok binary path.`);
+    }
+    return explicit;
   }
-  // Fallback: check common install locations
-  if (isWin) {
-    const wingetBase = join(homedir(), "AppData", "Local", "Microsoft", "WinGet", "Packages");
-    try {
-      const dirs = readdirSync(wingetBase).filter(d => d.startsWith("Ngrok.Ngrok"));
-      for (const d of dirs) {
-        const p = join(wingetBase, d, "ngrok.exe");
-        if (existsSync(p)) return p;
-      }
-    } catch {}
-  }
-  return null;
+  throw new Error('NGROK_BIN env var is not set. Set NGROK_BIN to the path of the ngrok binary (e.g. NGROK_BIN=/usr/local/bin/ngrok).');
 }
 const NGROK_META_FILE = join(DATA_DIR, "ngrok-meta.json");
 const NGROK_OLD_PID_FILE = join(DATA_DIR, "ngrok.pid");
@@ -421,12 +401,6 @@ class WebhookServer {
             const parsed = body ? JSON.parse(body) : {};
             const eventType = headers["x-github-event"] || null;
             const eventAction = parsed?.action || null;
-            if (!isActionableEvent(eventType, eventAction)) {
-              logWebhook(`${name}: skip event=${eventType || "<none>"} action=${eventAction || "<none>"} (id=${deliveryId})`);
-              res.writeHead(200, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ status: "skip", event: eventType, action: eventAction, id: deliveryId }));
-              return;
-            }
             // Quiet-hours skip: drop (do not queue) when webhook opt-in is on
             // and current time falls inside the shared quiet window.
             const webhookRespect = this.config?.respectQuiet === true;
@@ -502,7 +476,9 @@ class WebhookServer {
       return false;
     }
 
-    // Stale check — older than 24 hours
+    // Stale check — older than 24 hours (ngrok session realistic lifetime;
+    // ngrok free-tier tunnels expire after ~2h but paid/reserved-domain
+    // tunnels survive much longer; 24h is a safe conservative ceiling).
     if (meta.startedAt && (Date.now() - new Date(meta.startedAt).getTime()) > NGROK_MAX_AGE_MS) {
       logWebhook(`ngrok meta stale (started ${meta.startedAt}), killing PID ${pid}`);
       try { process.kill(pid); } catch {}
@@ -547,9 +523,11 @@ class WebhookServer {
       return;
     }
 
-    const ngrokBin = resolveNgrokBin();
-    if (!ngrokBin) {
-      logWebhook("ngrok binary not found \u2014 webhook tunnel disabled");
+    let ngrokBin;
+    try {
+      ngrokBin = resolveNgrokBin();
+    } catch (err) {
+      logWebhook(`ngrok disabled — ${err.message}`);
       this.ngrokStarting = false;
       return;
     }

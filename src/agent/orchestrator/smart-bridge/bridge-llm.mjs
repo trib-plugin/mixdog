@@ -60,8 +60,8 @@ function pluginRoot() {
 //      catalog so the shard stays bit-identical across roles)
 //   2. call-time guards (loop.mjs write-block + ai-wrapped-dispatch
 //      recursion break)
-// See manager.mjs resolveSessionTools / BRIDGE_DENY_TOOLS for the single
-// source of truth on the shared schema surface.
+// See manager.mjs resolveSessionTools for the single source of truth;
+// bridge visibility is declared via annotations.bridgeHidden on each tool def.
 
 function buildUnifiedHeader({ permission, role }) {
     const lines = [];

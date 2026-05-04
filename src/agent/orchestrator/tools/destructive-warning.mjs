@@ -7,11 +7,7 @@
 // envelope so the agent sees the risk inline. Does NOT block execution;
 // hard blocks remain in BLOCKED_PATTERNS in builtin.mjs / bash-session.mjs.
 
-const _SHELL_NAMES = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash']);
-const _WRAPPER_NAMES = new Set([
-  'env', 'sudo', 'doas', 'nice', 'stdbuf', 'chronic', 'time', 'timeout',
-  'nohup', 'setpriv', 'ionice', 'taskset',
-]);
+import { SHELL_NAMES as _SHELL_NAMES, WRAPPER_NAMES as _WRAPPER_NAMES } from './shell-policy.mjs';
 
 export function stripQuotedAndHeredoc(s) { return _stripQuotedSpans(s); }
 export function extractShellCInner(s) { return _extractShellCInner(s); }
@@ -185,6 +181,10 @@ function _classifyDd(args) {
   return null;
 }
 
+// DB destructive pattern baseline — security policy, not a heuristic
+// classifier. DROP/TRUNCATE/DELETE without WHERE are unambiguously
+// data-destructive regardless of context; this list is a floor, not a
+// complete SQL auditor.
 const _DB_PATTERNS = [
   [/\b(DROP|TRUNCATE)\s+(TABLE|DATABASE|SCHEMA)\b/i, 'may drop or truncate database objects'],
   [/\bDELETE\s+FROM\s+\w+[ \t]*(;|"|'|\n|$)/i, 'may delete all rows from a database table'],

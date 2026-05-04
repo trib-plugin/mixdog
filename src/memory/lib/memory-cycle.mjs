@@ -1,24 +1,11 @@
 import { existsSync, readFileSync } from 'fs'
-import { join, dirname } from 'path'
+import { join } from 'path'
 import { cleanMemoryText } from './memory.mjs'
-import { resolveProjectId } from './project-id-resolver.mjs'
 import { resolveMaintenancePreset } from '../../shared/llm/index.mjs'
 import { callBridgeLlm } from './agent-ipc.mjs'
 import { computeEntryScore } from './memory-score.mjs'
 import { embedText } from './embedding-provider.mjs'
-import { fetchRepoWhitelist, whitelistRepoMatch } from './repo-whitelist.mjs'
-import { normalizePath } from './path-normalize.mjs'
 import { DATA_DIR } from '../../shared/config.mjs'
-
-let _cycleWlPromise = null
-function getCycleWl() {
-  if (!_cycleWlPromise) {
-    _cycleWlPromise = fetchRepoWhitelist({
-      cachePath: join(DATA_DIR, 'repo-whitelist.json'),
-    }).catch(() => null)
-  }
-  return _cycleWlPromise
-}
 
 // Embedding dirty queue (#3/#4): cycle1 commits no longer await syncRootEmbedding
 // inline because a single LLM-side embedding hiccup must not block the rest of
@@ -27,66 +14,28 @@ function getCycleWl() {
 // roots actually exist, so it cannot grow unbounded; duplicates are coalesced.
 const EMBED_DIRTY_KEY = 'embedding.dirty_ids'
 
-// Regex patterns for extracting absolute paths from text.
-const _WIN_PATH_RE = /[A-Z]:[\\\/][^\s"'\)]+/g
-const _POSIX_PATH_RE = /\/[^\s"'\)]+/g
-
 /**
- * Resolve a project_id for a chunk. Stored project_id values on members take
- * priority: collect all NOT NULL project_id values across members into a unique
- * set. If exactly one distinct id is found, return it. If two or more distinct
- * ids are found, return null (mixed-project chunk treated as unknown). Only when
- * no stored ids exist does the function fall back to scanning member content and
- * source_ref for absolute path references, resolving each via resolveProjectId,
- * and returning the single converged id (or null when 0 or 2+ distinct ids found).
+ * Resolve a project_id for a chunk from stored DB state only.
+ *
+ * Collects all NOT NULL project_id values across member rows into a unique set.
+ * If exactly one distinct id is found, return it. If two or more distinct ids
+ * are found, return null (mixed-project chunk → COMMON pool). If no stored ids
+ * exist, return null.
+ *
+ * Removed: path-scan fallback that extracted absolute paths from content/
+ * source_ref and ran them through resolveProjectId + whitelistRepoMatch.
+ * That was a multi-step heuristic with no objective signal. project_id on
+ * member rows is the only reliable source; if it is absent the chunk belongs
+ * to COMMON.
  */
-export function inferChunkProjectId(members, whitelist = null) {
-  // 1st priority: use stored project_id values from member rows
+export function inferChunkProjectId(members) {
   const storedIds = new Set()
   for (const m of members) {
     if (m.project_id != null) storedIds.add(m.project_id)
   }
   if (storedIds.size === 1) return [...storedIds][0]
-  if (storedIds.size >= 2) return null
-
-  // Fallback: infer from absolute path references in content + source_ref
-  const MEM_CAP = 8 * 1024 // 8KB per-member slice
-  const MATCH_CAP = 32
-
-  // Collect unique dirs (dedup before cap) to avoid evidence starvation from
-  // repeated paths in the same directory. source_ref is typically short so it
-  // is appended without truncation; only content is capped.
-  const seenDirs = new Set()
-  const uniqueDirs = []
-
-  for (const m of members) {
-    const contentText = (m.content ?? '').slice(0, MEM_CAP)
-    const sourceText = m.source_ref ?? ''
-    for (const segment of [contentText, sourceText]) {
-      for (const re of [_WIN_PATH_RE, _POSIX_PATH_RE]) {
-        const hits = segment.match(re) ?? []
-        for (const h of hits) {
-          const dir = dirname(h)
-          if (seenDirs.has(dir)) continue
-          seenDirs.add(dir)
-          uniqueDirs.push(dir)
-          if (uniqueDirs.length >= MATCH_CAP) break
-        }
-        if (uniqueDirs.length >= MATCH_CAP) break
-      }
-      if (uniqueDirs.length >= MATCH_CAP) break
-    }
-    if (uniqueDirs.length >= MATCH_CAP) break
-  }
-
-  const ids = new Set()
-  for (const dir of uniqueDirs) {
-    const norm = normalizePath(dir)
-    const resolved = resolveProjectId(norm, { whitelist }) || (whitelist ? whitelistRepoMatch(whitelist, norm) : null)
-    if (resolved != null) ids.add(resolved)
-  }
-
-  return ids.size === 1 ? [...ids][0] : null
+  // storedIds.size === 0 (all NULL) or >= 2 (mixed) → COMMON
+  return null
 }
 
 function _readDirtyIds(db) {
@@ -417,7 +366,6 @@ export async function runCycle1(db, config = {}, options = {}) {
 
 async function _runCycle1Impl(db, config = {}, options = {}) {
   const pendingRowsAtStart = countPendingRows(db)
-  const _wlForCycle = await getCycleWl()
   const batchSize = Math.max(1, Number(config.batch_size ?? 50))
   // Fallback chain handles BOTH call shapes:
   //   - periodic tick passes flat config: { interval, min_batch: 20 }
@@ -650,7 +598,7 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
         continue
       }
 
-      const projectId = inferChunkProjectId(members, _wlForCycle)
+      const projectId = inferChunkProjectId(members)
 
       try {
         db.exec('BEGIN')
@@ -750,25 +698,42 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   }
 }
 
-function formatEntriesForPromotePrompt(rows) {
+function buildPidMap(rowSets) {
+  const pids = [...new Set(rowSets.flat().map(r => r.project_id).filter(Boolean))].sort()
+  return new Map(pids.map((p, i) => [p, `P${i + 1}`]))
+}
+
+function formatEntriesForPromotePrompt(rows, pidMap) {
   if (!rows || rows.length === 0) return '(none)'
-  const pids = [...new Set(rows.map(r => r.project_id).filter(Boolean))]
-  const pidMap = new Map(pids.map((p, i) => [p, `P${i + 1}`]))
+  // pidMap may be provided by caller for cross-set consistency; fall back to
+  // building one locally if not (keeps the function usable standalone).
+  const map = pidMap ?? buildPidMap([rows])
   const lines = rows.map(r => {
-    const tag = r.project_id ? pidMap.get(r.project_id) : 'C'
+    const tag = r.project_id ? (map.get(r.project_id) ?? 'C') : 'C'
     return `- id:${r.id} ${tag} ${r.category} s:${r.score ?? 'n'} el:${r.element} sm:${String(r.summary || '').slice(0, 150)}`
   })
-  if (pidMap.size === 0) return lines.join('\n')
-  const legend = [...pidMap.entries()].map(([p, t]) => `${t}=${p}`).concat('C=COMMON').join(', ')
+  if (map.size === 0) return lines.join('\n')
+  const legend = [...map.entries()].map(([p, t]) => `${t}=${p}`).concat('C=COMMON').join(', ')
   return `# pid: ${legend}\n` + lines.join('\n')
 }
 
-function parseCycle2LineFormat(raw) {
+// Phase-scoped verb whitelists. `omit` in phase3 is a no-op (silently skipped,
+// not an error). phase1/2 verbs that appear in the wrong phase are rejected with
+// a stderr log and the action is dropped (reviewed_at not advanced).
+const PHASE_VALID_VERBS = {
+  phase1_new_chunks:  new Set(['add', 'pending']),
+  phase2_reevaluate:  new Set(['promote', 'keep', 'processed']),
+  phase3_active_review: new Set(['demote', 'archived', 'merge', 'update']),
+}
+
+function parseCycle2LineFormat(raw, phase) {
   if (raw == null) return null
   const text = String(raw).trim()
-  if (!text) return [] // empty response = no actions, valid
+  if (!text) return { actions: [], rejectedIds: new Set() } // empty response = no actions, valid
+  const validVerbs = phase ? PHASE_VALID_VERBS[phase] : null
   const lines = text.split('\n')
   const actions = []
+  const rejectedIds = new Set()
   for (const rawLine of lines) {
     const line = rawLine.trim()
     if (!line) continue
@@ -779,6 +744,17 @@ function parseCycle2LineFormat(raw) {
     const entryId = Number(parts[0].trim())
     const action = parts[1].trim()
     if (!Number.isFinite(entryId) || !action) continue
+    // Phase-scoped whitelist check
+    if (validVerbs) {
+      if (action === 'omit') continue // phase3 no-op; silently skip everywhere
+      if (!validVerbs.has(action)) {
+        process.stderr.write(
+          `[cycle2] ${phase ?? 'unknown'} unknown verb=${action} id=${entryId}\n`,
+        )
+        rejectedIds.add(entryId)
+        continue // drop — do NOT push to actions; reviewed_at not advanced for this row
+      }
+    }
     if (action === 'update') {
       actions.push({
         entry_id: entryId,
@@ -801,51 +777,111 @@ function parseCycle2LineFormat(raw) {
       actions.push({ entry_id: entryId, action })
     }
   }
-  return actions
+  return { actions, rejectedIds }
 }
 
-function parsePromoteActions(raw) {
+function parsePromoteActions(raw, phase) {
   // Line-format-first: cycle2-agent now emits `<entry_id>|<action>...` per
   // line. Empty body returns []. JSON path stays as fallback for any prior
   // model behaviour or hand-crafted callers still emitting `{"actions":[]}`.
-  const lineActions = parseCycle2LineFormat(raw)
-  if (Array.isArray(lineActions) && lineActions.length > 0) return lineActions
+  const lineResult = parseCycle2LineFormat(raw, phase)
+  if (lineResult !== null && lineResult.actions.length > 0) return lineResult
   const parsed = extractJsonObject(raw)
-  if (parsed && Array.isArray(parsed.actions)) return parsed.actions
+  if (parsed && Array.isArray(parsed.actions)) {
+    // Run JSON-path actions through the same phase verb gate so invalid verbs
+    // in well-formed JSON are rejected and their ids tracked as rejected.
+    const validVerbs = phase ? PHASE_VALID_VERBS[phase] : null
+    const filteredActions = []
+    const rejectedIds = new Set()
+    for (const act of parsed.actions) {
+      const entryId = Number(act?.entry_id)
+      if (!Number.isFinite(entryId)) continue
+      const action = typeof act?.action === 'string' ? act.action.trim() : ''
+      if (validVerbs && action !== 'omit' && !validVerbs.has(action)) {
+        process.stderr.write(
+          `[cycle2] ${phase ?? 'unknown'} unknown verb (JSON)=${action} id=${entryId}\n`,
+        )
+        rejectedIds.add(entryId)
+        continue
+      }
+      if (action === 'omit') continue
+      filteredActions.push(act)
+    }
+    return { actions: filteredActions, rejectedIds }
+  }
   // Empty line-parse + no JSON → genuinely empty (valid) only when raw was
   // empty/whitespace; otherwise treat as unparseable so caller can fail loud.
-  if (Array.isArray(lineActions)) return lineActions
+  if (lineResult !== null) return lineResult
   return null
 }
 
-function applyAddOrPromote(db, entryId, nextStatus, nowMs) {
-  const row = db.prepare(`SELECT category, last_seen_at FROM entries WHERE id = ? AND is_root = 1`).get(entryId)
+function applyAddOrPromote(db, entryId, nextStatus, nowMs, activeCap) {
+  const row = db.prepare(`SELECT category, last_seen_at, element, summary FROM entries WHERE id = ? AND is_root = 1`).get(entryId)
   if (!row) return false
-  const newScore = computeEntryScore(row.category, nowMs, nowMs)
-  const res = db.prepare(
-    `UPDATE entries SET status = ?, score = ?, last_seen_at = ? WHERE id = ? AND is_root = 1`,
-  ).run(nextStatus, newScore, nowMs, entryId)
-  return Number(res.changes ?? 0) > 0
+  return db.transaction(() => {
+    if (nextStatus === 'active' && activeCap != null) {
+      const countStmt = db.prepare(
+        `SELECT COUNT(*) AS n FROM entries WHERE is_root = 1 AND status = 'active'`,
+      )
+      const victimStmt = db.prepare(
+        `SELECT id FROM entries WHERE is_root = 1 AND status = 'active' AND id != ?
+         ORDER BY last_seen_at ASC, score ASC, id ASC LIMIT 1`,
+      )
+      const demoteStmt = db.prepare(`UPDATE entries SET status = 'demoted' WHERE id = ?`)
+      const activeCount = countStmt.get()?.n ?? 0
+      if (activeCount >= activeCap) {
+        const victim = victimStmt.get(entryId)
+        if (!victim) {
+          process.stderr.write(
+            `[cycle2] applyAddOrPromote: cap=${activeCap} full, no evictable victim — skipping promote for entry ${entryId}\n`,
+          )
+          return false
+        }
+        demoteStmt.run(victim.id)
+        if ((countStmt.get()?.n ?? 0) >= activeCap) {
+          process.stderr.write(
+            `[cycle2] applyAddOrPromote: still over cap=${activeCap} after single demote — skipping promote for entry ${entryId}\n`,
+          )
+          return false
+        }
+      }
+    }
+    const newScore = computeEntryScore(row.category, nowMs, nowMs)
+    const res = db.prepare(
+      `UPDATE entries SET status = ?, score = ?, last_seen_at = ? WHERE id = ? AND is_root = 1`,
+    ).run(nextStatus, newScore, nowMs, entryId)
+    return Number(res.changes ?? 0) > 0
+  })()
 }
 
-function applySimpleStatus(db, entryId, nextStatus) {
+export function applySimpleStatus(db, entryId, nextStatus) {
   const res = db.prepare(
     `UPDATE entries SET status = ? WHERE id = ? AND is_root = 1`,
   ).run(nextStatus, entryId)
   return Number(res.changes ?? 0) > 0
 }
 
-async function applyUpdate(db, entryId, element, summary) {
+export async function applyUpdate(db, entryId, element, summary) {
   const fields = []
   const params = []
-  if (typeof element === 'string' && element.trim()) {
-    fields.push('element = ?'); params.push(element.trim())
+  const newElement = (typeof element === 'string' && element.trim()) ? element.trim() : null
+  const newSummary = (typeof summary === 'string' && summary.trim()) ? summary.trim() : null
+  if (newElement) {
+    fields.push('element = ?'); params.push(newElement)
   }
-  if (typeof summary === 'string' && summary.trim()) {
-    fields.push('summary = ?'); params.push(summary.trim())
+  if (newSummary) {
+    fields.push('summary = ?'); params.push(newSummary)
     fields.push('summary_hash = NULL')
   }
   if (fields.length === 0) return false
+  const row = db.prepare(
+    `SELECT category, last_seen_at FROM entries WHERE id = ? AND is_root = 1`,
+  ).get(entryId)
+  if (row) {
+    const nowMs = Date.now()
+    const newScore = computeEntryScore(row.category, row.last_seen_at ?? nowMs, nowMs)
+    fields.push('score = ?'); params.push(newScore)
+  }
   params.push(entryId)
   const res = db.prepare(
     `UPDATE entries SET ${fields.join(', ')} WHERE id = ? AND is_root = 1`,
@@ -855,7 +891,7 @@ async function applyUpdate(db, entryId, element, summary) {
   return true
 }
 
-function applyMerge(db, targetId, sourceIds) {
+export function applyMerge(db, targetId, sourceIds) {
   if (!Number.isFinite(targetId)) return 0
   const target = db.prepare(`SELECT id, project_id FROM entries WHERE id = ? AND is_root = 1`).get(targetId)
   if (!target) return 0
@@ -898,10 +934,13 @@ export async function runPromotePhase(db, phaseName, rows, activeRows, config, o
     throw new Error(`runCycle2: prompt file missing at ${promptPath}`)
   }
   const template = readFileSync(promptPath, 'utf8')
+  // Build a single pidMap across both activeRows and rows so the same project
+  // always gets the same P-label in both the active-context block and items block.
+  const sharedPidMap = buildPidMap([activeRows ?? [], rows ?? []])
   let prompt = template
     .replace('{{PHASE}}', phaseName)
-    .replace('{{CORE_MEMORY}}', formatEntriesForPromotePrompt(activeRows))
-    .replace('{{ITEMS}}', formatEntriesForPromotePrompt(rows))
+    .replace('{{CORE_MEMORY}}', formatEntriesForPromotePrompt(activeRows, sharedPidMap))
+    .replace('{{ITEMS}}', formatEntriesForPromotePrompt(rows, sharedPidMap))
   for (const [k, v] of Object.entries(extraReplacements)) {
     prompt = prompt.replace(`{{${k}}}`, String(v))
   }
@@ -928,24 +967,24 @@ export async function runPromotePhase(db, phaseName, rows, activeRows, config, o
     raw = await callOnce(null)
   } catch (err) {
     process.stderr.write(`[cycle2] ${phaseName} LLM error: ${err.message}\n`)
-    return { actions: [] }
+    return { actions: null, parseOk: false }
   }
-  let actions = parsePromoteActions(raw)
-  if (!actions) {
+  let parseResult = parsePromoteActions(raw, phaseName)
+  if (!parseResult) {
     process.stderr.write(`[cycle2] ${phaseName} unparseable response, retrying once (${previewRaw(raw)})\n`)
     try {
       const raw2 = await callOnce('json-only')
-      actions = parsePromoteActions(raw2)
-      if (!actions) {
+      parseResult = parsePromoteActions(raw2, phaseName)
+      if (!parseResult) {
         process.stderr.write(`[cycle2] ${phaseName} unparseable after retry — skipping batch (${previewRaw(raw2)})\n`)
-        return { actions: [] }
+        return { actions: null, parseOk: false }
       }
     } catch (err) {
       process.stderr.write(`[cycle2] ${phaseName} retry LLM error: ${err.message}\n`)
-      return { actions: [] }
+      return { actions: null, parseOk: false }
     }
   }
-  return { actions }
+  return { actions: parseResult.actions, rejectedIds: parseResult.rejectedIds, parseOk: true }
 }
 
 export async function runCycle2(db, config = {}, options = {}) {
@@ -955,7 +994,7 @@ export async function runCycle2(db, config = {}, options = {}) {
     return {
       phase1: { added: 0, pending: 0 },
       phase2: { promoted: 0, kept: 0, processed: 0 },
-      phase3: { demoted: 0, merged: 0, archived: 0, updated: 0 },
+      phase3: { demoted: 0, merged: 0, archived: 0, updated: 0, kept: 0 },
       skippedInFlight: true,
     }
   }
@@ -969,11 +1008,20 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   const batchSize = Math.max(1, Number(config.batch_size ?? 50))
   const activeCap = Math.max(1, Number(config.active_cap ?? CYCLE2_ACTIVE_CAP))
   const nowMs = Date.now()
+  // Monotonic sweep cursor: use max(reviewed_at)+1 so the touch timestamp is
+  // always strictly greater than any existing value, avoiding wall-clock skew.
+  // Falls back to nowMs if the table is empty or reviewed_at has never been set.
+  const maxReviewedRow = db.prepare(
+    `SELECT MAX(reviewed_at) AS m FROM entries WHERE is_root = 1`,
+  ).get()
+  const sweepCursor = (maxReviewedRow?.m != null && maxReviewedRow.m > 0)
+    ? maxReviewedRow.m + 1
+    : nowMs
 
   const stats = {
     phase1: { added: 0, pending: 0 },
     phase2: { promoted: 0, kept: 0, processed: 0 },
-    phase3: { demoted: 0, merged: 0, archived: 0, updated: 0 },
+    phase3: { demoted: 0, merged: 0, archived: 0, updated: 0, kept: 0 },
   }
 
   // #7: bound the active-context fetch to activeCap. Without LIMIT the cap
@@ -982,18 +1030,24 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   const loadActive = () => db.prepare(
     `SELECT id, element, category, summary, score, last_seen_at, project_id
      FROM entries WHERE is_root = 1 AND status = 'active'
-     ORDER BY score DESC LIMIT ?`,
+     ORDER BY last_seen_at DESC, score DESC, id ASC LIMIT ?`,
   ).all(activeCap)
 
+  // ORDER BY error_count ASC so rows with fewer parse failures are served first.
+  // Includes 'active' rows so legacy active entries that pre-date the EXCLUDE
+  // rubric rotate through phase3 and can be archived or demoted on each cycle.
   const loadPhase3Candidates = () => db.prepare(
     `SELECT id, element, category, summary, score, last_seen_at, project_id
-     FROM entries WHERE is_root = 1 AND status IN ('active', 'processed')
-     ORDER BY COALESCE(reviewed_at, 0) ASC, last_seen_at ASC, score DESC
+     FROM entries WHERE is_root = 1 AND status IN ('pending','demoted','active')
+     ORDER BY error_count ASC, reviewed_at ASC, id ASC
      LIMIT ?`,
   ).all(batchSize)
 
   const touchReviewed = db.prepare(
     `UPDATE entries SET reviewed_at = ? WHERE id = ?`,
+  )
+  const bumpErrorCount = db.prepare(
+    `UPDATE entries SET error_count = COALESCE(error_count, 0) + 1 WHERE id = ?`,
   )
 
   const phase1Rows = db.prepare(
@@ -1003,10 +1057,10 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   ).all(batchSize)
 
   if (phase1Rows.length > 0) {
-    const { actions } = await runPromotePhase(db, 'phase1_new_chunks', phase1Rows, loadActive(), config, options)
+    const { actions: phase1Actions } = await runPromotePhase(db, 'phase1_new_chunks', phase1Rows, loadActive(), config, options)
     // #6: only apply actions whose entry_id was actually presented to the LLM.
     const allowed = new Set(phase1Rows.map(r => Number(r.id)))
-    for (const act of actions) {
+    for (const act of (phase1Actions ?? [])) {
       const entryId = Number(act?.entry_id)
       if (!Number.isFinite(entryId)) continue
       if (!allowed.has(entryId)) {
@@ -1014,7 +1068,10 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
         continue
       }
       try {
-        if (act.action === 'add' && applyAddOrPromote(db, entryId, 'active', nowMs)) stats.phase1.added += 1
+        if (act.action === 'add' && applyAddOrPromote(db, entryId, 'active', nowMs, activeCap)) {
+          try { db.prepare(`UPDATE entries SET reviewed_at = ? WHERE id = ? AND is_root = 1`).run(sweepCursor, entryId) } catch {}
+          stats.phase1.added += 1
+        }
         else if (act.action === 'pending' && applySimpleStatus(db, entryId, 'pending')) stats.phase1.pending += 1
       } catch (err) {
         process.stderr.write(`[cycle2] phase1 action error (id=${entryId}): ${err.message}\n`)
@@ -1025,41 +1082,47 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   const phase2Rows = db.prepare(
     `SELECT id, element, category, summary, score, project_id
      FROM entries WHERE is_root = 1 AND status IN ('pending', 'demoted')
-     ORDER BY COALESCE(reviewed_at, 0) ASC, id DESC LIMIT ?`,
+     ORDER BY error_count ASC, reviewed_at ASC, id ASC LIMIT ?`,
   ).all(batchSize)
 
   if (phase2Rows.length > 0) {
-    // Touch reviewed_at for all phase2 candidates so the sweep cursor advances.
-    for (const row of phase2Rows) {
-      try { touchReviewed.run(nowMs, row.id) } catch {}
-    }
-    const { actions } = await runPromotePhase(db, 'phase2_reevaluate', phase2Rows, loadActive(), config, options)
-    // #6: phase2 batch allow-list.
-    const allowed = new Set(phase2Rows.map(r => Number(r.id)))
-    for (const act of actions) {
-      const entryId = Number(act?.entry_id)
-      if (!Number.isFinite(entryId)) continue
-      if (!allowed.has(entryId)) {
-        process.stderr.write(`[cycle2] phase2 action rejected: entry_id=${entryId} outside batch\n`)
-        continue
+    const phase2Active = loadActive()
+    const { actions: phase2Actions, rejectedIds: phase2RejectedIds = new Set() } = await runPromotePhase(db, 'phase2_reevaluate', phase2Rows, phase2Active, config, options)
+    if (phase2Actions) {
+      // Touch reviewed_at AFTER successful LLM parse so the cursor only advances
+      // on a real decision (parse failures increment error_count instead).
+      // Exclude rejected ids so they retry next sweep.
+      for (const row of phase2Rows) {
+        if (phase2RejectedIds.has(Number(row.id))) continue
+        try { touchReviewed.run(sweepCursor, row.id) } catch {}
       }
-      try {
-        if (act.action === 'promote' && applyAddOrPromote(db, entryId, 'active', nowMs)) stats.phase2.promoted += 1
-        else if (act.action === 'keep') stats.phase2.kept += 1
-        else if (act.action === 'processed' && applySimpleStatus(db, entryId, 'processed')) stats.phase2.processed += 1
-      } catch (err) {
-        process.stderr.write(`[cycle2] phase2 action error (id=${entryId}): ${err.message}\n`)
+      // #6: phase2 batch allow-list.
+      const allowed = new Set(phase2Rows.map(r => Number(r.id)))
+      for (const act of phase2Actions) {
+        const entryId = Number(act?.entry_id)
+        if (!Number.isFinite(entryId)) continue
+        if (!allowed.has(entryId)) {
+          process.stderr.write(`[cycle2] phase2 action rejected: entry_id=${entryId} outside batch\n`)
+          continue
+        }
+        try {
+          if (act.action === 'promote' && applyAddOrPromote(db, entryId, 'active', nowMs, activeCap)) stats.phase2.promoted += 1
+          else if (act.action === 'keep') stats.phase2.kept += 1
+          else if (act.action === 'processed' && applySimpleStatus(db, entryId, 'processed')) stats.phase2.processed += 1
+        } catch (err) {
+          process.stderr.write(`[cycle2] phase2 action error (id=${entryId}): ${err.message}\n`)
+        }
+      }
+    } else {
+      // LLM parse failed — bump error_count on all candidates; cursor not advanced.
+      for (const row of phase2Rows) {
+        try { bumpErrorCount.run(row.id) } catch {}
       }
     }
   }
 
   const phase3Rows = loadPhase3Candidates()
   if (phase3Rows.length > 0) {
-    // Touch reviewed_at for all phase3 candidates so the sweep cursor advances
-    // regardless of which action the LLM returns (including no-action keep).
-    for (const row of phase3Rows) {
-      try { touchReviewed.run(nowMs, row.id) } catch {}
-    }
     const activeContext = loadActive()
     // ACTIVE_COUNT: use a precise COUNT(*) query rather than activeContext.length
     // (which is capped by activeCap and may under-report on busy DBs). Also
@@ -1076,17 +1139,30 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
     const activeCountLabel = projectBreakdown.length > 1
       ? `${activeCountTotal} (${projectBreakdown.map(r => `${r.pid}:${r.cnt}`).join(', ')})`
       : String(activeCountTotal)
-    const { actions } = await runPromotePhase(
+    const { actions: phase3Actions, rejectedIds: phase3RejectedIds = new Set() } = await runPromotePhase(
       db, 'phase3_active_review', phase3Rows, activeContext, config, options,
       { ACTIVE_COUNT: activeCountLabel, ACTIVE_CAP: activeCap },
     )
+    if (phase3Actions) {
+      // Touch reviewed_at AFTER successful parse so cursor only advances on a
+      // real decision; parse failures increment error_count for backoff.
+      // Exclude rejected ids so they retry next sweep.
+      for (const row of phase3Rows) {
+        if (phase3RejectedIds.has(Number(row.id))) continue
+        try { touchReviewed.run(sweepCursor, row.id) } catch {}
+      }
+    } else {
+      for (const row of phase3Rows) {
+        try { bumpErrorCount.run(row.id) } catch {}
+      }
+    }
     // #6: phase3 sees both phase3Rows AND activeContext rows (the prompt
     // formats both). All entry_id/target_id/source_ids must fall in that union.
     const allowed = new Set([
       ...phase3Rows.map(r => Number(r.id)),
       ...activeContext.map(r => Number(r.id)),
     ])
-    for (const act of actions) {
+    for (const act of (phase3Actions ?? [])) {
       try {
         if (act.action === 'demote') {
           const eid = Number(act?.entry_id)
@@ -1134,6 +1210,11 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
         process.stderr.write(`[cycle2] phase3 action error: ${err.message}\n`)
       }
     }
+    // Count rows presented to phase3 that had no action taken (kept / no-op).
+    const actedIds = new Set((phase3Actions ?? []).map(a => Number(a?.entry_id)).filter(Number.isFinite))
+    for (const row of phase3Rows) {
+      if (!actedIds.has(Number(row.id))) stats.phase3.kept += 1
+    }
   }
 
   // Fire-and-forget — same rationale as cycle1's flush above. cycle2 emits
@@ -1154,7 +1235,7 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
     `[cycle2] phase1 added=${stats.phase1.added} pending=${stats.phase1.pending}` +
     ` | phase2 promoted=${stats.phase2.promoted} kept=${stats.phase2.kept} processed=${stats.phase2.processed}` +
     ` | phase3 demoted=${stats.phase3.demoted} merged=${stats.phase3.merged}` +
-    ` archived=${stats.phase3.archived} updated=${stats.phase3.updated}\n`,
+    ` archived=${stats.phase3.archived} updated=${stats.phase3.updated} kept=${stats.phase3.kept}\n`,
   )
 
   return stats

@@ -1,7 +1,10 @@
 import OpenAI from 'openai';
 import { loadConfig } from '../config.mjs';
 import { splitWithSidecars } from './sidecar-helper.mjs';
-const PRESETS = {
+// OPENAI_COMPAT_PRESETS — self-declaring list of compat provider names and
+// their base URLs / defaults. registry.mjs imports this export so there is no
+// parallel OPENAI_COMPAT_PROVIDERS list to maintain separately.
+export const OPENAI_COMPAT_PRESETS = {
     deepseek: {
         baseURL: 'https://api.deepseek.com',
         defaultModel: 'deepseek-v4-pro',
@@ -23,6 +26,7 @@ const PRESETS = {
         defaultModel: 'default',
     },
 };
+const PRESETS = OPENAI_COMPAT_PRESETS;
 function toOpenAIMessages(messages, providerName) {
     // NOTE: chat.completions has no equivalent slot for replaying reasoning
     // encrypted_content the way the Responses API does (no `type:'reasoning'`

@@ -4,7 +4,7 @@
  * Exports:
  *   parseKoreanDate(text, refDate?)  → { text, start: 'YYYY-MM-DD', end: null } | null
  *   searchDates(text, refDate?)      → [{ text, start: 'YYYY-MM-DD', end: null }, ...] | []
- *   parseTemporalHint(query)         → { start, end, exact } | null   (drop-in for memory-query-plan)
+ *   parseTemporalHint(query)         → { start, end, exact } | null
  */
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -324,8 +324,9 @@ export function searchDates(text, refDate) {
 }
 
 /**
- * Drop-in replacement for parseTemporalHint in memory-query-plan.mjs.
+ * Extract a temporal range from a query string.
  * Returns { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', exact: boolean } or null.
+ * Consumed by memory-recall-store.mjs and memory/index.mjs for date-filtering.
  */
 export function parseTemporalHint(query) {
   const parsed = parseKoreanDate(query)

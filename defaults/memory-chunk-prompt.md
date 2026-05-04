@@ -24,7 +24,7 @@ Example — input @1–@12 yields three chunks:
 
 - `idx_csv` — comma-separated 1-based `@N` indexes from the input. Bare numbers, no `@` in output.
 - Every input `@N` MUST appear in exactly one chunk's `idx_csv`. Dropping is forbidden.
-- Short acks (`ok`, `thanks`, 1–3 char replies in any language) absorb into the surrounding topic chunk; never form their own chunk unless an entire stretch is acks-only.
+- Brief acknowledgements with no standalone information should be folded into the surrounding context — let the conversational dependence judge it, not character counts.
 - Never mix indexes from different `[sess:XXX]` markers in one chunk. When session changes mid-batch, start a new chunk.
 - Output language: same as the input content language.
 - `element` is a short recall key (5-10 words). Include the subject and any distinctive number/identifier. Not a single keyword.
@@ -74,7 +74,7 @@ Example — input @1–@12 yields three chunks:
   - rule: "All .md files must be written in English." (enforced policy)
   - preference: "User dislikes unnecessary code comments." (style lean)
 
-When ambiguous, prefer the higher-grade category that fits (rule > constraint > decision > fact > goal > preference > task > issue).
+If multiple categories could apply, choose the one that best preserves intent.
 
 ## Common mistakes to avoid
 
@@ -88,11 +88,10 @@ When ambiguous, prefer the higher-grade category that fits (rule > constraint > 
 
 ## Member grouping guidelines
 
-- Prefer **tight chunks**: 2-5 related entries per chunk is the sweet spot. Large chunks dilute the summary.
-- Consecutive entries from the same topic are the strongest grouping signal. A topic shift (new subject, new question, new phase) usually breaks the chunk.
+- Group entries by shared topic; break on topic shifts.
 - Include both the question/statement and its resolution in the same chunk when they arrive together. Splitting them loses the cause-outcome pair.
 - If two entries disagree or supersede each other, the later one usually wins the `summary` framing — but the member list still includes both so the history is preserved.
-- A single user message containing 2-3 distinct asks should be split. Use the same ids across multiple chunks if needed; the caller deduplicates downstream.
+- Each input entry id appears in exactly one chunk; never duplicate ids across chunks.
 
 ## Summary quality
 

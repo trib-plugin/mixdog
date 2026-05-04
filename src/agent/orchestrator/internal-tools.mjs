@@ -73,7 +73,7 @@ export function addInternalTools(extraTools) {
         _tools = _tools.filter(t => t?.name !== def.name);
         _tools.push({
             name: def.name,
-            description: typeof def.description === 'string' ? def.description.slice(0, 2048) : '',
+            description: typeof def.description === 'string' ? def.description : '',
             inputSchema: def.inputSchema || { type: 'object', properties: {} },
             annotations: def.annotations || {},
         });

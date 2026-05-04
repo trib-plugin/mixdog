@@ -11,7 +11,7 @@ const DATA_DIR = resolvePluginData()
 const CONFIG_PATH = join(DATA_DIR, 'mixdog-config.json')
 
 const GENERATED_KEY = '_generated'
-export const GENERATED_MARKER = 'from mixdog-config.json — edits will be overwritten on next boot'
+const GENERATED_MARKER = 'from mixdog-config.json — edits will be overwritten on next boot'
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value)

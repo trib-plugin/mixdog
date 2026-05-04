@@ -13,7 +13,7 @@ import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory
 import { prepareBridgeSession } from './orchestrator/smart-bridge/session-builder.mjs';
 import { normalizeInputPath } from './orchestrator/tools/builtin.mjs';
 import { traceBridgePreset } from './orchestrator/bridge-trace.mjs';
-import { runWithDispatchRetry, isRecoverableError } from './orchestrator/bridge-retry.mjs';
+import { runWithDispatchRetry } from './orchestrator/bridge-retry.mjs';
 import { ensureDataSeeds } from '../shared/seed.mjs';
 import { writeFileSync, readFileSync, existsSync, watch } from 'fs';
 import { addPending, removePending } from './orchestrator/dispatch-persist.mjs';
@@ -285,12 +285,14 @@ const TOOLS = [
   {
     name: 'get_workflows',
     public: false,
+    annotations: { bridgeHidden: true },
     description: 'List workflow plans (name + description).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'get_workflow',
     public: false,
+    annotations: { bridgeHidden: true },
     description: 'Get a workflow plan by name. Returns full JSON with steps.',
     inputSchema: {
       type: 'object',
@@ -303,6 +305,7 @@ const TOOLS = [
   {
     name: 'set_prompt',
     title: 'Store Prompt',
+    annotations: { bridgeHidden: true },
     public: false,
     description: 'Store a long prompt and return a reference key for bridge.ref.',
     inputSchema: {
@@ -317,6 +320,7 @@ const TOOLS = [
   {
     name: 'bridge_spawn',
     title: 'Spawn Bridge Agent',
+    annotations: { bridgeHidden: true },
     public: false,
     description: 'Create a Smart Bridge agent session with a role/taskType. Replacement for native Agent/TeamCreate. wait=true returns first response sync; wait=false returns sessionId for later bridge_send. Prefer `explore` for filesystem lookup; use bridge_spawn only for standalone role sessions.',
     inputSchema: {
@@ -336,6 +340,7 @@ const TOOLS = [
   {
     name: 'bridge_send',
     title: 'Send to Bridge Agent',
+    annotations: { bridgeHidden: true },
     public: false,
     description: 'Send a message to an existing bridge agent session. Returns response synchronously.',
     inputSchema: {

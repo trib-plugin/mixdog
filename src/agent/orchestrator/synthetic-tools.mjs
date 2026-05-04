@@ -46,6 +46,10 @@ export const SYNTHETIC_TOOL_DEFS = Object.freeze([
                     type: 'boolean',
                     description: 'When true, expand each root entry with its member chunk ids (default false).',
                 },
+                includeRaw: {
+                    type: 'boolean',
+                    description: 'When true, fetch raw (unclassified) rows from the query period window and merge into results (default false). Caller-driven — not auto-triggered.',
+                },
             },
             required: ['query'],
         },

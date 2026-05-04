@@ -107,39 +107,6 @@ function cleanupStaleBufferFiles(maxAgeDays = 7) {
   return cleaned
 }
 
-export async function flushBufferedEntries() {
-  let flushed = 0
-  let failed = 0
-  let files
-  try {
-    files = fs.readdirSync(BUFFER_DIR).filter(f => f.endsWith('.json'))
-  } catch {
-    return { flushed, failed }
-  }
-  for (const file of files) {
-    const filePath = path.join(BUFFER_DIR, file)
-    try {
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-      await memoryFetch('POST', '/entry', data)
-      fs.unlinkSync(filePath)
-      flushed++
-    } catch (e) {
-      process.stderr.write(`[memory-client] flushBufferedEntries failed for ${file}: ${e.message}\n`)
-      // Quarantine corrupted JSON so it does not block future flushes
-      if (e instanceof SyntaxError) {
-        try {
-          const quarantine = filePath + '.corrupt'
-          fs.renameSync(filePath, quarantine)
-          process.stderr.write(`[memory-client] quarantined corrupt file: ${quarantine}\n`)
-        } catch {}
-      }
-      failed++
-    }
-  }
-  cleanupStaleBufferFiles()
-  return { flushed, failed }
-}
-
 export async function ingestTranscript(filePath, { cwd } = {}) {
   try {
     return await memoryFetch('POST', '/ingest-transcript', { filePath, ...(cwd ? { cwd } : {}) })

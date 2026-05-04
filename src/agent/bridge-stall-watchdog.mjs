@@ -23,37 +23,17 @@
  *     expected server silence, exactly like stream-watchdog.shouldSkip.
  */
 
+import { getHiddenRole } from './orchestrator/internal-roles.mjs';
+
 const TICK_MS = 30_000;
-// Default 600s aligns with stream-watchdog HARD_STALL_MS (600s / 10m).
+// DEFAULT_THRESHOLD_S — runtime envelope constant for roles not declared in
+// defaults/hidden-roles.json (public / custom user-workflow roles such as
+// "worker", "reviewer", or any user-defined name). These roles carry no
+// stallCap entry so the fallback keeps watchdog coverage without requiring
+// every custom role to be registered. Aligns with stream-watchdog
+// HARD_STALL_MS (600s / 10m) so the bridge stall fires before the global
+// hard abort on a completely silent provider.
 const DEFAULT_THRESHOLD_S = 600;
-
-// Role-aware thresholds. User-configurable roles (worker / reviewer /
-// debugger / tester / any custom name from `user-workflow.json`) all fall
-// through to DEFAULT_THRESHOLD_S — hardcoding their names here would
-// silently break the moment a user renames a role. Only internal hidden
-// roles (fixed names owned by the plugin) get explicit overrides. Tighten
-// per-session via env STALL_TIMEOUT_S; tighten the map below only if a
-// specific hidden role proves to spuriously consume the full budget.
-const ROLE_THRESHOLDS_S = {
-    explorer: 240,
-    'recall-agent': 240,
-    'search-agent': 240,
-    'cycle1-agent': 300,
-    'cycle2-agent': 300,
-};
-
-// Per-role override for the tool_running window. Without an entry the default
-// is `thresholdSeconds * 2` (matches pre-existing behaviour). Cycle/chunker
-// roles should never spend more than a few minutes inside a single tool call;
-// tightening these caps recovers a stuck fan-out shard inside ~5 min instead
-// of waiting out the full 20 min default and starving the rest of the cycle.
-const ROLE_TOOL_THRESHOLDS_S = {
-    explorer: 180,
-    'recall-agent': 180,
-    'search-agent': 180,
-    'cycle1-agent': 300,
-    'cycle2-agent': 300,
-};
 
 function envThresholdSeconds() {
     const raw = process.env.STALL_TIMEOUT_S;
@@ -63,20 +43,21 @@ function envThresholdSeconds() {
     return n;
 }
 
+// Read stallCap from the declarative hidden-role config (defaults/hidden-roles.json).
+// User-workflow roles (worker, reviewer, custom names) carry no stallCap and fall
+// through to DEFAULT_THRESHOLD_S — no per-role code branches here.
 function resolveThresholdSeconds(role) {
     const envOverride = envThresholdSeconds();
     if (envOverride != null) return envOverride;
-    if (role && Object.prototype.hasOwnProperty.call(ROLE_THRESHOLDS_S, role)) {
-        return ROLE_THRESHOLDS_S[role];
-    }
+    const cfg = role ? getHiddenRole(role) : null;
+    if (cfg?.stallCap?.idleSeconds > 0) return cfg.stallCap.idleSeconds;
     return DEFAULT_THRESHOLD_S;
 }
 
 function resolveToolThresholdSeconds(role, thresholdSeconds) {
-    if (role && Object.prototype.hasOwnProperty.call(ROLE_TOOL_THRESHOLDS_S, role)) {
-        return ROLE_TOOL_THRESHOLDS_S[role];
-    }
-    return thresholdSeconds * 2;
+    const cfg = role ? getHiddenRole(role) : null;
+    if (cfg?.stallCap?.toolRunningSeconds > 0) return cfg.stallCap.toolRunningSeconds;
+    return thresholdSeconds;
 }
 
 /**

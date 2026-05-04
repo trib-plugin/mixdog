@@ -1,6 +1,6 @@
 {
   "name": "mixdog",
-  "version": "0.1.432",
+  "version": "0.1.433",
   "description": "Claude Code all-in-one agent plugin — autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing.",
   "author": "jyp8877 <dev@tribgames.com>",
   "license": "MIT",
@@ -39,7 +39,8 @@
   "scripts": {
     "start": "bun server.mjs",
     "smoke:io-live": "bun scripts/live-io-smoke.mjs",
-    "build:tools": "bun scripts/build-tools-manifest.mjs",
+    "check:tools-sync": "node scripts/check-tools-sync.mjs",
+    "build:tools": "node scripts/check-tools-sync.mjs && bun scripts/build-tools-manifest.mjs",
     "bump": "bun scripts/bump-version.mjs",
     "check:version": "bun scripts/check-version.mjs"
   },

@@ -30,23 +30,12 @@
  * Values:
  *   '1h'   → ephemeral 1h TTL  (2x write premium, 0.1x read)
  *   '5m'   → ephemeral 5m TTL  (1.25x write premium, 0.1x read)
- *   'none' → no cache_control  (1x flat, no premium, no cache)
  *
  * Bridge/agent calls never experience interactive idle that would threaten
- * the 5m tail TTL, so the default tail policy is 5m.
- *
- * Maintenance roles (cycle1-agent / cycle2-agent) finish in iter=1 with
- * no tool calls, and their user message body (entries text / window
- * summary) varies per call. The BP4 cache_creation cost (1.25× write
- * premium) is single-use waste — the next cycle never reuses the same
- * tail. We override messages → 'none' for those roles so the body ships
- * uncached at flat 1× cost. The 1h BP1/BP2/BP3 prefix still hits.
+ * the 5m tail TTL, so the messages layer uses 5m for all roles.
  */
-const NONCACHED_TAIL_ROLES = new Set(['cycle1-agent', 'cycle2-agent']);
-
-export function resolveCacheStrategy({ role } = {}) {
-    const messages = NONCACHED_TAIL_ROLES.has(role) ? 'none' : '5m';
-    return { tools: '1h', system: '1h', tier3: '1h', messages };
+export function resolveCacheStrategy() {
+    return { tools: '1h', system: '1h', tier3: '1h', messages: '5m' };
 }
 
 /**
@@ -54,56 +43,42 @@ export function resolveCacheStrategy({ role } = {}) {
  *
  * @param {string} provider
  * @param {string} [sessionId]
+ * @param {string} [role]
  * @returns {object} partial sendOpts — spread into provider.send call
  */
+
+// Provider cache capability kinds:
+//   'anthropic' — explicit cache_control breakpoints (1h extended-cache-ttl header)
+//   'openai'    — prompt_cache_key + prompt_cache_retention=24h
+//   'gemini'    — explicit cachedContent object with TTL
+//   'none'      — no API-level cache knob
+const PROVIDER_CACHE_KIND = Object.freeze({
+    'anthropic':       'anthropic',
+    'anthropic-oauth': 'anthropic',
+    'openai':          'openai',
+    'gemini':          'gemini',
+})
+
 export function buildProviderCacheOpts(provider, sessionId, role) {
     const ttls = resolveCacheStrategy({ role });
-
-    switch (provider) {
-        case 'anthropic-oauth':
-        case 'anthropic':
-            // 2026-03-06 Anthropic dropped default TTL 1h→5m. We send
-            // extended-cache-ttl-2025-04-11 header to retain 1h.
-            // Verified 2026-04-17 (ephemeral_1h_input_tokens=4722).
-            return { cacheStrategy: ttls };
-
-        case 'openai-oauth':
-            // Codex endpoint rejects prompt_cache_retention. We rely on the
-            // server-side default in_memory cache (5-10min). The server still
-            // prefix-caches if the prefix is reused within the in-memory window.
-            return {};
-
-        case 'openai':
-            // Public OpenAI API supports prompt_cache_retention. Both cache
-            // types want extended retention — the prefix is shared across
-            // every Pool B call in the workspace.
-            return { cacheRetention: '24h' };
-
-        case 'gemini':
-            // Gemini uses cache objects. Signal intent; the provider layer
-            // creates/updates the object separately from the message.
-            return {
-                geminiCache: {
-                    enabled: true,
-                    ttlSeconds: ttlToSeconds(ttls.system),
-                },
-            };
-
-        case 'deepseek':
-            // Automatic context cache, hit token reported via prompt_cache_hit_tokens
-            return {};
-
-        case 'ollama':
-            // Local KV cache only, no API-level surface
-            return {};
-
-        case 'lmstudio':
-            // Local, no API cache
-            return {};
-
-        default:
-            return {};
+    const kind = PROVIDER_CACHE_KIND[provider]
+    if (kind === 'anthropic') {
+        // 2026-03-06 Anthropic dropped default TTL 1h→5m. We send
+        // extended-cache-ttl-2025-04-11 header to retain 1h.
+        // Verified 2026-04-17 (ephemeral_1h_input_tokens=4722).
+        return { cacheStrategy: ttls }
     }
+    if (kind === 'openai') {
+        // Public OpenAI API: prompt_cache_retention extends prefix retention.
+        // openai-oauth (Codex) rejects the header — falls through to default.
+        return { cacheRetention: '24h' }
+    }
+    if (kind === 'gemini') {
+        // Gemini uses cache objects. Signal intent; the provider layer
+        // creates/updates the object separately from the message.
+        return { geminiCache: { enabled: true, ttlSeconds: ttlToSeconds(ttls.system) } }
+    }
+    return {}
 }
 
 /**

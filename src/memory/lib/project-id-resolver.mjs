@@ -1,10 +1,8 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
-import { execFileSync } from 'node:child_process';
 
 /** @type {Map<string, string|null>} */
 const cache = new Map();
-let ghNotFoundWarned = false;
 
 /**
  * Walk up from `start`, returning the first directory that contains `name`,
@@ -24,145 +22,45 @@ function findAncestor(start, name) {
 }
 
 /**
- * Parse a git remote url and return "owner/repo" slug, or null on failure.
- * Handles:
- *   https://github.com/owner/repo.git
- *   git@github.com:owner/repo.git
- * @param {string} gitRoot
- * @returns {string|null}
- */
-function slugFromGitConfig(gitRoot) {
-  const configPath = join(gitRoot, '.git', 'config');
-  let text;
-  try {
-    text = readFileSync(configPath, 'utf8');
-  } catch {
-    return null;
-  }
-
-  // Find [remote "origin"] section and extract url value
-  const sectionMatch = text.match(/\[remote\s+"origin"\][^\[]*url\s*=\s*([^\r\n]+)/);
-  if (!sectionMatch) return null;
-
-  const url = sectionMatch[1].trim();
-
-  // https://github.com/owner/repo(.git)?
-  let m = url.match(/github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
-  if (m) return m[1];
-
-  return null;
-}
-
-/**
- * Call `gh repo view <slug> --json viewerPermission --jq .viewerPermission`.
- * Returns the trimmed permission string, or null on any failure.
- * @param {string} slug
- * @returns {string|null}
- */
-function fetchViewerPermission(slug) {
-  try {
-    const result = execFileSync(
-      'gh',
-      ['repo', 'view', slug, '--json', 'viewerPermission', '--jq', '.viewerPermission'],
-      { timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-    return result.toString().trim();
-  } catch (err) {
-    if (err.code === 'ENOENT' || (err.message && err.message.includes('spawn'))) {
-      if (!ghNotFoundWarned) {
-        ghNotFoundWarned = true;
-        process.stderr.write('[project-id] gh CLI not found, falling back to COMMON\n');
-      }
-    }
-    // timeout, non-zero exit, or spawn failure → null silently
-    return null;
-  }
-}
-
-/**
  * Resolve a project_id for the given working directory.
  *
- * 3-tier priority:
- *   1. .mixdog/project.id file in cwd or any ancestor
- *   2. .git root → parse origin url → gh CLI permission check → owner/repo slug
- *   3. null (COMMON)
+ * Single source: .mixdog/project.id file in cwd or any ancestor directory.
+ * Returns the file content (trimmed), or null if no file is found or the
+ * content is "common" (case-insensitive).
  *
- * Optional `whitelist` (from fetchRepoWhitelist) accelerates tier-2:
- * if the owner is in whitelist.owners the gh permission check is skipped.
+ * Removed: git origin parsing, gh CLI permission check, owner whitelist
+ * branch, lazy .mixdog/project.id write. Those were multi-step heuristics
+ * with no objective signal — project membership must be declared explicitly
+ * via a .mixdog/project.id file.
  *
- * Result is memoized by git-root (or cwd when no .git found).
+ * Result is memoized by the .mixdog root directory path.
  *
  * @param {string} cwd - absolute or relative working directory
- * @param {{ whitelist?: { repos: string[], owners: string[] } }} [opts]
  * @returns {string|null}
  */
-export function resolveProjectId(cwd, { whitelist } = {}) {
+export function resolveProjectId(cwd) {
   const absCwd = resolve(cwd);
 
-  // --- Tier 1: .mixdog/project.id file ---
   const mixdogRoot = findAncestor(absCwd, '.mixdog');
-  if (mixdogRoot) {
-    const idFile = join(mixdogRoot, '.mixdog', 'project.id');
-    if (existsSync(idFile)) {
-      const content = readFileSync(idFile, 'utf8').trim();
-      // "common" (case-insensitive) → forced COMMON
-      if (content.toLowerCase() === 'common') {
-        // Cache the null so repeated calls skip the ancestor walk.
-        if (!cache.has(mixdogRoot)) cache.set(mixdogRoot, null);
-        return null;
-      }
-      if (content) {
-        const cacheKey = mixdogRoot;
-        if (!cache.has(cacheKey)) cache.set(cacheKey, content);
-        return content;
-      }
-    }
-  }
+  if (!mixdogRoot) return null;
 
-  // --- Tier 2+: locate .git root ---
-  const gitRoot = findAncestor(absCwd, '.git');
-  const cacheKey = gitRoot ?? absCwd;
+  if (cache.has(mixdogRoot)) return cache.get(mixdogRoot);
 
-  if (cache.has(cacheKey)) return cache.get(cacheKey);
-
-  if (!gitRoot) {
-    cache.set(cacheKey, null);
+  const idFile = join(mixdogRoot, '.mixdog', 'project.id');
+  if (!existsSync(idFile)) {
+    cache.set(mixdogRoot, null);
     return null;
   }
 
-  // --- Tier 3: parse git origin slug ---
-  const slug = slugFromGitConfig(gitRoot);
-  if (!slug) {
-    cache.set(cacheKey, null);
+  const content = readFileSync(idFile, 'utf8').trim();
+  // "common" (case-insensitive) → forced COMMON
+  if (content.toLowerCase() === 'common' || !content) {
+    cache.set(mixdogRoot, null);
     return null;
   }
 
-  // --- Tier 4: gh CLI permission check (skip if owner is in whitelist) ---
-  let projectId;
-  const owner = slug.split('/')[0].toLowerCase();
-  if (whitelist?.owners?.includes(owner)) {
-    // Owner already verified via whitelist — adopt slug directly
-    projectId = slug;
-  } else {
-    const permission = fetchViewerPermission(slug);
-    const WRITE_LEVEL = new Set(['WRITE', 'MAINTAIN', 'ADMIN']);
-    projectId = (permission && WRITE_LEVEL.has(permission)) ? slug : null;
-  }
-
-  cache.set(cacheKey, projectId);
-
-  // --- Tier 5: lazily write .mixdog/project.id for fast future lookups ---
-  if (projectId) {
-    try {
-      const mixdogDir = join(gitRoot, '.mixdog');
-      mkdirSync(mixdogDir, { recursive: true });
-      writeFileSync(join(mixdogDir, 'project.id'), projectId, 'utf8');
-    } catch {
-      // non-critical; ignore write errors
-    }
-  }
-
-  return projectId;
+  cache.set(mixdogRoot, content);
+  return content;
 }
 
 /**

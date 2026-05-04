@@ -1,17 +1,14 @@
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { maxMtime, maxMtimeRecursive } from '../cache-mtime.mjs';
 // --- Agent template loading ---
 /**
  * Load an agent MD file (Worker.md, Reviewer.md, etc.) as session instructions.
  * Strips frontmatter, returns the body.
  */
-// Agent template cache — walkForAgent() recurses the whole marketplaces
-// tree, which is the single most expensive file-system call in
-// createSession. Cache per (name, cwd) with a 60s TTL so repeated Pool C
-// fan-out in the same window pays the walk cost once.
+// Agent template cache — mtime-invalidated per (name, cwd).
 const _agentTemplateCache = new Map();
-const AGENT_TEMPLATE_TTL = 60_000;
 export function loadAgentTemplate(name, cwd) {
     // When cwd is null/missing (bridge maintenance callers like cycle1-agent
     // pass cwd:null on purpose so provider-cache shards don't fork per MCP
@@ -20,8 +17,6 @@ export function loadAgentTemplate(name, cwd) {
     // directory into the cache key and fragment the shard per caller workspace.
     const projectDir = (typeof cwd === 'string' && cwd.length > 0) ? cwd : null;
     const key = `${name}|${projectDir ?? '__noproject__'}`;
-    const cached = _agentTemplateCache.get(key);
-    if (cached && Date.now() - cached.ts < AGENT_TEMPLATE_TTL) return cached.value;
     // Search paths for agent files. Drop the <projectDir>/.claude/agents
     // entry when cwd is missing; home-level + plugin walk still apply so the
     // function's "no template found → null" contract is preserved via the
@@ -31,25 +26,43 @@ export function loadAgentTemplate(name, cwd) {
         searchPaths.push(join(projectDir, '.claude', 'agents', `${name}.md`));
     }
     searchPaths.push(join(homedir(), '.claude', 'agents', `${name}.md`));
-    // Also search plugin directories
-    const pluginBase = join(homedir(), '.claude', 'plugins', 'marketplaces');
-    if (existsSync(pluginBase)) {
-        try {
-            walkForAgent(pluginBase, name, searchPaths);
-        }
-        catch { /* ignore */ }
+    // Derive the set of directories that gate freshness. Include both the
+    // containing agents/ dirs and the plugin marketplaces root so any
+    // addition/removal of nested agent files is detected.
+    const mtimePaths = [];
+    if (projectDir) mtimePaths.push(join(projectDir, '.claude', 'agents'));
+    mtimePaths.push(join(homedir(), '.claude', 'agents'));
+    // Also search plugin agent directories — precise sentinels only, no
+    // full marketplaces tree walk.
+    const pluginAgentDirs = [];
+    // 1. Cache layout: CLAUDE_PLUGIN_ROOT points to the live versioned dir.
+    const _pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+    if (_pluginRoot) {
+        const cacheAgentsDir = join(_pluginRoot, 'agents');
+        searchPaths.push(join(cacheAgentsDir, `${name}.md`));
+        pluginAgentDirs.push(cacheAgentsDir);
     }
+    // 2. Dev-sync / source layout: marketplaces/trib-plugin/agents.
+    const devSyncAgentsDir = join(homedir(), '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'agents');
+    searchPaths.push(join(devSyncAgentsDir, `${name}.md`));
+    pluginAgentDirs.push(devSyncAgentsDir);
+    // maxMtimeRecursive only over the two precise agents/ sentinel dirs.
+    const mtime = pluginAgentDirs.length > 0
+        ? Math.max(maxMtimeRecursive(mtimePaths), maxMtimeRecursive(pluginAgentDirs))
+        : maxMtimeRecursive(mtimePaths);
+    const cached = _agentTemplateCache.get(key);
+    if (cached && mtime <= cached.mtime) return cached.value;
     for (const p of searchPaths) {
         const content = readSafe(p);
         if (content) {
             // Strip YAML frontmatter
             const stripped = content.replace(/^---\n[\s\S]*?\n---\n*/, '');
             const body = stripped.trim();
-            _agentTemplateCache.set(key, { ts: Date.now(), value: body });
+            _agentTemplateCache.set(key, { mtime, value: body });
             return body;
         }
     }
-    _agentTemplateCache.set(key, { ts: Date.now(), value: null });
+    _agentTemplateCache.set(key, { mtime, value: null });
     return null;
 }
 /**
@@ -108,22 +121,32 @@ export function collectSkills(cwd) {
     }
     return skills;
 }
-// --- Skill cache (TTL-based) ---
-// Skills folders rarely change within a session. A 5-minute TTL keeps the
-// recursive readdirSync + frontmatter parse off the hot path for most
-// bridge/Pool C invocations. Bench harness or tests can invalidate by
-// boot; long-running plugin server picks up changes on next window.
+// --- Skill cache (mtime-based) ---
+// Skills folders rarely change within a session. Mtime invalidation keeps the
+// recursive readdirSync + frontmatter parse off the hot path while surfacing
+// any skill file added, removed, or edited immediately.
 let _skillsCache = null;
-let _skillsCacheTime = 0;
+let _skillsCacheMtime = 0;
 let _skillsCacheCwd = null;
-const SKILLS_CACHE_TTL = 5 * 60_000;
 export function collectSkillsCached(cwd) {
-    const now = Date.now();
-    if (_skillsCache && _skillsCacheCwd === cwd && now - _skillsCacheTime < SKILLS_CACHE_TTL) {
+    const projectDir = (typeof cwd === 'string' && cwd.length > 0) ? cwd : null;
+    const mtimePaths = [join(homedir(), '.claude', 'skills')];
+    if (projectDir) mtimePaths.push(join(projectDir, '.claude', 'skills'));
+    // walkForSkills populates dirs with plugin-internal skills/ paths.
+    // Use maxMtimeRecursive so edits to skill .md files inside those dirs
+    // propagate — parent dir mtime is unchanged on Linux/macOS for
+    // content-only edits.
+    const pluginBase = join(homedir(), '.claude', 'plugins', 'marketplaces');
+    const skillsDirs = [...mtimePaths];
+    if (existsSync(pluginBase)) {
+        try { walkForSkills(pluginBase, skillsDirs); } catch { /* ignore */ }
+    }
+    const mtime = maxMtimeRecursive(skillsDirs);
+    if (_skillsCache && _skillsCacheCwd === cwd && mtime <= _skillsCacheMtime) {
         return _skillsCache;
     }
     _skillsCache = collectSkills(cwd);
-    _skillsCacheTime = now;
+    _skillsCacheMtime = mtime;
     _skillsCacheCwd = cwd;
     return _skillsCache;
 }
@@ -204,12 +227,9 @@ export function buildSkillToolDefs(skills, { ownerIsBridge = false } = {}) {
  * Read <cwd>/PROJECT.md if present. Used to inject project-scoped guidance
  * into Tier 3 `# project-context` without polluting Tier 2 (Pool B prefix).
  */
-// PROJECT.md lookup per cwd — single readFileSync but still happens on
-// every createSession. Memoise for consistency with the other template
-// caches; the 60s TTL means a manually edited PROJECT.md shows up on the
-// next window.
+// PROJECT.md lookup per cwd — mtime-invalidated so edits are visible
+// on the very next createSession call.
 const _projectMdCache = new Map();
-const PROJECT_MD_TTL = 60_000;
 export function collectProjectMd(cwd) {
     // When cwd is null/missing (bridge maintenance calls deliberately pass
     // cwd:null so provider-cache shards don't fork per caller workspace),
@@ -219,10 +239,12 @@ export function collectProjectMd(cwd) {
     // MCP launch dir.
     const projectDir = (typeof cwd === 'string' && cwd.length > 0) ? cwd : null;
     if (!projectDir) return '';
+    const filePath = join(projectDir, 'PROJECT.md');
+    const mtime = maxMtime([filePath]);
     const cached = _projectMdCache.get(projectDir);
-    if (cached && Date.now() - cached.ts < PROJECT_MD_TTL) return cached.value;
-    const content = readSafe(join(projectDir, 'PROJECT.md')) || '';
-    _projectMdCache.set(projectDir, { ts: Date.now(), value: content });
+    if (cached && mtime <= cached.mtime) return cached.value;
+    const content = readSafe(filePath) || '';
+    _projectMdCache.set(projectDir, { mtime, value: content });
     return content;
 }
 
@@ -235,21 +257,19 @@ export function collectProjectMd(cwd) {
  * each spawn and injects the result into the Tier 3 system-reminder via
  * composeSystemPrompt's `roleTemplate` slot.
  */
-// Role template cache — file read + frontmatter parse on every
-// createSession under the unified-shard policy becomes measurable when a
-// long session fan-outs N Pool C sub-sessions. 60s TTL keeps UI edits
-// visible without hammering the disk on every bridge turn.
+// Role template cache — mtime-invalidated so UI edits are visible
+// on the very next createSession call without any TTL delay.
 const _roleTemplateCache = new Map();
-const ROLE_TEMPLATE_TTL = 60_000;
 export function loadRoleTemplate(role, dataDir) {
     if (!role || !dataDir) return null;
     const key = `${role}|${dataDir}`;
-    const cached = _roleTemplateCache.get(key);
-    if (cached && Date.now() - cached.ts < ROLE_TEMPLATE_TTL) return cached.value;
     const path = join(dataDir, 'roles', `${role}.md`);
+    const mtime = maxMtime([path]);
+    const cached = _roleTemplateCache.get(key);
+    if (cached && mtime <= cached.mtime) return cached.value;
     const content = readSafe(path);
     if (!content) {
-        _roleTemplateCache.set(key, { ts: Date.now(), value: null });
+        _roleTemplateCache.set(key, { mtime, value: null });
         return null;
     }
     const fm = parseFrontmatter(content);
@@ -265,7 +285,7 @@ export function loadRoleTemplate(role, dataDir) {
         permission,
         body: body || null,
     };
-    _roleTemplateCache.set(key, { ts: Date.now(), value: template });
+    _roleTemplateCache.set(key, { mtime, value: template });
     return template;
 }
 
@@ -297,12 +317,11 @@ import { listHiddenRoleNames, listHiddenRolesByKind } from '../internal-roles.mj
 const RETRIEVAL_PRINCIPLES_NAME = 'retrieval-role-principles';
 
 let _roleClassificationCache = null;
-let _roleClassificationCacheTime = 0;
-const ROLE_CLASSIFICATION_TTL = 60_000;
+let _roleClassificationMtime = 0;
 
 function loadRoleClassification(pluginRoot) {
-    const now = Date.now();
-    if (_roleClassificationCache && now - _roleClassificationCacheTime < ROLE_CLASSIFICATION_TTL) {
+    const mtime = maxMtime([join(pluginRoot, 'agents')]);
+    if (_roleClassificationCache && mtime <= _roleClassificationMtime) {
         return _roleClassificationCache;
     }
     const hidden = new Set(listHiddenRoleNames());
@@ -323,12 +342,11 @@ function loadRoleClassification(pluginRoot) {
         maintenance: new Set(listHiddenRolesByKind('maintenance')),
     };
     _roleClassificationCache = value;
-    _roleClassificationCacheTime = now;
+    _roleClassificationMtime = mtime;
     return value;
 }
 
 const _scopedRoleCatalogCache = new Map();
-const SCOPED_ROLE_CATALOG_TTL = 60_000;
 
 function loadHiddenRoleSnippets(pluginRoot) {
     try {
@@ -387,11 +405,18 @@ export function loadScopedRoleCatalog(role, provider = null) {
     const useUnified = !!(provider && EXPLICIT_CACHE_PROVIDERS.has(provider));
     const cacheKey = useUnified ? '__unified__' : (role || '__all__');
     const cached = _scopedRoleCatalogCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < SCOPED_ROLE_CATALOG_TTL) {
+    const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+    // Use maxMtimeRecursive so edits to .md files inside agents/ and
+    // rules/bridge/ propagate — parent dir mtime is unchanged on
+    // Linux/macOS when only a nested file's content changes.
+    const mtime = pluginRoot ? maxMtimeRecursive([
+        join(pluginRoot, 'agents'),
+        join(pluginRoot, 'rules', 'bridge'),
+    ]) : 0;
+    if (cached && mtime <= cached.mtime) {
         return cached.value;
     }
     try {
-        const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
         if (!pluginRoot) return '';
         const agentSections = loadAgentSections(pluginRoot);
         const hiddenPairs = loadHiddenRoleSnippets(pluginRoot);
@@ -451,7 +476,7 @@ export function loadScopedRoleCatalog(role, provider = null) {
             blocks.push(`# Hidden Role Catalog\n\n${hiddenSectionsToEmit.join('\n\n---\n\n')}`);
         }
         const value = blocks.join('\n\n---\n\n');
-        _scopedRoleCatalogCache.set(cacheKey, { ts: Date.now(), value });
+        _scopedRoleCatalogCache.set(cacheKey, { mtime, value });
         return value;
     } catch {
         return '';
@@ -587,26 +612,9 @@ function parseFrontmatter(content) {
     const permission = fm.match(/^permission:\s*["']?(.+?)["']?\s*$/m)?.[1]?.trim();
     return { name, description, permission };
 }
-function walkForAgent(dir, agentName, result) {
-    try {
-        const entries = readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-            if (entry.name === 'node_modules')
-                continue;
-            const full = join(dir, entry.name);
-            if (entry.isDirectory()) {
-                if (entry.name === 'agents') {
-                    result.push(join(full, `${agentName}.md`));
-                }
-                else {
-                    walkForAgent(full, agentName, result);
-                }
-            }
-        }
-    }
-    catch { /* ignore */ }
-}
-function walkForSkills(dir, result) {
+// depth cap: marketplaces/<plugin>/skills/ is depth 2 from pluginBase
+function walkForSkills(dir, result, depth = 0) {
+    if (depth > 3) return;
     try {
         const entries = readdirSync(dir, { withFileTypes: true });
         for (const entry of entries) {
@@ -618,7 +626,7 @@ function walkForSkills(dir, result) {
                     result.push(full);
                 }
                 else {
-                    walkForSkills(full, result);
+                    walkForSkills(full, result, depth + 1);
                 }
             }
         }

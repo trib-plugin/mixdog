@@ -10,99 +10,59 @@
  * resets the attempt index to startAttempt (caller-supplied).
  */
 
+// Safety envelope: 2 total attempts (initial + 1 retry).  This is a runtime
+// policy constant, not a heuristic — raising it risks amplifying provider
+// load on genuine outages.  Change only with deliberate cost/reliability tradeoff.
 const MAX_ATTEMPTS = 2;
 
-/**
- * Recoverable message patterns. Anthropic tool_use pairing + OpenAI WS
- * truncation + a narrow set of network-transient signatures. Broad substring
- * matches deliberately avoided so deterministic bugs (TypeError, ReferenceError,
- * 4xx semantic faults rendered as Error.message) do not auto-retry.
- */
-const RECOVERABLE_MSG_PATTERNS = [
-  // Anthropic 400 tool_use pairing
-  /tool_use ids were found without tool_result/i,
-  // messages.N:.*tool_use removed — too broad; matches deterministic schema
-  // validation errors. Transient tool_use faults are covered by the id-pairing pattern above.
-  // OpenAI WS truncation
-  /Codex WS closed before response\.completed/i,
-  /response\.incomplete/i,
-  // Network transient (raw rendering of socket/timeout faults)
-  /\bECONNRESET\b/,
-  /\bETIMEDOUT\b/,
-  /\bEAI_AGAIN\b/,
-  /socket hang up/i,
-  /network timeout/i,
-  /upstream connect error/i,
-  /Connection reset/i,
-  /read ECONNRESET/i,
-];
-
-const RECOVERABLE_WS_CODES   = new Set([1006, 1011, 1012, 4000]);
-// 408 Request Timeout and 500 Internal Server Error added alongside 502/503/504.
-const RECOVERABLE_HTTP_STATUS = new Set([408, 500, 502, 503, 504]);
-// ECONNREFUSED/ECONNABORTED: local proxy restart or refused connection.
-// UND_ERR_*: undici fetch timeout/socket faults (Node 18+ native fetch).
-const RECOVERABLE_ERR_CODES   = new Set([
-  'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'ESOCKETTIMEDOUT',
-  'ECONNREFUSED', 'ECONNABORTED',
-  'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
+// Small whitelist of Node.js / undici error codes that represent transient
+// network conditions safe to retry with a fresh session.  Kept as a flat Set
+// so the lookup is O(1) and the full table is visible in one place.
+const TRANSIENT_NETWORK_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
 ]);
-// DNS faults likely indicate misconfig; tracked separately so retry policy
-// can cap them more aggressively than other transient errors.
-const DNS_ERR_CODES           = new Set(['ENOTFOUND', 'EAI_NONAME', 'EAI_FAIL']);
+
+// Transient WS close codes (abnormal close / server restart / overload).
+const TRANSIENT_WS_CODES = new Set([1006, 1011, 1012, 4000]);
+
+// Transient HTTP statuses: timeout (408), server fault (500), gateway (502/503/504).
+const TRANSIENT_HTTP_STATUS = new Set([408, 500, 502, 503, 504]);
 
 /**
- * Returns true when the error looks like a transient provider fault that is
- * safe to retry with a fresh session.
+ * Returns true when `err` represents a transient network or provider fault
+ * that is safe to retry with a fresh session.  Walks err.cause and
+ * err.response.data up to depth 2 so wrapped errors (axios / fetch / sdk)
+ * are detected without unbounded recursion.
+ *
+ * Classification order (first match wins):
+ *   1. err.retryable === true  — provider explicitly marks the error retryable.
+ *   2. err.code in TRANSIENT_NETWORK_CODES  — raw socket / DNS transient.
+ *   3. err.wsCloseCode in TRANSIENT_WS_CODES  — WS abnormal / server restart.
+ *   4. err.httpStatus or err.response.status in TRANSIENT_HTTP_STATUS  — gateway fault.
  * @param {unknown} err
  * @returns {boolean}
  */
-export function isRecoverableError(err) {
-  if (!err) return false;
-  return _isRecoverableError(err, 0);
-}
-
-/**
- * DNS-class faults (ENOTFOUND / EAI_NONAME / EAI_FAIL). Walks err.cause and
- * err.response.data up to depth 2 so wrapped errors (axios / fetch / sdk) are
- * detected without unbounded recursion.
- */
-export function isDnsError(err) {
-  if (!err) return false;
-  return _isDnsError(err, 0);
-}
-
-function _isDnsError(err, depth) {
-  if (!err || depth > 2) return false;
-  if (err.code != null && DNS_ERR_CODES.has(err.code)) return true;
-  const msg = (err instanceof Error ? err.message : String(err)) || '';
-  if (/\b(ENOTFOUND|EAI_NONAME|EAI_FAIL)\b/.test(msg)) return true;
-  if (err.cause != null) return _isDnsError(err.cause, depth + 1);
-  if (err.response != null && err.response.data != null) {
-    return _isDnsError(err.response.data, depth + 1);
+export function isTransientNetworkError(err, _depth = 0) {
+  if (!err || _depth > 2) return false;
+  if (err.retryable === true) return true;
+  if (err.code != null && TRANSIENT_NETWORK_CODES.has(err.code)) return true;
+  if (err.wsCloseCode != null && TRANSIENT_WS_CODES.has(err.wsCloseCode)) return true;
+  if (err.wsCloseCode === 1000) {
+    const msg = (err instanceof Error ? err.message : String(err)) || '';
+    if (/before response\.completed/i.test(msg)) return true;
   }
+  if (err.httpStatus != null && TRANSIENT_HTTP_STATUS.has(err.httpStatus)) return true;
+  if (err.response?.status != null && TRANSIENT_HTTP_STATUS.has(err.response.status)) return true;
+  if (err.cause != null) return isTransientNetworkError(err.cause, _depth + 1);
+  if (err.response?.data != null) return isTransientNetworkError(err.response.data, _depth + 1);
   return false;
 }
-
-function _isRecoverableError(err, depth) {
-  if (!err || depth > 2) return false;
-  const msg = (err instanceof Error ? err.message : String(err)) || '';
-  if (RECOVERABLE_MSG_PATTERNS.some((re) => re.test(msg))) return true;
-  if (err.wsCloseCode != null && RECOVERABLE_WS_CODES.has(err.wsCloseCode)) return true;
-  // wsCloseCode 1000 is a normal close; only recover if it was a truncation
-  if (err.wsCloseCode === 1000 && /before response\.completed/i.test(msg)) return true;
-  if (err.httpStatus  != null && RECOVERABLE_HTTP_STATUS.has(err.httpStatus)) return true;
-  if (err.response != null && err.response.status != null && RECOVERABLE_HTTP_STATUS.has(err.response.status)) return true;
-  if (err.code        != null && RECOVERABLE_ERR_CODES.has(err.code)) return true;
-  if (err.cause != null) return _isRecoverableError(err.cause, depth + 1);
-  if (err.response != null && err.response.data != null) {
-    return _isRecoverableError(err.response.data, depth + 1);
-  }
-  return false;
-}
-
 /**
- * Run `runFn(attempt)` with automatic retry on recoverable errors.
+ * Run `runFn(attempt)` with automatic retry on transient network errors.
  *
  * @param {object} opts
  * @param {string}   opts.role        - role label (for stderr logging)
@@ -125,28 +85,14 @@ export async function runWithDispatchRetry({ role, jobId, startAttempt = 0, runF
       const result = await runFn(attempt);
       return { result, attempt };
     } catch (err) {
-      const dnsErr      = isDnsError(err);
-      const recoverable = !dnsErr && isRecoverableError(err);
+      const recoverable = isTransientNetworkError(err);
       const nextAttempt = attempt + 1;
-
-      // DNS faults are misconfig-suspect: retry once at attempt 0 only.
-      if (dnsErr && attempt === 0 && nextAttempt < MAX_ATTEMPTS) {
-        const msg = (err instanceof Error ? err.message : String(err)) || '';
-        try {
-          process.stderr.write(
-            `[bridge-retry] worker DNS error attempt=${attempt}: ${msg.slice(0, 160)}\n` +
-            `[bridge-retry] role=${role} job=${jobId} → single DNS retry as attempt=${nextAttempt}\n`,
-          );
-        } catch { /* best-effort */ }
-        attempt = nextAttempt;
-        continue;
-      }
 
       if (recoverable && nextAttempt < MAX_ATTEMPTS) {
         const msg = (err instanceof Error ? err.message : String(err)) || '';
         try {
           process.stderr.write(
-            `[bridge-retry] worker recoverable error attempt=${attempt}: ${msg.slice(0, 160)}\n` +
+            `[bridge-retry] worker transient error attempt=${attempt}: ${msg.slice(0, 160)}\n` +
             `[bridge-retry] role=${role} job=${jobId} → retrying as attempt=${nextAttempt}\n`,
           );
         } catch { /* best-effort */ }

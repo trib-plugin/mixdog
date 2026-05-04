@@ -1300,7 +1300,6 @@ function wireEventQueueHandlers(eventQueue) {
       throw err;
     }
   });
-  eventQueue.setSessionStateGetter(() => scheduler.getSessionState());
   // Defensive ownership probe: the queue tick should only run in the active
   // owner process. Standby / proxy instances see bridgeRuntimeConnected=false
   // or proxyMode=true and will skip the tick even if an errant start() slipped

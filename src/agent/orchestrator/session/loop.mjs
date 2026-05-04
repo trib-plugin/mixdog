@@ -14,6 +14,7 @@ import { compressToolResult, recordToolBatch } from '../tools/result-compression
 import { isHiddenRole } from '../internal-roles.mjs';
 import { loadConfig } from '../config.mjs';
 import { createRequire } from 'module';
+import { readFileSync as _readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve as resolvePath } from 'path';
 // Load the CJS permission evaluator. The hooks/ directory lives two levels
@@ -25,30 +26,20 @@ const MCP_TOOL_PREFIX = 'mcp__plugin_mixdog_mixdog__';
 const SAFETY_TRIM_PERCENT = 0.90;
 const SOFT_ITERATION_WARN_THRESHOLDS = Object.freeze([24, 48, 96]);
 const EMERGENCY_ITERATION_FUSE = 100;
-// Iteration caps for system-spawned hidden roles only. Soft = warn threshold
-// (last in the warn ladder), hard = emergency fuse. Tuned from observed
-// p95/max in the 24h trace: recall p95=9 max=19, search max=20, explorer ~5
-// typical. Hidden non-retrieval roles (cycle*, scheduler, webhook, proactive)
-// are single-shot or near so (cycle1 p95=1, cycle2 max=2, proactive max=3);
-// a tight cap catches runaway loops early.
-//
-// User-defined roles from user-workflow.json are NOT listed here — their
-// names are configurable per install, so they fall to `default` unless
-// overridden via agent-config.json:
-//   { "bridge": { "iterationCaps": { "<role>": { "soft": N, "hard": M } } } }
-// opts.iterationEmergencyFuse on the per-call payload still overrides hard
-// for benchmarks / batch jobs.
-const ROLE_ITERATION_CAPS = Object.freeze({
-    'recall-agent': { soft: 4, hard: 16 },
-    'search-agent': { soft: 5, hard: 18 },
-    'explorer': { soft: 9, hard: 25 },
-    'cycle1-agent': { soft: 5, hard: 20 },
-    'cycle2-agent': { soft: 5, hard: 20 },
-    'proactive-decision': { soft: 5, hard: 20 },
-    'scheduler-task': { soft: 5, hard: 20 },
-    'webhook-handler': { soft: 5, hard: 20 },
-    default: { soft: 30, hard: 100 },
-});
+// Per-role iteration caps are declared in defaults/hidden-roles.json under
+// `iterationCap: { soft, hard }`. The default fallback applies when a role
+// has no entry there, or for user-defined roles from user-workflow.json.
+// agent-config.json `bridge.iterationCaps` still overrides at call time.
+// opts.iterationEmergencyFuse wins for benchmarks / batch jobs.
+const _HIDDEN_ROLES_JSON = resolvePath(dirname(fileURLToPath(import.meta.url)), '../../../../defaults/hidden-roles.json');
+let _hiddenRolesCache = null;
+function _getHiddenRoles() {
+    if (_hiddenRolesCache) return _hiddenRolesCache;
+    try {
+        _hiddenRolesCache = JSON.parse(_readFileSync(_HIDDEN_ROLES_JSON, 'utf8'));
+    } catch { _hiddenRolesCache = { roles: [] }; }
+    return _hiddenRolesCache;
+}
 // Transcript pairing guard. Anthropic 400-rejects when an assistant message
 // ends with tool_use blocks and the next message isn't tool results for
 // those exact ids. abort/timeout/error race in the loop body can leave a
@@ -133,8 +124,10 @@ function resolveRoleIterationCaps(role) {
         const cfg = loadConfig();
         override = cfg?.bridge?.iterationCaps || null;
     } catch { /* config read failure → fall back to defaults */ }
-    const builtin = ROLE_ITERATION_CAPS[role] || null;
-    const fallback = ROLE_ITERATION_CAPS.default;
+    const hiddenRoles = _getHiddenRoles();
+    const roleEntry = Array.isArray(hiddenRoles?.roles) ? hiddenRoles.roles.find(r => r.name === role) : null;
+    const builtin = roleEntry?.iterationCap || null;
+    const fallback = { soft: 30, hard: 100 };
     const fromOverride = (override && typeof override === 'object' && override[role]) || null;
     const fromOverrideDefault = (override && typeof override === 'object' && override.default) || null;
     const pick = (key) => {
@@ -162,14 +155,15 @@ const DIRECT_HIDDEN_TOOLS = new Set(['memory_search', 'web_search']);
 // these or they spawn another hidden agent of the same kind — nested chain
 // + token burn. Block at call time; the role's rule prompt also says so.
 const RETRIEVAL_WRAPPERS = new Set(['recall', 'search', 'explore']);
-// Eager-dispatch allowlist: read-only builtins can safely start executing
-// during SSE parsing so tool work overlaps with the rest of the stream.
-// Writes, bash, MCP and skills stay serial after send() returns.
-const EAGER_TOOLS = new Set(['read', 'grep', 'glob', 'list', 'find_symbol']);
+// Eager-dispatch: tools with readOnlyHint:true in their declaration are safe
+// to execute during SSE parsing so tool work overlaps with the rest of the
+// stream. Writes, bash, MCP and skills stay serial after send() returns.
 const COMPLETION_HINT_TOOLS = new Set(['read', 'grep', 'glob', 'list', 'find_symbol']);
-const EXPLICIT_TOOL_VERBS = String.raw`(?:use|call|run|invoke|prefer)`
-const EXPLICIT_TOOL_NEGATION = String.raw`(?:do\s+not|don't|never)\s+${EXPLICIT_TOOL_VERBS}`
-function isEagerDispatchable(name) { return EAGER_TOOLS.has(name); }
+function isEagerDispatchable(name, tools) {
+    if (!Array.isArray(tools)) return false;
+    const def = tools.find(t => t?.name === name);
+    return def?.annotations?.readOnlyHint === true;
+}
 // ── Bridge-worker permission enforcement ──────────────────────────────────────
 // Mirrors the PreToolUse hook evaluation for tool calls that originate inside a
 // bridge worker session. Worker dispatch previously bypassed the hook pipeline
@@ -213,44 +207,6 @@ function withToolCompletionHint(name, result) {
         '',
         text,
     ].join('\n');
-}
-function escapeRegex(text) {
-    return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-function userTextsNewestFirst(messages) {
-    if (!Array.isArray(messages)) return [];
-    const texts = [];
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-        const msg = messages[i];
-        if (msg?.role !== 'user') continue;
-        if (typeof msg.content === 'string') {
-            if (!msg.content.startsWith('<system-reminder>')) texts.push(msg.content);
-            continue;
-        }
-        if (Array.isArray(msg.content)) {
-            const text = msg.content.map(item => typeof item?.text === 'string' ? item.text : '').filter(Boolean).join('\n');
-            if (text && !text.startsWith('<system-reminder>')) texts.push(text);
-        }
-    }
-    return texts;
-}
-function explicitToolChoiceName(messages, tools) {
-    const texts = userTextsNewestFirst(messages);
-    if (!texts.length || !Array.isArray(tools) || !tools.length) return null;
-    const names = tools.map(tool => tool?.name).filter(Boolean).sort((a, b) => b.length - a.length);
-    for (const text of texts) {
-        for (const name of names) {
-            const escaped = escapeRegex(name);
-            const quotedName = '`?' + escaped + '`?';
-            const positive = new RegExp(`\\b${EXPLICIT_TOOL_VERBS}\\s+(?:exactly\\s+one\\s+|one\\s+)?${quotedName}\\b`, 'i');
-            const negative = new RegExp(`\\b${EXPLICIT_TOOL_NEGATION}\\s+${quotedName}\\b`, 'i');
-            if (positive.test(text) && !negative.test(text)) return name;
-        }
-        if (names.includes('list') && /\buse\s+(?:exactly\s+)?one\s+directory\s+(?:find|metadata|list)\s+query\b/i.test(text)) {
-            return 'list';
-        }
-    }
-    return null;
 }
 function effectiveToolPermission(sessionRef) {
     return sessionRef?.toolPermission || sessionRef?.permission || null;
@@ -456,7 +412,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     const loopGuard = createGuard();
     // Per-role soft/hard iteration caps. soft = last warn threshold; hard =
     // emergency fuse default. Map + override resolution at module scope —
-    // see ROLE_ITERATION_CAPS / resolveRoleIterationCaps. Per-call
+    // see resolveRoleIterationCaps / defaults/hidden-roles.json. Per-call
     // opts.iterationEmergencyFuse still wins for benchmarks / batch jobs.
     const sessionRole = opts.session?.role;
     const roleCaps = resolveRoleIterationCaps(sessionRole);
@@ -467,7 +423,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     const emergencyIterationFuse = Number.isFinite(Number(opts.iterationEmergencyFuse))
         ? Number(opts.iterationEmergencyFuse)
         : roleCaps.hard;
-    const forcedFirstTool = opts.forcedFirstTool || explicitToolChoiceName(messages, tools);
+    const forcedFirstTool = opts.forcedFirstTool ?? null;
     const forcedFirstToolDef = forcedFirstTool
         ? tools.find(tool => tool?.name === forcedFirstTool)
         : null;
@@ -535,7 +491,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         // returns and run serially in the call-order loop below.
         const pending = new Map();
         const startEagerTool = (call) => {
-            if (!call?.id || pending.has(call.id) || !isEagerDispatchable(call.name)) return null;
+            if (!call?.id || pending.has(call.id) || !isEagerDispatchable(call.name, tools)) return null;
             const toolKind = getToolKind(call.name);
             // Run role guards before eager execution — same checks as the serial path.
             const noToolRole = sessionRef?.role === 'cycle1-agent' || sessionRef?.role === 'cycle2-agent';
@@ -561,7 +517,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         const startEagerRun = (calls, startIndex) => {
             for (let j = startIndex; j < calls.length; j += 1) {
                 const call = calls[j];
-                if (!call?.id || !isEagerDispatchable(call.name)) break;
+                if (!call?.id || !isEagerDispatchable(call.name, tools)) break;
                 if (!startEagerTool(call) && !pending.has(call.id)) break;
             }
         };
@@ -697,7 +653,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 // Fallback for providers that don't stream tool calls early:
                 // execute a contiguous read-only run in parallel, but never
                 // cross a write/bash/MCP boundary that may change state.
-                if (isEagerDispatchable(call.name)) {
+                if (isEagerDispatchable(call.name, tools)) {
                     startEagerRun(calls, callIndex);
                 }
                 const eager = pending.get(call.id);

@@ -13,8 +13,8 @@ import { getCapabilities } from '../../../shared/config.mjs';
 import { getAbortSignalForSession } from '../session/abort-lookup.mjs';
 import { execShellCommand, stripAnsi as _shellStripAnsi } from './shell-command.mjs';
 import { wrapCommandWithSnapshot } from './shell-snapshot.mjs';
-import { interpretCommandResult } from './command-semantics.mjs';
 import { getDestructiveCommandWarning, stripQuotedAndHeredoc, extractShellCInner } from './destructive-warning.mjs';
+import { isBlockedCommand } from './shell-policy.mjs';
 const execAsync = promisify(exec);
 
 // ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ const execAsync = promisify(exec);
 // Helper extracted to src/shared/user-cwd.mjs so server-main.mjs can import
 // the same primitive without circular-import risk.
 // ---------------------------------------------------------------------------
-import { resolveDefaultUserCwd as _resolveDefaultUserCwd, invalidateUserCwdCache as _invalidateUserCwdCache, pwd } from '../../../shared/user-cwd.mjs';
+import { resolveDefaultUserCwd as _resolveDefaultUserCwd, pwd } from '../../../shared/user-cwd.mjs';
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
 // implementation that handles CSI + OSC + DCS edge cases; older runtimes
@@ -889,16 +889,15 @@ function walkDir(root, { hidden = false, maxDepth = Infinity, visit, sort } = {}
 // Ordered to match the previous hand-maintained tools.json entries
 // (read / edit / write / bash / grep / glob) so
 // build-tools-manifest reproduces the legacy ordering.
-// Shape mirrors tools.json: title + annotations + compact descriptions.
-// The previous long-form descriptions have been trimmed to the tools.json
-// versions — those are what external models actually saw in the prefix.
-// `BUILTIN_TOOLS` name is preserved because session/manager.mjs and the
-// isBuiltinTool check in this file both reference it by that symbol.
+// CANONICAL SOURCE for all tool annotations (compressible, readOnlyHint,
+// destructiveHint, etc.). tools.json is GENERATED from this array by
+// scripts/build-tools-manifest.mjs — do not edit annotations in tools.json
+// directly. To verify sync: node scripts/check-tools-sync.mjs
 export const BUILTIN_TOOLS = [
     {
         name: 'read',
         title: 'Read',
-        annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, compressible: true },
         description: 'Read file(s). `path` accepts a single string or array (`["a.mjs","b.mjs"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead. For per-file differing offset/limit/mode, pass `path` as an array of objects: `path:[{path:"a.mjs",offset:10,limit:5},{path:"b.mjs",mode:"head",n:3}]`.',
         inputSchema: {
             type: 'object',
@@ -972,7 +971,7 @@ export const BUILTIN_TOOLS = [
     {
         name: 'bash',
         title: 'Bash',
-        annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+        annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true, compressible: true },
         description: 'Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Pass `persistent:true` to keep cwd/env/venv across calls in the same session (the bridge reuses one shell). Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.',
         inputSchema: {
             type: 'object',
@@ -1005,7 +1004,7 @@ export const BUILTIN_TOOLS = [
     {
         name: 'grep',
         title: 'Grep',
-        annotations: { title: 'Grep', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        annotations: { title: 'Grep', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, compressible: true },
         description: 'ripgrep content search. `pattern` accepts a single regex string (use `|` for alternation: `pattern:"foo|bar"`) OR an array of patterns (`pattern:["foo","bar"]`, OR-joined). `glob` follows the same shape — single string or array. Prefer the array form when patterns are long or genuinely independent; serial greps are not allowed. For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.',
         inputSchema: {
             type: 'object',
@@ -1828,35 +1827,8 @@ function startBackgroundShellJob({ command, timeoutMs, workDir, mergeStderr, spa
 }
 
 // --- Blocked commands for safety ---
-// Anchor for "command start": line start, after ; && || | (with optional whitespace)
-const _CMD_START = '(?:^|[;&|\\n(){}]\\s*|\\$[\\({]\\s*|[<>]\\(\\s*|`\\s*)';
-const BLOCKED_PATTERNS = [
-    // rm — catch -rf, -fr, split flags (-r -f / -f -r), and `--` separator;
-    // target restricted to / or ~ so legitimate `rm -rf .build` still passes.
-    // W1 H: allow any number of intervening options (e.g. --no-preserve-root)
-    // between the recursive-force flag and the root target. Prior pattern
-    // only allowed bare `--` and missed `rm -rf --no-preserve-root /`.
-    /\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|-[rR]\s+-[fF]|-[fF]\s+-[rR])(?:\s+(?:--?[a-zA-Z][\w-]*))*\s+[\/~]/i,
-    // W1 H: force-push variants. --force, -f, --force-with-lease, and the
-    // leading-plus refspec form (`git push origin +branch`) all rewrite
-    // remote history without warning.
-    /\bgit\s+push\s+(?:[^\n]*\s)?(?:--force(?:-with-lease)?|-f)\b/i,
-    /\bgit\s+push\s+\S+\s+\+/i,
-    /\bgit\s+reset\s+--hard/i,
-    /\bformat\s+[a-z]:/i,
-    /\b(shutdown|reboot|halt)\b/i,
-    /\bdel\s+\/[sfq]/i,
-    // W1 H: Windows root removal via cmd builtins. `rmdir /s /q C:\` and
-    // its alias `rd /s /q D:\` wipe an entire drive without confirmation.
-    /\b(?:rmdir|rd)\s+(?:\/[sq]\s+)+[a-zA-Z]:\\?/i,
-    new RegExp(_CMD_START + 'mkfs(?:\\.|\\b)', 'i'),
-    new RegExp(_CMD_START + 'dd\\s+[^\\n]*\\bif=/dev/', 'i'),
-    // W1 H: dd writing to a block device (disk wipe). Block of=/dev/* the
-    // same way if=/dev/* (read from device) is blocked.
-    new RegExp(_CMD_START + 'dd\\s+[^\\n]*\\bof=/dev/', 'i'),
-    new RegExp(_CMD_START + 'diskpart\\b[^\\n]*\\bclean\\b', 'i'),
-    /:\(\)\s*\{[^}]*:\|:&[^}]*\};\s*:/, // bash fork-bomb signature (idempotent string)
-];
+// Hard-block patterns live exclusively in ./shell-policy.mjs (BLOCKED_PATTERNS /
+// isBlockedCommand). The local copy was removed to eliminate drift.
 const SHELL_MUTATION_PATTERN = /(?:^|[;&|\n]\s*)(?:touch|mkdir|mktemp|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+-i|perl\s+-pi|npm\s+(?:install|i|ci|uninstall)|pnpm\s+(?:install|i|add|remove|update|up)|yarn\s+(?:install|add|remove|up)|bun\s+(?:install|add|remove|update|up)|pip(?:3)?\s+install|python(?:3)?\s+-m\s+pip\s+install|git\s+(?:checkout|switch|restore|clean|apply|am|cherry-pick|merge|rebase|stash|pull|reset)|cargo\s+(?:build|install|clean)|go\s+(?:build|install|generate)|make|cmake)\b/i;
 const SHELL_READ_ONLY_SEGMENT_RE = /^(?:cd|pwd|echo|printf|env|printenv|set|unset|export|alias|unalias|source|\.|type|which|whereis|ls|dir|cat|head|tail|wc|grep|rg|find|git\s+(?:status|diff|show|log|rev-parse|branch|remote|ls-files)|stat|readlink|realpath|basename|dirname|sort|uniq|cut|sed\s+-n|awk|ps|whoami|uname|date|true|false|test|\[)\b/i;
 const SHELL_GLOBAL_MUTATORS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip3', 'python', 'python3', 'git', 'cargo', 'go', 'make', 'cmake', 'dd']);
@@ -2962,10 +2934,8 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
             // string literal (`echo "rm -rf /"`) doesn't false-positive,
             // while `bash -c 'rm -rf /'` payloads are extracted and re-tested.
             const _blockTargets = [stripQuotedAndHeredoc(command), ...extractShellCInner(command).map(stripQuotedAndHeredoc)];
-            for (const pattern of BLOCKED_PATTERNS) {
-                if (_blockTargets.some((t) => pattern.test(t))) {
-                    return `Error: blocked command pattern — "${command}" matches safety rule`;
-                }
+            if (_blockTargets.some((t) => isBlockedCommand(t))) {
+                return `Error: blocked command pattern — "${command}" matches safety rule`;
             }
             // G4: surface destructive-command warning inline (informational
             // only; BLOCKED_PATTERNS above handles hard blocks).
@@ -3106,22 +3076,10 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
                     ? 'SIGTERM'
                     : (result.killed ? 'SIGKILL' : (result.signal || null));
                 const exitCode = signal ? null : result.exitCode;
-                // G4: command-aware exit interpretation. grep / find /
-                // diff / test return non-zero for benign signals (no
-                // matches, files differ, false condition); render those
-                // as informational notes instead of [exit code: N] so the
-                // agent doesn't re-run the command thinking it failed.
-                const _semantic = interpretCommandResult(
-                    command,
-                    exitCode != null ? exitCode : -1,
-                );
-                const _isReallyErrored = !!signal
-                    || (exitCode !== 0 && exitCode !== null && _semantic.isError);
+                const _isReallyErrored = !!signal || (exitCode !== 0 && exitCode !== null);
                 const statusMarker = signal
                     ? `[signal: ${signal}]`
-                    : (_isReallyErrored
-                        ? `[exit code: ${exitCode}]`
-                        : (_semantic.note ? `[${_semantic.note}]` : ''));
+                    : (_isReallyErrored ? `[exit code: ${exitCode}]` : '');
                 if (mergeStderr) {
                     // Legacy back-compat path for callers that parsed the old
                     // merged form. Concatenate stdout + stderr; no separator

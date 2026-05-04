@@ -42,7 +42,7 @@ import {
 } from './lib/memory.mjs'
 import { configureEmbedding, embedText, getEmbeddingDims } from './lib/embedding-provider.mjs'
 import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
-import { runCycle1, runCycle2, parseInterval, syncRootEmbedding } from './lib/memory-cycle.mjs'
+import { runCycle1, runCycle2, parseInterval, syncRootEmbedding, runPromotePhase, applySimpleStatus, applyUpdate, applyMerge } from './lib/memory-cycle.mjs'
 import { searchRelevantHybrid } from './lib/memory-recall-store.mjs'
 import { retrieveEntries } from './lib/memory-retrievers.mjs'
 import { resetEmbeddingIndex, pruneOldEntries } from './lib/memory-maintenance-store.mjs'
@@ -50,9 +50,6 @@ import { computeEntryScore, freshnessFactor } from './lib/memory-score.mjs'
 import { runFullBackfill } from './lib/memory-ops-policy.mjs'
 import { listCore, addCore, editCore, deleteCore } from './lib/core-memory-store.mjs'
 import { resolveProjectId } from './lib/project-id-resolver.mjs'
-import { fetchRepoWhitelist, whitelistRepoMatch } from './lib/repo-whitelist.mjs'
-import { normalizePath } from './lib/path-normalize.mjs'
-
 import { resolvePluginData } from '../shared/plugin-paths.mjs'
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || process.argv[2]
@@ -73,12 +70,6 @@ process.stderr.write(`[memory-service] DATA_DIR=${DATA_DIR}\n`)
 
 import { execFileSync } from 'child_process'
 
-// Lazy whitelist promise — resolved once per process, shared across all ingest calls.
-let _wlPromise = null
-function getWl() {
-  if (!_wlPromise) _wlPromise = fetchRepoWhitelist({ cachePath: path.join(DATA_DIR, 'repo-whitelist.json') }).catch(() => null)
-  return _wlPromise
-}
 const LOCK_FILE = path.join(DATA_DIR, '.memory-service.lock')
 
 const RUNTIME_DIR = path.join(os.tmpdir(), 'mixdog-memory')
@@ -412,55 +403,8 @@ async function ingestTranscriptFile(transcriptPath, { cwd } = {}) {
   prev.bytes = stat.size
   const lines = buf.toString('utf8').split('\n').filter(Boolean)
 
-  // Whitelist for fast permission resolution (lazy, shared across all ingest calls)
-  const wl = await getWl()
-
-  // 1차: cwd 기반 project_id 결정
   const resolvedCwd = typeof cwd === 'string' && cwd ? cwd : cwdFromTranscriptPath(transcriptPath)
-  let projectId = resolvedCwd != null ? resolveProjectId(normalizePath(resolvedCwd), { whitelist: wl }) : null
-
-  // 2차 fallback: jsonl 본문 1회 prepass로 path 빈도 tally
-  if (projectId == null) {
-    const _WIN_RE = /[A-Z]:[\\\/][^\s"'\)\]]+/g
-    const _HOME_RE = /(?:~|\$HOME|%USERPROFILE%)[\/\\][^\s"'\)\]]+/g
-    const tally = new Map()
-
-    const _tallyPath = (raw, weight) => {
-      const norm = normalizePath(raw)
-      const dir = path.dirname(norm)
-      const id = resolveProjectId(dir, { whitelist: wl }) ?? whitelistRepoMatch(wl, dir)
-      if (!id) return
-      tally.set(id, (tally.get(id) ?? 0) + weight)
-    }
-
-    for (const line of lines) {
-      let parsed
-      try { parsed = JSON.parse(line) } catch { continue }
-      const msgContent = parsed.message?.content
-      // text paths from content strings — 1pt each
-      const textStr = typeof msgContent === 'string' ? msgContent
-        : Array.isArray(msgContent)
-          ? msgContent.map(c => (c?.type === 'text' ? c.text : '') || '').join(' ')
-          : ''
-      for (const m of (textStr.match(_WIN_RE) ?? [])) _tallyPath(m, 1)
-      for (const m of (textStr.match(_HOME_RE) ?? [])) _tallyPath(m, 1)
-      // tool_use input paths — 6pt each
-      if (Array.isArray(msgContent)) {
-        for (const item of msgContent) {
-          if (item?.type !== 'tool_use') continue
-          const inp = item.input ?? {}
-          for (const key of ['file_path', 'path', 'cwd', 'base_path']) {
-            if (typeof inp[key] === 'string' && inp[key]) _tallyPath(inp[key], 6)
-          }
-        }
-      }
-    }
-
-    if (tally.size > 0) {
-      // top1 채택 (margin/threshold 없음 — V_wl_top1)
-      projectId = [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0]
-    }
-  }
+  const projectId = resolveProjectId(resolvedCwd ?? process.cwd())
 
   const insertStmt = db.prepare(`
     INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id, source_turn, project_id)
@@ -703,8 +647,9 @@ async function _awaitCycle1Run(config = {}, options = {}) {
 // Periodic cycle1 sizing: only enter when ≥ 20 pending rows have built up,
 // then split into 2 windows of 50 rows each (≤100 rows per tick). The on-
 // demand path used by SessionStart hooks runs with a 1-row threshold and
-// 4×25 windows instead — see hooks/session-start.cjs:481. mainConfig.cycle1
-// values still win, so users can override any of these in config.json.
+// 5×20 windows instead — see hooks/session-start.cjs ON_DEMAND_CYCLE1_ARGS.
+// mainConfig.cycle1 values still win, so users can override any of these in
+// config.json.
 function periodicCycle1Config() {
   return {
     min_batch: 20,
@@ -975,64 +920,15 @@ async function handleSearch(args) {
   }
   const query = String(args.query ?? '').trim()
   let period = String(args.period ?? '').trim() || undefined
-  // Auto-derive period from time keywords in the query when the caller did
-  // not pass one explicitly. The recall-agent rules try to map these but
-  // models occasionally skip the mapping; this engine-side fallback ensures
-  // 'right now / 지금 / 방금 / 현재 / today / 오늘' always activates the
-  // narrow-window pre-filter and JSONL tail merge below.
-  if (!period && query) {
-    const q = query.toLowerCase()
-    if (/(지금|방금|현재|몇분전|방금전|1시간 이내|한 시간 이내|몇분 전|조금 전|좀 전|얼마 전|잠깐 전|최근 1시간|right now|just now|this minute|a few minutes ago|a moment ago|moments ago|a little while ago|right this second|in the last hour|past hour|within an hour)/.test(q)) {
-      period = '1h'
-    } else if (/(어제|yesterday)/.test(q)) {
-      period = 'yesterday'
-    } else if (/(오늘|today|this hour|today's session|this session|이번 세션)/.test(q)) {
-      // Calendar 'today' (since local midnight) instead of rolling 24h.
-      period = 'today'
-    } else if (/(24시간 이내|하루 이내|last 24 hours)/.test(q)) {
-      period = '1d'
-    } else if (/(지난주|last week)/.test(q)) {
-      // R5 P7: 지난주 → calendar-style previous-week window (7–14d ago)
-      // instead of rolling 7d which silently included today and this week.
-      period = 'last_week'
-    } else if (/(이번주|this week)/.test(q)) {
-      // R6 P9: 이번주 → calendar Mon-now (this calendar week) instead
-      // of rolling 7d which silently included last weekend.
-      period = 'this_week'
-    } else if (/(7일 이내|last 7 days|past 7 days)/.test(q)) {
-      period = '7d'
-    } else if (/(최근 며칠|지난 며칠|recent days|past few days|few days ago|며칠간|며칠동안|지난 [2-7]일|이틀|사흘|나흘)/.test(q)) {
-      // R5 P6: vague multi-day cues collapse to 3d so candidate window
-      // covers today + last 2 days, freshness factor handles ranking.
-      period = '3d'
-    } else if (/(이번달|지난달|this month|last month|30일 이내)/.test(q)) {
-      period = '30d'
-    } else if (/(이어서|계속|지금까장|지금까지|방금까지|진행 상황|현재 작업|마지막 작업|최근 작업|최근 변경|최근 진행|진행 중|continuing|continue from|where.*left off|pick up.*from|latest progress|current status|current work|ongoing now|right now status)/.test(q)) {
-      // Vague-time continuation cues ("최근 작업", "최근 변경", "이어서" etc.)
-      // map to `today` (current calendar day). This includes bare 최근 when
-      // combined with 작업/변경/진행 — the compound makes intent unambiguous.
-      // Bare `최근` alone (no continuation compound) falls through to period=null
-      // so the engine uses the default 30d window. `today` is a calendar-bounded
-      // period, so freshness decay is skipped and results are sorted ts DESC.
-      period = 'today'
-    }
-  }
-  // R6 P12: detect chronological cues so "가장 최근 결정 / 최근 결정 /
-  // 시간순 / 순서대로 / recent decisions / chronological / date order"
-  // queries return ts-DESC ordering even in mid/wide windows, instead of
-  // letting BM25 surface lexically-rich older entries first. Forced sort
-  // is overridden by an explicit caller sort.
-  let forcedSort = null
-  if (query) {
-    const cq = query.toLowerCase()
-    if (/(가장 최근|최근 결정|시간순|순서대로|낙시순|최근 동향|최근 이벤트|chronological|date order|recent decisions|recent events|latest decisions|latest events|most recent decisions)/.test(cq)) {
-      forcedSort = 'date'
-    }
-  }
+  // Period and sort are caller-supplied only. Vague-time phrase mapping
+  // and chronological intent detection are handled by the recall-agent
+  // prompt (rules/bridge/20-recall-agent.md); the engine does not infer
+  // them from query text.
   const limit = Math.max(1, Number(args.limit ?? 10))
   const offset = Math.max(0, Number(args.offset ?? 0))
-  const sort = args.sort != null ? String(args.sort) : (forcedSort ?? 'importance')
+  const sort = args.sort != null ? String(args.sort) : 'importance'
   const includeMembers = Boolean(args.includeMembers)
+  const includeRaw = Boolean(args.includeRaw)
   const temporal = parsePeriod(period, Boolean(query))
 
   // Derive projectScope from caller cwd (falls back to process.cwd()).
@@ -1070,104 +966,7 @@ async function handleSearch(args) {
       projectScope,
     })
     let filtered = results
-    // Narrow-window fallback: caller asked for 'today / right now / just now
-    // / 1d' (≤24h) and hybrid found nothing because the freshest evidence
-    // lives in raw NULL chunks whose content does not lexically overlap the
-    // caller's exact tokens (cycle1 has not produced an `element/summary`
-    // yet). Pull both classified roots and raw chunks in the window so the
-    // recall-agent can render them as `[raw]` recent-window evidence per
-    // its rules.
-    const narrowWindowMs = 24 * 60 * 60 * 1000
-    const isNarrow = temporal?.startMs != null
-      && temporal?.endMs != null
-      && (temporal.endMs - temporal.startMs) <= narrowWindowMs
-    // P5 R3: ALWAYS augment narrow-window candidate pool with chronological
-    // scan results. The previous behaviour (run only on empty hybrid) caused
-    // BM25 to seed `filtered` with topic-matched older entries while the
-    // freshest in-window items never entered the candidate set, so freshness
-    // factor had nothing to rank. Now we union hybrid hits with the full
-    // window scan and dedup by id; sort=date default below makes ts the
-    // ranking key for narrow windows.
-    // R5 P8: extend augment to mid-band (>24h, ≤7d). Narrow keeps
-    // root+raw, mid-band keeps roots only so week-scope queries get
-    // classified decisions injected without the noise of raw turn
-    // chunks. Augmented entries carry freshnessFactor so they tiebreak
-    // with low-tier hybrid hits but never overtake high-quality matches.
-    const sevenDayMs = 7 * 24 * 60 * 60 * 1000
-    const isMidWindow = !isNarrow
-      && temporal?.startMs != null
-      && temporal?.endMs != null
-      && (temporal.endMs - temporal.startMs) <= sevenDayMs * 1.1
-    if (isNarrow || isMidWindow) {
-      // R11 reviewer H2/M3: exclude archived/demoted, scope raw to orphan
-      // chunks (chunk_root IS NULL) so member rows of classified roots
-      // can't duplicate their root in the augment pool.
-      const baseFilters = {
-        limit: Math.max(limit + offset, isNarrow ? 24 : 32),
-        ts_from: temporal.startMs,
-        ts_to: temporal.endMs,
-        excludeStatuses: ['archived', 'demoted'],
-        projectScope,
-      }
-      if (includeMembers) baseFilters.includeMembers = true
-      const rootHits = retrieveEntries(db, { ...baseFilters, is_root: true })
-      const rawHits = isNarrow
-        ? retrieveEntries(db, { ...baseFilters, is_root: false, chunkRootNull: true })
-        : []
-      const existingIds = new Set(filtered.map(f => Number(f.id)))
-      const nowForAugment = Date.now()
-      for (const r of [...rootHits, ...rawHits]) {
-        const id = Number(r.id)
-        if (existingIds.has(id)) continue
-        existingIds.add(id)
-        // R11 reviewer M4: calendar periods skip freshness within-window.
-        const fresh = applyFreshness ? freshnessFactor(r.ts, nowForAugment) : 1.0
-        const augBase = isNarrow ? 0.005 : 0.012
-        filtered.push({ ...r, retrievalScore: augBase * fresh, rrf: 0, freshness: fresh })
-      }
-    }
-    // Raw-row merge for narrow windows: raw rows (chunk_root IS NULL, is_root=0)
-    // are inserted immediately by ingestTranscriptFile so they carry the
-    // freshest turns available in the DB. Merge and deduplicate against hybrid
-    // results; apply a freshness boost so recent raw rows sort to the top.
-    if (isNarrow) {
-      const rawEntries = readRawRowsInWindow(
-        db,
-        temporal.startMs,
-        temporal.endMs,
-        Math.max(limit + offset, 6),
-        { projectScope },
-      )
-      if (rawEntries.length > 0) {
-        const dedupKey = (r) => {
-          const head = String(r.content || r.element || '').replace(/\s+/g, ' ').slice(0, 80)
-          return `${Number(r.ts) || 0}|${r.role || ''}|${head}`
-        }
-        const dbKeys = new Set(filtered.map(dedupKey))
-        const nowMs = Date.now()
-        const fresh = rawEntries
-          .filter(t => !dbKeys.has(dedupKey(t)))
-          .map(t => {
-            const ageMs = Math.max(0, nowMs - Number(t.ts || 0))
-            const ageMinutes = ageMs / (60 * 1000)
-            const boost = ageMinutes < 5 ? 1.0
-              : ageMinutes < 30 ? 0.5
-              : ageMinutes < 60 ? 0.2
-              : 0.1
-            return { ...t, retrievalScore: boost, rrf: boost }
-          })
-        filtered = [...fresh, ...filtered]
-      }
-    }
-    // P5 R3: narrow-window queries default to chronological sort. Caller
-    // semantics for "today / 지금까지 / 이어서 / 최근 진행" is "latest
-    // events", not "most lexically relevant". Explicit sort='importance'
-    // still works for callers that want BM25-ranked narrow searches.
-    // R6 P12: forcedSort wins over narrow-window auto-default.
-    const effectiveSort = (args.sort != null)
-      ? sort
-      : (forcedSort ?? (isNarrow ? 'date' : sort))
-    if (effectiveSort === 'date') {
+    if (sort === 'date') {
       // R11 reviewer L5: NaN guard — entries with null/undefined ts default
       // to 0 so the comparator stays numeric and stable.
       filtered.sort((a, b) => (Number(b.ts) || 0) - (Number(a.ts) || 0))
@@ -1179,6 +978,22 @@ async function handleSearch(args) {
           || (sa(b.ts ?? 0) - sa(a.ts ?? 0))
           || (Number(a.id ?? 0) - Number(b.id ?? 0))
       })
+    }
+    if (includeRaw) {
+      const rawRows = readRawRowsInWindow(
+        db,
+        temporal?.startMs ?? null,
+        temporal?.endMs ?? Date.now(),
+        20,
+        { projectScope },
+      )
+      const seenIds = new Set(filtered.map(r => r.id))
+      for (const r of rawRows) {
+        if (!seenIds.has(r.id)) filtered.push(r)
+      }
+      if (sort === 'date') {
+        filtered.sort((a, b) => (Number(b.ts) || 0) - (Number(a.ts) || 0))
+      }
     }
     const sliced = filtered.slice(offset, offset + limit)
     return { text: renderEntryLines(sliced) }
@@ -1351,7 +1166,8 @@ async function handleMemoryAction(args) {
       archived: p3.archived || 0,
       merged: p3.merged || 0,
       updated: p3.updated || 0,
-      kept: p2.kept || 0,
+      phase2_kept: p2.kept || 0,
+      phase3_kept: p3.kept || 0,
       processed: p2.processed || 0,
       pending: p1.pending || 0,
     }
@@ -1494,7 +1310,7 @@ async function handleMemoryAction(args) {
       const finalCategory = newCategory ?? existing.category
       const finalStatus = newStatus ?? existing.status
       const nowMs = Date.now()
-      const score = computeEntryScore(finalCategory, existing.ts ?? nowMs, nowMs)
+      const score = computeEntryScore(finalCategory, nowMs, nowMs)
       const textChanged = newElement != null || newSummary != null
 
       db.exec('BEGIN')
@@ -1603,6 +1419,111 @@ async function handleMemoryAction(args) {
     return { text: `purged all memory entries (count=${preCount})` }
   }
 
+  if (action === 'retro_eval_active') {
+    if (args.confirm !== 'REEVAL ACTIVE') {
+      return { text: 'retro_eval_active requires confirm: "REEVAL ACTIVE" (heavy LLM batch op — reviews all active roots through the phase3 rubric)', isError: true }
+    }
+    const RETRO_BATCH = 50
+    const cycle2Config = config?.cycle2 || {}
+    const allActive = db.prepare(
+      `SELECT id, element, category, summary, score, last_seen_at, project_id
+       FROM entries WHERE is_root = 1 AND status = 'active'
+       ORDER BY reviewed_at ASC, id ASC`,
+    ).all()
+    const total = allActive.length
+    let archived = 0, demoted = 0, kept = 0, updated = 0, merged = 0, errors = 0
+    const nowMs = Date.now()
+    for (let offset = 0; offset < total; offset += RETRO_BATCH) {
+      const batch = allActive.slice(offset, offset + RETRO_BATCH)
+      const batchIds = batch.map(r => Number(r.id))
+      const activeContext = db.prepare(
+        `SELECT id, element, category, summary, score, last_seen_at, project_id
+         FROM entries WHERE is_root = 1 AND status = 'active'
+         ORDER BY last_seen_at DESC, score DESC, id ASC LIMIT 200`,
+      ).all()
+      const activeCountRow = db.prepare(`SELECT COUNT(*) AS total FROM entries WHERE is_root = 1 AND status = 'active'`).get()
+      const activeCountTotal = activeCountRow?.total ?? 0
+      let phaseResult
+      try {
+        phaseResult = await runPromotePhase(
+          db, 'phase3_active_review', batch, activeContext, cycle2Config, {},
+          { ACTIVE_COUNT: String(activeCountTotal), ACTIVE_CAP: 200 },
+        )
+      } catch (err) {
+        process.stderr.write(`[retro_eval_active] runPromotePhase failed (offset=${offset}): ${err.message}\n`)
+        errors += batch.length
+        continue
+      }
+      // #3: parse failure — count as errors, do not touchReviewed (rows retry next time)
+      if (phaseResult?.parseOk === false || phaseResult?.actions === null) {
+        errors += batch.length
+        continue
+      }
+      const actions = phaseResult?.actions ?? []
+      const allowed = new Set(batchIds)
+      const rejectedIds = phaseResult?.rejectedIds ?? new Set()
+      // #5: build successIds = batchIds minus rejectedIds; only touch those
+      const successIds = new Set(batchIds.filter(id => !rejectedIds.has(id)))
+      // #4: touchReviewed here so all-omit batches still advance the cursor
+      const touch = db.prepare(`UPDATE entries SET reviewed_at = ? WHERE id = ?`)
+      for (const id of successIds) {
+        try { touch.run(nowMs, id) } catch {}
+      }
+      // No actions returned: every entry in successIds is kept as-is (omit = keep).
+      if (!actions.length) { kept += batch.filter(r => successIds.has(Number(r.id))).length; continue }
+      const acted = new Set()
+      for (const act of actions) {
+        try {
+          const eid = Number(act?.entry_id)
+          if (!Number.isFinite(eid) || !allowed.has(eid)) continue
+          acted.add(eid)
+          if (act.action === 'archived') {
+            if (applySimpleStatus(db, eid, 'archived')) archived += 1
+          } else if (act.action === 'demote') {
+            if (applySimpleStatus(db, eid, 'demoted')) demoted += 1
+          } else if (act.action === 'update') {
+            // #6: count updates separately, not as kept
+            if (await applyUpdate(db, eid, act.element, act.summary)) updated += 1
+          } else if (act.action === 'merge') {
+            // #2: mirror cycle2 phase3 merge behavior
+            const targetId = Number(act?.target_id)
+            const sourceIds = Array.isArray(act?.source_ids) ? act.source_ids : []
+            if (!Number.isFinite(targetId) || !allowed.has(targetId)) {
+              process.stderr.write(`[retro_eval_active] merge target outside batch (id=${targetId})\n`)
+              acted.delete(eid)
+              continue
+            }
+            const filteredSources = sourceIds.filter(s => allowed.has(Number(s)))
+            if (filteredSources.length !== sourceIds.length) {
+              process.stderr.write(
+                `[retro_eval_active] merge sources filtered: ${JSON.stringify(sourceIds)} -> ${JSON.stringify(filteredSources)}\n`,
+              )
+            }
+            acted.add(targetId)
+            filteredSources.forEach(s => acted.add(Number(s)))
+            const moved = applyMerge(db, targetId, filteredSources)
+            if (moved > 0) {
+              merged += moved
+              if (typeof act.element === 'string' || typeof act.summary === 'string') {
+                try {
+                  if (await applyUpdate(db, targetId, act.element, act.summary)) updated += 1
+                } catch (err) {
+                  process.stderr.write(`[retro_eval_active] merge target update failed (target=${targetId}): ${err.message}\n`)
+                }
+              }
+            }
+          }
+        } catch (err) {
+          process.stderr.write(`[retro_eval_active] action error (id=${act?.entry_id}): ${err.message}\n`)
+          errors += 1
+        }
+      }
+      // Entries in successIds but not acted-upon are kept (includes omit/no-op actions).
+      kept += batch.filter(r => successIds.has(Number(r.id)) && !acted.has(Number(r.id))).length
+    }
+    return { text: `retro_eval_active: total=${total} archived=${archived} demoted=${demoted} kept=${kept} updated=${updated} merged=${merged} errors=${errors}` }
+  }
+
   return { text: `unknown memory action: ${action}`, isError: true }
 }
 
@@ -1620,7 +1541,7 @@ const TOOL_DEFS = [
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['core','manage','status','sleep','cycle1','cycle2','flush','backfill','prune','rebuild','rebuild_classifications','purge'], description: 'Operation. `core` = user-curated JSON list (merged into SessionStart Core Memory section). `manage` = entries-table per-row CRUD. Others = batch/maintenance.' },
+        action: { type: 'string', enum: ['core','manage','status','sleep','cycle1','cycle2','flush','backfill','prune','rebuild','rebuild_classifications','purge','retro_eval_active'], description: 'Operation. `core` = user-curated JSON list (merged into SessionStart Core Memory section). `manage` = entries-table per-row CRUD. Others = batch/maintenance. `retro_eval_active` = one-time batch re-evaluation of all active rows through the phase3 rubric (requires confirm: "REEVAL ACTIVE").' },
         op: { type: 'string', enum: ['add','edit','delete','list'], description: 'Required when action is core or manage. core supports add/edit/delete/list. manage supports add/edit/delete.' },
         id: { type: 'number', description: 'Entry id. Required for core/manage edit and delete (positive integer).' },
         element: { type: 'string', description: 'Short headline / canonical name. Required for add ops (core/manage); optional for edit.' },
@@ -1668,6 +1589,7 @@ const TOOL_DEFS = [
         limit: { type: 'number', default: 30 },
         offset: { type: 'number', default: 0 },
         includeMembers: { type: 'boolean', description: 'Include chunk member entries inline.' },
+        includeRaw: { type: 'boolean', description: 'When true, fetch unclassified raw rows in the requested period window and merge into results. Caller-driven only — no auto-trigger.' },
       },
       required: [],
     },

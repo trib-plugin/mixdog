@@ -1,16 +1,7 @@
 #!/usr/bin/env bun
-import { loadConfig, saveConfig } from '../src/agent/orchestrator/config.mjs';
-import { loadToolLoopGuardRecommendation } from '../src/agent/orchestrator/tool-loop-guard-recommend.mjs';
-
-const rec = loadToolLoopGuardRecommendation();
-if (!rec) {
-  console.error('No saved tool loop guard recommendation found.');
-  process.exit(1);
-}
-
-const config = loadConfig();
-config.bridge = config.bridge || {};
-config.bridge.toolLoopGuard = rec.overrides || {};
-saveConfig(config);
-
-console.log(`Applied saved toolLoopGuard recommendation generated at ${rec.generatedAt || '(unknown time)'}`);
+// This script has been removed. The statistical recommendation system
+// (tool-loop-guard-recommend.mjs) was deleted in round 8 of heuristic removal.
+// To tune tool loop guard limits, set values directly in config.bridge.toolLoopGuard:
+//   sameToolWarnDefault, sameToolAbort, totalToolWarnThreshold, totalToolAbortThreshold
+console.error('apply-tool-loop-guard-recommendation: removed — use config.bridge.toolLoopGuard to set limits directly.');
+process.exit(1);

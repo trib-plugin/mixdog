@@ -14,7 +14,6 @@ class EventQueue {
   runningCount = 0;
   injectFn = null;
   sendFn = null;
-  sessionStateGetter = null;
   ownerGetter = null;
   ownerSkipLogged = false;
   notifiedFiles = /* @__PURE__ */ new Set();
@@ -32,9 +31,6 @@ class EventQueue {
   }
   setSendHandler(fn) {
     this.sendFn = fn;
-  }
-  setSessionStateGetter(fn) {
-    this.sessionStateGetter = fn;
   }
   setOwnerGetter(fn) {
     this.ownerGetter = fn;
@@ -73,7 +69,9 @@ class EventQueue {
     ensureDir(QUEUE_DIR);
     const seq = String(this.enqueueSeq++).padStart(8, "0");
     const id = `${Date.now()}-${seq}-${Math.random().toString(36).slice(2, 6)}`;
-    const filename = `${item.priority === "high" ? "0" : item.priority === "normal" ? "1" : "2"}-${id}.json`;
+    // Filename is plain <id>.json — ordering is by enqueue sequence (monotonic).
+    // Priority is stored inside the item JSON; callers sort/filter by item.priority.
+    const filename = `${id}.json`;
     // Write to .tmp first then atomic rename so a partially-written file
     // can't be read back by the next tick mid-enqueue. POSIX/NTFS rename
     // within the same dir is atomic.
@@ -105,19 +103,13 @@ class EventQueue {
       }
       this.ownerSkipLogged = false;
     }
+    // maxConcurrent: documented runtime envelope — configurable, default 2.
     const maxConcurrent = this.config.maxConcurrent ?? 2;
     const files = this.readQueueFiles();
     if (files.length === 0) return;
-    const sessionState = this.sessionStateGetter?.() ?? "idle";
-    const interactiveFiles = [];
     for (const file of files) {
       const item = this.readItem(file);
       if (!item) continue;
-      if (item.priority === "low") continue;
-      if (item.exec === "interactive") {
-        interactiveFiles.push({ file, item });
-        continue;
-      }
       if (this.runningCount >= maxConcurrent) return;
       // Atomic claim: rename into in-progress/ before executing. If the
       // rename fails (another tick / cleanup raced, or file vanished),
@@ -125,28 +117,6 @@ class EventQueue {
       const claimed = this.claimFile(file);
       if (!claimed) continue;
       this.executeItem(item, claimed);
-    }
-    if (interactiveFiles.length === 0) return;
-    if (sessionState === "idle") {
-      this.notifiedFiles.clear();
-      for (const { file, item } of interactiveFiles) {
-        const claimed = this.claimFile(file);
-        if (!claimed) continue;
-        this.executeItem(item, claimed);
-      }
-    } else {
-      const unnotified = interactiveFiles.filter((f) => !this.notifiedFiles.has(f.file));
-      if (unnotified.length > 0 && this.injectFn) {
-        const count = interactiveFiles.length;
-        this.injectFn("", "queue", " ", {
-          instruction: `There are ${count} pending webhook/event items in the queue. The user is currently busy. Do not process them now \u2014 just be aware they exist. When the user seems available, briefly mention "${count} pending items" naturally.`,
-          type: "queue"
-        });
-        for (const { file } of unnotified) {
-          this.notifiedFiles.add(file);
-        }
-        logEvent(`queue: notified ${count} pending interactive items (session=${sessionState})`);
-      }
     }
   }
   processBatch() {
@@ -168,7 +138,10 @@ class EventQueue {
       this.ownerSkipLogged = false;
     }
     const files = this.readQueueFiles();
-    const lowFiles = files.filter((f) => f.startsWith("2-"));
+    const lowFiles = files.filter((f) => {
+      const item = this.readItem(f);
+      return item?.priority === "low";
+    });
     if (lowFiles.length === 0) return;
     const groups = /* @__PURE__ */ new Map();
     for (const file of lowFiles) {

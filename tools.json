@@ -5,6 +5,7 @@
     "annotations": {
       "title": "Discord Reply",
       "readOnlyHint": false,
+      "bridgeHidden": true,
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": true
@@ -60,6 +61,7 @@
     "annotations": {
       "title": "Reaction",
       "readOnlyHint": false,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": true
@@ -95,6 +97,7 @@
     "annotations": {
       "title": "Edit Message",
       "readOnlyHint": false,
+      "bridgeHidden": true,
       "destructiveHint": true,
       "idempotentHint": true,
       "openWorldHint": true
@@ -144,6 +147,7 @@
     "annotations": {
       "title": "Download Attachment",
       "readOnlyHint": true,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": true
@@ -174,6 +178,7 @@
     "annotations": {
       "title": "Fetch",
       "readOnlyHint": true,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": true
@@ -203,6 +208,7 @@
     "annotations": {
       "title": "Schedule Status",
       "readOnlyHint": true,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -220,6 +226,7 @@
     "annotations": {
       "title": "Trigger Schedule",
       "readOnlyHint": false,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": false
@@ -245,6 +252,7 @@
     "annotations": {
       "title": "Schedule Control",
       "readOnlyHint": false,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -283,6 +291,7 @@
     "annotations": {
       "title": "Activate Channel Bridge",
       "readOnlyHint": false,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -308,6 +317,7 @@
     "annotations": {
       "title": "Reload Config",
       "readOnlyHint": false,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -325,6 +335,7 @@
     "annotations": {
       "title": "Memory Cycle",
       "readOnlyHint": false,
+      "bridgeHidden": true,
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false
@@ -479,6 +490,7 @@
     "annotations": {
       "title": "Create Session",
       "readOnlyHint": false,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": true
@@ -549,6 +561,7 @@
     "annotations": {
       "title": "List Sessions",
       "readOnlyHint": true,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -566,6 +579,7 @@
     "annotations": {
       "title": "Close Session",
       "readOnlyHint": false,
+      "bridgeHidden": true,
       "destructiveHint": true,
       "idempotentHint": true,
       "openWorldHint": false
@@ -591,6 +605,7 @@
     "annotations": {
       "title": "List Models",
       "readOnlyHint": true,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -608,6 +623,7 @@
     "annotations": {
       "title": "Bridge to External Model",
       "readOnlyHint": false,
+      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": true
@@ -732,7 +748,8 @@
       "readOnlyHint": true,
       "destructiveHint": false,
       "idempotentHint": true,
-      "openWorldHint": false
+      "openWorldHint": false,
+      "compressible": true
     },
     "description": "Read file(s). `path` accepts a single string or array (`[\"a.mjs\",\"b.mjs\"]`) for parallel multi-file batches. `mode`: full (default) | head | tail | count. `n` sets head/tail line count; `offset`/`limit` set the full-mode line window. Files over the byte cap require offset/limit, head, tail, count, or `grep`. PDF and .ipynb files are automatically extracted as text. Do not repeat an identical read on the same file/range — open a wider window or different range instead. For per-file differing offset/limit/mode, pass `path` as an array of objects: `path:[{path:\"a.mjs\",offset:10,limit:5},{path:\"b.mjs\",mode:\"head\",n:3}]`.",
     "inputSchema": {
@@ -892,7 +909,8 @@
       "readOnlyHint": false,
       "destructiveHint": true,
       "idempotentHint": false,
-      "openWorldHint": true
+      "openWorldHint": true,
+      "compressible": true
     },
     "description": "Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Pass `persistent:true` to keep cwd/env/venv across calls in the same session (the bridge reuses one shell). Set `run_in_background:true` for long builds/tests/servers, then `job_wait` to block until it finishes and `read` the stdout/stderr paths for logs. Destructive patterns (rm -rf /, force-push, format) are blocked.",
     "inputSchema": {
@@ -970,7 +988,8 @@
       "readOnlyHint": true,
       "destructiveHint": false,
       "idempotentHint": true,
-      "openWorldHint": false
+      "openWorldHint": false,
+      "compressible": true
     },
     "description": "ripgrep content search. `pattern` accepts a single regex string (use `|` for alternation: `pattern:\"foo|bar\"`) OR an array of patterns (`pattern:[\"foo\",\"bar\"]`, OR-joined). `glob` follows the same shape — single string or array. Prefer the array form when patterns are long or genuinely independent; serial greps are not allowed. For identifier/symbol lookup where you know the name but not the file, prefer `find_symbol` instead of grep. Use `grep` for content confirmation, broader text search, or regex. Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.",
     "inputSchema": {

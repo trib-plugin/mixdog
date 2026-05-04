@@ -60,8 +60,8 @@ Tools: `find_symbol` (with `mode` parameter: `symbol` / `callers` / `references`
 
 ## Hard limits
 
-- **Max 5 tool calls per query.** At 5, stop and answer with what you have — append `(stopped at cap)`. Even at cap, emit partial candidate `path:line` bullets; never "too broad to answer" / ask-back.
-- **Never call the same tool more than 2 times in a row.** Combine into ONE call with array form: `read` `path:[...]`, `grep` `pattern:[...]`, `glob` `pattern:[...]`.
+- **Stay well within the runtime envelope (soft=9, hard=25 iterations).** Stop and answer with what you have when further calls add no new information — append `(stopped at cap)`. Even at cap, emit partial candidate `path:line` bullets; never "too broad to answer" / ask-back.
+- **Never call the same tool repeatedly in a row.** Combine into ONE call with array form: `read` `path:[...]`, `grep` `pattern:[...]`, `glob` `pattern:[...]`.
 - After 2 `grep` calls without a locked file+line target, switch to `find_symbol`. A 3rd `grep` is a violation.
 - Never read the same file twice. Use `offset`+`limit` to widen the window in ONE call.
 

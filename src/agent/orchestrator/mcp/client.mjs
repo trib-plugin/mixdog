@@ -340,8 +340,9 @@ async function connectServer(name, cfg) {
     const toolsResult = await client.listTools();
     const tools = (toolsResult.tools || []).map((t) => ({
         name: `mcp__${name}__${t.name}`,
-        description: t.description ? t.description.slice(0, 2048) : '',
+        description: t.description || '',
         inputSchema: (t.inputSchema || { type: 'object', properties: {} }),
+        ...(t.annotations && typeof t.annotations === 'object' ? { annotations: t.annotations } : {}),
     }));
     const mode = cfg.pluginCache ? `pluginCache(${cfg.pluginCache})` : cfg.autoDetect ? `autoDetect(${cfg.autoDetect})` : cfg.transport || 'stdio';
     const toolNames = tools.map(t => t.name);

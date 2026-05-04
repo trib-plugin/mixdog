@@ -1,10 +1,11 @@
-import { OpenAICompatProvider } from './openai-compat.mjs';
+import { OpenAICompatProvider, OPENAI_COMPAT_PRESETS } from './openai-compat.mjs';
 import { AnthropicProvider } from './anthropic.mjs';
 import { GeminiProvider } from './gemini.mjs';
 import { OpenAIOAuthProvider } from './openai-oauth.mjs';
 import { AnthropicOAuthProvider } from './anthropic-oauth.mjs';
 import { OpenAIDirectProvider } from './openai-ws.mjs';
-const OPENAI_COMPAT_PROVIDERS = ['deepseek', 'xai', 'nvidia', 'ollama', 'lmstudio'];
+// OpenAI-compat provider names are self-declared by openai-compat.mjs via
+// OPENAI_COMPAT_PRESETS. No parallel list maintained here.
 const providers = new Map();
 export async function initProviders(config) {
     providers.clear();
@@ -27,7 +28,7 @@ export async function initProviders(config) {
             else if (name === 'openai') {
                 providers.set(name, new OpenAIDirectProvider(cfg));
             }
-            else if (OPENAI_COMPAT_PROVIDERS.includes(name)) {
+            else if (Object.prototype.hasOwnProperty.call(OPENAI_COMPAT_PRESETS, name)) {
                 providers.set(name, new OpenAICompatProvider(name, cfg));
             }
         }

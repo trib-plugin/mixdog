@@ -9,12 +9,12 @@
  * Lookup order (bridge-llm.resolvePresetName):
  *   1. explicit preset arg
  *   2. opts.preset
- *   3. BUILTIN_HIDDEN_ROLES[role]         ← plugin-internal, this file
- *   4. user-workflow.json[role]           ← user-owned
+ *   3. hidden-role registry (defaults/hidden-roles.json) ← plugin-internal
+ *   4. user-workflow.json[role]                          ← user-owned
  *
- * Adding or renaming entries here is a plugin-code change, not a user-config
- * change, so users cannot accidentally break the internal dispatch path by
- * editing their workflow JSON.
+ * Role definitions live in defaults/hidden-roles.json. Editing that file is a
+ * plugin-code change; users cannot break the dispatch path by touching their
+ * workflow JSON.
  *
  * The preset names refer to entries seeded in agent-config.json via
  * DEFAULT_PRESETS (see config.mjs). If the user deletes the referenced preset
@@ -37,84 +37,39 @@
  *                    declaratively instead of forcing every hidden role to 'read'.
  */
 
-// The `slot` field is the maintenance-config key used to look up the preset
-// at runtime: loadConfig().maintenance[slot]. By sharing the slot with the
-// maintenance tasks (explore / recall / search), the user changes one setting
-// and both the hidden-role path and the synth that it may invoke move to the
-// new model in lockstep. Preset is NEVER hard-coded here.
-export const BUILTIN_HIDDEN_ROLES = Object.freeze({
-  'explorer': Object.freeze({
-    slot: 'explore',
-    systemFile: 'rules/bridge/10-explorer.md',
-    description: 'Filesystem navigation agent invoked by the `explore` MCP tool',
-    invokedBy: 'explore',
-    kind: 'retrieval',
-    permission: 'read',
-  }),
-  'recall-agent': Object.freeze({
-    slot: 'recall',
-    systemFile: 'rules/bridge/20-recall-agent.md',
-    description: 'Memory retrieval agent invoked by the `recall` MCP tool',
-    invokedBy: 'recall',
-    kind: 'retrieval',
-    permission: 'read',
-  }),
-  'search-agent': Object.freeze({
-    slot: 'search',
-    systemFile: 'rules/bridge/30-search-agent.md',
-    description: 'External info agent invoked by the `search` MCP tool',
-    invokedBy: 'search',
-    kind: 'retrieval',
-    permission: 'read',
-  }),
-  'cycle1-agent': Object.freeze({
-    slot: 'cycle1',
-    systemFile: 'rules/bridge/40-cycle1-agent.md',
-    description: 'Chunker/classifier invoked by memory-cycle runCycle1',
-    invokedBy: 'cycle1',
-    kind: 'maintenance',
-    permission: 'read',
-  }),
-  'cycle2-agent': Object.freeze({
-    slot: 'cycle2',
-    systemFile: 'rules/bridge/41-cycle2-agent.md',
-    description: 'Root re-scorer invoked by memory-cycle runCycle2',
-    invokedBy: 'cycle2',
-    kind: 'maintenance',
-    permission: 'read',
-  }),
-  'proactive-decision': Object.freeze({
-    slot: 'proactive',
-    systemFile: 'rules/bridge/50-proactive-decision.md',
-    description: 'Decision agent invoked by scheduler proactive evaluator',
-    invokedBy: 'scheduler',
-    kind: 'maintenance',
-    permission: 'read',
-  }),
-  'scheduler-task': Object.freeze({
-    slot: 'scheduler',
-    systemFile: 'agents/scheduler-task.md',
-    description: 'Scheduled-task executor invoked by scheduler tick',
-    invokedBy: 'scheduler',
-    kind: 'maintenance',
-    permission: 'read-write',
-  }),
-  'webhook-handler': Object.freeze({
-    slot: 'webhook',
-    systemFile: 'agents/webhook-handler.md',
-    description: 'Webhook payload handler invoked by inbound webhook events',
-    invokedBy: 'webhook',
-    kind: 'maintenance',
-    permission: 'read-write',
-  }),
-})
+import { fileURLToPath } from 'url'
+import { readFileSync } from 'fs'
+import { join, dirname } from 'path'
+
+// Load hidden-role definitions from defaults/hidden-roles.json at module
+// initialisation. CLAUDE_PLUGIN_ROOT points to the plugin root directory
+// (same pattern used by bridge-llm.mjs pluginRoot()). Falls back to a
+// path derived from import.meta.url (3 levels up from src/agent/orchestrator/)
+// so tests and standalone scripts work without the env var.
+function _loadHiddenRoles() {
+  const root = process.env.CLAUDE_PLUGIN_ROOT
+    || join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+  try {
+    const raw = JSON.parse(readFileSync(join(root, 'defaults', 'hidden-roles.json'), 'utf8'))
+    const map = Object.create(null)
+    for (const entry of (raw.roles || [])) {
+      if (entry && entry.name) map[entry.name] = Object.freeze({ ...entry })
+    }
+    return Object.freeze(map)
+  } catch (err) {
+    // Fail loudly — a missing or malformed hidden-roles.json breaks dispatch.
+    throw new Error(`[internal-roles] failed to load defaults/hidden-roles.json: ${err.message}`)
+  }
+}
+
+const _HIDDEN_ROLES = _loadHiddenRoles()
 
 /**
  * Return the hidden-role definition, or null if the name is not internal.
  */
 export function getHiddenRole(name) {
   if (!name) return null
-  return BUILTIN_HIDDEN_ROLES[name] || null
+  return _HIDDEN_ROLES[name] || null
 }
 
 /**
@@ -122,7 +77,7 @@ export function getHiddenRole(name) {
  */
 export function isHiddenRole(name) {
   if (!name) return false
-  return Object.prototype.hasOwnProperty.call(BUILTIN_HIDDEN_ROLES, name)
+  return Object.prototype.hasOwnProperty.call(_HIDDEN_ROLES, name)
 }
 
 /**
@@ -130,7 +85,7 @@ export function isHiddenRole(name) {
  * a user-defined role doesn't collide with an internal one.
  */
 export function listHiddenRoleNames() {
-  return Object.keys(BUILTIN_HIDDEN_ROLES)
+  return Object.keys(_HIDDEN_ROLES)
 }
 
 /**
@@ -140,7 +95,7 @@ export function listHiddenRoleNames() {
  */
 export function listHiddenRolesByKind(kind) {
   const out = []
-  for (const [name, def] of Object.entries(BUILTIN_HIDDEN_ROLES)) {
+  for (const [name, def] of Object.entries(_HIDDEN_ROLES)) {
     if (def.kind === kind) out.push(name)
   }
   return out

@@ -1,7 +1,7 @@
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
-import { existsSync, statSync } from 'fs';
+import { existsSync } from 'fs';
 import { join, resolve as pathResolve } from 'path';
 import { homedir } from 'os';
 import { getProvider } from '../providers/registry.mjs';
@@ -16,14 +16,11 @@ import { collectSkillsCached, buildSkillToolDefs, loadAgentTemplate, loadRoleTem
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
-import { classifyPromptIntent } from '../intent-classifier.mjs';
 import { resolvePluginData, DEFAULT_PLUGIN, DEFAULT_MARKETPLACE } from '../../../shared/plugin-paths.mjs';
 import { traceBridgeTool } from '../bridge-trace.mjs';
 import { isHiddenRole } from '../internal-roles.mjs';
 import { runWithCwdOverride, pwd } from '../../../shared/user-cwd.mjs';
-// Mutable seam: harnesses (MIXDOG_TEST_EXPORTS=1) can override via _internals._setClassifyPromptIntentForTest.
-let _classifyPromptIntentImpl = classifyPromptIntent;
-
+import { maxMtimeRecursive } from '../cache-mtime.mjs';
 // Phase B: Pool B Tier 2 content builder (common rules only).
 // Loaded once per process via createRequire so the CJS module reaches us.
 const _require = createRequire(import.meta.url);
@@ -42,27 +39,32 @@ const _rulesBuilder = (() => {
 // user agent configs). It's rebuilt from disk
 // by rules-builder.cjs on every call; since createSession fires on every
 // Pool B/C bridge turn, that's a lot of redundant readFileSync + concat.
-// 60s TTL is short enough that a user rule edit propagates quickly while
-// the hot path reuses the cached string.
+// BP1/BP3 cache — invalidated by source file mtime, not a timer.
+// Cheap: O(sentinel-count) stat calls on each bridge turn, no I/O otherwise.
 // BP1 cache — single shared entry. buildBridgeInjectionContent is
 // role-agnostic (true cross-role common), so every bridge role reuses the
 // same prefix bytes.
 let _bridgeRulesCache = null;
-let _bridgeRulesCacheTime = 0;
-const BRIDGE_RULES_CACHE_TTL = 60_000;
+let _bridgeRulesMtime = 0;
 function _buildBridgeRules() {
     if (!_rulesBuilder || typeof _rulesBuilder.buildBridgeInjectionContent !== 'function') return '';
-    const now = Date.now();
-    if (_bridgeRulesCache !== null && now - _bridgeRulesCacheTime < BRIDGE_RULES_CACHE_TTL) {
-        return _bridgeRulesCache;
-    }
     const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT
         || join(homedir(), '.claude', 'plugins', 'marketplaces', DEFAULT_MARKETPLACE, 'external_plugins', DEFAULT_PLUGIN);
     const DATA_DIR = resolvePluginData();
+    const RULES_DIR = join(PLUGIN_ROOT, 'rules');
+    const mtime = maxMtimeRecursive([
+        join(RULES_DIR, 'shared'),
+        join(RULES_DIR, 'bridge'),
+        join(DATA_DIR, 'roles'),
+        join(DATA_DIR, 'mixdog-config.json'),
+    ]);
+    if (_bridgeRulesCache !== null && mtime <= _bridgeRulesMtime) {
+        return _bridgeRulesCache;
+    }
     try {
         const built = _rulesBuilder.buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR });
         _bridgeRulesCache = built;
-        _bridgeRulesCacheTime = now;
+        _bridgeRulesMtime = mtime;
         return built;
     } catch (e) {
         process.stderr.write(`[session] bridge rules build failed: ${e.message}\n`);
@@ -73,21 +75,27 @@ function _buildBridgeRules() {
 // BP3 role-specific cache — keyed by role. webhook / schedule / hidden
 // retrieval roles each have their own scoped instruction set; other roles
 // return ''.
-const _roleSpecificCache = new Map();
+const _roleSpecificCache = new Map(); // role → { value, mtime }
 function _buildRoleSpecific(currentRole) {
     if (!_rulesBuilder || typeof _rulesBuilder.buildBridgeRoleSpecificContent !== 'function') return '';
     if (!currentRole) return '';
-    const now = Date.now();
-    const entry = _roleSpecificCache.get(currentRole);
-    if (entry && now - entry.ts < BRIDGE_RULES_CACHE_TTL) {
-        return entry.value;
-    }
     const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT
         || join(homedir(), '.claude', 'plugins', 'marketplaces', DEFAULT_MARKETPLACE, 'external_plugins', DEFAULT_PLUGIN);
     const DATA_DIR = resolvePluginData();
+    const RULES_DIR = join(PLUGIN_ROOT, 'rules');
+    const mtime = maxMtimeRecursive([
+        join(RULES_DIR, 'shared'),
+        join(DATA_DIR, 'mixdog-config.json'),
+        join(DATA_DIR, 'webhooks'),
+        join(DATA_DIR, 'schedules'),
+    ]);
+    const entry = _roleSpecificCache.get(currentRole);
+    if (entry && mtime <= entry.mtime) {
+        return entry.value;
+    }
     try {
         const built = _rulesBuilder.buildBridgeRoleSpecificContent({ PLUGIN_ROOT, DATA_DIR, currentRole });
-        _roleSpecificCache.set(currentRole, { ts: now, value: built });
+        _roleSpecificCache.set(currentRole, { mtime, value: built });
         return built;
     } catch (e) {
         process.stderr.write(`[session] role-specific rules build failed: ${e.message}\n`);
@@ -130,42 +138,34 @@ export class SessionClosedError extends Error {
         this.reason = closeReason || null;
     }
 }
-let _mcpToolsCache = null;
-let _mcpToolsCacheTime = 0;
-const MCP_CACHE_TTL = 60000; // 1 minute
 const HEARTBEAT_THROTTLE_MS = 60_000; // 60s
 
-function _getMcpToolsCached() {
-    const now = Date.now();
-    if (!_mcpToolsCache || now - _mcpToolsCacheTime > MCP_CACHE_TTL) {
-        // Merge externally-connected MCP tools with the plugin's in-process
-        // tools (registered by agent's toolExecutor bridge). Internal tools
-        // are exposed to LLMs under their bare names (search, memory_search,
-        // reply, ...) — no mcp__ prefix, since the dispatcher in server.mjs
-        // handles them directly without a transport.
-        const mcp = getMcpTools() || [];
-        const internalRaw = getInternalTools() || [];
-        const internal = internalRaw.map(t => ({
-            name: t.name,
-            description: typeof t.description === 'string' ? t.description.slice(0, 2048) : '',
-            inputSchema: t.inputSchema || { type: 'object', properties: {} },
-            // Keep annotations so the permission filter / role invariants can
-            // tell read-only from write-capable internal tools (reply, react,
-            // edit_message, schedule_*, reload_config all declare
-            // readOnlyHint:false in tools.json).
-            annotations: t.annotations || {},
-        }));
-        // Sort deterministically by name — protects BP_1 hash stability from
-        // listTools() ordering churn. Anthropic / OpenAI / Gemini all hash
-        // the tools array verbatim, so any reorder rewrites the prefix.
-        _mcpToolsCache = [...mcp, ...internal].sort((a, b) => {
-            const an = a?.name || '';
-            const bn = b?.name || '';
-            return an < bn ? -1 : an > bn ? 1 : 0;
-        });
-        _mcpToolsCacheTime = now;
-    }
-    return _mcpToolsCache;
+// Merge externally-connected MCP tools with the plugin's in-process tools
+// (registered by agent's toolExecutor bridge). Internal tools are exposed
+// under their bare names — no mcp__ prefix, since the dispatcher in
+// server.mjs handles them directly without a transport.
+// Sorted deterministically by name — protects BP_1 hash stability from
+// listTools() ordering churn. Anthropic / OpenAI / Gemini all hash the
+// tools array verbatim, so any reorder rewrites the prefix.
+// No cache: getMcpTools() and getInternalTools() are O(n) in-memory reads;
+// the sort overhead on ~30 tools is negligible.
+function _getMcpTools() {
+    const mcp = getMcpTools() || [];
+    const internalRaw = getInternalTools() || [];
+    const internal = internalRaw.map(t => ({
+        name: t.name,
+        description: typeof t.description === 'string' ? t.description : '',
+        inputSchema: t.inputSchema || { type: 'object', properties: {} },
+        // Keep annotations so the permission filter / role invariants can
+        // tell read-only from write-capable internal tools, and so
+        // bridgeHidden can be read during deny filtering.
+        annotations: t.annotations || {},
+    }));
+    return [...mcp, ...internal].sort((a, b) => {
+        const an = a?.name || '';
+        const bn = b?.name || '';
+        return an < bn ? -1 : an > bn ? 1 : 0;
+    });
 }
 
 // Phase D-2 — profile.tools resolution.
@@ -197,7 +197,7 @@ const ALL_BUILTIN_SESSION_TOOLS = _dedupByName([
 ]);
 
 function resolveSessionTools(toolSpec, skills, { ownerIsBridge = false } = {}) {
-    const mcp = _getMcpToolsCached();
+    const mcp = _getMcpTools();
     // Bridge sessions freeze the 3 skill meta-tools into the schema
     // unconditionally — concrete skill resolution is cwd-scoped at tool-call
     // time (loop.mjs), so the schema bytes stay bit-identical across roles /
@@ -222,47 +222,9 @@ function _dedupByName(tools) {
     return [...seen.values()];
 }
 
-// Canonical bridge deny list — the SINGLE source of truth for which tools a
-// bridge-owned session strips from its tool schema. Exported so benchmarks
-// (scripts/measure-bp1.mjs) and tests can import the same list instead of
-// maintaining a parallel copy that silently drifts.
-//
-// KEEP (bridge agents can call):
-//   - core file / shell: read, edit, write, bash (persistent:true), grep, glob
-//   - IO helpers: read (mode:head|tail|count), list (mode:tree|find)
-//   - Code graph / refactors: find_symbol (with mode parameter)
-//   - memory read: recall (hidden recall-agent gets memory_search directly)
-//   - information retrieval: search, explore
-//     (hidden search-agent gets web_search directly)
-export const BRIDGE_DENY_TOOLS = Object.freeze([
-    // Discord / channel (Lead-only)
-    'reply', 'react', 'edit_message', 'download_attachment', 'fetch',
-    'activate_channel_bridge',
-    // Session lifecycle (Lead-only)
-    'create_session', 'close_session', 'list_sessions', 'list_models',
-    // Schedule / config admin (Lead-only)
-    'schedule_status', 'trigger_schedule', 'schedule_control', 'reload_config',
-    // Inject input is Lead-only — used to push messages into other roles.
-    'inject_input',
-    // Bridge dispatch — Pool B/C agents do the work; Lead does the dispatch.
-    // Recall/search/explore stay (info retrieval, not role delegation).
-    'bridge', 'bridge_send', 'bridge_spawn',
-    // Lead-side workflow / prompt admin and skill-mining surfaces. These are
-    // public:false helper tools for the main session, not bridge-agent work
-    // tools; stripping them from Pool B/C keeps the shared BP_1 shard lean and
-    // avoids exposing chain-spawn adjacent control planes.
-    'get_workflow', 'get_workflows', 'set_prompt',
-    // Main-session convenience aliases. Bridge roles already know to use
-    // `find_symbol (with mode parameter)` directly, so carrying alias-only tools
-    // here just bloats the shared BP_1 shard without adding capability.
-    'find_imports', 'find_dependents', 'find_references', 'find_callers',
-    // External `mixdog-memory` MCP server duplicates internal memory_search /
-    // recall / explore surfaces (those are the canonical paths). Keeping the
-    // mcp__-prefixed twins live just lets the model wander between two
-    // schemas for the same call. Strip them from bridge to keep the shard
-    // clean; Lead can still reach them through the mcp surface if needed.
-    'mcp__mixdog-memory__memory', 'mcp__mixdog-memory__recall', 'mcp__mixdog-memory__explore',
-]);
+// Bridge visibility is declared per-tool via annotations.bridgeHidden.
+// Tools with bridgeHidden:true are stripped from bridge sessions at schema
+// build time (see deny filtering below). No code-level name list needed.
 
 function _computeBaseTools(toolSpec, mcp, skillTools) {
     if (Array.isArray(toolSpec)) {
@@ -577,27 +539,6 @@ function _summarizeEnvFlagFastPath(identifier, candidate) {
     return parts.join('\n\n');
 }
 
-const EXPLICIT_PROMPT_TOOL_VERBS = String.raw`(?:use|call|run|invoke|prefer)`;
-const EXPLICIT_PROMPT_TOOL_NEGATION = String.raw`(?:do\s+not|don't|never)\s+${EXPLICIT_PROMPT_TOOL_VERBS}`;
-function _escapeToolRegex(text) {
-    return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-function _explicitPromptToolChoiceName(prompt, tools) {
-    const text = String(prompt || '');
-    if (!text || !Array.isArray(tools) || tools.length === 0) return null;
-    const names = tools.map(tool => tool?.name).filter(Boolean).sort((a, b) => b.length - a.length);
-    for (const name of names) {
-        const escaped = _escapeToolRegex(name);
-        const quotedName = '`?' + escaped + '`?';
-        const positive = new RegExp(`\\b${EXPLICIT_PROMPT_TOOL_VERBS}\\s+(?:exactly\\s+one\\s+|one\\s+)?${quotedName}\\b`, 'i');
-        const negative = new RegExp(`\\b${EXPLICIT_PROMPT_TOOL_NEGATION}\\s+${quotedName}\\b`, 'i');
-        if (positive.test(text) && !negative.test(text)) return name;
-    }
-    if (names.includes('list') && /\buse\s+(?:exactly\s+)?one\s+directory\s+(?:find|metadata|list)\s+query\b/i.test(text)) {
-        return 'list';
-    }
-    return null;
-}
 
 function _extractDirectoryMetadataRequest(prompt) {
     const text = String(prompt || '');
@@ -658,83 +599,10 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
     // there is no project cwd, so filesystem-existence checks never leak the
     // launcher's working directory into bridge fast-path intent classification.
     const fastPathCwd = effectiveCwd || session.cwd || null;
-    const knownFiles = _extractKnownFilePaths(prompt, fastPathCwd, 1);
     const identifier = _extractBridgeIdentifier(prompt);
-    const intentCandidates = [];
-    if (identifier) intentCandidates.push('definition_lookup', 'usage_lookup', 'callers', 'references');
-    if (knownFiles.length >= 1) intentCandidates.push('dependents', 'imports');
-    const intent = await _classifyPromptIntentImpl(prompt, [...new Set(intentCandidates)]).catch(() => null);
 
-    const resolveIdentifierCandidate = async () => {
-        if (!identifier) return null;
-        const symbolText = await executeInternalTool('find_symbol', { symbol: identifier }).catch(() => null);
-        const candidate = symbolText ? _parseFindSymbolBestCandidate(symbolText) : null;
-        if (!candidate?.filePath || !Number.isFinite(candidate.line)) return null;
-        onToolCall?.(1, [{ name: 'find_symbol', arguments: { symbol: identifier } }]);
-        return candidate;
-    };
-
-    if (identifier && ['callers', 'references'].includes(intent || '') && _isSimpleIdentifierLookup(prompt)) {
-        const graphArgs = {
-            mode: intent === 'callers' ? 'callers' : 'references',
-            symbol: identifier,
-        };
-        const graphOut = await executeInternalTool('code_graph', graphArgs).catch(() => null);
-        const _gs658 = String(graphOut ?? '');
-        if (graphOut && !_gs658.startsWith('Error:') && !/file not found in graph/i.test(_gs658) && !/^\(no [^)]+\)$/m.test(_gs658)) {
-            onToolCall?.(1, [{ name: 'code_graph', arguments: graphArgs }]);
-            return {
-                content: _gs658,
-                iterations: 2,
-                toolCallsTotal: 1,
-                usage: null,
-            };
-        }
-    }
-
-    if (identifier && intent === 'usage_lookup' && !_isEnvLikeIdentifier(identifier) && _isSimpleIdentifierLookup(prompt)) {
-        const candidate = await resolveIdentifierCandidate();
-        if (candidate) {
-            const graphArgs = {
-                mode: 'references',
-                file: candidate.filePath,
-                symbol: identifier,
-            };
-            const graphOut = await executeInternalTool('code_graph', graphArgs).catch(() => null);
-            const _gs678 = String(graphOut ?? '');
-            if (graphOut && !_gs678.startsWith('Error:') && !/file not found in graph/i.test(_gs678) && !/^\(no [^)]+\)$/m.test(_gs678)) {
-                onToolCall?.(2, [{ name: 'code_graph', arguments: graphArgs }]);
-                return {
-                    content: _gs678,
-                    iterations: 3,
-                    toolCallsTotal: 2,
-                    usage: null,
-                };
-            }
-        }
-    }
-
-    // Strong structural signals first — require explicit definition_lookup
-    // classification AND a simple-lookup-shaped prompt. The previous `|| intent
-    // === null` fallthrough misfired on any long instruction that happened to
-    // contain an identifier.
-    if (identifier && intent === 'definition_lookup' && _isSimpleIdentifierLookup(prompt)) {
-        const symbolText = await executeInternalTool('find_symbol', { symbol: identifier }).catch(() => null);
-        const candidateFromSymbol = symbolText ? _parseFindSymbolBestCandidate(symbolText) : null;
-        if (candidateFromSymbol?.filePath && Number.isFinite(candidateFromSymbol.line)) {
-            onToolCall?.(1, [{ name: 'find_symbol', arguments: { symbol: identifier } }]);
-            return {
-                content: _summarizeDefinitionFastPath(identifier, candidateFromSymbol),
-                iterations: 2,
-                toolCallsTotal: 1,
-                usage: null,
-            };
-        }
-    }
-
-    // Env-flag shape (ALL_CAPS_WITH_UNDERSCORES) has no intent gate because it
-    // is a strong structural signal on its own. Still require a simple-lookup
-    // prompt so "list all FOO_BAR usages in ..." long instructions don't hijack.
+    // Env-flag shape (ALL_CAPS_WITH_UNDERSCORES) — strong structural signal.
+    // Still require a simple-lookup prompt so long instructions don't hijack.
     if (identifier && _isEnvLikeIdentifier(identifier) && _isSimpleIdentifierLookup(prompt) && fastPathCwd) {
         // Fix 3: env-flag grep prefetch needs a concrete project cwd. When the
         // caller is cwd-less (cycle1/memory-cycle), skip the prefetch entirely
@@ -755,22 +623,6 @@ async function _tryBridgeFastPath(session, prompt, effectiveCwd, onToolCall) {
             onToolCall?.(1, [{ name: 'grep', arguments: grepArgs }]);
             return {
                 content: _summarizeEnvFlagFastPath(identifier, candidate),
-                iterations: 2,
-                toolCallsTotal: 1,
-                usage: null,
-            };
-        }
-    }
-
-    if (knownFiles.length >= 1 && ['dependents', 'imports'].includes(intent || '') && _isSimpleIdentifierLookup(prompt)) {
-        const mode = intent === 'imports' ? 'imports' : 'dependents';
-        const graphArgs = { mode, file: knownFiles[0] };
-        const graphOut = await executeInternalTool('code_graph', graphArgs).catch(() => null);
-        const _gid = String(graphOut ?? '');
-        if (graphOut && !_gid.startsWith('Error:') && !/file not found in graph/i.test(_gid) && !/^\(no [^)]+\)$/m.test(_gid)) {
-            onToolCall?.(1, [{ name: 'code_graph', arguments: graphArgs }]);
-            return {
-                content: _gid,
                 iterations: 2,
                 toolCallsTotal: 1,
                 usage: null,
@@ -918,10 +770,6 @@ async function _tryBridgePrefetchContext(session, prompt, effectiveCwd, onToolCa
         // do not invoke builtin tools against the launcher's working directory
         // (executeBuiltinTool has its own `cwd || process.cwd()` fallback that
         // we cannot touch from this file).
-        // If the user explicitly asked the worker to call a concrete tool, let
-        // the normal loop satisfy that instruction. Prefetching in front of an
-        // explicit list/read benchmark can otherwise produce duplicate calls.
-        if (_explicitPromptToolChoiceName(prompt, session.tools)) return null;
         const listArgs = {
             path: metadataRequest.path,
             mode: metadataRequest.mode,
@@ -1173,27 +1021,30 @@ export function createSession(opts) {
     }
     let tools = toolsForRouting;
 
-    // Deny-list layers, merged into one set and applied after schema build:
+    // Deny filtering applied after schema build:
     //   - opts.disallowedTools : per-call caller override (Anthropic
     //     BuiltInAgentDefinition pattern)
-    //   - BRIDGE_DENY_TOOLS    : Lead-only admin surface (channel, session
-    //     lifecycle, schedule/config, bridge dispatch, memory admin, AST
-    //     editors). See BRIDGE_DENY_TOOLS declaration for the full keep/strip
-    //     rationale. Pool A (Lead) still sees the full tools.json.
+    //   - annotations.bridgeHidden : declarative per-tool flag (tools.json
+    //     and internal tool defs). Pool A (Lead) still sees all tools.
     //
     // Pool C direct tools (memory_search / web_search) intentionally remain
     // in Pool B schemas too. Runtime guards in loop.mjs reject them outside
     // hidden roles, preserving behavior while keeping the B/C cache prefix
     // bit-identical.
     const callerDeny = Array.isArray(opts.disallowedTools) ? opts.disallowedTools.map(n => String(n)) : [];
-    const bridgeDeny = opts.owner === 'bridge' ? BRIDGE_DENY_TOOLS : [];
-    const mergedDeny = [...new Set([...callerDeny, ...bridgeDeny])];
-    if (mergedDeny.length) {
-        const denySet = new Set(mergedDeny);
+    if (callerDeny.length) {
+        const denySet = new Set(callerDeny);
         const before = tools.length;
         tools = tools.filter(t => !denySet.has(String(t?.name || '').toLowerCase()));
         if (tools.length !== before) {
-            process.stderr.write(`[session] disallowedTools=${mergedDeny.join(',')} stripped ${before - tools.length} tools\n`);
+            process.stderr.write(`[session] disallowedTools=${callerDeny.join(',')} stripped ${before - tools.length} tools\n`);
+        }
+    }
+    if (opts.owner === 'bridge') {
+        const before = tools.length;
+        tools = tools.filter(t => !t?.annotations?.bridgeHidden);
+        if (tools.length !== before) {
+            process.stderr.write(`[session] bridgeHidden stripped ${before - tools.length} tools\n`);
         }
     }
 
@@ -1553,7 +1404,6 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 return fastPath;
             }
             const outgoing = [...session.messages, { role: 'user', content: prompt }];
-            const forcedFirstTool = prefetchedContext ? null : _explicitPromptToolChoiceName(prompt, session.tools);
             const result = await _api_call_with_interrupt(sessionId, (signal) =>
                 agentLoop(provider, outgoing, session.model, session.tools, onToolCall, effectiveCwd, {
                     effort: session.effort || null,
@@ -1574,7 +1424,6 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                     // don't get overridden by defaults. When session has no profile,
                     // providerCacheOpts is null and this spread is a no-op.
                     ...(session.providerCacheOpts || {}),
-                    forcedFirstTool,
                     onStageChange: (stage) => updateSessionStage(sessionId, stage),
                     onStreamDelta: () => markSessionStreamDelta(sessionId),
                 }),
@@ -1939,11 +1788,5 @@ export const _internals = {
     _extractDirectoryMetadataRequest,
     _tryBridgeFastPath,
     _tryBridgePrefetchContext,
-    // Allows harnesses to inject a deterministic classifyPromptIntent mock
-    // so fast-path branch tests don't depend on live embedding calls.
-    // Only active when MIXDOG_TEST_EXPORTS=1.
-    ...(process.env.MIXDOG_TEST_EXPORTS === '1' ? {
-        _setClassifyPromptIntentForTest(fn) { _classifyPromptIntentImpl = fn; },
-        _resetClassifyPromptIntentForTest() { _classifyPromptIntentImpl = classifyPromptIntent; },
-    } : {}),
+
 };

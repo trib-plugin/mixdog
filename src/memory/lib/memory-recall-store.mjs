@@ -1,9 +1,5 @@
 import {
   buildFtsQuery,
-  buildTokenLikePatterns,
-  extractKoCompoundTokens,
-  generateQueryVariants,
-  tokenizeMemoryText,
 } from './memory-text-utils.mjs'
 import { vecToHex } from './memory-vector-utils.mjs'
 import { computeEntryScore, freshnessFactor } from './memory-score.mjs'
@@ -15,33 +11,12 @@ function setCandidateRank(candidateIds, id, key, rank) {
   candidateIds.get(id)[key] = prev == null ? rank : Math.min(prev, rank)
 }
 
-function computeLexicalBonus(row, queryTokenSet, cleanQuery) {
-  if (!(queryTokenSet instanceof Set) || queryTokenSet.size === 0) return 0
-  const haystack = `${row?.element ?? ''} ${row?.summary ?? ''} ${row?.content ?? ''}`.trim()
-  if (!haystack) return 0
-
-  const rowTokens = new Set(tokenizeMemoryText(haystack))
-  let overlap = 0
-  for (const token of queryTokenSet) {
-    if (rowTokens.has(token)) overlap += 1
-  }
-
-  const coverage = overlap / queryTokenSet.size
-  const normalizedHaystack = haystack.toLowerCase()
-  const normalizedQuery = String(cleanQuery ?? '').trim().toLowerCase()
-  const exactPhraseBonus = normalizedQuery && normalizedQuery.length >= 3 && normalizedHaystack.includes(normalizedQuery)
-    ? 0.01
-    : 0
-
-  return (coverage * 0.02) + (Math.min(overlap, 4) * 0.004) + exactPhraseBonus
-}
-
 export async function searchRelevantHybrid(db, query, options = {}) {
   const clean = String(query ?? '').trim()
   if (!clean) return []
 
-  const limit = Math.max(1, Number(options.limit ?? 8))
-  const candidateWindow = Math.min(200, Math.max(limit * 5, 24))
+  const limit = Math.max(1, Math.floor(Number(options?.limit ?? 8)))
+  const candidateWindow = limit * 5
   const includeMembers = Boolean(options.includeMembers)
   const writeBackMemberHits = options.writeBackMemberHits !== false
   // Pre-filter knobs. Without them, FTS/vec rank the whole tree and a
@@ -55,7 +30,7 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     : ['archived', 'demoted']
   const minRetrievalScore = Number.isFinite(Number(options.minRetrievalScore))
     ? Number(options.minRetrievalScore)
-    : 0.005
+    : 0
   // R11 reviewer M4: caller can disable freshness decay when the period
   // is calendar-bounded (yesterday / today / this_week / last_week / a
   // specific date). Inside a fixed window, applying absolute-age decay
@@ -113,7 +88,7 @@ export async function searchRelevantHybrid(db, query, options = {}) {
            AND f.rowid IN (SELECT id FROM entries WHERE 1=1 ${projectScopeClause})
          ORDER BY bm25 LIMIT ?`,
       )
-      const ftsQueries = [...new Set(generateQueryVariants(clean).map(variant => buildFtsQuery(variant)).filter(Boolean))]
+      const ftsQueries = [buildFtsQuery(clean)].filter(Boolean)
       for (const [variantIndex, ftsQuery] of ftsQueries.entries()) {
         const ftsRows = ftsStmt.all(ftsQuery, ...projectScopeParams, candidateWindow)
         ftsRows.forEach((row, rank) => {
@@ -139,27 +114,9 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     } catch { /* ignore */ }
   }
 
-  if (sparseCount < Math.max(3, Math.min(limit, 6))) {
-    try {
-      const patterns = buildTokenLikePatterns(clean).slice(0, 8)
-      if (patterns.length > 0) {
-        const where = patterns.map(() => `(content LIKE ? OR summary LIKE ? OR element LIKE ?)`).join(' OR ')
-        const likeRows = db.prepare(
-          `SELECT id FROM entries
-           WHERE (${where}) ${projectScopeClause}
-           ORDER BY ts DESC LIMIT ?`,
-        ).all(...patterns.flatMap(pattern => [pattern, pattern, pattern]), ...projectScopeParams, candidateWindow)
-        likeRows.forEach((row, rank) => {
-          const id = Number(row.id)
-          setCandidateRank(candidateIds, id, 'sparseRank', rank + 1 + Math.max(1, sparseCount))
-        })
-        sparseCount += likeRows.length
-      }
-    } catch { /* ignore */ }
-  }
-
   if (candidateIds.size === 0) return []
 
+  // K=60 is the standard RRF constant from Cormack et al. (SIGIR 2009).
   const K = 60
   const scored = []
   for (const [id, ranks] of candidateIds) {
@@ -192,24 +149,17 @@ export async function searchRelevantHybrid(db, query, options = {}) {
      FROM entries WHERE id IN (${placeholders})${filterSql}`,
   ).all(...topIds, ...filterParams)
   const byId = new Map(rawRows.map(r => [Number(r.id), r]))
-  const queryTokenSet = new Set([
-    ...tokenizeMemoryText(clean),
-    ...extractKoCompoundTokens(clean),
-  ])
   const nowMs = Date.now()
   // Age decay multiplier applied to retrievalScore. R5: shared with
   // handleSearch augment path via memory-score.mjs export.
   const ranked = scored
     .map((entry) => {
       const row = byId.get(entry.id)
-      const lexicalBonus = row ? computeLexicalBonus(row, queryTokenSet, clean) : 0
       const freshness = applyFreshness ? freshnessFactor(row?.ts, nowMs) : 1.0
-      const baseScore = entry.rrf + lexicalBonus
       return {
         ...entry,
-        lexicalBonus,
         freshness,
-        retrievalScore: baseScore * freshness,
+        retrievalScore: entry.rrf * freshness,
       }
     })
     .filter(entry => entry.retrievalScore >= minRetrievalScore)
@@ -219,7 +169,7 @@ export async function searchRelevantHybrid(db, query, options = {}) {
   const rootIdsForReturn = []
   const seen = new Set()
 
-  for (const { id, rrf, lexicalBonus, retrievalScore } of ranked) {
+  for (const { id, rrf, retrievalScore } of ranked) {
     const row = byId.get(id)
     if (!row) continue
     let targetRow = null
@@ -251,7 +201,6 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     rootIdsForReturn.push({
       root: targetRow,
       rrf,
-      lexicalBonus,
       retrievalScore,
       retrievalRank: rootIdsForReturn.length + 1,
     })
@@ -276,8 +225,8 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     }
   }
 
-  const results = rootIdsForReturn.map(({ root, rrf, lexicalBonus, retrievalScore, retrievalRank }) => {
-    const out = { ...root, rrf, lexicalBonus, retrievalScore, retrievalRank }
+  const results = rootIdsForReturn.map(({ root, rrf, retrievalScore, retrievalRank }) => {
+    const out = { ...root, rrf, retrievalScore, retrievalRank }
     if (includeMembers && root.is_root === 1) {
       out.members = db.prepare(
         `SELECT id, ts, role, content, session_id, source_turn

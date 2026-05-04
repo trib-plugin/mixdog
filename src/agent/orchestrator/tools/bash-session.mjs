@@ -41,6 +41,7 @@ import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { invalidateBuiltinResultCache, analyzeShellCommandEffects, preflightShellLargeFileProbe } from './builtin.mjs';
 import { markCodeGraphDirtyPaths } from './code-graph.mjs';
+import { isBlockedCommand } from './shell-policy.mjs';
 
 // CC parity: default 120 s, max 1800 s (matches the foreground `bash`
 // tool in builtin.mjs). 30 s default left interactive build/test workflows
@@ -53,16 +54,16 @@ const MAX_SESSIONS = 10;
 const STDERR_DRAIN_MS = 25;
 const STDERR_DRAIN_MAX_MS = 250;
 const STDERR_QUIESCENT_MS = 25;
-// Shared cap with the `bash` tool (SHELL_OUTPUT_MAX_CHARS). Duplicated here
-// so bash-session stays decoupled from builtin.mjs's private constants.
+// SHELL_OUTPUT_MAX_CHARS — output preview cap, matches the `bash` tool.
+// Duplicated here so bash-session stays decoupled from builtin.mjs private constants.
 const SHELL_OUTPUT_MAX_CHARS = 30_000;
-// Hard byte cap on each in-memory stream buffer. Past the cap further
-// data is dropped on the floor and replaced with a truncation marker so
-// a runaway command (e.g. `cat /dev/urandom`) can't OOM the orchestrator
-// before the marker fires. Spilling to a disk-backed TaskOutput sink
-// would require new plumbing; the simple cap is the in-budget fix.
+// STREAM_BUF_BYTE_CAP — hard byte cap per in-memory stream buffer. Past the
+// cap data is dropped and a truncation marker injected so a runaway command
+// (e.g. `cat /dev/urandom`) can't OOM the orchestrator.
 const STREAM_BUF_BYTE_CAP = 4 * 1024 * 1024; // 4 MB per stream
 const STREAM_TRUNC_MARKER = '\n... [TRUNCATED — stream cap reached] ...\n';
+// Output truncation runtime envelope: 400 lines / 30 KB total;
+// head=80 + tail=80 lines preserved on middle-truncation.
 const SMART_BASH_MAX_LINES = 400;
 const SMART_BASH_MAX_BYTES = 30 * 1024;
 const SMART_BASH_HEAD_LINES = 80;
@@ -110,30 +111,8 @@ function smartMiddleTruncate(content) {
     return `${head}\n\n... [TRUNCATED — ${middle} lines middle elided; total ${lines.length} lines / ${totalKb} KB. Rerun with tighter filters for more] ...\n\n${tail}`;
 }
 
-// --- Blocked patterns (same set as bash tool; duplicated to keep module
-// standalone). Any drift should be fixed in BOTH files.
-const _CMD_START = '(?:^|[;&|\\n(){}]\\s*|\\$[\\({]\\s*|[<>]\\(\\s*|`\\s*)';
-const BLOCKED_PATTERNS = [
-    // Synced with builtin.mjs BLOCKED_PATTERNS rm rule — catch -rf, -fr,
-    // split flags, `--` separator. Target restricted to / or ~.
-    /\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|-[rR]\s+-[fF]|-[fF]\s+-[rR])(?:\s+--)?\s+[\/~]/i,
-    /\bgit\s+push\s+--force/i,
-    /\bgit\s+reset\s+--hard/i,
-    /\bformat\s+[a-z]:/i,
-    /\b(shutdown|reboot|halt)\b/i,
-    /\bdel\s+\/[sfq]/i,
-    new RegExp(_CMD_START + 'mkfs(?:\\.|\\b)', 'i'),
-    new RegExp(_CMD_START + 'dd\\s+[^\\n]*\\bif=/dev/', 'i'),
-    new RegExp(_CMD_START + 'diskpart\\b[^\\n]*\\bclean\\b', 'i'),
-    /:\(\)\s*\{[^}]*:\|:&[^}]*\};\s*:/, // bash fork-bomb signature
-];
-function isBlocked(command) {
-    for (const pat of BLOCKED_PATTERNS) {
-        if (pat.test(command)) return true;
-    }
-    return false;
-}
-
+// Blocked command check delegated to shell-policy.mjs (shared with
+// builtin.mjs). See that module for the full pattern set and rationale.
 // Locate a usable bash binary. On Windows, Git Bash / MSYS ships one; on
 // POSIX, /bin/bash is ubiquitous. We deliberately pin bash (not sh) since
 // the feature set depended on by the sentinel echo and `$?` is bash-shaped.
@@ -521,7 +500,7 @@ async function bash_session(args, cwd = process.cwd(), opts = {}) {
     const abortSignal = opts && opts.abortSignal ? opts.abortSignal : null;
     const command = typeof args?.command === 'string' ? args.command : '';
     if (!command) return 'Error: command is required';
-    if (isBlocked(command)) {
+    if (isBlockedCommand(command)) {
         return `Error: blocked command pattern — "${command}" matches safety rule`;
     }
     const baseCwd = (() => {

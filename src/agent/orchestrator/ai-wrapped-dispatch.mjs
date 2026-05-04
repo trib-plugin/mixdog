@@ -19,6 +19,7 @@ import { homedir } from 'os'
 import { resolve as resolvePath, isAbsolute, join, relative } from 'path'
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs'
 import { loadConfig, getPluginData } from './config.mjs'
+import { getHiddenRole } from './internal-roles.mjs'
 import { readSection } from '../../shared/config.mjs'
 import { resolvePresetName } from './smart-bridge/bridge-llm.mjs'
 import { smartReadTruncate } from './tools/builtin.mjs'
@@ -29,15 +30,15 @@ import { notifyActivity } from './activity-bus.mjs'
 import { stripLeadingSoftWarns } from './tool-loop-guard.mjs'
 import { stripAnsi, normalizeWhitespace, dedupRepeatedLines } from './tools/result-compression.mjs'
 import {
-  validateExploreOutput,
-  enforceExploreContract,
-  EXPLORE_REJECT_FALLBACK,
   EXPLORE_OUTPUT_CHAR_CAP,
   EXPLORE_PER_PIECE_CHAR_CAP,
   EXPLORE_TRUNCATION_MARKER,
 } from './explore-validator.mjs'
+import { getRawProviderCredentialSource } from '../../search/lib/config.mjs'
 
-// Fan-out deadline: default 240 s. Override via env FANOUT_DEADLINE_S.
+// Fan-out deadline — documented runtime envelope.
+// Default 240 s; override via env FANOUT_DEADLINE_S. 240 s balances
+// the slowest search/recall sub-agent latency against session responsiveness.
 // Applied to both sync and background fan-out paths. After expiry, settled
 // subs are merged as partial; pending subs are aborted.
 const _FANOUT_DEADLINE_MS = (() => {
@@ -54,12 +55,25 @@ function isHardSubError(reason) {
   return true
 }
 
-const ROLE_BY_TOOL = Object.freeze({
-  recall:  { role: 'recall-agent',  build: (q, cwd) => _internals.builders.recall(q, cwd),   label: 'recall-agent' },
-  search:  { role: 'search-agent',  build: (q, cwd) => _internals.builders.search(q, cwd),   label: 'search-agent' },
-  explore: { role: 'explorer',      build: (q, cwd) => _internals.builders.explore(q, cwd),  label: 'explorer agent' },
-})
+// tool→role mapping derived from the declarative hidden-roles config
+// (defaults/hidden-roles.json). Each aiWrapped tool name matches the
+// `invokedBy` field of exactly one hidden role entry. Builders are
+// wired in after the prompt functions are defined (see _internals).
+function _roleNameForTool(tool) {
+  // Scan all hidden roles for the one whose invokedBy matches the tool name.
+  // The set is small (8 entries) so linear scan is fine at module load time.
+  for (const name of ['explorer', 'recall-agent', 'search-agent']) {
+    const def = getHiddenRole(name)
+    if (def && def.invokedBy === tool) return name
+  }
+  return null
+}
 
+const ROLE_BY_TOOL = Object.freeze({
+  recall:  { role: _roleNameForTool('recall'),  build: (q, cwd) => _internals.builders.recall(q, cwd),  label: _roleNameForTool('recall')  || 'recall-agent' },
+  search:  { role: _roleNameForTool('search'),  build: (q, cwd) => _internals.builders.search(q, cwd),  label: _roleNameForTool('search')  || 'search-agent' },
+  explore: { role: _roleNameForTool('explore'), build: (q, cwd) => _internals.builders.explore(q, cwd), label: _roleNameForTool('explore') || 'explorer' },
+})
 // search-agent output validator. Reviewer-recommended (gpt-5.5):
 // prompt polishing alone hits diminishing returns against LLM phrasing
 // drift; line-allowlist post-filter enforces the output contract
@@ -186,35 +200,43 @@ function _mergeRecallSearchSettled(settled, queries, label, partialInfo) {
   return _appendPartialFooter(merged, partialInfo)
 }
 
-// Detect "very broad" cwds — user home, ~/.claude, or filesystem root.
-// Returns a non-empty error string when the cwd is too broad to explore safely
-// (V8 string-limit risk), or '' when the cwd is acceptable.
-// Callers MUST check the return value and abort with an MCP error when non-empty.
-function checkBroadCwdBlock(resolvedCwd, rawCwdInput) {
+// Preflight: reject explore cwd values whose entry count exceeds the
+// cardinality threshold. Objective check — threshold is the only runtime
+// envelope constant; path-list heuristics were removed.
+//
+// Implementation: glob '**/*' with head_limit = EXPLORE_BROAD_CWD_THRESHOLD+1
+// via executeBuiltinTool so the walk stops as soon as the limit is hit
+// (no full tree scan). Returns a non-empty error string when rejected,
+// '' when acceptable. Callers MUST abort with an MCP error when non-empty.
+//
+// EXPLORE_BROAD_CWD_THRESHOLD — maximum number of filesystem entries
+// (files + directories) allowed under the explore cwd. Chosen so that
+// a typical workspace (~3 000 entries after node_modules exclusion) passes
+// while a user home dir or a drive root (~50 000+) is rejected immediately.
+const EXPLORE_BROAD_CWD_THRESHOLD = 5000
+
+async function checkBroadCwdBlock(resolvedCwd, rawCwdInput) {
   const display = (typeof rawCwdInput === 'string' && rawCwdInput.trim())
     ? rawCwdInput.trim()
     : (resolvedCwd || '')
   if (!resolvedCwd) return ''
-  let normalized
+  let entryCount = 0
   try {
-    normalized = resolvePath(resolvedCwd).replace(/[\\/]+$/g, '')
+    const raw = await executeBuiltinTool('glob', {
+      pattern: '**/*',
+      path: resolvedCwd,
+      head_limit: EXPLORE_BROAD_CWD_THRESHOLD + 1,
+    })
+    if (typeof raw === 'string' && !raw.startsWith('Error:')) {
+      entryCount = raw.split('\n').filter(Boolean).length
+    }
   } catch {
-    normalized = String(resolvedCwd).replace(/[\\/]+$/g, '')
+    // On glob error (unreadable dir, etc.) allow through — the agent will
+    // surface its own error rather than giving a misleading preflight block.
+    return ''
   }
-  const home = (() => {
-    try { return resolvePath(homedir()).replace(/[\\/]+$/g, '') }
-    catch { return '' }
-  })()
-  const isFsRoot = normalized === ''
-    || normalized === '/'
-    || /^[A-Za-z]:$/.test(normalized)
-    || /^[A-Za-z]:[\\/]?$/.test(resolvedCwd.trim())
-  const isHome = home && normalized === home
-  const isDotClaude = home && (
-    normalized === join(home, '.claude').replace(/[\\/]+$/g, '')
-  )
-  if (isFsRoot || isHome || isDotClaude) {
-    return `Error: explore cwd "${display}" is too broad (home, ~/.claude, or filesystem root) — V8 string-limit risk. Narrow to a specific subdir (e.g. ~/.claude/projects/<slug> or a workspace subdirectory).`
+  if (entryCount > EXPLORE_BROAD_CWD_THRESHOLD) {
+    return `Error: explore root too broad: ${entryCount} entries under "${display}" (limit ${EXPLORE_BROAD_CWD_THRESHOLD}). Narrow to a specific subdirectory.`
   }
   return ''
 }
@@ -225,6 +247,10 @@ function checkBroadCwdBlock(resolvedCwd, rawCwdInput) {
 // mistake for a real answer. Precheck here to fail the MCP call directly
 // with guidance instead. Runs only for `search` — `recall`/`explore` need
 // no external credentials.
+//
+// Provider env-var lookup delegates to getRawProviderCredentialSource from
+// src/search/lib/config.mjs — single source of truth for provider→env-key
+// mappings; no duplicate table maintained here.
 function searchProviderKeysMissing() {
   try {
     const raw = readSection('search')
@@ -235,21 +261,16 @@ function searchProviderKeysMissing() {
       if (typeof v === 'string' && v.trim().length > 0) return false
     }
     // Legacy top-level firecrawlApiKey field (mirrors getFirecrawlApiKey at
-    // src/search/lib/config.mjs:190 which checks cfg.firecrawlApiKey).
+    // src/search/lib/config.mjs which checks cfg.firecrawlApiKey).
     const legacyFirecrawl = raw?.firecrawlApiKey
     if (typeof legacyFirecrawl === 'string' && legacyFirecrawl.trim().length > 0) return false
     // Config has no credentials — also accept env-var credentials.
-    // Mirrors the lookup table in src/search/lib/config.mjs:162.
-    const envKeyByProvider = {
-      serper: ['SERPER_API_KEY'],
-      brave: ['BRAVE_API_KEY'],
-      perplexity: ['PERPLEXITY_API_KEY'],
-      firecrawl: ['FIRECRAWL_API_KEY'],
-      tavily: ['TAVILY_API_KEY'],
-      xai: ['XAI_API_KEY', 'GROK_API_KEY'],
-    }
-    for (const keys of Object.values(envKeyByProvider)) {
-      if (keys.some(k => process.env[k]?.trim())) return false
+    // Delegates to getRawProviderCredentialSource (search/lib/config.mjs)
+    // which owns the provider→env-key mapping table.
+    const knownProviders = ['serper', 'brave', 'perplexity', 'firecrawl', 'tavily', 'xai']
+    const cfg = raw || {}
+    for (const provider of knownProviders) {
+      if (getRawProviderCredentialSource(cfg, provider)) return false
     }
     return true
   } catch {
@@ -266,12 +287,8 @@ function searchProviderKeysMissing() {
 const _dispatchResults = new Map() // id → { status, role, tool, queries, createdAt, completedAt?, content?, error? }
 const DISPATCH_RESULT_MAX_ENTRIES = 200
 const DISPATCH_RESULT_TTL_MS = 30 * 60_000 // 30 minutes — enough for the Lead to loop back, short enough to not hoard memory
-const QUERY_RESULT_CACHE_MAX_ENTRIES = 256
-const QUERY_RESULT_CACHE_TTLS_MS = Object.freeze({
-  recall: 5 * 60_000,    // 5 min — memory mutates slowly via cycle1
-  explore: 5 * 60_000,   // 5 min — code rarely changes within a session
-  search: 30 * 60_000,   // 30 min — external web facts are stable
-})
+const QUERY_RESULT_CACHE_MAX_ENTRIES = 200
+const QUERY_RESULT_CACHE_TTL_MS = 5 * 60_000 // 5 min — provider-level cache handles freshness per tool
 const _queryResultCache = new Map() // key → { ts, content }
 const _queryInflight = new Map() // key → Promise<string>
 const QUERY_CACHE_DISK_FILE = 'aiwrapped-query-cache.json'
@@ -286,8 +303,8 @@ const GITHUB_REPO_EXACT_RE = new RegExp(`^\\s*(${GITHUB_OWNER_PART})\\/(${GITHUB
 const GITHUB_REPO_EMBEDDED_RE = new RegExp(`(?:^|[^\\w.-])(${GITHUB_OWNER_PART})\\/(${GITHUB_REPO_PART})(?=$|[^\\w.-])`, 'i')
 const FILE_EXT_RE = /\.[a-z0-9]{1,6}$/i
 
-function cacheTtlMs(tool) {
-  return QUERY_RESULT_CACHE_TTLS_MS[tool] || 30_000
+function cacheTtlMs(_tool) {
+  return QUERY_RESULT_CACHE_TTL_MS
 }
 
 function normalizeQueryForCache(query) {
@@ -723,11 +740,6 @@ async function runCachedQuery(tool, key, runner) {
   pruneQueryCaches()
   const cached = getCachedQueryResult(tool, key)
   if (cached !== null) {
-    if (tool === 'explore' && !validateExploreOutput(cached)) {
-      _queryResultCache.set(key, { ts: Date.now(), content: EXPLORE_REJECT_FALLBACK })
-      scheduleDiskCacheFlush()
-      return EXPLORE_REJECT_FALLBACK
-    }
     return cached
   }
   const inflight = _queryInflight.get(key)
@@ -735,11 +747,7 @@ async function runCachedQuery(tool, key, runner) {
   const p = Promise.resolve()
     .then(runner)
     .then((content) => {
-      // For explore, validate before caching. Invalid output gets the fallback
-      // string so callers always receive corrected content from the cache.
-      const storeContent = (tool === 'explore' && !validateExploreOutput(content))
-        ? EXPLORE_REJECT_FALLBACK
-        : content
+      const storeContent = content
       _queryResultCache.set(key, { ts: Date.now(), content: storeContent })
       _queryInflight.delete(key)
       pruneQueryCaches()
@@ -848,7 +856,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
   // mcp server process. Fail fast here so neither the sync nor background
   // path ever launches a sub-agent against a dangerous root.
   if (name === 'explore') {
-    const _earlyBroadErr = checkBroadCwdBlock(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
+    const _earlyBroadErr = await checkBroadCwdBlock(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
     if (_earlyBroadErr) return fail(_earlyBroadErr)
   }
 
@@ -902,8 +910,6 @@ export async function dispatchAiWrapped(name, args, ctx) {
         })
         const raw = await llm({ prompt: spec.build(q, resolvedCwd) })
         return name === 'search' ? filterSearchOutput(raw)
-          // T17 FOLLOW-UP: enforceExploreContract catches chunk-id format only; line-content hallucination open.
-          : name === 'explore' ? enforceExploreContract(raw, llm, spec, q, resolvedCwd)
           : raw
       })
       p.then(
@@ -955,7 +961,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
 
     let merged
     if (name === 'explore') {
-      const broadErr = checkBroadCwdBlock(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
+      const broadErr = await checkBroadCwdBlock(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
       if (broadErr) return fail(broadErr)
       merged = mergeExploreSettled(settled, queries, spec.label, partialInfo)
     } else {
@@ -1063,7 +1069,6 @@ export async function dispatchAiWrapped(name, args, ctx) {
         })
         const raw = await llm({ prompt: spec.build(q, resolvedCwd) })
         return name === 'search' ? filterSearchOutput(raw)
-          : name === 'explore' ? enforceExploreContract(raw, llm, spec, q, resolvedCwd)
           : raw
       })
       p.then(
@@ -1113,7 +1118,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
 
     let merged
     if (name === 'explore') {
-      const broadErr = checkBroadCwdBlock(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
+      const broadErr = await checkBroadCwdBlock(resolvedCwd, hasExplicitCwdArg ? args.cwd : '')
       if (broadErr) {
         removePending(process.env.CLAUDE_PLUGIN_DATA, id)
         pushDispatchResult(ctx, id, name, queries, broadErr, { error: true })

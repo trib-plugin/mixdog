@@ -41,6 +41,8 @@ export function init(db, dims) {
         status        TEXT,
         score         REAL,
         last_seen_at  INTEGER,
+        reviewed_at   INTEGER,
+        error_count   INTEGER NOT NULL DEFAULT 0,
         embedding     BLOB,
         summary_hash  TEXT,
         UNIQUE (source_ref),
@@ -116,6 +118,14 @@ export function init(db, dims) {
         WHERE is_root = 1 AND status IN ('active', 'processed');
       CREATE INDEX idx_entries_project
         ON entries(project_id) WHERE project_id IS NOT NULL;
+      CREATE INDEX idx_entries_reviewed_at
+        ON entries(reviewed_at ASC)
+        WHERE is_root = 1;
+      -- v8: composite index for phase2/phase3 sweep (status, is_root, error_count,
+      -- reviewed_at, id). Allows the planner to skip poison rows (error_count >= 3)
+      -- without a full table scan.
+      CREATE INDEX idx_entries_phase_sweep
+        ON entries(status, is_root, error_count, reviewed_at, id);
 
       CREATE TABLE meta (
         key   TEXT PRIMARY KEY,
@@ -163,7 +173,7 @@ export function init(db, dims) {
 
     const metaInsert = db.prepare(`INSERT INTO meta(key, value) VALUES (?, ?)`)
     metaInsert.run('embedding.current_dims', String(dimCount))
-    metaInsert.run('boot.schema_version', '5')
+    metaInsert.run('boot.schema_version', '8')
     metaInsert.run('boot.schema_bootstrap_complete', '1')
 
     db.exec('COMMIT')
@@ -294,6 +304,13 @@ function migrateIfNeeded(db) {
         return
       }
     }
+    // Backfill NULL → 0 so ORDER BY reviewed_at ASC uses the raw column index
+    // (COALESCE wrapping prevents index use; 0 sorts before any real timestamp).
+    try {
+      db.exec(`UPDATE entries SET reviewed_at = 0 WHERE reviewed_at IS NULL AND is_root = 1`)
+    } catch (e) {
+      process.stderr.write(`[memory] schema v6 backfill failed: ${e.message}\n`)
+    }
     try {
       db.exec(`CREATE INDEX IF NOT EXISTS idx_entries_reviewed_at
         ON entries(reviewed_at ASC)
@@ -304,6 +321,39 @@ function migrateIfNeeded(db) {
     }
     setMetaValue(db, 'boot.schema_version', '6')
     process.stderr.write(`[memory] schema migrated to v6 (reviewed_at)\n`)
+  }
+  if (current < 7) {
+    // v7: error_count tracks parse/LLM failures per root so poison rows back
+    // off from cycle2 sweep naturally (reviewed_at not advanced on failure).
+    try {
+      db.exec(`ALTER TABLE entries ADD COLUMN error_count INTEGER NOT NULL DEFAULT 0`)
+    } catch (e) {
+      if (!/duplicate column name/i.test(String(e?.message))) {
+        process.stderr.write(`[memory] schema v7 migration failed: ${e.message}\n`)
+        return
+      }
+    }
+    setMetaValue(db, 'boot.schema_version', '7')
+    process.stderr.write(`[memory] schema migrated to v7 (error_count)\n`)
+  }
+  if (current < 8) {
+    // v8: composite index for phase2/phase3 sweep queries that filter on
+    // (status, is_root, error_count, reviewed_at, id). Without this index
+    // the sweep falls back to idx_entries_reviewed_at (single-column) and
+    // post-filters error_count on every scanned row.
+    try {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_entries_phase_sweep
+          ON entries(status, is_root, error_count, reviewed_at, id)
+      `)
+    } catch (e) {
+      if (!/already exists/i.test(String(e?.message))) {
+        process.stderr.write(`[memory] schema v8 migration failed: ${e.message}\n`)
+        return
+      }
+    }
+    setMetaValue(db, 'boot.schema_version', '8')
+    process.stderr.write(`[memory] schema migrated to v8 (idx_entries_phase_sweep)\n`)
   }
 }
 

@@ -1,66 +1,6 @@
 import {
   cleanMemoryText,
-  classifyCandidateConcept,
 } from './memory-extraction.mjs'
-
-const MEMORY_TOKEN_ALIASES = new Map([
-  ['윈도우', 'windows'],
-  ['호환성', 'compatibility'],
-  ['대응', 'compatibility'],
-  ['중복', 'duplicate'],
-  ['메시지', 'message'],
-  ['리콜', 'recall'],
-  ['배포', 'deploy'],
-  ['빌드', 'build'],
-  ['커밋', 'commit'],
-  ['푸시', 'push'],
-  ['클라', 'client'],
-  ['서버', 'server'],
-  ['호칭', 'address'],
-  ['말투', 'tone'],
-  ['어투', 'tone'],
-  ['시간대', 'timezone'],
-  ['타임존', 'timezone'],
-  ['deployment', 'deploy'],
-  // dev & infra terms
-  ['권한', 'permission'],
-  ['스케줄', 'schedule'],
-  ['채널', 'channel'],
-  ['디스코드', 'discord'],
-  ['파이프라인', 'pipeline'],
-  ['트리거', 'trigger'],
-  ['플러그인', 'plugin'],
-  ['익스플로러', 'explorer'],
-  ['탐색', 'explore'],
-  ['임베딩', 'embedding'],
-  ['벡터', 'vector'],
-  ['모델', 'model'],
-  ['프롬프트', 'prompt'],
-  ['토큰', 'token'],
-  ['데이터', 'data'],
-  ['인덱스', 'index'],
-  ['캐시', 'cache'],
-  ['로그', 'log'],
-  ['에러', 'error'],
-  ['버그', 'bug'],
-  ['테스트', 'test'],
-  ['타입', 'type'],
-  ['모드', 'mode'],
-  ['훅', 'hook'],
-  ['세션', 'session'],
-  ['컨텍스트', 'context'],
-  ['프로젝트', 'project'],
-  ['워크스페이스', 'workspace'],
-  ['알림', 'notification'],
-  ['동기화', 'sync'],
-  ['자동화', 'automation'],
-  ['기능', 'feature'],
-  ['인바운드', 'inbound'],
-  ['아웃바운드', 'outbound'],
-  ['포워딩', 'forwarding'],
-  ['리팩터', 'refactor'],
-  ['마이그레이션', 'migration'],
-])
 
 const MEMORY_TOKEN_STOPWORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'did', 'do', 'does', 'for', 'from',
@@ -87,45 +27,6 @@ export function firstTextContent(content) {
     .join('\n')
 }
 
-export function looksLowSignal(text) {
-  const clean = cleanMemoryText(text)
-  if (!clean) return true
-  if (clean.includes('[Request interrupted by user]')) return true
-  if (/<event-result[\s>]|<event\s/i.test(String(text ?? ''))) return true
-  if (/^(read|list|show|count|find|tell me|summarize)\b/i.test(clean) && /(\/|\.jsonl\b|\.md\b|\.csv\b|\bfilenames?\b)/i.test(clean)) return true
-  if (/^no response requested\.?$/i.test(clean)) return true
-  if (/^stop hook error:/i.test(clean)) return true
-  if (/^you are consolidating high-signal long-term memory candidates/i.test(clean)) return true
-  if (/^you are improving retrieval quality for a long-term memory system/i.test(clean)) return true
-  if (/^analyze the conversation and output only markdown/i.test(clean)) return true
-  if (/^you are analyzing (today's|a day's) conversation to generate/i.test(clean)) return true
-  if (/^summarize the conversation below\.?/i.test(clean)) return true
-  if (/history directory:/i.test(clean) && /data sources/i.test(clean)) return true
-  if (/use read tool/i.test(clean) && /existing files/i.test(clean)) return true
-  if (/return this exact shape:/i.test(clean)) return true
-  if (/^mixdog-memory setup\b/i.test(clean) && /parse the command arguments/i.test(clean)) return true
-  if (/\b(chat_id|gmail_search_messages|newer_than:\d+[dh]|query:\s*")/i.test(clean)) return true
-  if (/^new session started\./i.test(clean) && /one short message only/i.test(clean)) return true
-  if (/^before starting any work/i.test(clean) && /tell the user/i.test(clean)) return true
-  const compact = clean.replace(/\s+/g, '')
-  const hasKorean = /[\uAC00-\uD7AF]/.test(compact)
-  const shortKoreanMeaningful =
-    hasKorean &&
-    compact.length >= 2 &&
-    (
-      /[?？]$/.test(clean) ||
-      /일정|상태|시간|규칙|정책|언어|말투|호칭|기억|검색|중복|설정|오류|버그|왜|뭐|언제|어디|누구|무엇/.test(clean) ||
-      /해봐|해줘|진행|시작|고쳐|수정|확인|돌려|ㄱㄱ|ㅇㅇ|ㄴㄴ|좋아|오케이/.test(clean) ||
-      classifyCandidateConcept(clean, 'user')?.admit
-    )
-  const minCompactLen = hasKorean ? 4 : 8
-  if (compact.length < minCompactLen && !shortKoreanMeaningful) return true
-  const words = clean.split(/\s+/).filter(Boolean)
-  if (words.length < 2 && compact.length < (hasKorean ? 4 : 16) && !shortKoreanMeaningful) return true
-  const symbolCount = (clean.match(/[^\p{L}\p{N}\s]/gu) ?? []).length
-  if (symbolCount > clean.length * 0.45) return true
-  return false
-}
 
 export function looksLowSignalQuery(text) {
   const clean = cleanMemoryText(text)
@@ -157,7 +58,6 @@ export function normalizeMemoryToken(token) {
     else if (normalized.length > 3 && normalized.endsWith('s')) normalized = normalized.slice(0, -1)
   }
 
-  normalized = MEMORY_TOKEN_ALIASES.get(normalized) ?? normalized
   return normalized
 }
 
@@ -244,121 +144,6 @@ export function buildTokenLikePatterns(text) {
   const tokens = [...new Set(tokenizeMemoryText(clean))]
   if (tokens.length > 0) return tokens.map(token => `%${escapeLikeToken(token)}%`)
   return [`%${escapeLikeToken(clean)}%`]
-}
-
-
-export function generateQueryVariants(query) {
-  const clean = cleanMemoryText(query)
-  if (!clean) return [clean]
-
-  const baseVariants = [clean]
-  const tokens = tokenizeMemoryText(clean)
-
-  // 1. Token alias applied version (Korean → English)
-  const aliasedTokens = tokens.map(t => {
-    const alias = MEMORY_TOKEN_ALIASES.get(t)
-    return alias && alias !== t ? alias : t
-  })
-  const aliased = aliasedTokens.join(' ')
-  const aliasVariants = aliased !== tokens.join(' ') ? [aliased] : []
-
-  // 2. Remove Korean particles + reinforce English keywords
-  const koToEn = {
-    '수정': 'fix', '상태': 'status', '구조': 'structure', '방식': 'method',
-    '설정': 'config settings', '작업': 'task work', '규칙': 'rule policy',
-    '목록': 'list', '관련': 'related', '현재': 'current', '진행': 'progress',
-    '이관': 'migration', '정리': 'cleanup', '안정화': 'stabilize',
-    '아키텍처': 'architecture', '검색': 'search retrieval', '저장': 'storage',
-    '인증': 'authentication auth', '메모리': 'memory', '언어': 'language',
-    '호칭': 'address name honorific', '응답': 'response', '형식': 'format style',
-    '캐주얼': 'casual informal', '누적': 'accumulate',
-    // extended coverage for cross-lingual retrieval
-    '권한': 'permission access', '스케줄': 'schedule cron', '채널': 'channel',
-    '모드': 'mode', '디스코드': 'discord', '파이프라인': 'pipeline',
-    '트리거': 'trigger', '플러그인': 'plugin', '임베딩': 'embedding vector',
-    '프롬프트': 'prompt', '토큰': 'token', '데이터': 'data', '인덱스': 'index',
-    '에러': 'error', '버그': 'bug', '테스트': 'test', '모델': 'model',
-    '훅': 'hook', '세션': 'session', '컨텍스트': 'context', '알림': 'notification',
-    '동기화': 'sync synchronize', '분류': 'classification classify',
-    '후보': 'candidate', '점수': 'score', '가중치': 'weight', '벡터': 'vector',
-    '차원': 'dimension dims', '프로젝트': 'project', '워크스페이스': 'workspace',
-    '인바운드': 'inbound', '아웃바운드': 'outbound', '포워딩': 'forwarding',
-    '리팩터': 'refactor', '마이그레이션': 'migration', '중복': 'duplicate dedup',
-    '삭제': 'delete remove', '추가': 'add create', '변경': 'change update modify',
-    '확인': 'check verify', '실행': 'execute run', '종료': 'stop terminate',
-    '시작': 'start begin', '재시작': 'restart', '배포': 'deploy',
-    '호출': 'call invoke', '반환': 'return', '파싱': 'parse parsing',
-    '캐시': 'cache', '타임아웃': 'timeout', '재시도': 'retry',
-    '자동화': 'automation webhook schedule trigger workflow',
-    '기능': 'feature capability tool',
-    '익스플로러': 'explorer explore codebase',
-    '탐색': 'explore explorer search',
-    '리콜': 'recall memory',
-  }
-  const translated = tokens.map(t => koToEn[t] ?? t).join(' ')
-  const translatedVariants = translated !== tokens.join(' ') ? [translated] : []
-
-  // 3. Phrase-level architectural / operational expansions
-  const phraseExpansions = []
-  if (/단독|독립|분리|standalone|independent|separate/i.test(clean)) {
-    phraseExpansions.push(`${clean} standalone independent separate plugin`)
-  }
-  if (/동작가능|동작 가능|작동가능|작동 가능|가능해|가능하/i.test(clean)) {
-    phraseExpansions.push(`${clean} supported capability standalone`)
-  }
-  if (/채널 ?id|채널아이디|channel id|mapping|매핑/i.test(clean)) {
-    phraseExpansions.push(`${clean} channel id mapping access config inbound`)
-  }
-  if (/자동바인딩|자동 바인딩|binding|바인딩/i.test(clean)) {
-    phraseExpansions.push(`${clean} automatic binding reconnect restore discord`)
-  }
-  if (/인바운드|inbound/i.test(clean)) {
-    phraseExpansions.push(`${clean} inbound delivery binding discord channel receive`)
-  }
-  if (/메세지안옴|메시지안옴|message.*not|안옴|안 와|안와/i.test(clean)) {
-    phraseExpansions.push(`${clean} message delivery inbound discord notification`)
-  }
-  if ((/임베드|embed|embedding/i.test(clean)) && (/즉시|timing|immediate/i.test(clean))) {
-    phraseExpansions.push(`${clean} inline embedding immediate timing`)
-  }
-  if (/자동화|automation/i.test(clean)) {
-    phraseExpansions.push(`${clean} automation webhook schedule trigger workflow receiver`)
-  }
-  if (/익스플로러|explorer|탐색/i.test(clean)) {
-    phraseExpansions.push(`${clean} explorer explore codebase grep read`)
-  }
-  if (/리콜|recall/i.test(clean)) {
-    phraseExpansions.push(`${clean} recall memory retrieval past context`)
-  }
-  // 4. English→Korean reverse mapping (for en queries matching ko content)
-  const enToKo = {
-    'permission': '권한 접근', 'schedule': '스케줄 예약', 'channel': '채널',
-    'discord': '디스코드', 'pipeline': '파이프라인', 'plugin': '플러그인',
-    'embedding': '임베딩 벡터', 'model': '모델', 'prompt': '프롬프트',
-    'hook': '훅', 'session': '세션', 'context': '컨텍스트',
-    'notification': '알림', 'config': '설정', 'settings': '설정',
-    'deploy': '배포', 'test': '테스트', 'search': '검색',
-    'memory': '메모리 기억', 'cache': '캐시', 'trigger': '트리거',
-    'inbound': '인바운드 수신', 'project': '프로젝트', 'sync': '동기화',
-    'migration': '마이그레이션 이관', 'refactor': '리팩터 정리',
-    'error': '에러 오류', 'bug': '버그', 'mode': '모드',
-    'automation': '자동화 웹훅 스케줄 트리거', 'feature': '기능 capability',
-    'explorer': '익스플로러 탐색', 'explore': '탐색 익스플로러',
-    'recall': '리콜 기억 메모리',
-  }
-  const reverseTokens = tokens.map(t => enToKo[t] ?? t).join(' ')
-  const reverseVariants = reverseTokens !== tokens.join(' ') ? [reverseTokens] : []
-
-  const variants = [
-    ...baseVariants,
-    ...phraseExpansions,
-    ...aliasVariants,
-    ...translatedVariants,
-    ...reverseVariants,
-  ]
-
-  // Remove duplicates
-  return [...new Set(variants)].slice(0, 6)
 }
 
 /**

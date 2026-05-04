@@ -1,0 +1,92 @@
+{
+  "roles": [
+    {
+      "name": "explorer",
+      "slot": "explore",
+      "systemFile": "rules/bridge/10-explorer.md",
+      "description": "Filesystem navigation agent invoked by the `explore` MCP tool",
+      "invokedBy": "explore",
+      "iterationCap": { "soft": 9, "hard": 25 },
+      "kind": "retrieval",
+      "permission": "read",
+      "stallCap": { "idleSeconds": 240, "toolRunningSeconds": 180 }
+    },
+    {
+      "name": "recall-agent",
+      "slot": "recall",
+      "systemFile": "rules/bridge/20-recall-agent.md",
+      "description": "Memory retrieval agent invoked by the `recall` MCP tool",
+      "invokedBy": "recall",
+      "iterationCap": { "soft": 4, "hard": 16 },
+      "kind": "retrieval",
+      "permission": "read",
+      "stallCap": { "idleSeconds": 240, "toolRunningSeconds": 180 }
+    },
+    {
+      "name": "search-agent",
+      "slot": "search",
+      "systemFile": "rules/bridge/30-search-agent.md",
+      "description": "External info agent invoked by the `search` MCP tool",
+      "invokedBy": "search",
+      "iterationCap": { "soft": 5, "hard": 18 },
+      "kind": "retrieval",
+      "permission": "read",
+      "stallCap": { "idleSeconds": 240, "toolRunningSeconds": 180 }
+    },
+    {
+      "name": "cycle1-agent",
+      "slot": "cycle1",
+      "systemFile": "rules/bridge/40-cycle1-agent.md",
+      "description": "Chunker/classifier invoked by memory-cycle runCycle1",
+      "invokedBy": "cycle1",
+      "iterationCap": { "soft": 5, "hard": 20 },
+      "kind": "maintenance",
+      "permission": "read",
+      "stallCap": { "idleSeconds": 300, "toolRunningSeconds": 300 }
+    },
+    {
+      "name": "cycle2-agent",
+      "slot": "cycle2",
+      "systemFile": "rules/bridge/41-cycle2-agent.md",
+      "description": "Root re-scorer invoked by memory-cycle runCycle2",
+      "invokedBy": "cycle2",
+      "iterationCap": { "soft": 5, "hard": 20 },
+      "kind": "maintenance",
+      "permission": "read",
+      "stallCap": { "idleSeconds": 300, "toolRunningSeconds": 300 }
+    },
+    {
+      "name": "proactive-decision",
+      "slot": "proactive",
+      "systemFile": "rules/bridge/50-proactive-decision.md",
+      "description": "Decision agent invoked by scheduler proactive evaluator",
+      "invokedBy": "scheduler",
+      "iterationCap": { "soft": 5, "hard": 20 },
+      "kind": "maintenance",
+      "permission": "read",
+      "stallCap": { "idleSeconds": 600, "toolRunningSeconds": 600 }
+    },
+    {
+      "name": "scheduler-task",
+      "slot": "scheduler",
+      "systemFile": "agents/scheduler-task.md",
+      "description": "Scheduled-task executor invoked by scheduler tick",
+      "invokedBy": "scheduler",
+      "iterationCap": { "soft": 5, "hard": 20 },
+      "kind": "maintenance",
+      "permission": "read-write",
+      "stallCap": { "idleSeconds": 600, "toolRunningSeconds": 600 }
+    },
+    {
+      "name": "webhook-handler",
+      "slot": "webhook",
+      "systemFile": "agents/webhook-handler.md",
+      "description": "Webhook payload handler invoked by inbound webhook events",
+      "invokedBy": "webhook",
+      "iterationCap": { "soft": 5, "hard": 20 },
+      "kind": "maintenance",
+      "permission": "read-write",
+      "stallCap": { "idleSeconds": 600, "toolRunningSeconds": 600 }
+    }
+  ]
+}

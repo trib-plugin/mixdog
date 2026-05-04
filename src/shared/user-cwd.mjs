@@ -82,5 +82,6 @@ export function resolveDefaultUserCwd() { return getOriginalCwd() }
 /**
  * No-op kept for back-compat. capture-once semantics make re-reads unsafe;
  * the frozen value is the single source of truth for this process lifetime.
+ * One live importer: src/agent/orchestrator/tools/builtin.mjs (imported but not called).
  */
 export function invalidateUserCwdCache() { /* no-op: capture-once semantics */ }

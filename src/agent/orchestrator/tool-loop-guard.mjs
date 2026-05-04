@@ -4,82 +4,41 @@
  * Signature = sha256(toolName + normalizedArgs + errorCategory).
  * Warn-first policy: detectThreshold emits a synthetic soft-warn string
  *   (see buildSoftWarn) that callers PREPEND onto the just-returned tool
- *   result. Massive legit runs stay alive; the 100-per-axis abort is a
- *   last-resort ceiling, not an early cutoff.
- * Any success, different tool, or different error category resets the state.
+ *   result. The hard abort is a last-resort safety ceiling, not an early cutoff.
+ * Any success resets the error-loop state.
  * Recovery guidance lives here as a per-call sidecar — intentionally
  * actionable rather than a standing system-prompt hint.
+ *
+ * Safety-envelope constants (not classifiers — tune via config.bridge.toolLoopGuard):
+ *   SAME_TOOL_WARN_DEFAULT  — warn after this many consecutive same-tool calls (any tool)
+ *   SAME_TOOL_ABORT         — hard-stop ceiling for consecutive same-tool calls
+ *   TOTAL_WARN              — warn when total session tool calls cross this count
+ *   TOTAL_ABORT             — hard-stop ceiling for total session tool calls
  */
 import { createHash } from 'crypto';
 import { loadConfig, getPluginData } from './config.mjs';
 
-const DEFAULT_SAME_TOOL_THRESHOLDS = Object.freeze({
-    search: 24,
-    recall: 24,
-    explore: 24,
-    memory_search: 24,
-    read: 16,
-    grep: 16,
-    glob: 16,
-    list: 16,
-    bash: 20,
-    web_search: 3,
-});
-// Note: web_search appears once with threshold 3 (was duplicated as 24 above
-// before; the duplicate has been removed).
-// Unified abort ceiling: warn freely, only hard-stop at 100 per axis.
-const DEFAULT_SAME_TOOL_ABORT_THRESHOLDS = Object.freeze(
-    Object.fromEntries(Object.keys(DEFAULT_SAME_TOOL_THRESHOLDS).map((name) => [name, 100])),
-);
-const DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS = Object.freeze({
-    structure_probe: 100,
-    search_fanout: 100,
-});
+// Uniform same-tool warn threshold — applies to every tool without per-tool tuning.
+const SAME_TOOL_WARN_DEFAULT = 4;
 
-// Tools where an identical (toolName + args) call directly after an error
-// from the same tool is a terminal config-gap signature, not a recoverable
-// retry. The strict track aborts on the *second* identical attempt rather
-// than waiting for the regular detect/abort thresholds. Applied narrowly
-// (web_search default) because most tools have legitimate idempotent
-// retries; web_search auth/config errors do not.
-const DEFAULT_STRICT_IDENTICAL_ARGS_AFTER_ERROR_TOOLS = Object.freeze(['web_search']);
+// Hard abort ceiling for consecutive same-tool calls.
+const SAME_TOOL_ABORT = 100;
 
-// Tools whose success signals genuine progress (not probe grinding).
-// A successful call to any of these resets the structure_probe and
-// search_fanout family counters so probe→edit→probe cycles don't
-// accumulate toward abort.
-const PRODUCTIVE_TOOLS = Object.freeze(new Set([
-    'edit',
-    'apply_patch', 'write',
-    'bash',
-]));
+// Single total-call warn threshold.
+const TOTAL_WARN = 50;
+
+// Hard abort ceiling for total tool calls in a session.
+const TOTAL_ABORT = 100;
 
 const DEFAULT_CONFIG = Object.freeze({
     detectThreshold: 4,
-    abortThreshold: 100,
-    sameToolThresholds: DEFAULT_SAME_TOOL_THRESHOLDS,
-    sameToolAbortThresholds: DEFAULT_SAME_TOOL_ABORT_THRESHOLDS,
-    strictIdenticalArgsAfterErrorTools: DEFAULT_STRICT_IDENTICAL_ARGS_AFTER_ERROR_TOOLS,
-    toolFamilyWarnRules: Object.freeze([
-        Object.freeze({
-            key: 'structure_probe',
-            threshold: 12,
-            repeatEvery: 16,
-            minDistinctTools: 2,
-            tools: Object.freeze(['read', 'grep', 'glob', 'list']),
-        }),
-        Object.freeze({
-            key: 'search_fanout',
-            threshold: 10,
-            repeatEvery: 6,
-            minDistinctTools: 2,
-            tools: Object.freeze(['search', 'recall', 'explore', 'web_search', 'memory_search']),
-        }),
-    ]),
-    toolFamilyAbortThresholds: DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS,
-    totalToolWarnThresholds: Object.freeze([24, 48, 72, 96]),
-    totalToolAbortThresholds: Object.freeze([100]),
+    abortThreshold: TOTAL_ABORT,
+    sameToolWarnDefault: SAME_TOOL_WARN_DEFAULT,
+    sameToolAbort: SAME_TOOL_ABORT,
+    totalToolWarnThreshold: TOTAL_WARN,
+    totalToolAbortThreshold: TOTAL_ABORT,
 });
+
 let _runtimeConfig = null;
 let _loadedRuntimeConfig = null;
 let _loadedRuntimeConfigTs = 0;
@@ -87,51 +46,13 @@ let _loadedRuntimeConfigKey = '';
 const RUNTIME_CONFIG_CACHE_TTL_MS = 60_000;
 
 function buildRuntimeConfig(overrides = {}) {
-    const sameToolThresholds = {
-        ...DEFAULT_CONFIG.sameToolThresholds,
-        ...(overrides.sameToolThresholds || {}),
-    };
-    const sameToolAbortThresholds = {};
-    const overrideSameToolAbort = overrides.sameToolAbortThresholds || {};
-    for (const name of Object.keys(sameToolThresholds)) {
-        const overrideThreshold = overrideSameToolAbort[name];
-        if (Number.isFinite(overrideThreshold)) {
-            sameToolAbortThresholds[name] = overrideThreshold;
-        } else {
-            // Use the unified per-axis ceiling (100) rather than warn*2;
-            // warn thresholds are intentionally low for early advisory and
-            // doubling them would abort far below the documented ceiling.
-            sameToolAbortThresholds[name] = DEFAULT_SAME_TOOL_ABORT_THRESHOLDS[name] ?? 100;
-        }
-    }
     return {
         detectThreshold: Number.isFinite(overrides.detectThreshold) ? overrides.detectThreshold : DEFAULT_CONFIG.detectThreshold,
         abortThreshold: Number.isFinite(overrides.abortThreshold) ? overrides.abortThreshold : DEFAULT_CONFIG.abortThreshold,
-        sameToolThresholds: new Map(Object.entries(sameToolThresholds)),
-        sameToolAbortThresholds: new Map(Object.entries(sameToolAbortThresholds)),
-        toolFamilyWarnRules: (Array.isArray(overrides.toolFamilyWarnRules) ? overrides.toolFamilyWarnRules : DEFAULT_CONFIG.toolFamilyWarnRules)
-            .map((rule) => ({
-                key: rule.key,
-                threshold: rule.threshold,
-                repeatEvery: rule.repeatEvery,
-                minDistinctTools: rule.minDistinctTools,
-                tools: new Set(rule.tools),
-            })),
-        toolFamilyAbortThresholds: new Map(Object.entries({
-            ...DEFAULT_CONFIG.toolFamilyAbortThresholds,
-            ...(overrides.toolFamilyAbortThresholds || {}),
-        })),
-        totalToolWarnThresholds: Array.isArray(overrides.totalToolWarnThresholds)
-            ? [...overrides.totalToolWarnThresholds]
-            : [...DEFAULT_CONFIG.totalToolWarnThresholds],
-        totalToolAbortThresholds: Array.isArray(overrides.totalToolAbortThresholds)
-            ? [...overrides.totalToolAbortThresholds]
-            : [...DEFAULT_CONFIG.totalToolAbortThresholds],
-        strictIdenticalArgsAfterErrorTools: new Set(
-            (Array.isArray(overrides.strictIdenticalArgsAfterErrorTools)
-                ? overrides.strictIdenticalArgsAfterErrorTools
-                : DEFAULT_CONFIG.strictIdenticalArgsAfterErrorTools).map((t) => String(t).toLowerCase()),
-        ),
+        sameToolWarnDefault: Number.isFinite(overrides.sameToolWarnDefault) ? overrides.sameToolWarnDefault : DEFAULT_CONFIG.sameToolWarnDefault,
+        sameToolAbort: Number.isFinite(overrides.sameToolAbort) ? overrides.sameToolAbort : DEFAULT_CONFIG.sameToolAbort,
+        totalToolWarnThreshold: Number.isFinite(overrides.totalToolWarnThreshold) ? overrides.totalToolWarnThreshold : DEFAULT_CONFIG.totalToolWarnThreshold,
+        totalToolAbortThreshold: Number.isFinite(overrides.totalToolAbortThreshold) ? overrides.totalToolAbortThreshold : DEFAULT_CONFIG.totalToolAbortThreshold,
     };
 }
 
@@ -162,29 +83,6 @@ function getLoadedRuntimeConfig() {
 function getActiveRuntimeConfig() {
     return _runtimeConfig || getLoadedRuntimeConfig();
 }
-
-function sameToolThreshold(toolName) {
-    return getActiveRuntimeConfig().sameToolThresholds.get(String(toolName || '').toLowerCase()) ?? null;
-}
-
-function sameToolThresholdFromConfig(config, toolName) {
-    return config.sameToolThresholds.get(String(toolName || '').toLowerCase()) ?? null;
-}
-
-function sameToolAbortThresholdFromConfig(config, toolName) {
-    return config.sameToolAbortThresholds.get(String(toolName || '').toLowerCase()) ?? null;
-}
-
-const ERROR_RULES = [
-    { cat: 'edit-match-fail', test: (t) => t.includes('old_string') && (t.includes('did not match') || t.includes('not found') || t.includes('match')) },
-    { cat: 'fs-not-found', test: (t) => t.includes('enoent') || t.includes('no such file') },
-    { cat: 'fs-exists', test: (t) => t.includes('eexist') || t.includes('file exists') },
-    { cat: 'rate-limit', test: (t) => t.includes('429') || (t.includes('rate') && t.includes('limit')) },
-    { cat: 'permission', test: (t) => t.includes('eacces') || t.includes('permission denied') || t.includes('access denied') },
-    { cat: 'timeout', test: (t) => t.includes('etimedout') || t.includes('timed out') || t.includes('timeout') },
-    { cat: 'conn-refused', test: (t) => t.includes('econnrefused') || t.includes('connection refused') },
-    { cat: 'auth', test: (t) => t.includes('unauthorized') || t.includes('401') || t.includes('invalid api key') },
-];
 
 export class ToolLoopAbortError extends Error {
     constructor(info) {
@@ -219,9 +117,15 @@ function normalizeArgs(args) {
 function classifyError(errorText) {
     if (!errorText) return 'unknown';
     const lower = String(errorText).toLowerCase();
-    for (const rule of ERROR_RULES) {
-        if (rule.test(lower)) return rule.cat;
-    }
+    // Unambiguous OS-level codes and well-known HTTP markers only.
+    // Domain-specific provider heuristics (429, "rate limit", "timeout") removed —
+    // callers receiving typed runtime errors should pass the category directly.
+    if (lower.includes('old_string') && (lower.includes('did not match') || lower.includes('not found') || lower.includes('match'))) return 'edit-match-fail';
+    if (lower.includes('enoent') || lower.includes('no such file')) return 'fs-not-found';
+    if (lower.includes('eexist') || lower.includes('file exists')) return 'fs-exists';
+    if (lower.includes('eacces') || lower.includes('permission denied') || lower.includes('access denied')) return 'permission';
+    if (lower.includes('econnrefused') || lower.includes('connection refused')) return 'conn-refused';
+    if (lower.includes('unauthorized') || lower.includes('401') || lower.includes('invalid api key')) return 'auth';
     if (lower.startsWith('error:')) {
         const firstLine = lower.split('\n')[0].slice(0, 80);
         const hash = createHash('sha256').update(firstLine).digest('hex').slice(0, 8);
@@ -260,7 +164,7 @@ export function buildSoftWarn(info) {
         `- Different arguments (broader/narrower pattern, different path, different glob)`,
         `- A different tool (explore instead of grep, read instead of glob, etc.)`,
         `- Accept the current result and move on`,
-        `Repeated identical calls will abort this session at the per-axis ceiling (100).`,
+        `Repeated identical calls will abort this session at the ceiling (${TOTAL_ABORT}).`,
     ].join('\n');
 }
 
@@ -302,37 +206,6 @@ export function buildSameToolWarn(info) {
     if (abortThreshold) {
         lines.push(`- Hard stop: at ${abortThreshold} repeated \`${toolName}\` calls this session will abort.`);
     }
-    lines.push(
-        `(Advisory only — the call is not blocked.)`,
-    );
-    return lines.join('\n');
-}
-
-export function buildToolFamilyWarn(info) {
-    const family = String(info?.familyKey || '');
-    const count = Number(info?.count || 0);
-    const tools = Array.isArray(info?.tools) ? info.tools : [];
-    const abortThreshold = Number.isFinite(info?.abortThreshold) ? info.abortThreshold : null;
-    const toolList = tools.length ? tools.map((t) => `\`${t}\``).join(', ') : '`tool`';
-    const lines = [
-        `⚠ Mixed-tool soft-warn: this session has made ${count} consecutive low-level ${family.replace(/_/g, ' ')} calls across ${toolList}.`,
-        `Tools remain available, but before issuing another similar low-level call, switch strategy or narrow sharply:`,
-    ];
-    if (family === 'structure_probe') {
-        lines.push(`- Prefer \`code_graph\` or \`explore\` for the next lookup unless you have a specific new path/range.`);
-        lines.push(`- If the needed file/value is already visible, move to \`edit\`/\`apply_patch\` or answer from that evidence instead of another broad \`grep\`/\`read\` pass.`);
-    } else if (family === 'edit_roundtrip') {
-        lines.push(`- Prefer \`apply_patch\` for the next step instead of another \`edit\` round-trip.`);
-        lines.push(`- If the exact change is already clear, emit one multi-file patch and move on.`);
-    } else if (family === 'search_fanout') {
-        lines.push(`- Batch the next search questions into one call, or synthesize from the evidence you already gathered.`);
-        lines.push(`- If the answer is already repo-local, switch from external / memory search back to local tools.`);
-    } else {
-        lines.push(`- A higher-level tool or a narrower next call will likely yield more than another broad probe.`);
-    }
-    if (abortThreshold) {
-        lines.push(`- Hard stop: at ${abortThreshold} consecutive ${family.replace(/_/g, ' ')} calls this session will abort.`);
-    }
     lines.push(`(Advisory only — the call is not blocked.)`);
     return lines.join('\n');
 }
@@ -363,20 +236,11 @@ export function createGuard() {
         count: 0,
         lastInfo: null,
         warnedSig: null, // last signature we emitted a soft-warn for
-        // Same-tool repetition tracking — independent of error-loop sig.
-        // Counts EVERY call (success or fail) of a whitelisted tool.
+        // Same-tool repetition tracking — counts every call (success or fail).
         // Resets when a different tool runs.
         sameToolName: null,
         sameToolCount: 0,
         sameToolWarnedFor: new Set(),
-        // Strict identical-args-after-error track. Maps toolKey →
-        // { argsSha, errorCategory } from the previous call. If the next call
-        // for the same tool sends the same argsSha after that prior error,
-        // we abort on the second attempt instead of waiting for the normal
-        // 4-of-a-kind detect threshold. Used for tools where the failure mode
-        // is config-gap, not a recoverable retry (e.g. web_search auth).
-        lastCallByTool: new Map(),
-        familyRuns: new Map(),
         totalToolCalls: 0,
         totalToolWarnedThresholds: new Set(),
     };
@@ -396,7 +260,7 @@ export function resetGuardConfigForTesting() {
  *
  * @param {object} guard - state from createGuard()
  * @param {{toolName: string, args: any, result: any, iteration: number}} event
- * @returns {{action: 'continue'|'detected'|'abort', info?: object}}
+ * @returns {{action: 'continue'|'detected'|'same_tool_warn'|'budget_warn'|'abort', info?: object, warnText?: string}}
  */
 export function checkToolCall(guard, event) {
     const { toolName, args, result, iteration } = event;
@@ -404,27 +268,17 @@ export function checkToolCall(guard, event) {
     const cfg = guard?.config || getActiveRuntimeConfig();
     guard.totalToolCalls += 1;
 
-    // ── Strict identical-args-after-error abort.
-    // Whitelisted tools (default: web_search) abort on the SECOND identical
-    // (toolName + args) call when the immediately prior call for that tool
-    // returned an error. Caller-side config gaps (e.g. invalid GitHub token)
-    // surface marker-prefixed errors and would otherwise burn through 6 retries
-    // before the same-tool ceiling kicks in.
-    if (!guard.lastCallByTool) guard.lastCallByTool = new Map();
-    const strictTools = cfg.strictIdenticalArgsAfterErrorTools instanceof Set
-        ? cfg.strictIdenticalArgsAfterErrorTools
-        : new Set(Array.isArray(cfg.strictIdenticalArgsAfterErrorTools) ? cfg.strictIdenticalArgsAfterErrorTools.map((t) => String(t).toLowerCase()) : []);
-    const strictTrackEnabled = strictTools.has(toolKey);
-    let strictPriorError = null;
-    let strictCurrentArgsSha = null;
-    if (strictTrackEnabled) {
-        strictCurrentArgsSha = createHash('sha256').update(normalizeArgs(args)).digest('hex').slice(0, 16);
-        const prev = guard.lastCallByTool.get(toolKey);
-        if (prev && prev.errored && prev.argsSha === strictCurrentArgsSha) {
-            strictPriorError = prev;
-        }
+    // ── Same-tool repetition (applies uniformly to all tools).
+    let sameToolWarn = null;
+    const sameToolWarnThreshold = cfg.sameToolWarnDefault;
+    const sameToolAbortThreshold = cfg.sameToolAbort;
+    if (guard.sameToolName === toolKey) {
+        guard.sameToolCount += 1;
+    } else {
+        guard.sameToolName = toolKey;
+        guard.sameToolCount = 1;
     }
-    if (strictPriorError) {
+    if (guard.sameToolCount >= sameToolAbortThreshold) {
         const argsSample = (() => {
             try { return JSON.stringify(args).slice(0, 300); } catch { return String(args).slice(0, 300); }
         })();
@@ -432,151 +286,33 @@ export function checkToolCall(guard, event) {
         return {
             action: 'abort',
             info: {
-                signature: `identical-args-after-error:${toolKey}:${strictCurrentArgsSha}`,
+                signature: `same-tool:${toolKey}`,
                 toolName,
-                errorCategory: 'identical-args-after-error',
-                attemptCount: 2,
+                errorCategory: `same-tool-repeat@${sameToolAbortThreshold}`,
+                attemptCount: guard.sameToolCount,
                 argsSample,
                 errorSample,
                 iteration,
-                priorErrorCategory: strictPriorError.errorCategory,
+                threshold: sameToolAbortThreshold,
             },
         };
     }
-
-    // ── Same-tool repetition track (independent of error-loop signature).
-    // Thresholded whitelist only; non-whitelisted tools also reset the run so an
-    // intermixed call sequence breaks the streak.
-    let sameToolWarn = null;
-    const sameToolWarnThreshold = sameToolThresholdFromConfig(cfg, toolKey);
-    const sameToolAbortThreshold = sameToolAbortThresholdFromConfig(cfg, toolKey);
-    if (sameToolWarnThreshold !== null) {
-        if (guard.sameToolName === toolKey) {
-            guard.sameToolCount += 1;
-        } else {
-            guard.sameToolName = toolKey;
-            guard.sameToolCount = 1;
-        }
-        if (sameToolAbortThreshold !== null && guard.sameToolCount >= sameToolAbortThreshold) {
-            const argsSample = (() => {
-                try { return JSON.stringify(args).slice(0, 300); } catch { return String(args).slice(0, 300); }
-            })();
-            const errorSample = String(result).slice(0, 300);
-            return {
-                action: 'abort',
-                info: {
-                    signature: `same-tool:${toolKey}`,
-                    toolName,
-                    errorCategory: `same-tool-repeat@${sameToolAbortThreshold}`,
-                    attemptCount: guard.sameToolCount,
-                    argsSample,
-                    errorSample,
-                    iteration,
-                    threshold: sameToolAbortThreshold,
-                },
-            };
-        }
-        if (guard.sameToolCount >= sameToolWarnThreshold
-            && !guard.sameToolWarnedFor.has(toolKey)) {
-            guard.sameToolWarnedFor.add(toolKey);
-            sameToolWarn = {
-                toolName,
-                count: guard.sameToolCount,
-                threshold: sameToolWarnThreshold,
-                abortThreshold: sameToolAbortThreshold,
-                text: buildSameToolWarn({ toolName, count: guard.sameToolCount, abortThreshold: sameToolAbortThreshold }),
-            };
-        }
-    } else {
-        guard.sameToolName = null;
-        guard.sameToolCount = 0;
-    }
-
-    let familyWarn = null;
-    for (const rule of cfg.toolFamilyWarnRules) {
-        const prev = guard.familyRuns.get(rule.key) || {
-            count: 0,
-            distinctTools: new Set(),
-            warned: false,
-            warnedAt: 0,
+    if (guard.sameToolCount >= sameToolWarnThreshold && !guard.sameToolWarnedFor.has(toolKey)) {
+        guard.sameToolWarnedFor.add(toolKey);
+        sameToolWarn = {
+            toolName,
+            count: guard.sameToolCount,
+            threshold: sameToolWarnThreshold,
+            abortThreshold: sameToolAbortThreshold,
+            text: buildSameToolWarn({ toolName, count: guard.sameToolCount, abortThreshold: sameToolAbortThreshold }),
         };
-        const familyAbortThreshold = cfg.toolFamilyAbortThresholds.get(rule.key) ?? null;
-        if (rule.tools.has(toolKey)) {
-            prev.count += 1;
-            prev.distinctTools.add(toolKey);
-            if (familyAbortThreshold !== null
-                && prev.count >= familyAbortThreshold
-                && prev.distinctTools.size >= rule.minDistinctTools) {
-                const argsSample = (() => {
-                    try { return JSON.stringify(args).slice(0, 300); } catch { return String(args).slice(0, 300); }
-                })();
-                const errorSample = String(result).slice(0, 300);
-                return {
-                    action: 'abort',
-                    info: {
-                        signature: `family:${rule.key}`,
-                        toolName,
-                        errorCategory: `tool-family@${familyAbortThreshold}:${rule.key}`,
-                        attemptCount: prev.count,
-                        argsSample,
-                        errorSample,
-                        iteration,
-                        familyKey: rule.key,
-                        threshold: familyAbortThreshold,
-                        tools: [...prev.distinctTools].sort(),
-                    },
-                };
-            }
-            const repeatEvery = Number.isFinite(Number(rule.repeatEvery)) ? Number(rule.repeatEvery) : rule.threshold;
-            if (prev.count >= rule.threshold
-                && (!prev.warned || prev.count - (prev.warnedAt || 0) >= repeatEvery)
-                && prev.distinctTools.size >= rule.minDistinctTools) {
-                prev.warned = true;
-                prev.warnedAt = prev.count;
-                familyWarn = {
-                    familyKey: rule.key,
-                    count: prev.count,
-                    threshold: rule.threshold,
-                    tools: [...prev.distinctTools].sort(),
-                    text: buildToolFamilyWarn({
-                        familyKey: rule.key,
-                        count: prev.count,
-                        tools: [...prev.distinctTools].sort(),
-                        abortThreshold: familyAbortThreshold,
-                    }),
-                };
-            }
-        } else {
-            prev.count = 0;
-            prev.distinctTools = new Set();
-            prev.warned = false;
-            prev.warnedAt = 0;
-        }
-        guard.familyRuns.set(rule.key, prev);
     }
 
+    // ── Total tool budget.
     let budgetWarn = null;
-    let budgetAbortThreshold = null;
-    for (const threshold of cfg.totalToolWarnThresholds) {
-        if (guard.totalToolCalls >= threshold && !guard.totalToolWarnedThresholds.has(threshold)) {
-            guard.totalToolWarnedThresholds.add(threshold);
-            budgetWarn = {
-                count: guard.totalToolCalls,
-                threshold,
-                abortThreshold: null,
-                text: buildToolBudgetWarn({ count: guard.totalToolCalls, threshold, abortThreshold: cfg.totalToolAbortThresholds[0] ?? null }),
-            };
-            break;
-        }
-    }
-    for (const threshold of cfg.totalToolAbortThresholds) {
-        if (guard.totalToolCalls >= threshold) {
-            budgetAbortThreshold = threshold;
-            break;
-        }
-    }
-
-    if (budgetAbortThreshold !== null) {
+    const totalWarnThreshold = cfg.totalToolWarnThreshold;
+    const totalAbortThreshold = cfg.totalToolAbortThreshold;
+    if (guard.totalToolCalls >= totalAbortThreshold) {
         const argsSample = (() => {
             try { return JSON.stringify(args).slice(0, 300); } catch { return String(args).slice(0, 300); }
         })();
@@ -584,45 +320,30 @@ export function checkToolCall(guard, event) {
         return {
             action: 'abort',
             info: {
-                signature: `tool-budget:${budgetAbortThreshold}`,
+                signature: `tool-budget:${totalAbortThreshold}`,
                 toolName,
-                errorCategory: `tool-budget@${budgetAbortThreshold}`,
+                errorCategory: `tool-budget@${totalAbortThreshold}`,
                 attemptCount: guard.totalToolCalls,
                 argsSample,
                 errorSample,
                 iteration,
-                threshold: budgetAbortThreshold,
+                threshold: totalAbortThreshold,
             },
         };
     }
-
-    if (strictTrackEnabled) {
-        const errored = isErrorResult(result);
-        guard.lastCallByTool.set(toolKey, {
-            argsSha: strictCurrentArgsSha,
-            errored,
-            errorCategory: errored ? classifyError(result) : null,
-        });
+    if (guard.totalToolCalls >= totalWarnThreshold && !guard.totalToolWarnedThresholds.has(totalWarnThreshold)) {
+        guard.totalToolWarnedThresholds.add(totalWarnThreshold);
+        budgetWarn = {
+            count: guard.totalToolCalls,
+            threshold: totalWarnThreshold,
+            abortThreshold: totalAbortThreshold,
+            text: buildToolBudgetWarn({ count: guard.totalToolCalls, threshold: totalWarnThreshold, abortThreshold: totalAbortThreshold }),
+        };
     }
 
     if (!isErrorResult(result)) {
-        // Productive-tool reset: a successful edit/bash between probes means
-        // the model is making progress, not grinding. Reset structure_probe
-        // and search_fanout family counters so legitimate probe→edit→probe
-        // cycles don't accumulate toward abort.
-        if (PRODUCTIVE_TOOLS.has(toolKey)) {
-            for (const rule of cfg.toolFamilyWarnRules) {
-                const prev = guard.familyRuns.get(rule.key);
-                if (prev) {
-                    prev.count = 0;
-                    prev.distinctTools = new Set();
-                    prev.warned = false;
-                }
-            }
-        }
-
         // Success resets the error-loop guard (same-tool track stays — it
-        // counts both success and failure on whitelisted tools).
+        // counts both success and failure).
         guard.currentSig = null;
         guard.count = 0;
         guard.lastInfo = null;
@@ -634,18 +355,11 @@ export function checkToolCall(guard, event) {
                 info: { toolName: sameToolWarn.toolName, count: sameToolWarn.count, threshold: sameToolWarn.threshold, abortThreshold: sameToolWarn.abortThreshold },
             };
         }
-        if (familyWarn) {
-            return {
-                action: 'family_warn',
-                warnText: familyWarn.text,
-                info: { familyKey: familyWarn.familyKey, count: familyWarn.count, threshold: familyWarn.threshold, tools: familyWarn.tools },
-            };
-        }
         if (budgetWarn) {
             return {
                 action: 'budget_warn',
                 warnText: budgetWarn.text,
-                info: { count: budgetWarn.count, threshold: budgetWarn.threshold, abortThreshold: cfg.totalToolAbortThresholds[0] ?? null },
+                info: { count: budgetWarn.count, threshold: budgetWarn.threshold, abortThreshold: totalAbortThreshold },
             };
         }
         return { action: 'continue' };
@@ -684,10 +398,7 @@ export function checkToolCall(guard, event) {
         return { action: 'abort', info };
     }
     if (guard.count >= cfg.detectThreshold) {
-        // Emit the soft-warn sidecar once per run-up. If the signature
-        // somehow ticks past the detect threshold more than once for the
-        // same run (shouldn't repeat with the per-axis ceiling at 100,
-        // but defensive) we don't re-spam the warning.
+        // Emit the soft-warn sidecar once per run-up.
         const warnText = guard.warnedSig === signature ? null : buildSoftWarn(info);
         guard.warnedSig = signature;
         return { action: 'detected', info, warnText };
@@ -699,18 +410,11 @@ export function checkToolCall(guard, event) {
             info: { toolName: sameToolWarn.toolName, count: sameToolWarn.count, threshold: sameToolWarn.threshold, abortThreshold: sameToolWarn.abortThreshold },
         };
     }
-    if (familyWarn) {
-        return {
-            action: 'family_warn',
-            warnText: familyWarn.text,
-            info: { familyKey: familyWarn.familyKey, count: familyWarn.count, threshold: familyWarn.threshold, tools: familyWarn.tools },
-        };
-    }
     if (budgetWarn) {
         return {
             action: 'budget_warn',
             warnText: budgetWarn.text,
-            info: { count: budgetWarn.count, threshold: budgetWarn.threshold, abortThreshold: cfg.totalToolAbortThresholds[0] ?? null },
+            info: { count: budgetWarn.count, threshold: budgetWarn.threshold, abortThreshold: totalAbortThreshold },
         };
     }
     return { action: 'continue' };
@@ -720,32 +424,17 @@ export function checkToolCall(guard, event) {
  * Strip leading soft-warn marker lines from a body that is about to leave
  * the agent boundary (channel push / external report). Soft-warn markers
  * are intentionally prepended to TOOL RESULTS so the model sees them and
- * self-corrects (see buildSoftWarn / buildRunUpSoftWarn / etc above), but
- * sub-agents tend to echo the marker line as the first line of their own
- * reply. That is fine for self-correction but ugly for the user, so the
- * outbound side strips them right before send.
+ * self-corrects, but sub-agents tend to echo the marker line as the first
+ * line of their own reply. Strip before send; never call on tool-result
+ * bodies fed back to the model.
  *
- * Removes any number of leading lines that match the four canonical
- * marker prefixes, plus a single trailing blank line per stripped marker.
- * Anywhere else in the body is left alone — only the leading run.
- *
- * NEVER call this on the tool-result body that is fed back to the model;
- * that would defeat the self-correction signal.
+ * Removes any number of leading soft-warn blocks (marker line + continuation
+ * up to first blank line) in sequence.
  */
-// Soft-warn blocks are multi-line: the marker line is followed by bullet
-// guidance and (for the canonical envelopes) an `(Advisory only — ...)`
-// trailer, then a blank-line separator before the actual tool body. The
-// previous regex only consumed the marker line, leaving the bullets and
-// trailer attached to the body and leaking guidance back into outbound
-// merges. Match the full block — marker line plus continuation lines —
-// up to the first blank line (or end of string).
-const SOFT_WARN_LEADING_RE = /^\s*⚠\s+(?:Tool-loop|Repeated-tool|Mixed-tool|Tool-budget)\s+soft-warn[\s\S]*?(?:\n\s*\n|$)/;
+const SOFT_WARN_LEADING_RE = /^\s*⚠\s+(?:Tool-loop|Repeated-tool|Tool-budget)\s+soft-warn[\s\S]*?(?:\n\s*\n|$)/;
 export function stripLeadingSoftWarns(text) {
     if (typeof text !== 'string' || text.length === 0) return text;
     let out = text;
-    // Repeat: multiple markers may stack (one tool call can trigger more
-    // than one warn family at once, and a sub-agent may echo all of them
-    // back-to-back). Strip until no leading marker remains.
     while (SOFT_WARN_LEADING_RE.test(out)) {
         out = out.replace(SOFT_WARN_LEADING_RE, '');
     }

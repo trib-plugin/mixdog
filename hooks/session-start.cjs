@@ -231,11 +231,28 @@ function buildContext(db, cwd) {
       : [...readUserCoreMemoryLines(), ...readAllProjectMemoryLines()];
     const seen = new Set();
     const lines = [];
-    for (const line of [...userLines, ...dbLines]) {
+    // userLines are user-curated and small — always include unconditionally.
+    for (const line of userLines) {
       const key = line.toLowerCase().replace(/\s+/g, ' ').slice(0, 120);
       if (seen.has(key)) continue;
       seen.add(key);
       lines.push(line);
+    }
+    // dbLines: accumulate score-DESC rows until the char cap is reached.
+    const HEADER_LEN = '## Core Memory\n'.length;
+    // CAP = 5000 chars — documented host-preview envelope. This is a byte cap,
+    // not token-aware (adding a token counter would require a tokeniser dependency).
+    // Deferred: token-aware cap once a lightweight counter is available.
+    const CAP = 5000;
+    let total = HEADER_LEN + lines.reduce((s, l) => s + l.length + 1, 0);
+    for (const line of dbLines) {
+      const key = line.toLowerCase().replace(/\s+/g, ' ').slice(0, 120);
+      if (seen.has(key)) continue;
+      const add = line.length + 1;
+      if (total + add > CAP) break;
+      seen.add(key);
+      lines.push(line);
+      total += add;
     }
     if (lines.length === 0) return '';
     return `## Core Memory\n${lines.join('\n')}`;
@@ -586,16 +603,18 @@ async function requestCycle1Once(deadline, opts) {
 
   try {
     const tPostStart = Date.now();
+    // On-demand cycle1 (SessionStart hook path): min_batch=1 triggers on a
+    // single pending row; session_cap=5 × batch_size=20 caps a single hook
+    // pass at 100 rows so wallclock stays low. Periodic path runs 2×50 from
+    // memory/index.mjs:periodicCycle1Config. concurrency still defers to the
+    // server-side default.
+    const ON_DEMAND_CYCLE1_ARGS = { min_batch: 1, session_cap: 5, batch_size: 20 };
     const res = await httpPostJson({
       hostname: '127.0.0.1',
       port,
       path: '/cycle1',
       timeoutMs: remaining,
-      // On-demand path: 1 row is enough to enter; cap fan-out at 5 windows
-      // of 20 rows each (≤100 rows total). Smaller windows than the periodic
-      // path (50/window) shorten max(window_t) since output token volume is
-      // the dominant latency component for cycle1.
-      body: { timeout_ms: remaining, args: { min_batch: 1, session_cap: 5, batch_size: 20 } },
+      body: { timeout_ms: remaining, args: ON_DEMAND_CYCLE1_ARGS },
     });
     teeStderr(`[session-start] cycle1 slot=${slot} timing pollMs=${tPollEnd - start} postMs=${Date.now() - tPostStart}\n`);
     if (res.statusCode !== 200) {
