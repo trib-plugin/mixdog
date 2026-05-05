@@ -118,7 +118,7 @@ export async function syncRootEmbedding(db, rootId) {
         throw new Error(`dim mismatch (id=${rootId} got=${vector.length} expected=${expected})`)
       }
       await tx.query(
-        `UPDATE entries SET embedding = $1::vector WHERE id = $2 AND is_root = 1`,
+        `UPDATE entries SET embedding = $1::halfvec WHERE id = $2 AND is_root = 1`,
         [embeddingToSql(vector), rootId],
       )
     })

@@ -2,14 +2,13 @@ import {
   buildFtsQuery,
 } from './memory-text-utils.mjs'
 import { embeddingToSql } from './memory.mjs'
-import { computeEntryScore, freshnessFactor } from './memory-score.mjs'
+import { freshnessFactor } from './memory-score.mjs'
 
-function setCandidateRank(candidateIds, id, key, rank) {
-  if (!Number.isFinite(id) || !Number.isFinite(rank) || rank <= 0) return
-  if (!candidateIds.has(id)) candidateIds.set(id, { denseRank: null, sparseRank: null })
-  const prev = candidateIds.get(id)[key]
-  candidateIds.get(id)[key] = prev == null ? rank : Math.min(prev, rank)
-}
+// Trigram similarity threshold for the pg_trgm % operator.
+// 0.10 is intentionally permissive — short phrases (3–5 chars) rarely
+// exceed 0.3 similarity against longer content strings. Filtering is
+// left to the RRF re-rank that follows.
+const TRGM_THRESHOLD = 0.10
 
 export async function searchRelevantHybrid(db, query, options = {}) {
   const clean = String(query ?? '').trim()
@@ -42,16 +41,6 @@ export async function searchRelevantHybrid(db, query, options = {}) {
   // 'all' or undefined → no filter.
   const projectScope = typeof options.projectScope === 'string' ? options.projectScope : null
 
-  const candidateIds = new Map()
-  let denseCount = 0
-  let sparseCount = 0
-
-  // Build project scope SQL fragment and bind params for candidate SELECTs.
-  // Used in subquery forms (dense/FTS) and direct WHERE forms (LIKE).
-  // 'common' → project_id IS NULL
-  // slug     → project_id IS NULL OR project_id = $N
-  // 'all'/null → no filter
-  // scopeParamOffset is the 1-based index of the first scope param in the query.
   // buildFilterClause: pushes ts/status/scope filters INTO candidate SELECTs.
   // offset = 1-based index of the first bind param it may consume.
   // Returns { clause: string, params: any[] }; clause begins with AND or is ''.
@@ -92,128 +81,173 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     return { clause: '', params: [] }
   }
 
-  if (Array.isArray(options.queryVector) && options.queryVector.length > 0) {
-    try {
-      const vecSql = embeddingToSql(options.queryVector)
-      // $1 = vector, filter params start at $2, LIMIT = last param
-      const { clause: filterClause, params: filterParams } = buildFilterClause(2)
-      const limitIdx = 2 + filterParams.length
-      const { rows: knnRows } = await db.query(
-        `SELECT id, 1 - (embedding <=> $1::vector) AS sim
-         FROM entries
-         WHERE is_root = 1 AND embedding IS NOT NULL ${filterClause}
-         ORDER BY embedding <=> $1::vector LIMIT $${limitIdx}`,
-        [vecSql, ...filterParams, candidateWindow],
-      )
-      knnRows.forEach((row, rank) => {
-        const id = Number(row.id)
-        setCandidateRank(candidateIds, id, 'denseRank', rank + 1)
-      })
-      denseCount = knnRows.length
-    } catch { /* embedding column may be empty */ }
+  // ── Single-round-trip hybrid CTE ─────────────────────────────────────────
+  // Param layout (fixed prefix):
+  //   $1  = halfvec literal  (NULL when no queryVector)
+  //   $2  = tsQuery text     (NULL when short query)
+  //   $3  = cleanText        (trigram term)
+  //   $4  = candidateWindow  (LIMIT for each CTE leg)
+  //   $5+ = filter params (ts_from, ts_to, excludeStatuses..., projectScope slug)
+  //
+  // When a leg is inapplicable its CTE returns no rows; the UNION + LEFT JOINs
+  // handle that cleanly. dense/sparse/trgm legs each re-use the same filter
+  // params starting at $5 since they live in independent CTE scopes.
+
+  const vecSql = (Array.isArray(options.queryVector) && options.queryVector.length > 0)
+    ? embeddingToSql(options.queryVector)
+    : null
+
+  const ftsQuery = clean.length >= 3 ? (buildFtsQuery(clean) ?? null) : null
+
+  // For very short queries (< 3 chars) the trigram operator still works but
+  // we relax the server-side threshold via set_limit() — however that requires
+  // a separate round-trip. Instead we fall back to a plain ILIKE scan for
+  // short text (rare edge case; sequential scan is acceptable for < 3 chars).
+  const isShortQuery = clean.length < 3
+
+  // $5 onward are the shared filter params; each CTE leg duplicates the same
+  // positional params because they live in independent SELECT scopes.
+  const { clause: filterClause, params: filterParams } = buildFilterClause(5)
+  const bindParams = [vecSql, ftsQuery, clean, candidateWindow, ...filterParams]
+
+  // dense CTE: active only when a query vector is supplied.
+  const denseCte = vecSql ? `
+dense AS (
+  SELECT id,
+         1 - (embedding <=> $1::halfvec) AS sim,
+         ROW_NUMBER() OVER (ORDER BY embedding <=> $1::halfvec) AS dense_rank
+  FROM entries
+  WHERE is_root = 1 AND embedding IS NOT NULL
+    ${filterClause}
+  ORDER BY embedding <=> $1::halfvec
+  LIMIT $4
+),` : `
+dense AS (SELECT NULL::bigint AS id, NULL::float8 AS sim, NULL::bigint AS dense_rank WHERE false),`
+
+  // sparse CTE: active only when ftsQuery is non-null.
+  const sparseCte = ftsQuery ? `
+sparse AS (
+  SELECT id,
+         ts_rank_cd(search_tsv, to_tsquery('simple', $2)) AS lex,
+         ROW_NUMBER() OVER (ORDER BY ts_rank_cd(search_tsv, to_tsquery('simple', $2)) DESC) AS sparse_rank
+  FROM entries
+  WHERE is_root = 1 AND search_tsv @@ to_tsquery('simple', $2)
+    ${filterClause}
+  ORDER BY lex DESC
+  LIMIT $4
+),` : `
+sparse AS (SELECT NULL::bigint AS id, NULL::float8 AS lex, NULL::bigint AS sparse_rank WHERE false),`
+
+  // trgm CTE: pg_trgm similarity path. For short queries (< 3 chars) the %
+  // operator is unreliable (trigrams need at least 3 chars); use ILIKE instead.
+  const trgmCte = isShortQuery ? `
+trgm AS (
+  SELECT id,
+         0.5::float8 AS trg_sim,
+         ROW_NUMBER() OVER (ORDER BY ts DESC) AS trgm_rank
+  FROM entries
+  WHERE is_root = 1
+    AND (content ILIKE '%' || $3 || '%' OR summary ILIKE '%' || $3 || '%' OR element ILIKE '%' || $3 || '%')
+    ${filterClause}
+  ORDER BY ts DESC
+  LIMIT $4
+),` : `
+trgm AS (
+  SELECT id,
+         GREATEST(
+           similarity(content,               $3),
+           similarity(coalesce(element, ''),  $3),
+           similarity(coalesce(summary, ''),  $3)
+         ) AS trg_sim,
+         ROW_NUMBER() OVER (ORDER BY GREATEST(
+           similarity(content,               $3),
+           similarity(coalesce(element, ''),  $3),
+           similarity(coalesce(summary, ''),  $3)
+         ) DESC) AS trgm_rank
+  FROM entries
+  WHERE is_root = 1
+    AND (content % $3 OR element % $3 OR summary % $3)
+    AND GREATEST(similarity(content, $3), similarity(coalesce(element, ''), $3), similarity(coalesce(summary, ''), $3)) >= ${TRGM_THRESHOLD}
+    ${filterClause}
+  ORDER BY trg_sim DESC
+  LIMIT $4
+),`
+
+  const hybridSql = `
+WITH
+${denseCte}
+${sparseCte}
+${trgmCte}
+combined AS (
+  SELECT id FROM dense  WHERE id IS NOT NULL UNION
+  SELECT id FROM sparse WHERE id IS NOT NULL UNION
+  SELECT id FROM trgm   WHERE id IS NOT NULL
+)
+SELECT
+  e.id, e.element, e.summary, e.category, e.status, e.score,
+  e.last_seen_at, e.ts, e.project_id, e.session_id, e.source_ref,
+  e.source_turn, e.content, e.chunk_root, e.is_root,
+  e.role,
+  d.sim        AS dense_sim,
+  d.dense_rank,
+  s.lex        AS sparse_lex,
+  s.sparse_rank,
+  t.trg_sim,
+  t.trgm_rank
+FROM combined c
+JOIN   entries e ON e.id = c.id
+LEFT JOIN dense  d ON d.id = c.id
+LEFT JOIN sparse s ON s.id = c.id
+LEFT JOIN trgm   t ON t.id = c.id`
+
+  let rawRows = []
+  let denseCount = 0
+  let sparseCount = 0
+  let trgmCount = 0
+
+  try {
+    const { rows } = await db.query(hybridSql, bindParams)
+    rawRows = rows
+    // Count how many rows each leg contributed (a row may appear in multiple legs).
+    for (const r of rawRows) {
+      if (r.dense_rank != null) denseCount++
+      if (r.sparse_rank != null) sparseCount++
+      if (r.trgm_rank != null) trgmCount++
+    }
+  } catch (err) {
+    process.stderr.write(`[recall] hybrid CTE failed: ${err.message}\n`)
+    return []
   }
 
-  if (clean.length >= 3) {
-    try {
-      const ftsQueries = [buildFtsQuery(clean)].filter(Boolean)
-      for (const [variantIndex, ftsQuery] of ftsQueries.entries()) {
-        // $1 = tsquery text, filter params start at $2, LIMIT = last param
-        const { clause: filterClause, params: filterParams } = buildFilterClause(2)
-        const limitIdx = 2 + filterParams.length
-        const { rows: ftsRows } = await db.query(
-          `SELECT id, ts_rank_cd(search_tsv, to_tsquery('simple', $1)) AS lex
-           FROM entries
-           WHERE is_root = 1
-             AND search_tsv @@ to_tsquery('simple', $1)
-             ${filterClause}
-           ORDER BY lex DESC LIMIT $${limitIdx}`,
-          [ftsQuery, ...filterParams, candidateWindow],
-        )
-        ftsRows.forEach((row, rank) => {
-          const id = Number(row.id)
-          setCandidateRank(candidateIds, id, 'sparseRank', rank + 1 + variantIndex)
-        })
-        sparseCount += ftsRows.length
-      }
-    } catch { /* fts unavailable */ }
-  } else {
-    try {
-      const likePattern = `%${clean}%`
-      // $1,$2,$3 = likePattern x3, filter params start at $4, LIMIT = last param
-      const { clause: filterClause, params: filterParams } = buildFilterClause(4)
-      const limitIdx = 4 + filterParams.length
-      const { rows: likeRows } = await db.query(
-        `SELECT id FROM entries
-         WHERE (content LIKE $1 OR summary LIKE $2 OR element LIKE $3) ${filterClause}
-         ORDER BY ts DESC LIMIT $${limitIdx}`,
-        [likePattern, likePattern, likePattern, ...filterParams, candidateWindow],
-      )
-      likeRows.forEach((row, rank) => {
-        const id = Number(row.id)
-        setCandidateRank(candidateIds, id, 'sparseRank', rank + 1)
-      })
-      sparseCount = likeRows.length
-    } catch { /* ignore */ }
-  }
+  if (rawRows.length === 0) return []
 
-  if (candidateIds.size === 0) return []
-
+  // ── JS-side RRF merge (unchanged logic) ──────────────────────────────────
   // K=60 is the standard RRF constant from Cormack et al. (SIGIR 2009).
   const K = 60
-  const scored = []
-  for (const [id, ranks] of candidateIds) {
-    const rrf = (ranks.denseRank ? 1 / (K + ranks.denseRank) : 0)
-              + (ranks.sparseRank ? 1 / (K + ranks.sparseRank) : 0)
-    scored.push({ id, rrf })
-  }
-  scored.sort((a, b) => b.rrf - a.rrf)
-
-  const topIds = scored.map(s => s.id)
-  const filterClauses = []
-  const filterParams = []
-  if (tsFrom != null) { filterClauses.push(`ts >= $${topIds.length + filterParams.length + 1}`); filterParams.push(tsFrom) }
-  if (tsTo != null) { filterClauses.push(`ts <= $${topIds.length + filterParams.length + 1}`); filterParams.push(tsTo) }
-  if (excludeStatuses.length > 0) {
-    const statusPlaceholders = excludeStatuses.map((_, i) => `$${topIds.length + filterParams.length + i + 1}`).join(',')
-    filterClauses.push(`(status IS NULL OR status NOT IN (${statusPlaceholders}))`)
-    filterParams.push(...excludeStatuses)
-  }
-  if (projectScope === 'common') {
-    filterClauses.push(`project_id IS NULL`)
-  } else if (projectScope && projectScope !== 'all') {
-    filterClauses.push(`(project_id IS NULL OR project_id = $${topIds.length + filterParams.length + 1})`)
-    filterParams.push(projectScope)
-  }
-  const filterSql = filterClauses.length > 0 ? ` AND ${filterClauses.join(' AND ')}` : ''
-  const idPlaceholders = topIds.map((_, i) => `$${i + 1}`).join(',')
-  const { rows: rawRows } = await db.query(
-    `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
-            element, category, summary, project_id, status, score, last_seen_at
-     FROM entries WHERE id IN (${idPlaceholders})${filterSql}`,
-    [...topIds, ...filterParams],
-  )
-  const byId = new Map(rawRows.map(r => [Number(r.id), r]))
   const nowMs = Date.now()
-  // Age decay multiplier applied to retrievalScore. R5: shared with
-  // handleSearch augment path via memory-score.mjs export.
-  const ranked = scored
-    .map((entry) => {
-      const row = byId.get(entry.id)
-      const freshness = applyFreshness ? freshnessFactor(row?.ts, nowMs) : 1.0
-      return {
-        ...entry,
-        freshness,
-        retrievalScore: entry.rrf * freshness,
-      }
-    })
-    .filter(entry => entry.retrievalScore >= minRetrievalScore)
-    .sort((a, b) => b.retrievalScore - a.retrievalScore || b.rrf - a.rrf)
 
+  const scored = rawRows.map(row => {
+    const id = Number(row.id)
+    const denseRank = row.dense_rank != null ? Number(row.dense_rank) : null
+    const sparseRank = row.sparse_rank != null ? Number(row.sparse_rank) : null
+    const trgmRank = row.trgm_rank != null ? Number(row.trgm_rank) : null
+    const rrf = (denseRank ? 1 / (K + denseRank) : 0)
+              + (sparseRank ? 1 / (K + sparseRank) : 0)
+              + (trgmRank ? 1 / (K + trgmRank) : 0)
+    const freshness = applyFreshness ? freshnessFactor(row.ts, nowMs) : 1.0
+    return { id, row, rrf, freshness, retrievalScore: rrf * freshness }
+  })
+  scored.sort((a, b) => b.retrievalScore - a.retrievalScore || b.rrf - a.rrf)
+
+  const filtered = scored.filter(e => e.retrievalScore >= minRetrievalScore)
+
+  // ── Root resolution + member-hit write-back ───────────────────────────────
+  const byId = new Map(rawRows.map(r => [Number(r.id), r]))
   const memberHitRootIds = new Set()
   const rootIdsForReturn = []
   const seen = new Set()
 
-  for (const { id, rrf, retrievalScore } of ranked) {
+  for (const { id, rrf, retrievalScore } of filtered) {
     const row = byId.get(id)
     if (!row) continue
     let targetRow = null
@@ -251,11 +285,10 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     for (const rootId of memberHitRootIds) {
       const r = rootIdsForReturn.find(x => x.root.id === rootId)?.root ?? byId.get(rootId)
       if (!r) continue
-      const newScore = computeEntryScore(r.category, nowMs, nowMs)
       try {
         await db.query(
-          `UPDATE entries SET last_seen_at = $1, score = $2 WHERE id = $3 AND is_root = 1`,
-          [nowMs, newScore, rootId],
+          `UPDATE entries SET last_seen_at = $1 WHERE id = $2 AND is_root = 1`,
+          [nowMs, rootId],
         )
         writeBackCount += 1
       } catch (err) {
@@ -264,15 +297,28 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     }
   }
 
+  // ── Final fetch: full row for each root by id = ANY(bigint[]) ────────────
+  const topIds = rootIdsForReturn.map(x => Number(x.root.id))
+  const { clause: finalFilter, params: finalFilterParams } = buildFilterClause(2)
+  const { rows: finalRows } = await db.query(
+    `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
+            element, category, summary, project_id, status, score, last_seen_at
+     FROM entries
+     WHERE id = ANY($1::bigint[])
+       ${finalFilter}`,
+    [topIds, ...finalFilterParams],
+  )
+  const finalById = new Map(finalRows.map(r => [Number(r.id), r]))
+
   const results = await Promise.all(rootIdsForReturn.map(async ({ root, rrf, retrievalScore, retrievalRank }) => {
-    const out = { ...root, rrf, retrievalScore, retrievalRank }
-    if (includeMembers && root.is_root === 1) {
+    const finalRoot = finalById.get(Number(root.id)) ?? root
+    const out = { ...finalRoot, rrf, retrievalScore, retrievalRank }
+    if (includeMembers && finalRoot.is_root === 1) {
       const { rows: memberRows } = await db.query(
-        `SELECT id, ts, role, content, session_id, source_turn
-         , project_id
+        `SELECT id, ts, role, content, session_id, source_turn, project_id
          FROM entries WHERE chunk_root = $1 AND is_root = 0
          ORDER BY ts ASC, id ASC`,
-        [root.id],
+        [finalRoot.id],
       )
       out.members = memberRows
     }
@@ -280,7 +326,7 @@ export async function searchRelevantHybrid(db, query, options = {}) {
   }))
 
   process.stderr.write(
-    `[recall] dense=${denseCount} sparse=${sparseCount} merged=${results.length} write_back=${writeBackCount}\n`,
+    `[recall] dense=${denseCount} sparse=${sparseCount} trgm=${trgmCount} merged=${results.length} write_back=${writeBackCount}\n`,
   )
 
   return results

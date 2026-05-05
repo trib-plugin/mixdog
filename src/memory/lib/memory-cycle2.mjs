@@ -3,13 +3,21 @@ import { join } from 'path'
 import { homedir as _homedir } from 'os'
 import { resolveMaintenancePreset } from '../../shared/llm/index.mjs'
 import { callBridgeLlm } from './agent-ipc.mjs'
-import { computeEntryScore } from './memory-score.mjs'
 import {
   syncRootEmbedding, deleteRootEmbedding, flushEmbeddingDirty,
 } from './memory-embed.mjs'
+import { refreshHotActive } from './memory.mjs'
 
 const CYCLE2_ACTIVE_TARGET_CAP = 100
 const TIER1_THRESHOLD = 0.78
+
+function parseVectorText(s) {
+  if (Array.isArray(s)) return s
+  if (typeof s !== 'string' || !s.startsWith('[')) return null
+  const arr = s.slice(1, -1).split(',').map(Number)
+  return arr.every(Number.isFinite) ? arr : null
+}
+
 const TIER2_LOW = 0.65
 const LLM_JUDGE_CAP = 20
 
@@ -116,12 +124,11 @@ async function applyPromoteFromPending(db, entryId, nowMs) {
   )
   const row = rowRes.rows[0]
   if (!row) return false
-  const newScore = computeEntryScore(row.category, nowMs, nowMs)
   const res = await db.query(
-    `UPDATE entries SET status = 'active', score = $1, last_seen_at = $2,
-      promoted_at = COALESCE(promoted_at, $3)
-     WHERE id = $4 AND is_root = 1 AND status = 'pending'`,
-    [newScore, nowMs, nowMs, entryId],
+    `UPDATE entries SET status = 'active', last_seen_at = $1,
+      promoted_at = COALESCE(promoted_at, $2)
+     WHERE id = $3 AND is_root = 1 AND status = 'pending'`,
+    [nowMs, nowMs, entryId],
   )
   return Number(res.affectedRows ?? 0) > 0
 }
@@ -149,16 +156,6 @@ export async function applyUpdate(db, entryId, element, summary) {
     setClauses.push('summary_hash = NULL')
   }
   if (setClauses.length === 0) return false
-  const rowRes = await db.query(
-    `SELECT category, last_seen_at FROM entries WHERE id = $1 AND is_root = 1`,
-    [entryId],
-  )
-  const row = rowRes.rows[0]
-  if (row) {
-    const nowMs = Date.now()
-    const newScore = computeEntryScore(row.category, row.last_seen_at ?? nowMs, nowMs)
-    setClauses.push(`score = $${paramIdx++}`); params.push(newScore)
-  }
   params.push(entryId)
   const res = await db.query(
     `UPDATE entries SET ${setClauses.join(', ')} WHERE id = $${paramIdx} AND is_root = 1`,
@@ -259,9 +256,9 @@ export async function runPhaseMerge(db, options = {}) {
 
   if (rows.length < 2) return { merged: 0, llm_calls: 0, tier1_pairs: 0, tier2_pairs: 0 }
 
-  // embedding column is vector(1024) — PGlite returns JS array directly.
+  // embedding column is halfvec — PGlite returns a '[v1,v2,…]' string; parse before use.
   const vecs = rows.map(r => {
-    const vec = Array.isArray(r.embedding) ? r.embedding : null
+    const vec = parseVectorText(r.embedding)
     return { ...r, vec }
   })
 
@@ -509,26 +506,6 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
     cascade: { evaluated: 0, dropped: 0 },
   }
 
-  // Re-score sweep: recompute score for active entries with current weighting.
-  const activeForRescoreRes = await db.query(
-    `SELECT id, category, last_seen_at FROM entries WHERE is_root = 1 AND status = 'active'`,
-    [],
-  )
-  const activeForRescore = activeForRescoreRes.rows
-  if (activeForRescore.length > 0) {
-    await db.transaction(async (tx) => {
-      for (const r of activeForRescore) {
-        const newScore = computeEntryScore(r.category, r.last_seen_at ?? nowMs, nowMs)
-        if (Number.isFinite(newScore)) {
-          try {
-            const upd = await tx.query(`UPDATE entries SET score = $1 WHERE id = $2`, [newScore, r.id])
-            if (Number(upd.affectedRows ?? 0) > 0) stats.rescore.updated += 1
-          } catch {}
-        }
-      }
-    })
-  }
-
   // Unified candidate selection: pending/active by reviewed_at rotation.
   // Pending sorts first so freshly extracted chunks reach evaluation quickly.
   const rowsRes = await db.query(`
@@ -721,6 +698,8 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
     ` | phase_merge merged=${stats.phase_merge.merged} llm=${stats.phase_merge.llm_calls}` +
     ` | phase4 archived=${stats.phase4.archived}\n`,
   )
+
+  try { await refreshHotActive(db) } catch (e) { process.stderr.write('[cycle2] mv refresh failed: ' + e.message + '\n') }
 
   return stats
 }
