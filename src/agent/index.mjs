@@ -422,7 +422,7 @@ export async function init() {
   // serialised in front of it.
   setImmediate(() => warmupCatalogs());
   seedDefaults();
-  initTrajectoryStore(getPluginData());
+  void initTrajectoryStore(getPluginData()).catch(() => {});
   startStreamWatchdog(forEachSessionRuntime);
   // Smart Bridge — unified router + cache strategy + profile system.
   // User-role preset mapping comes from user-workflow.json (existing source
@@ -1142,7 +1142,7 @@ export async function handleToolCall(name, args, opts = {}) {
             try {
               const cfg = loadConfig();
               if (cfg.trajectory?.enabled !== false) {
-                recordTrajectory({
+                void recordTrajectory({
                   session_id: activeSession.id,
                   scope: role,
                   preset: presetName,
@@ -1155,7 +1155,7 @@ export async function handleToolCall(name, args, opts = {}) {
                   duration_ms: Date.now() - t0,
                   completed: completed ? 1 : 0,
                   error_message: errorMessage,
-                });
+                }).catch(() => {});
               }
             } catch {}
           }

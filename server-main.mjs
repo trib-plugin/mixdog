@@ -906,7 +906,7 @@ setImmediate(() => {
 
 // ── CLAUDE.md managed block reconciliation ─────────────────────────
 // Writes static rules into the managed block. Session recap is NOT
-// written here — the SessionStart hook injects it live from sqlite.
+// written here — the SessionStart hook injects it live from PGlite.
 // Fail-soft: any error is logged and swallowed.
 //
 //   mode === 'claude_md'  → upsert the managed block (strong enforcement)

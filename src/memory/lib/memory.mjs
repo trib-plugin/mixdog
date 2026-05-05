@@ -207,6 +207,35 @@ export async function init(db, dims) {
   await db.query(`INSERT INTO meta(key, value) VALUES ($1, $2::jsonb)`, ['boot.schema_bootstrap_complete', JSON.stringify('1')])
 }
 
+// Idempotent. trajectories is auxiliary (agent orchestrator log) and does
+// not participate in SCHEMA_VERSION; future aux tables follow the same
+// IF NOT EXISTS pattern.
+export async function ensureTrajectoryTable(db) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS trajectories (
+      id              BIGSERIAL PRIMARY KEY,
+      ts              TIMESTAMP NOT NULL DEFAULT NOW(),
+      session_id      TEXT,
+      scope           TEXT,
+      preset          TEXT,
+      model           TEXT,
+      agent_type      TEXT,
+      phase           TEXT,
+      tool_calls_json JSONB,
+      iterations      INTEGER DEFAULT 1,
+      tokens_in       INTEGER DEFAULT 0,
+      tokens_out      INTEGER DEFAULT 0,
+      duration_ms     INTEGER DEFAULT 0,
+      completed       SMALLINT DEFAULT 1,
+      error_message   TEXT,
+      created_at      BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT
+    )
+  `)
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_traj_scope ON trajectories(scope, ts)`)
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_traj_ts ON trajectories(ts)`)
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_traj_tool_calls_gin ON trajectories USING GIN (tool_calls_json)`)
+}
+
 export async function openDatabase(dataDir, dims) {
   const key = resolve(dataDir)
   const existing = dbs.get(key)
@@ -234,10 +263,11 @@ export async function openDatabase(dataDir, dims) {
       try { await db.close() } catch {}
       throw new Error(
         `memory: pgdata at ${key} is schema v${version || '?'}, code expects v${SCHEMA_VERSION}. ` +
-        `Re-run dev/migrate/migrate-from-sqlite.mjs (or delete pgdata and reinit) before booting.`,
+        `Delete pgdata and reinit before booting.`,
       )
     }
   }
+  await ensureTrajectoryTable(db)
   dbs.set(key, db)
   return db
 }
@@ -304,12 +334,3 @@ export function embeddingToSql(arr) {
   return `[${arr.map((n) => Number(n).toFixed(6)).join(',')}]`
 }
 
-export function embeddingFromBuffer(buf) {
-  if (!buf || buf.length === 0) return null
-  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer ?? buf)
-  const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength)
-  const n = u8.byteLength / 4
-  const out = new Array(n)
-  for (let i = 0; i < n; i++) out[i] = view.getFloat32(i * 4, true)
-  return out
-}

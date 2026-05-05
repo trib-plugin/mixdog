@@ -1,6 +1,6 @@
 {
   "name": "mixdog",
-  "version": "0.2.002",
+  "version": "0.2.003",
   "description": "Claude Code all-in-one agent plugin — autonomous agents, continuous memory, cost-aware sub-agents, and syntax-aware code editing.",
   "author": "jyp8877 <dev@tribgames.com>",
   "license": "MIT",
@@ -50,7 +50,6 @@
     "@huggingface/transformers": "^3.5.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@mozilla/readability": "^0.6.0",
-    "better-sqlite3": "^12.9.0",
     "diff": "^9.0.0",
     "discord.js": "^14.14.0",
     "jsdom": "^26.0.0",

@@ -35,7 +35,7 @@ process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT
 let _tempDataDir = null
 if (!process.env.CLAUDE_PLUGIN_DATA) {
   // Module imports below (channels / memory / search / agent) touch DATA_DIR
-  // during init (boot.log, caches, sqlite warm-up). Route those writes to a
+  // during init (boot.log, caches, PGlite warm-up). Route those writes to a
   // throwaway OS temp dir so the manifest build never pollutes the plugin
   // source tree with a shadow `.data/` next to the real one under
   // ~/.claude/plugins/data/<plugin>-<marketplace>.
