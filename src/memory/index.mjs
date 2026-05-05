@@ -58,7 +58,7 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
       resolvePluginData(),
     ]
     for (const c of candidates) {
-      if (fs.existsSync(path.join(c, 'memory.sqlite'))) return c
+      if (fs.existsSync(path.join(c, 'pgdata'))) return c
     }
     return null
   })()
@@ -88,7 +88,7 @@ const MEMORY_INSTRUCTIONS_TEXT = (() => {
 })()
 
 const PROXY_TOOL_DEFS = [
-  { name: 'memory', description: 'Memory operations. User-curated core list (sqlite core_entries table, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
+  { name: 'memory', description: 'Memory operations. User-curated core list (core_entries pool, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
 ]
 
 function readPortFile() {
@@ -296,18 +296,18 @@ async function _initStore() {
     })
   }
   const dims = Number(getEmbeddingDims())
-  db = openDatabase(DATA_DIR, dims)
-  if (!isBootstrapComplete(db)) {
+  db = await openDatabase(DATA_DIR, dims)
+  if (!await isBootstrapComplete(db)) {
     throw new Error('memory-service: bootstrap not complete after openDatabase')
   }
   startLlmWorker()
   _bootTimestamp = Date.now()
-  loadTranscriptOffsets()
+  await loadTranscriptOffsets()
 }
 
-function loadTranscriptOffsets() {
+async function loadTranscriptOffsets() {
   try {
-    const raw = getMetaValue(db, TRANSCRIPT_OFFSETS_KEY, '{}')
+    const raw = await getMetaValue(db, TRANSCRIPT_OFFSETS_KEY, '{}')
     const obj = JSON.parse(raw)
     _transcriptOffsets = new Map(Object.entries(obj))
   } catch {
@@ -315,18 +315,18 @@ function loadTranscriptOffsets() {
   }
 }
 
-function persistTranscriptOffsets() {
+async function persistTranscriptOffsets() {
   try {
     const obj = Object.fromEntries(_transcriptOffsets)
-    setMetaValue(db, TRANSCRIPT_OFFSETS_KEY, JSON.stringify(obj))
+    await setMetaValue(db, TRANSCRIPT_OFFSETS_KEY, JSON.stringify(obj))
   } catch (e) {
     process.stderr.write(`[memory] persist transcript offsets failed: ${e.message}\n`)
   }
 }
 
-function getCycleLastRun() {
+async function getCycleLastRun() {
   try {
-    const raw = getMetaValue(db, CYCLE_LAST_RUN_KEY, '{}')
+    const raw = await getMetaValue(db, CYCLE_LAST_RUN_KEY, '{}')
     const obj = JSON.parse(raw)
     return {
       cycle1: Number(obj.cycle1) || 0,
@@ -350,38 +350,50 @@ function getCycleLastRun() {
   }
 }
 
-function setCycleLastRun(kind, ts) {
-  const cur = getCycleLastRun()
+async function setCycleLastRun(kind, ts) {
+  const cur = await getCycleLastRun()
   cur[kind] = ts
-  setMetaValue(db, CYCLE_LAST_RUN_KEY, JSON.stringify(cur))
+  await setMetaValue(db, CYCLE_LAST_RUN_KEY, JSON.stringify(cur))
 }
 
 // Raw-row priority lookup for narrow-window queries. Raw rows (is_root=0,
 // chunk_root IS NULL) are inserted immediately by ingestTranscriptFile before
 // cycle1 runs, so they always carry the freshest turns in the DB.
-function readRawRowsInWindow(db, tsFromMs, tsToMs, hardLimit = 10, { projectScope } = {}) {
+async function readRawRowsInWindow(db, tsFromMs, tsToMs, hardLimit = 10, { projectScope } = {}) {
   try {
-    const params = [tsFromMs ?? 0, tsToMs ?? Date.now()]
-    let projectFilter = ''
+    let sql, params
     if (projectScope === 'common') {
-      projectFilter = 'AND project_id IS NULL'
-    } else if (projectScope && projectScope !== 'all') {
-      projectFilter = 'AND (project_id IS NULL OR project_id = ?)'
-      params.push(projectScope)
-    }
-    params.push(hardLimit)
-    const stmt = db.prepare(
-      `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
+      sql = `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
               element, category, summary, status, score, last_seen_at, project_id
        FROM entries
        WHERE chunk_root IS NULL AND is_root = 0
-         AND ts >= ? AND ts <= ?
-         ${projectFilter}
+         AND ts >= $1 AND ts <= $2
+         AND project_id IS NULL
        ORDER BY ts DESC
-       LIMIT ?`
-    )
-    return stmt.all(...params)
-      .map(r => ({ ...r, retrievalScore: 0, rrf: 0 }))
+       LIMIT $3`
+      params = [tsFromMs ?? 0, tsToMs ?? Date.now(), hardLimit]
+    } else if (projectScope && projectScope !== 'all') {
+      sql = `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
+              element, category, summary, status, score, last_seen_at, project_id
+       FROM entries
+       WHERE chunk_root IS NULL AND is_root = 0
+         AND ts >= $1 AND ts <= $2
+         AND (project_id IS NULL OR project_id = $3)
+       ORDER BY ts DESC
+       LIMIT $4`
+      params = [tsFromMs ?? 0, tsToMs ?? Date.now(), projectScope, hardLimit]
+    } else {
+      sql = `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
+              element, category, summary, status, score, last_seen_at, project_id
+       FROM entries
+       WHERE chunk_root IS NULL AND is_root = 0
+         AND ts >= $1 AND ts <= $2
+       ORDER BY ts DESC
+       LIMIT $3`
+      params = [tsFromMs ?? 0, tsToMs ?? Date.now(), hardLimit]
+    }
+    const rows = (await db.query(sql, params)).rows
+    return rows.map(r => ({ ...r, retrievalScore: 0, rrf: 0 }))
   } catch { return [] }
 }
 
@@ -406,11 +418,6 @@ async function ingestTranscriptFile(transcriptPath, { cwd } = {}) {
   const resolvedCwd = typeof cwd === 'string' && cwd ? cwd : cwdFromTranscriptPath(transcriptPath)
   const projectId = resolveProjectId(resolvedCwd ?? process.cwd())
 
-  const insertStmt = db.prepare(`
-    INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id, source_turn, project_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `)
-
   let count = 0
   let index = prev.lineIndex
   for (const line of lines) {
@@ -426,15 +433,20 @@ async function ingestTranscriptFile(transcriptPath, { cwd } = {}) {
     const tsMs = parseTsToMs(parsed.timestamp ?? parsed.ts ?? Date.now())
     const sourceRef = `transcript:${sessionUuid}#${index}`
     try {
-      const result = insertStmt.run(tsMs, role, cleaned, sourceRef, sessionUuid, index, projectId)
-      if (result.changes > 0) count += 1
+      const result = await db.query(
+        `INSERT INTO entries(ts, role, content, source_ref, session_id, source_turn, project_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT DO NOTHING`,
+        [tsMs, role, cleaned, sourceRef, sessionUuid, index, projectId]
+      )
+      if (result.affectedRows > 0) count += 1
     } catch (e) {
       process.stderr.write(`[transcript-watch] insert error (${sourceRef}): ${e.message}\n`)
     }
   }
   prev.lineIndex = index
   _transcriptOffsets.set(transcriptPath, prev)
-  persistTranscriptOffsets()
+  await persistTranscriptOffsets()
   return count
 }
 
@@ -588,14 +600,14 @@ function _startCycle1Run(config = {}, options = {}) {
       // success because the next overdue check would otherwise see a fake
       // green and stop forcing auto-restarts.
       const now = Date.now()
-      setCycleLastRun('cycle1_heartbeat', now)
+      await setCycleLastRun('cycle1_heartbeat', now)
       const skipped = result?.skippedInFlight === true
       const allFailed = !skipped
         && Number(result?.chunks ?? 0) === 0
         && Number(result?.processed ?? 0) === 0
         && Number(result?.skipped ?? 0) > 0
       if (!skipped && !allFailed) {
-        setCycleLastRun('cycle1', now)
+        await setCycleLastRun('cycle1', now)
       }
       return result
     } finally {
@@ -666,7 +678,7 @@ async function checkCycles() {
   const cycle2Ms = parseInterval(mainConfig?.cycle2?.interval || '1h')
 
   const now = Date.now()
-  const last = getCycleLastRun()
+  const last = await getCycleLastRun()
 
   // Phase B §2.4 — cache-keeper health check + auto-restart.
   //
@@ -699,10 +711,11 @@ async function checkCycles() {
       // failure we return immediately instead of falling through into the
       // due branch — falling through would silently re-enter the same
       // failing path within the same tick.
-      setCycleLastRun('cycle1_autoRestart_attempt', now)
+      await setCycleLastRun('cycle1_autoRestart_attempt', now)
+      await setCycleLastRun('cycle1_autoRestart_attempt', now)
       try {
         const result = await _awaitCycle1Run(periodicCycle1Config())
-        setCycleLastRun('cycle1_autoRestart', Date.now())
+        await setCycleLastRun('cycle1_autoRestart', Date.now())
         process.stderr.write(
           `[cycle1] auto-restart completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`
         )
@@ -728,7 +741,7 @@ async function checkCycles() {
   if (now - last.cycle2 >= cycle2Ms) {
     try {
       await runCycle2(db, mainConfig?.cycle2 || {})
-      setCycleLastRun('cycle2', Date.now())
+      await setCycleLastRun('cycle2', Date.now())
       process.stderr.write(`[cycle2] completed\n`)
     } catch (e) {
       process.stderr.write(`[cycle2] error: ${e.message}\n`)
@@ -772,6 +785,7 @@ function _stopCycles() {
 
 async function _initRuntime() {
   await _initStore()
+  await loadTranscriptOffsets()
   _initTranscriptWatcher()
   _startCycles()
   _initialized = true
@@ -980,7 +994,7 @@ async function handleSearch(args) {
       })
     }
     if (includeRaw) {
-      const rawRows = readRawRowsInWindow(
+      const rawRows = await readRawRowsInWindow(
         db,
         temporal?.startMs ?? null,
         temporal?.endMs ?? Date.now(),
@@ -1006,7 +1020,7 @@ async function handleSearch(args) {
   }
   filters.projectScope = projectScope
   if (includeMembers) filters.includeMembers = true
-  const rows = retrieveEntries(db, filters)
+  const rows = await retrieveEntries(db, filters)
   const sliced = rows.slice(offset, offset + limit)
   return { text: renderEntryLines(sliced) }
 }
@@ -1088,26 +1102,16 @@ function renderEntryLines(rows) {
   return lines.join('\n')
 }
 
-function entryStats() {
-  const stmtTotal      = db.prepare(`SELECT COUNT(*) c FROM entries`)
-  const stmtRoots      = db.prepare(`SELECT COUNT(*) c FROM entries WHERE is_root = 1`)
-  const stmtUnchunked  = db.prepare(`SELECT COUNT(*) c FROM entries WHERE chunk_root IS NULL`)
-  const stmtPhase1     = db.prepare(`SELECT COUNT(*) c FROM entries WHERE is_root = 1 AND status = 'pending'`)
-  const stmtByStatus   = db.prepare(`SELECT status, COUNT(*) c FROM entries WHERE is_root = 1 GROUP BY status`)
-  const stmtByCategory = db.prepare(`SELECT category, COUNT(*) c FROM entries WHERE is_root = 1 AND status = 'active' GROUP BY category ORDER BY c DESC`)
-  let total, roots, unchunked_leaves, phase1_pending_roots, byStatus, byCategory
-  db.exec('BEGIN')
-  try {
-    total               = stmtTotal.get().c
-    roots               = stmtRoots.get().c
-    unchunked_leaves    = stmtUnchunked.get().c
-    phase1_pending_roots = stmtPhase1.get().c
-    byStatus            = stmtByStatus.all()
-    byCategory          = stmtByCategory.all()
-  } finally {
-    db.exec('COMMIT')
-  }
-  return { total, roots, unchunked_leaves, phase1_pending_roots, byStatus, byCategory }
+async function entryStats() {
+  return await db.transaction(async (tx) => {
+    const total               = (await tx.query(`SELECT COUNT(*) c FROM entries`)).rows[0].c
+    const roots               = (await tx.query(`SELECT COUNT(*) c FROM entries WHERE is_root = 1`)).rows[0].c
+    const unchunked_leaves    = (await tx.query(`SELECT COUNT(*) c FROM entries WHERE chunk_root IS NULL`)).rows[0].c
+    const phase1_pending_roots = (await tx.query(`SELECT COUNT(*) c FROM entries WHERE is_root = 1 AND status = 'pending'`)).rows[0].c
+    const byStatus            = (await tx.query(`SELECT status, COUNT(*) c FROM entries WHERE is_root = 1 GROUP BY status`)).rows
+    const byCategory          = (await tx.query(`SELECT category, COUNT(*) c FROM entries WHERE is_root = 1 AND status = 'active' GROUP BY category ORDER BY c DESC`)).rows
+    return { total, roots, unchunked_leaves, phase1_pending_roots, byStatus, byCategory }
+  })
 }
 
 async function handleMemoryAction(args) {
@@ -1115,10 +1119,10 @@ async function handleMemoryAction(args) {
   const config = readMainConfig()
 
   if (action === 'status') {
-    const stats = entryStats()
-    const last = getCycleLastRun()
-    const dims = Number(getMetaValue(db, 'embedding.current_dims', '0'))
-    const vecReady = Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE name='vec_entries'`).get())
+    const stats = await entryStats()
+    const last = await getCycleLastRun()
+    const dims = Number(await getMetaValue(db, 'embedding.current_dims', '0'))
+    const vecReady = true
     const lastCycle1Ago = last.cycle1 ? `${Math.round((Date.now() - last.cycle1) / 60000)}m ago` : 'never'
     const lastCycle2Ago = last.cycle2 ? `${Math.round((Date.now() - last.cycle2) / 60000)}m ago` : 'never'
     const activeCap = config?.cycle2?.active_cap ?? 300  // fallback: CYCLE2_ACTIVE_CAP default
@@ -1126,7 +1130,7 @@ async function handleMemoryAction(args) {
       `entries: total=${stats.total} roots=${stats.roots} unchunked_leaves=${stats.unchunked_leaves} pending_roots=${stats.phase1_pending_roots}`,
       `status: ${stats.byStatus.map(r => `${r.status ?? '?'}:${r.c}`).join(', ') || 'empty'}`,
       `categories(active): ${stats.byCategory.map(r => `${r.category ?? 'NULL'}:${r.c}`).join(', ') || 'empty'} active_cap=${activeCap}`,
-      `vec_entries: ${vecReady ? 'ready' : 'missing'} dims=${dims}`,
+      `embedding_index: ${vecReady ? 'ready' : 'n/a'} dims=${dims}`,
       `bootstrap: ${isBootstrapComplete(db) ? 'complete' : 'incomplete'}`,
       `last_cycle1: ${lastCycle1Ago}`,
       `last_cycle2: ${lastCycle2Ago}`,
@@ -1164,15 +1168,13 @@ async function handleMemoryAction(args) {
 
   if (action === 'cycle2' || action === 'sleep') {
     const result = await runCycle2(db, config?.cycle2 || {})
-    setCycleLastRun('cycle2', Date.now())
+    await setCycleLastRun('cycle2', Date.now())
     const counts = {
       promoted: result?.promoted || 0,
       archived: result?.archived || 0,
-      demoted: result?.demoted || 0,
       merged: result?.merged || 0,
       updated: result?.updated || 0,
       kept: result?.kept || 0,
-      fixed_kept: result?.fixed_kept || 0,
       rejected_verb: result?.rejected_verb || 0,
       cascade_drop: result?.cascade?.dropped || 0,
       phase_merge: result?.phase_merge?.merged || 0,
@@ -1185,7 +1187,7 @@ async function handleMemoryAction(args) {
   if (action === 'flush') {
     const r1 = await _awaitCycle1Run(config?.cycle1 || {})
     const r2 = await runCycle2(db, config?.cycle2 || {})
-    setCycleLastRun('cycle2', Date.now())
+    await setCycleLastRun('cycle2', Date.now())
     return { text: `flush: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
   }
 
@@ -1193,23 +1195,23 @@ async function handleMemoryAction(args) {
     if (args.confirm !== 'REBUILD MEMORY') {
       return { text: 'rebuild requires confirm: "REBUILD MEMORY" (truncates classification columns and re-runs cycles)', isError: true }
     }
-    db.prepare(`UPDATE entries SET chunk_root = NULL, is_root = 0 WHERE chunk_root = id`).run()
-    db.prepare(`UPDATE entries SET chunk_root = NULL WHERE is_root = 0`).run()
-    db.prepare(`
+    await db.query(`UPDATE entries SET chunk_root = NULL, is_root = 0 WHERE chunk_root = id`)
+    await db.query(`UPDATE entries SET chunk_root = NULL WHERE is_root = 0`)
+    await db.query(`
       UPDATE entries
       SET element = NULL, category = NULL, summary = NULL,
           status = 'pending', score = NULL, last_seen_at = NULL,
           embedding = NULL, summary_hash = NULL
       WHERE is_root = 1
-    `).run()
-    db.prepare(`
+    `)
+    await db.query(`
       UPDATE entries
       SET status = NULL
       WHERE is_root = 0
-    `).run()
+    `)
     const r1 = await _awaitCycle1Run(config?.cycle1 || {})
     const r2 = await runCycle2(db, config?.cycle2 || {})
-    setCycleLastRun('cycle2', Date.now())
+    await setCycleLastRun('cycle2', Date.now())
     return { text: `rebuild: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
   }
 
@@ -1218,7 +1220,7 @@ async function handleMemoryAction(args) {
       return { text: 'prune requires confirm: "PRUNE OLD ENTRIES" (permanently deletes unclassified entries older than maxDays)', isError: true }
     }
     const days = Math.max(1, Number(args.maxDays ?? 30))
-    const result = pruneOldEntries(db, days)
+    const result = await pruneOldEntries(db, days)
     return { text: `prune: deleted ${result.deleted} unclassified entries older than ${days} days` }
   }
 
@@ -1236,7 +1238,7 @@ async function handleMemoryAction(args) {
       runCycle1: (dbArg, cycle1Config = {}, options = {}) => _awaitCycle1Run(cycle1Config, options),
       runCycle2,
     })
-    setCycleLastRun('cycle2', Date.now())
+    await setCycleLastRun('cycle2', Date.now())
     return {
       text: `backfill: window=${result.window} scope=${result.scope} files=${result.files} ingested=${result.ingested} cycle1_iters=${result.cycle1_iters} promoted=${result.promoted} unclassified=${result.unclassified}`,
     }
@@ -1248,7 +1250,7 @@ async function handleMemoryAction(args) {
       return { text: 'manage requires op: "add" | "edit" | "delete"', isError: true }
     }
     const VALID_CAT = new Set(['rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue'])
-    const VALID_STATUS = new Set(['pending', 'active', 'fixed', 'archived'])
+    const VALID_STATUS = new Set(['pending', 'active', 'archived'])
 
     if (op === 'add') {
       const element = String(args.element ?? '').trim()
@@ -1263,25 +1265,26 @@ async function handleMemoryAction(args) {
       const nowMs = Date.now()
       const sourceRef = `manual:${nowMs}-${process.pid}`
       const manageProjectId = resolveProjectId(typeof args.cwd === 'string' && args.cwd ? args.cwd : process.cwd())
-      db.exec('BEGIN')
       try {
-        const result = db.prepare(`
-          INSERT INTO entries(ts, role, content, source_ref, session_id, project_id)
-          VALUES (?, 'system', ?, ?, NULL, ?)
-        `).run(nowMs, element + ' — ' + summary, sourceRef, manageProjectId)
-        const newId = Number(result.lastInsertRowid)
-        const score = computeEntryScore(category, nowMs, nowMs)
-        db.prepare(`
-          UPDATE entries
-          SET chunk_root = ?, is_root = 1, element = ?, category = ?, summary = ?,
-              status = 'fixed', score = ?, last_seen_at = ?
-          WHERE id = ?
-        `).run(newId, element, category, summary, score, nowMs, newId)
-        db.exec('COMMIT')
+        let newId
+        await db.transaction(async (tx) => {
+          const result = await tx.query(`
+            INSERT INTO entries(ts, role, content, source_ref, session_id, project_id)
+            VALUES ($1, 'system', $2, $3, NULL, $4)
+            RETURNING id
+          `, [nowMs, element + ' — ' + summary, sourceRef, manageProjectId])
+          newId = Number(result.rows[0].id)
+          const score = computeEntryScore(category, nowMs, nowMs)
+          await tx.query(`
+            UPDATE entries
+            SET chunk_root = $1, is_root = 1, element = $2, category = $3, summary = $4,
+                status = 'active', score = $5, last_seen_at = $6
+            WHERE id = $7
+          `, [newId, element, category, summary, score, nowMs, newId])
+        })
         await syncRootEmbedding(db, newId)
         return { text: `added (id=${newId}): [${category}] ${element} — ${summary.slice(0, 200)}` }
       } catch (e) {
-        try { db.exec('ROLLBACK') } catch {}
         return { text: `manage add failed: ${e.message}`, isError: true }
       }
     }
@@ -1291,9 +1294,10 @@ async function handleMemoryAction(args) {
       if (!Number.isFinite(id) || id <= 0) {
         return { text: 'manage edit requires numeric id', isError: true }
       }
-      const existing = db.prepare(
-        `SELECT id, element, summary, category, status, ts, is_root FROM entries WHERE id = ?`,
-      ).get(id)
+      const existing = (await db.query(
+        `SELECT id, element, summary, category, status, ts, is_root FROM entries WHERE id = $1`,
+        [id]
+      )).rows[0]
       if (!existing) return { text: `manage edit: no entry with id=${id}`, isError: true }
       if (existing.is_root !== 1) return { text: `manage edit: id=${id} is not a root`, isError: true }
 
@@ -1325,20 +1329,15 @@ async function handleMemoryAction(args) {
       const score = computeEntryScore(finalCategory, nowMs, nowMs)
       const textChanged = newElement != null || newSummary != null
 
-      db.exec('BEGIN')
       try {
-        db.prepare(`
+        await db.query(`
           UPDATE entries
-          SET element = ?, summary = ?, category = ?, status = ?, score = ?,
-              last_seen_at = ?, content = ?
-          WHERE id = ?
-        `).run(
-          finalElement, finalSummary, finalCategory, finalStatus, score,
-          nowMs, finalElement + ' — ' + finalSummary, id,
-        )
-        db.exec('COMMIT')
+          SET element = $1, summary = $2, category = $3, status = $4, score = $5,
+              last_seen_at = $6, content = $7
+          WHERE id = $8
+        `, [finalElement, finalSummary, finalCategory, finalStatus, score,
+            nowMs, finalElement + ' — ' + finalSummary, id])
       } catch (e) {
-        try { db.exec('ROLLBACK') } catch {}
         return { text: `manage edit failed: ${e.message}`, isError: true }
       }
       if (textChanged) {
@@ -1354,19 +1353,17 @@ async function handleMemoryAction(args) {
       if (!Number.isFinite(id) || id <= 0) {
         return { text: 'manage delete requires numeric id', isError: true }
       }
-      const info = db.prepare(
-        `SELECT id, category, element, is_root FROM entries WHERE id = ?`,
-      ).get(id)
+      const info = (await db.query(
+        `SELECT id, category, element, is_root FROM entries WHERE id = $1`,
+        [id]
+      )).rows[0]
       if (!info) return { text: `manage delete: no entry with id=${id}`, isError: true }
-      db.exec('BEGIN')
       try {
         const result = info.is_root === 1
-          ? db.prepare(`DELETE FROM entries WHERE id = ? OR chunk_root = ?`).run(id, id)
-          : db.prepare(`DELETE FROM entries WHERE id = ?`).run(id)
-        db.exec('COMMIT')
-        return { text: `deleted (id=${id}, rows=${result.changes}): [${info.category ?? '-'}] ${info.element ?? ''}` }
+          ? await db.query(`DELETE FROM entries WHERE id = $1 OR chunk_root = $2`, [id, id])
+          : await db.query(`DELETE FROM entries WHERE id = $1`, [id])
+        return { text: `deleted (id=${id}, rows=${result.affectedRows}): [${info.category ?? '-'}] ${info.element ?? ''}` }
       } catch (e) {
-        try { db.exec('ROLLBACK') } catch {}
         return { text: `manage delete failed: ${e.message}`, isError: true }
       }
     }
@@ -1391,20 +1388,20 @@ async function handleMemoryAction(args) {
     const projectId = rawProjectId || null
     try {
       if (op === 'list') {
-        const entries = listCore(dataDir, projectId)
+        const entries = await listCore(dataDir, projectId)
         if (entries.length === 0) return { text: 'core: empty' }
         return { text: entries.map(e => `id=${e.id} [${e.category}] ${e.element} — ${String(e.summary || '').slice(0, 200)}`).join('\n') }
       }
       if (op === 'add') {
-        const entry = addCore(dataDir, args, projectId)
+        const entry = await addCore(dataDir, args, projectId)
         return { text: `core added (id=${entry.id}): [${entry.category}] ${entry.element} — ${entry.summary.slice(0, 200)}` }
       }
       if (op === 'edit') {
-        const entry = editCore(dataDir, args.id, args, projectId)
+        const entry = await editCore(dataDir, args.id, args, projectId)
         return { text: `core edited (id=${entry.id}): [${entry.category}] ${entry.element} — ${entry.summary.slice(0, 200)}` }
       }
       if (op === 'delete') {
-        const removed = deleteCore(dataDir, args.id, projectId)
+        const removed = await deleteCore(dataDir, args.id, projectId)
         return { text: `core deleted (id=${removed.id}): [${removed.category}] ${removed.element}` }
       }
     } catch (e) {
@@ -1417,15 +1414,10 @@ async function handleMemoryAction(args) {
     if (args.confirm !== 'DELETE ALL MEMORY') {
       return { text: 'purge requires confirm: "DELETE ALL MEMORY"', isError: true }
     }
-    const preCount = db.prepare(`SELECT COUNT(*) c FROM entries`).get().c
-    db.exec('BEGIN')
+    const preCount = (await db.query(`SELECT COUNT(*) c FROM entries`)).rows[0].c
     try {
-      db.prepare(`DELETE FROM entries`).run()
-      try { db.exec(`DELETE FROM entries_fts`) } catch {}
-      try { db.exec(`DELETE FROM vec_entries`) } catch {}
-      db.exec('COMMIT')
+      await db.query(`DELETE FROM entries`)
     } catch (e) {
-      try { db.exec('ROLLBACK') } catch {}
       return { text: `purge failed: ${e.message}`, isError: true }
     }
     return { text: `purged all memory entries (count=${preCount})` }
@@ -1437,22 +1429,22 @@ async function handleMemoryAction(args) {
     }
     const RETRO_BATCH = 50
     const cycle2Config = config?.cycle2 || {}
-    const allActive = db.prepare(
+    const allActive = (await db.query(
       `SELECT id, element, category, summary, score, last_seen_at, project_id, status
        FROM entries WHERE is_root = 1 AND status = 'active'
-       ORDER BY reviewed_at ASC, id ASC`,
-    ).all()
+       ORDER BY reviewed_at ASC, id ASC`
+    )).rows
     const total = allActive.length
     let archived = 0, kept = 0, updated = 0, merged = 0, errors = 0
     const nowMs = Date.now()
     for (let offset = 0; offset < total; offset += RETRO_BATCH) {
       const batch = allActive.slice(offset, offset + RETRO_BATCH)
       const batchIds = batch.map(r => Number(r.id))
-      const activeContext = db.prepare(
+      const activeContext = (await db.query(
         `SELECT id, element, category, summary, score, last_seen_at, project_id, status
-         FROM entries WHERE is_root = 1 AND status IN ('active','fixed')
-         ORDER BY score DESC, last_seen_at DESC, id ASC LIMIT 200`,
-      ).all()
+         FROM entries WHERE is_root = 1 AND status = 'active'
+         ORDER BY score DESC, last_seen_at DESC, id ASC LIMIT 200`
+      )).rows
       let gateResult
       try {
         gateResult = await runUnifiedGate(db, batch, activeContext, cycle2Config, { activeCap: 200 })
@@ -1469,9 +1461,8 @@ async function handleMemoryAction(args) {
       const allowed = new Set(batchIds)
       const rejected = gateResult?.rejected ?? new Set()
       const successIds = new Set(batchIds.filter(id => !rejected.has(id)))
-      const touch = db.prepare(`UPDATE entries SET reviewed_at = ? WHERE id = ?`)
       for (const id of successIds) {
-        try { touch.run(nowMs, id) } catch {}
+        try { await db.query(`UPDATE entries SET reviewed_at = $1 WHERE id = $2`, [nowMs, id]) } catch {}
       }
       if (!actions.length) { kept += batch.filter(r => successIds.has(Number(r.id))).length; continue }
       const acted = new Set()
@@ -1481,7 +1472,7 @@ async function handleMemoryAction(args) {
           if (!Number.isFinite(eid) || !allowed.has(eid)) continue
           acted.add(eid)
           if (act.action === 'archived') {
-            if (applySimpleStatus(db, eid, 'archived')) archived += 1
+            if (await applySimpleStatus(db, eid, 'archived')) archived += 1
           } else if (act.action === 'active') {
             // active → active is a keep verdict from the gate.
             kept += 1
@@ -1503,7 +1494,7 @@ async function handleMemoryAction(args) {
             }
             acted.add(targetId)
             filteredSources.forEach(s => acted.add(Number(s)))
-            const moved = applyMerge(db, targetId, filteredSources)
+            const moved = await applyMerge(db, targetId, filteredSources)
             if (moved > 0) {
               merged += moved
               if (typeof act.element === 'string' || typeof act.summary === 'string') {
@@ -1539,7 +1530,7 @@ const TOOL_DEFS = [
     name: 'memory',
     title: 'Memory Cycle',
     annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    description: 'Memory operations. User-curated core list (sqlite core_entries table, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.',
+    description: 'Memory operations. User-curated core list (core_entries pool, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1549,7 +1540,7 @@ const TOOL_DEFS = [
         element: { type: 'string', description: 'Short headline / canonical name. Required for add ops (core/manage); optional for edit.' },
         summary: { type: 'string', description: 'Long-form description. Required for add ops (falls back to element if omitted); optional for edit.' },
         category: { type: 'string', enum: ['rule','constraint','decision','fact','goal','preference','task','issue'], description: 'Entry category. Default fact for add; optional for edit.' },
-        status: { type: 'string', enum: ['pending','active','fixed','archived'], description: 'Lifecycle state. manage edit only. fixed = user-injected, protected from cycle2 archival. Not used by core.' },
+        status: { type: 'string', enum: ['pending','active','archived'], description: 'Lifecycle state. manage edit only. Not used by core.' },
         maxDays: { type: 'number', description: 'Age threshold in days for the prune action. Default 30, minimum 1. Ignored elsewhere.' },
         window: { type: 'string', description: 'Time window for backfill: 1d, 3d, 7d, 30d, all' },
         limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
@@ -1585,7 +1576,7 @@ const TOOL_DEFS = [
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Search text. Triggers hybrid search (vec_entries KNN + entries_fts BM25).' },
+        query: { type: 'string', description: 'Search text. Triggers hybrid search (vector KNN + full-text BM25).' },
         period: { type: 'string', description: 'Time scope: "last" (before this session), "24h"/"3d"/"7d"/"30d" (relative), "all", "2026-04-05" (single day), "2026-04-01~2026-04-05" (range). Default: 30d when query set, latest entries otherwise.' },
         sort: { type: 'string', enum: ['date', 'importance'], description: 'date (newest first) or importance (score desc).' },
         limit: { type: 'number', default: 30 },
@@ -1689,10 +1680,10 @@ const httpServer = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && req.url === '/health') {
     try {
-      const stats = entryStats()
+      const stats = await entryStats()
       sendJson(res, {
         status: 'ok',
-        bootstrap: isBootstrapComplete(db),
+        bootstrap: await isBootstrapComplete(db),
         entries: stats.total,
         roots: stats.roots,
         unclassified: stats.unclassified,
@@ -1765,11 +1756,14 @@ const httpServer = http.createServer(async (req, res) => {
       }
       const entryProjectId = resolveProjectId(typeof body.cwd === 'string' && body.cwd ? body.cwd : process.cwd())
       try {
-        const result = db.prepare(`
-          INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id, project_id)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).run(tsMs, role, cleaned, sourceRef, sessionId, entryProjectId)
-        sendJson(res, { ok: true, id: Number(result.lastInsertRowid), changes: Number(result.changes) })
+        const result = await db.query(`
+          INSERT INTO entries(ts, role, content, source_ref, session_id, project_id)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT DO NOTHING
+          RETURNING id
+        `, [tsMs, role, cleaned, sourceRef, sessionId, entryProjectId])
+        const insertedId = result.rows[0]?.id ?? null
+        sendJson(res, { ok: true, id: insertedId !== null ? Number(insertedId) : null, changes: result.affectedRows })
       } catch (e) {
         sendJson(res, { error: e.message }, 500)
       }
@@ -1817,7 +1811,7 @@ export async function stop() {
   _stopCycles()
   void stopLlmWorker().catch(() => {})
   if (httpServer) await new Promise(resolve => httpServer.close(resolve))
-  closeDatabase(DATA_DIR)
+  await closeDatabase(DATA_DIR)
   releaseLock()
   removePortFile()
 }

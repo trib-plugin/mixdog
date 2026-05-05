@@ -13,12 +13,11 @@ const TIER1_THRESHOLD = 0.78
 const TIER2_LOW = 0.65
 const LLM_JUDGE_CAP = 20
 
-// Status-based verb whitelist. The LLM cannot archive a 'fixed' entry —
-// user-injected memories are protected; only update/merge are permitted.
+// Status-based verb whitelist. 3-tier policy: pending → active/archived,
+// active → active/archived/update/merge. No fixed tier after v13 migration.
 const STATUS_ALLOWED_VERBS = {
   pending: new Set(['active', 'archived']),
   active:  new Set(['active', 'archived', 'update', 'merge']),
-  fixed:   new Set(['fixed', 'update', 'merge']),
 }
 
 function resourceDir() {
@@ -110,70 +109,84 @@ function parseUnifiedFormat(raw, statusById) {
 }
 
 // Promote a 'pending' row to 'active' with score recompute and promoted_at set.
-function applyPromoteFromPending(db, entryId, nowMs) {
-  const row = db.prepare(`SELECT category FROM entries WHERE id = ? AND is_root = 1 AND status = 'pending'`).get(entryId)
+async function applyPromoteFromPending(db, entryId, nowMs) {
+  const rowRes = await db.query(
+    `SELECT category FROM entries WHERE id = $1 AND is_root = 1 AND status = 'pending'`,
+    [entryId],
+  )
+  const row = rowRes.rows[0]
   if (!row) return false
   const newScore = computeEntryScore(row.category, nowMs, nowMs)
-  const res = db.prepare(
-    `UPDATE entries SET status = 'active', score = ?, last_seen_at = ?,
-      promoted_at = COALESCE(promoted_at, ?)
-     WHERE id = ? AND is_root = 1 AND status = 'pending'`,
-  ).run(newScore, nowMs, nowMs, entryId)
-  return Number(res.changes ?? 0) > 0
+  const res = await db.query(
+    `UPDATE entries SET status = 'active', score = $1, last_seen_at = $2,
+      promoted_at = COALESCE(promoted_at, $3)
+     WHERE id = $4 AND is_root = 1 AND status = 'pending'`,
+    [newScore, nowMs, nowMs, entryId],
+  )
+  return Number(res.affectedRows ?? 0) > 0
 }
 
-// Generic status update for archived/demote terminal transitions.
-export function applySimpleStatus(db, entryId, nextStatus) {
-  const res = db.prepare(
-    `UPDATE entries SET status = ? WHERE id = ? AND is_root = 1`,
-  ).run(nextStatus, entryId)
-  return Number(res.changes ?? 0) > 0
+// Generic status update for archived/active terminal transitions.
+export async function applySimpleStatus(db, entryId, nextStatus) {
+  const res = await db.query(
+    `UPDATE entries SET status = $1 WHERE id = $2 AND is_root = 1`,
+    [nextStatus, entryId],
+  )
+  return Number(res.affectedRows ?? 0) > 0
 }
 
 export async function applyUpdate(db, entryId, element, summary) {
-  const fields = []
+  const setClauses = []
   const params = []
+  let paramIdx = 1
   const newElement = (typeof element === 'string' && element.trim()) ? element.trim() : null
   const newSummary = (typeof summary === 'string' && summary.trim()) ? summary.trim() : null
   if (newElement) {
-    fields.push('element = ?'); params.push(newElement)
+    setClauses.push(`element = $${paramIdx++}`); params.push(newElement)
   }
   if (newSummary) {
-    fields.push('summary = ?'); params.push(newSummary)
-    fields.push('summary_hash = NULL')
+    setClauses.push(`summary = $${paramIdx++}`); params.push(newSummary)
+    setClauses.push('summary_hash = NULL')
   }
-  if (fields.length === 0) return false
-  const row = db.prepare(
-    `SELECT category, last_seen_at FROM entries WHERE id = ? AND is_root = 1`,
-  ).get(entryId)
+  if (setClauses.length === 0) return false
+  const rowRes = await db.query(
+    `SELECT category, last_seen_at FROM entries WHERE id = $1 AND is_root = 1`,
+    [entryId],
+  )
+  const row = rowRes.rows[0]
   if (row) {
     const nowMs = Date.now()
     const newScore = computeEntryScore(row.category, row.last_seen_at ?? nowMs, nowMs)
-    fields.push('score = ?'); params.push(newScore)
+    setClauses.push(`score = $${paramIdx++}`); params.push(newScore)
   }
   params.push(entryId)
-  const res = db.prepare(
-    `UPDATE entries SET ${fields.join(', ')} WHERE id = ? AND is_root = 1`,
-  ).run(...params)
-  if (Number(res.changes ?? 0) === 0) return false
+  const res = await db.query(
+    `UPDATE entries SET ${setClauses.join(', ')} WHERE id = $${paramIdx} AND is_root = 1`,
+    params,
+  )
+  if (Number(res.affectedRows ?? 0) === 0) return false
   await syncRootEmbedding(db, entryId)
   return true
 }
 
-export function applyMerge(db, targetId, sourceIds) {
+export async function applyMerge(db, targetId, sourceIds) {
   if (!Number.isFinite(targetId)) return 0
-  const target = db.prepare(`SELECT id, project_id FROM entries WHERE id = ? AND is_root = 1`).get(targetId)
+  const targetRes = await db.query(
+    `SELECT id, project_id FROM entries WHERE id = $1 AND is_root = 1`,
+    [targetId],
+  )
+  const target = targetRes.rows[0]
   if (!target) return 0
   let moved = 0
   for (const src of sourceIds) {
     const sid = Number(src)
     if (!Number.isFinite(sid) || sid === targetId) continue
-    const srcRow = db.prepare(`SELECT id, project_id, status FROM entries WHERE id = ? AND is_root = 1`).get(sid)
+    const srcRes = await db.query(
+      `SELECT id, project_id, status FROM entries WHERE id = $1 AND is_root = 1`,
+      [sid],
+    )
+    const srcRow = srcRes.rows[0]
     if (!srcRow) continue
-    if (srcRow.status === 'fixed') {
-      process.stderr.write(`[cycle2] merge rejected: source is fixed (id=${sid})\n`)
-      continue
-    }
     if (target.project_id !== srcRow.project_id) {
       process.stderr.write(
         `[cycle2] merge rejected: cross-pool (target=${targetId} project_id=${target.project_id ?? 'COMMON'} src=${sid} project_id=${srcRow.project_id ?? 'COMMON'})\n`,
@@ -181,41 +194,26 @@ export function applyMerge(db, targetId, sourceIds) {
       continue
     }
     try {
-      db.exec('BEGIN')
-      db.prepare(
-        `UPDATE entries SET chunk_root = ?, project_id = ? WHERE chunk_root = ? AND id != ? AND is_root = 0`,
-      ).run(targetId, target.project_id, sid, sid)
-      db.prepare(
-        `UPDATE entries SET status = 'archived' WHERE id = ? AND is_root = 1`,
-      ).run(sid)
-      db.exec('COMMIT')
-      deleteRootEmbedding(db, sid)
+      await db.transaction(async (tx) => {
+        await tx.query(
+          `UPDATE entries SET chunk_root = $1, project_id = $2 WHERE chunk_root = $3 AND id != $4 AND is_root = 0`,
+          [targetId, target.project_id, sid, sid],
+        )
+        await tx.query(
+          `UPDATE entries SET status = 'archived' WHERE id = $1 AND is_root = 1`,
+          [sid],
+        )
+      })
+      await deleteRootEmbedding(db, sid)
       moved += 1
     } catch (err) {
-      try { db.exec('ROLLBACK') } catch {}
       process.stderr.write(`[cycle2] merge failed (target=${targetId} src=${sid}): ${err.message}\n`)
     }
   }
   return moved
 }
 
-// ─── phase_merge: cosine-similarity dedup pass (unchanged) ───────────────────
-
-function _bufToVec(raw) {
-  if (!raw || raw.length === 0) return null
-  const u8 = raw instanceof Uint8Array ? raw : new Uint8Array(raw.buffer ?? raw)
-  const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength)
-  const n = u8.byteLength / 4
-  const v = new Float32Array(n)
-  for (let i = 0; i < n; i++) v[i] = view.getFloat32(i * 4, true)
-  for (let i = 0; i < n; i++) {
-    if (!Number.isFinite(v[i])) {
-      process.stderr.write(`[cycle2] phase_merge skipping non-finite embedding\n`)
-      return null
-    }
-  }
-  return v
-}
+// ─── phase_merge: cosine-similarity dedup pass ───────────────────────────────
 
 function _cosineSim(a, b) {
   if (!a || !b || a.length !== b.length) return 0
@@ -226,9 +224,6 @@ function _cosineSim(a, b) {
 }
 
 function _pickKeeper(a, b) {
-  // Prefer 'fixed' over 'active' so user-injected entries always win merge.
-  if (a.status === 'fixed' && b.status !== 'fixed') return a
-  if (b.status === 'fixed' && a.status !== 'fixed') return b
   if ((a.score ?? 0) !== (b.score ?? 0)) return (a.score ?? 0) > (b.score ?? 0) ? a : b
   if ((a.last_seen_at ?? 0) !== (b.last_seen_at ?? 0)) return (a.last_seen_at ?? 0) > (b.last_seen_at ?? 0) ? a : b
   return a.id < b.id ? a : b
@@ -254,15 +249,21 @@ async function _llmJudgePair(summaryA, summaryB) {
 }
 
 export async function runPhaseMerge(db, options = {}) {
-  const rows = db.prepare(
+  const res = await db.query(
     `SELECT id, category, summary, score, last_seen_at, status, embedding
-     FROM entries WHERE is_root = 1 AND status IN ('active','fixed') AND embedding IS NOT NULL
+     FROM entries WHERE is_root = 1 AND status = 'active' AND embedding IS NOT NULL
      ORDER BY score DESC, last_seen_at DESC, id ASC`,
-  ).all()
+    [],
+  )
+  const rows = res.rows
 
   if (rows.length < 2) return { merged: 0, llm_calls: 0, tier1_pairs: 0, tier2_pairs: 0 }
 
-  const vecs = rows.map(r => ({ ...r, vec: _bufToVec(r.embedding) }))
+  // embedding column is vector(1024) — PGlite returns JS array directly.
+  const vecs = rows.map(r => {
+    const vec = Array.isArray(r.embedding) ? r.embedding : null
+    return { ...r, vec }
+  })
 
   const tier1Pairs = []
   const tier2Pairs = []
@@ -270,9 +271,8 @@ export async function runPhaseMerge(db, options = {}) {
   for (let i = 0; i < vecs.length; i++) {
     for (let j = i + 1; j < vecs.length; j++) {
       const a = vecs[i], b = vecs[j]
+      if (!a.vec || !b.vec) continue
       if (a.category !== b.category) continue
-      // Both fixed? Skip — user-injected entries don't auto-merge.
-      if (a.status === 'fixed' && b.status === 'fixed') continue
       const sim = _cosineSim(a.vec, b.vec)
       if (sim >= TIER1_THRESHOLD) tier1Pairs.push({ a, b, sim })
       else if (sim >= TIER2_LOW) tier2Pairs.push({ a, b, sim })
@@ -285,12 +285,11 @@ export async function runPhaseMerge(db, options = {}) {
   let llmCalls = 0
   const mergedIds = new Set()
 
-  const doMerge = (a, b, sim) => {
+  const doMerge = async (a, b, sim) => {
     if (mergedIds.has(a.id) || mergedIds.has(b.id)) return
     const keeper = _pickKeeper(a, b)
     const loser = keeper.id === a.id ? b : a
-    if (loser.status === 'fixed') return  // never archive a fixed loser
-    const moved = applyMerge(db, keeper.id, [loser.id])
+    const moved = await applyMerge(db, keeper.id, [loser.id])
     if (moved > 0) {
       merged += moved
       mergedIds.add(loser.id)
@@ -300,7 +299,7 @@ export async function runPhaseMerge(db, options = {}) {
     }
   }
 
-  for (const pair of tier1Pairs) doMerge(pair.a, pair.b, pair.sim)
+  for (const pair of tier1Pairs) await doMerge(pair.a, pair.b, pair.sim)
 
   for (const pair of tier2Pairs) {
     if (llmCalls >= LLM_JUDGE_CAP) break
@@ -310,7 +309,7 @@ export async function runPhaseMerge(db, options = {}) {
       String(pair.a.summary ?? '').slice(0, 400),
       String(pair.b.summary ?? '').slice(0, 400),
     )
-    if (shouldMerge) doMerge(pair.a, pair.b, pair.sim)
+    if (shouldMerge) await doMerge(pair.a, pair.b, pair.sim)
   }
 
   process.stderr.write(
@@ -354,7 +353,7 @@ function loadCurrentRulesDigest() {
 
 // ─── Unified gate ────────────────────────────────────────────────────────────
 
-// Single LLM pass over rows whose status is in {pending, active, fixed}.
+// Single LLM pass over rows whose status is in {pending, active}.
 // Returns { actions, rejected, parseOk } following parseUnifiedFormat shape.
 export async function runUnifiedGate(db, rows, activeContext, config = {}, options = {}) {
   if (!rows || rows.length === 0) return { actions: [], rejected: new Set(), parseOk: true }
@@ -483,8 +482,8 @@ export async function runCycle2(db, config = {}, options = {}) {
   if (_runCycle2InFlight.has(db)) {
     process.stderr.write('[cycle2] skipped: already in flight for this db\n')
     return {
-      promoted: 0, archived: 0, demoted: 0, merged: 0,
-      updated: 0, kept: 0, fixed_kept: 0, rejected_verb: 0,
+      promoted: 0, archived: 0, merged: 0,
+      updated: 0, kept: 0, rejected_verb: 0,
       skippedInFlight: true,
     }
   }
@@ -502,8 +501,8 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   const nowMs = Date.now()
 
   const stats = {
-    promoted: 0, archived: 0, demoted: 0, merged: 0,
-    updated: 0, kept: 0, fixed_kept: 0, rejected_verb: 0,
+    promoted: 0, archived: 0, merged: 0,
+    updated: 0, kept: 0, rejected_verb: 0,
     rescore: { updated: 0 },
     phase_merge: { merged: 0, llm_calls: 0, tier1_pairs: 0, tier2_pairs: 0 },
     phase4: { archived: 0 },
@@ -511,62 +510,65 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   }
 
   // Re-score sweep: recompute score for active entries with current weighting.
-  const activeForRescore = db.prepare(
+  const activeForRescoreRes = await db.query(
     `SELECT id, category, last_seen_at FROM entries WHERE is_root = 1 AND status = 'active'`,
-  ).all()
+    [],
+  )
+  const activeForRescore = activeForRescoreRes.rows
   if (activeForRescore.length > 0) {
-    const rescoreUpdate = db.prepare(`UPDATE entries SET score = ? WHERE id = ?`)
-    db.transaction(() => {
+    await db.transaction(async (tx) => {
       for (const r of activeForRescore) {
         const newScore = computeEntryScore(r.category, r.last_seen_at ?? nowMs, nowMs)
         if (Number.isFinite(newScore)) {
-          try { rescoreUpdate.run(newScore, r.id); stats.rescore.updated += 1 } catch {}
+          try {
+            const upd = await tx.query(`UPDATE entries SET score = $1 WHERE id = $2`, [newScore, r.id])
+            if (Number(upd.affectedRows ?? 0) > 0) stats.rescore.updated += 1
+          } catch {}
         }
       }
-    })()
+    })
   }
 
-  // Unified candidate selection: pending/active/fixed by reviewed_at rotation.
+  // Unified candidate selection: pending/active by reviewed_at rotation.
   // Pending sorts first so freshly extracted chunks reach evaluation quickly.
-  const rows = db.prepare(`
+  const rowsRes = await db.query(`
     SELECT id, element, category, summary, score, last_seen_at, project_id, status
     FROM entries
-    WHERE is_root = 1 AND status IN ('pending','active','fixed')
+    WHERE is_root = 1 AND status IN ('pending','active')
     ORDER BY
-      CASE status WHEN 'pending' THEN 0 WHEN 'active' THEN 1 WHEN 'fixed' THEN 2 END ASC,
+      CASE status WHEN 'pending' THEN 0 WHEN 'active' THEN 1 END ASC,
       reviewed_at ASC,
       error_count ASC,
       score ASC,
       id ASC
-    LIMIT ?
-  `).all(batchSize)
+    LIMIT $1
+  `, [batchSize])
+  const rows = rowsRes.rows
 
-  // Active+fixed snapshot for prompt context (do-not-duplicate reference).
-  const activeContext = db.prepare(`
+  // Active snapshot for prompt context (do-not-duplicate reference).
+  const activeContextRes = await db.query(`
     SELECT id, element, category, summary, score, last_seen_at, project_id, status
     FROM entries
-    WHERE is_root = 1 AND status IN ('active', 'fixed')
+    WHERE is_root = 1 AND status = 'active'
     ORDER BY score DESC, last_seen_at DESC, id ASC
     LIMIT 100
-  `).all()
+  `, [])
+  const activeContext = activeContextRes.rows
 
   const gateResult = rows.length > 0
     ? await runUnifiedGate(db, rows, activeContext, config, { activeCap: activeTargetCap, preset: options.preset })
     : { actions: [], rejected: new Set(), parseOk: true }
 
-  const touchReviewed = db.prepare(`UPDATE entries SET reviewed_at = ? WHERE id = ?`)
-  const bumpErrorCount = db.prepare(`UPDATE entries SET error_count = COALESCE(error_count, 0) + 1 WHERE id = ?`)
-  const archiveStmt = db.prepare(`UPDATE entries SET status = 'archived' WHERE id = ? AND is_root = 1`)
   const sweepCursor = nowMs
 
   const rowsById = new Map(rows.map(r => [Number(r.id), r]))
 
-  // Cascade pre-pass: pull first-pass keeps (verb 'active' from pending/active,
-  // or 'fixed' from fixed) into Sonnet for re-judge. update/merge/archived skip.
+  // Cascade pre-pass: pull first-pass keeps (verb 'active') into Sonnet for
+  // re-judge. update/merge/archived skip.
   const cascadeCandidates = []
   if (gateResult.actions) {
     for (const a of gateResult.actions) {
-      if (a.action !== 'active' && a.action !== 'fixed') continue
+      if (a.action !== 'active') continue
       const row = rowsById.get(Number(a.entry_id))
       if (!row) continue
       cascadeCandidates.push({
@@ -592,41 +594,39 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
       if (!row) continue
 
       try {
-        // Cascade override: drop a tentatively-kept entry → archive (unless fixed).
-        if ((a.action === 'active' || a.action === 'fixed') && cascadeVerdicts.get(id) === 'drop') {
-          if (row.status === 'fixed') {
-            // 'fixed' is sacrosanct — Sonnet's drop is advisory only.
-            stats.fixed_kept += 1
-          } else {
-            if (archiveStmt.run(id).changes > 0) {
-              stats.archived += 1
-              stats.cascade.dropped += 1
-            }
+        // Cascade override: drop a tentatively-kept entry → archive.
+        if (a.action === 'active' && cascadeVerdicts.get(id) === 'drop') {
+          const archRes = await db.query(
+            `UPDATE entries SET status = 'archived' WHERE id = $1 AND is_root = 1`,
+            [id],
+          )
+          if (Number(archRes.affectedRows ?? 0) > 0) {
+            stats.archived += 1
+            stats.cascade.dropped += 1
           }
-          touchReviewed.run(sweepCursor, id)
+          await db.query(`UPDATE entries SET reviewed_at = $1 WHERE id = $2`, [sweepCursor, id])
           continue
         }
 
         if (a.action === 'active') {
           if (row.status === 'pending') {
-            if (applyPromoteFromPending(db, id, nowMs)) stats.promoted += 1
+            if (await applyPromoteFromPending(db, id, nowMs)) stats.promoted += 1
           } else if (row.status === 'active') {
             stats.kept += 1
           }
-        } else if (a.action === 'fixed') {
-          stats.fixed_kept += 1
         } else if (a.action === 'archived') {
-          if (archiveStmt.run(id).changes > 0) stats.archived += 1
-        } else if (a.action === 'demote') {
-          // Unified design has no demoted state; treat as archived.
-          if (archiveStmt.run(id).changes > 0) stats.demoted += 1
+          const archRes = await db.query(
+            `UPDATE entries SET status = 'archived' WHERE id = $1 AND is_root = 1`,
+            [id],
+          )
+          if (Number(archRes.affectedRows ?? 0) > 0) stats.archived += 1
         } else if (a.action === 'update') {
           if (await applyUpdate(db, id, a.element, a.summary)) stats.updated += 1
         } else if (a.action === 'merge') {
           const sourceIds = Array.isArray(a.source_ids) ? a.source_ids : []
           const targetId = Number(a.target_id)
           if (!Number.isFinite(targetId)) continue
-          const moved = applyMerge(db, targetId, sourceIds)
+          const moved = await applyMerge(db, targetId, sourceIds)
           if (moved > 0) {
             stats.merged += moved
             if (typeof a.element === 'string' || typeof a.summary === 'string') {
@@ -637,7 +637,7 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
             }
           }
         }
-        touchReviewed.run(sweepCursor, id)
+        await db.query(`UPDATE entries SET reviewed_at = $1 WHERE id = $2`, [sweepCursor, id])
       } catch (err) {
         process.stderr.write(`[cycle2] action error (id=${id}): ${err.message}\n`)
       }
@@ -645,7 +645,12 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   } else if (rows.length > 0) {
     // Parse failure — bump error_count, do not advance reviewed_at.
     for (const r of rows) {
-      try { bumpErrorCount.run(r.id) } catch {}
+      try {
+        await db.query(
+          `UPDATE entries SET error_count = COALESCE(error_count, 0) + 1 WHERE id = $1`,
+          [r.id],
+        )
+      } catch {}
     }
   }
 
@@ -654,31 +659,42 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   if (gateResult.rejected && gateResult.rejected.size > 0) {
     stats.rejected_verb = gateResult.rejected.size
     for (const id of gateResult.rejected) {
-      try { touchReviewed.run(sweepCursor, id); bumpErrorCount.run(id) } catch {}
+      try {
+        await db.query(`UPDATE entries SET reviewed_at = $1 WHERE id = $2`, [sweepCursor, id])
+        await db.query(
+          `UPDATE entries SET error_count = COALESCE(error_count, 0) + 1 WHERE id = $1`,
+          [id],
+        )
+      } catch {}
     }
   }
 
-  // phase_merge: cosine dedup over active+fixed (fixed never archived).
+  // phase_merge: cosine dedup over active entries.
   const phaseMergeStats = await runPhaseMerge(db, options)
   stats.phase_merge = phaseMergeStats
 
   // phase4 hard cap: archive lowest-priority active rows over target.
-  // 'fixed' rows are excluded from victim selection (cap counts only active).
-  const activeCountBeforeP4 = (db.prepare(
+  const activeCountRes = await db.query(
     `SELECT COUNT(*) AS n FROM entries WHERE is_root = 1 AND status = 'active'`,
-  ).get())?.n ?? 0
+    [],
+  )
+  const activeCountBeforeP4 = Number(activeCountRes.rows[0]?.n ?? 0)
   if (activeCountBeforeP4 > activeTargetCap) {
     const overflow = activeCountBeforeP4 - activeTargetCap
     process.stderr.write(
       `[cycle2] phase4 active_cap_enforce: active=${activeCountBeforeP4} target=${activeTargetCap} overflow=${overflow}\n`,
     )
-    const victims = db.prepare(`
+    const victimsRes = await db.query(`
       SELECT id FROM entries WHERE is_root = 1 AND status = 'active'
-      ORDER BY last_seen_at ASC, score ASC, id ASC LIMIT ?
-    `).all(overflow)
-    for (const v of victims) {
+      ORDER BY last_seen_at ASC, score ASC, id ASC LIMIT $1
+    `, [overflow])
+    for (const v of victimsRes.rows) {
       try {
-        if (archiveStmt.run(v.id).changes > 0) stats.phase4.archived += 1
+        const res = await db.query(
+          `UPDATE entries SET status = 'archived' WHERE id = $1 AND is_root = 1`,
+          [v.id],
+        )
+        if (Number(res.affectedRows ?? 0) > 0) stats.phase4.archived += 1
       } catch (err) {
         process.stderr.write(`[cycle2] phase4 archive failed (id=${v.id}): ${err.message}\n`)
       }
@@ -698,8 +714,8 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
 
   process.stderr.write(
     `[cycle2] rescore=${stats.rescore.updated}` +
-    ` | gate promoted=${stats.promoted} archived=${stats.archived} demoted=${stats.demoted}` +
-    ` updated=${stats.updated} kept=${stats.kept} fixed_kept=${stats.fixed_kept}` +
+    ` | gate promoted=${stats.promoted} archived=${stats.archived}` +
+    ` updated=${stats.updated} kept=${stats.kept}` +
     ` rejected_verb=${stats.rejected_verb}` +
     ` | cascade eval=${stats.cascade.evaluated} drop=${stats.cascade.dropped}` +
     ` | phase_merge merged=${stats.phase_merge.merged} llm=${stats.phase_merge.llm_calls}` +

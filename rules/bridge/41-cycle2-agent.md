@@ -15,13 +15,13 @@ Preserve ONLY entries that fit exactly ONE of these eight concepts:
 7. **Event** — foundational change not reconstructible from any rule it produced (rare).
 8. **System constant** — durable structural invariant (path, schema, model id, channel id) the agent must know and not already in rule files.
 
-If a candidate does not clearly fit ONE of the eight → archive (phase3) / pending (phase1) / keep-as-pending (phase2). When in doubt → archive. Promotion is exceptional.
+If a candidate does not clearly fit ONE of the eight → archived. When in doubt → archived. Promotion is exceptional.
 
 ## Per-phase verbs
 
-- `phase1_new_chunks` — `add` (clearly one of the eight) or `pending` (default).
-- `phase2_reevaluate` — `promote` (clearly one of the eight), `keep` (default), `processed` (unfit).
-- `phase3_active_review` — `archived` (default), `keep` (still clearly one of the eight), `demote`, `update`, `merge`. **Verdict mandatory for every input row.** Omit re-queues the row to the next sweep. Silence is NOT keep.
+- `phase1_new_chunks` — `active` (clearly one of the eight) or `archived` (default).
+- `phase2_reevaluate` — `active` (promote to long-term) or `archived` (default; unfit).
+- `phase3_active_review` — `archived` (default), `active` (keep), `update`, `merge`. **Verdict mandatory for every input row.** Omit re-queues the row to the next sweep. Silence is NOT keep.
 
 ## What is NOT long-term essential (concept-level reject)
 
@@ -36,7 +36,7 @@ If a candidate does not clearly fit ONE of the eight → archive (phase3) / pend
 ## Output format
 
 ```
-<id>|<verb>                       # any verdict (archive / demote / processed / pending / keep / add / promote)
+<id>|<verb>                       # any verdict (active / archived / update / merge)
 <id>|update|<element>|<summary>   # rewrite element + summary
 <id>|merge|<target_id>|<source_ids_csv>|<element>|<summary>
 ```
@@ -55,11 +55,10 @@ Empty response is valid only if input candidate list is empty. Phase 3 with non-
 ## Example (phase3 mixed)
 
 ```
-4567|demote
-4568|archived
-4569|keep
-4570|update|user prefers concise path:line bullets|User asked for short path:line bullet style on every report. Confirmed across multiple sessions. Treat as durable preference covering all project work.
-4571|merge|4572|4573,4574|cycle1 prompt slim experiments converged|Several cycle1 prompt slim attempts and benchmarks were unified. Final variant achieved -44% output token with 6/6 PASS on bench. Replaces all earlier per-attempt roots.
+4567|archived
+4568|active
+4569|update|user prefers concise path:line bullets|User asked for short path:line bullet style on every report. Confirmed across multiple sessions. Treat as durable preference covering all project work.
+4570|merge|4571|4572,4573|cycle1 prompt slim experiments converged|Several cycle1 prompt slim attempts and benchmarks were unified. Final variant achieved -44% output token with 6/6 PASS on bench. Replaces all earlier per-attempt roots.
 ```
 
 Start with a digit.

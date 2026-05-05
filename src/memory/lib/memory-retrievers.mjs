@@ -1,20 +1,20 @@
 const VALID_CATEGORIES_SET = new Set([
   'rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue',
 ])
-const VALID_STATUS_SET = new Set(['pending', 'active', 'fixed', 'archived'])
+const VALID_STATUS_SET = new Set(['pending', 'active', 'archived'])
 
-export function retrieveEntries(db, filters = {}) {
+export async function retrieveEntries(db, filters = {}) {
   const where = []
   const params = []
 
   // is_root filter (default: true)
   const isRoot = filters.is_root === undefined ? true : Boolean(filters.is_root)
-  where.push(`is_root = ?`)
+  where.push(`is_root = $${params.length + 1}`)
   params.push(isRoot ? 1 : 0)
 
   if (filters.session_id != null) {
     const sid = String(filters.session_id).trim()
-    if (sid) { where.push(`session_id = ?`); params.push(sid) }
+    if (sid) { where.push(`session_id = $${params.length + 1}`); params.push(sid) }
   }
 
   // projectScope filter: 'common' → project_id IS NULL only;
@@ -23,22 +23,23 @@ export function retrieveEntries(db, filters = {}) {
   if (filters.projectScope === 'common') {
     where.push(`project_id IS NULL`)
   } else if (typeof filters.projectScope === 'string' && filters.projectScope && filters.projectScope !== 'all') {
-    where.push(`(project_id IS NULL OR project_id = ?)`)
+    where.push(`(project_id IS NULL OR project_id = $${params.length + 1})`)
     params.push(filters.projectScope)
   }
   // projectScope === 'all' or undefined → no filter
 
   const tsFrom = Number(filters.ts_from)
-  if (Number.isFinite(tsFrom)) { where.push(`ts >= ?`); params.push(tsFrom) }
+  if (Number.isFinite(tsFrom)) { where.push(`ts >= $${params.length + 1}`); params.push(tsFrom) }
   const tsTo = Number(filters.ts_to)
-  if (Number.isFinite(tsTo)) { where.push(`ts <= ?`); params.push(tsTo) }
+  if (Number.isFinite(tsTo)) { where.push(`ts <= $${params.length + 1}`); params.push(tsTo) }
 
   if (filters.category != null) {
     const cats = (Array.isArray(filters.category) ? filters.category : [filters.category])
       .map(c => String(c).trim().toLowerCase())
       .filter(c => VALID_CATEGORIES_SET.has(c))
     if (cats.length > 0) {
-      where.push(`category IN (${cats.map(() => '?').join(',')})`)
+      const ph = cats.map((_, i) => `$${params.length + 1 + i}`).join(',')
+      where.push(`category IN (${ph})`)
       params.push(...cats)
     }
   }
@@ -46,18 +47,19 @@ export function retrieveEntries(db, filters = {}) {
   if (filters.status != null) {
     const statusVal = String(filters.status).trim().toLowerCase()
     if (VALID_STATUS_SET.has(statusVal)) {
-      where.push(`status = ?`)
+      where.push(`status = $${params.length + 1}`)
       params.push(statusVal)
     }
   }
 
-  // R11 reviewer H2: exclude archived/demoted leakage in temporal augment paths.
+  // R11 reviewer H2: exclude archived leakage in temporal augment paths.
   if (Array.isArray(filters.excludeStatuses) && filters.excludeStatuses.length > 0) {
     const exc = filters.excludeStatuses
       .map(s => String(s).trim().toLowerCase())
       .filter(s => VALID_STATUS_SET.has(s))
     if (exc.length > 0) {
-      where.push(`(status IS NULL OR status NOT IN (${exc.map(() => '?').join(',')}))`)
+      const ph = exc.map((_, i) => `$${params.length + 1 + i}`).join(',')
+      where.push(`(status IS NULL OR status NOT IN (${ph}))`)
       params.push(...exc)
     }
   }
@@ -72,24 +74,26 @@ export function retrieveEntries(db, filters = {}) {
   const offset = Math.max(0, Number(filters.offset ?? 0))
   const orderBy = 'score DESC NULLS LAST, ts DESC, id DESC'
 
+  params.push(limit, offset)
   const sql = `SELECT id, ts, role, content, source_ref, session_id, source_turn,
                       chunk_root, is_root, element, category, summary, project_id,
                       status, score, last_seen_at
                FROM entries
                WHERE ${where.join(' AND ')}
                ORDER BY ${orderBy}
-               LIMIT ? OFFSET ?`
-  params.push(limit, offset)
+               LIMIT $${params.length - 1} OFFSET $${params.length}`
 
-  const rows = db.prepare(sql).all(...params)
+  const rows = (await db.query(sql, params)).rows
 
   if (filters.includeMembers && rows.length > 0) {
-    const memberStmt = db.prepare(
-      `SELECT id, ts, role, content, session_id, source_turn, project_id
-       FROM entries WHERE chunk_root = ? AND is_root = 0
-       ORDER BY ts ASC, id ASC`,
-    )
-    for (const r of rows) r.members = memberStmt.all(r.id)
+    for (const r of rows) {
+      r.members = (await db.query(
+        `SELECT id, ts, role, content, session_id, source_turn, project_id
+         FROM entries WHERE chunk_root = $1 AND is_root = 0
+         ORDER BY ts ASC, id ASC`,
+        [r.id],
+      )).rows
+    }
   }
 
   return rows

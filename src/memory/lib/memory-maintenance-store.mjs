@@ -1,26 +1,24 @@
-export function resetEmbeddingIndex(db) {
-  db.exec('BEGIN')
+export async function resetEmbeddingIndex(db) {
   try {
-    const res = db.prepare(
+    const res = await db.query(
       `UPDATE entries SET embedding = NULL, summary_hash = NULL WHERE is_root = 1`,
-    ).run()
-    db.exec(`DROP TABLE IF EXISTS vec_entries`)
-    db.exec('COMMIT')
-    return { clearedRoots: Number(res.changes ?? 0) }
+      [],
+    )
+    return { clearedRoots: Number(res.affectedRows ?? 0) }
   } catch (err) {
-    try { db.exec('ROLLBACK') } catch {}
     throw err
   }
 }
 
-export function pruneOldEntries(db, maxAgeDays) {
+export async function pruneOldEntries(db, maxAgeDays) {
   const days = Number(maxAgeDays)
   if (!Number.isFinite(days) || days <= 0) {
     throw new Error(`pruneOldEntries: maxAgeDays must be positive, got ${maxAgeDays}`)
   }
   const cutoffMs = Date.now() - days * 86_400_000
-  const result = db.prepare(
-    `DELETE FROM entries WHERE chunk_root IS NULL AND ts < ?`,
-  ).run(cutoffMs)
-  return { deleted: Number(result.changes ?? 0), cutoffMs }
+  const result = await db.query(
+    `DELETE FROM entries WHERE chunk_root IS NULL AND ts < $1`,
+    [cutoffMs],
+  )
+  return { deleted: Number(result.affectedRows ?? 0), cutoffMs }
 }

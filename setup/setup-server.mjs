@@ -11,7 +11,7 @@ import { resolvePluginData } from '../src/shared/plugin-paths.mjs';
 import { ensureDataSeeds } from '../src/shared/seed.mjs';
 import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memory-cycle.mjs';
 import { runFullBackfill } from '../src/memory/lib/memory-ops-policy.mjs';
-import { cleanMemoryText } from '../src/memory/lib/memory.mjs';
+import { cleanMemoryText, openDatabase, getMetaValue, setMetaValue } from '../src/memory/lib/memory.mjs';
 import { cwdFromTranscriptPath } from '../src/memory/index.mjs';
 import { resolveProjectId } from '../src/memory/lib/project-id-resolver.mjs';
 import { readSection, writeSection } from '../src/shared/config.mjs';
@@ -45,8 +45,6 @@ function sanitizeName(n) {
   return n;
 }
 
-import { DatabaseSync } from '../lib/sqlite-bridge.mjs';
-
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isWin = process.platform === 'win32';
 const home = homedir();
@@ -69,8 +67,6 @@ const USER_WORKFLOW_MD_PATH = join(DATA_DIR, 'user-workflow.md');
 const DEFAULTS_DIR = join(__dirname, '..', 'defaults');
 const DEFAULT_USER_WORKFLOW = JSON.parse(readFileSync(join(DEFAULTS_DIR, 'user-workflow.json'), 'utf8'));
 const DEFAULT_USER_WORKFLOW_MD = readFileSync(join(DEFAULTS_DIR, 'user-workflow.md'), 'utf8');
-
-const MEMORY_DB_PATH = join(DATA_DIR, 'memory.sqlite');
 
 const PORT = 3458;
 const APP_WIDTH = 950;
@@ -588,23 +584,17 @@ function mergeSearchConfig(existing, data) {
   return config;
 }
 
-// -- Memory SQLite --
+// -- Memory PGlite --
 
-function openMemoryDb(readonly = false) {
-  if (!DatabaseSync) throw new Error('sqlite-bridge unavailable');
-  const db = new DatabaseSync(MEMORY_DB_PATH, { open: true, readOnly: readonly });
-  // WAL is pinned to the file by src/memory/lib/memory.mjs init. Apply
-  // busy_timeout per-connection so this surface (UI / backfill / writes)
-  // never collides with the memory worker or hook readers.
-  try { db.exec(`PRAGMA busy_timeout = ${readonly ? 2000 : 5000}`); } catch {}
-  return db;
+async function openMemoryDb(_readonly = false) {
+  return await openDatabase(DATA_DIR, Number(process.env.MIXDOG_EMBED_DIMS ?? 1024));
 }
 
 // -- Memory backfill (UI trigger) --
 
 let _backfillInProgress = false;
 
-function ingestTranscriptForBackfill(db, transcriptPath, { cwd } = {}) {
+async function ingestTranscriptForBackfill(db, transcriptPath, { cwd } = {}) {
   if (!existsSync(transcriptPath)) return 0;
   let content;
   try { content = readFileSync(transcriptPath, 'utf8'); } catch { return 0; }
@@ -613,9 +603,6 @@ function ingestTranscriptForBackfill(db, transcriptPath, { cwd } = {}) {
   const resolvedCwd = typeof cwd === 'string' && cwd ? cwd : cwdFromTranscriptPath(transcriptPath);
   const projectId = resolveProjectId(typeof resolvedCwd === 'string' && resolvedCwd ? resolvedCwd : process.cwd());
   const lines = content.split('\n').filter(Boolean);
-  const insertStmt = db.prepare(
-    `INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id, project_id) VALUES (?, ?, ?, ?, ?, ?)`
-  );
   let count = 0;
   for (let i = 0; i < lines.length; i++) {
     let parsed;
@@ -644,8 +631,11 @@ function ingestTranscriptForBackfill(db, transcriptPath, { cwd } = {}) {
     }
     const sourceRef = `transcript:${sessionUuid}#${i + 1}`;
     try {
-      const result = insertStmt.run(tsMs, role, cleaned, sourceRef, sessionUuid, projectId);
-      if (result.changes > 0) count += 1;
+      const result = await db.query(
+        `INSERT INTO entries(ts, role, content, source_ref, session_id, project_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING`,
+        [tsMs, role, cleaned, sourceRef, sessionUuid, projectId]
+      );
+      if (result.affectedRows > 0) count += 1;
     } catch {}
   }
   return count;
@@ -1673,18 +1663,17 @@ const server = http.createServer(async (req, res) => {
   }
   // /memory/files endpoints removed in v0.6.72 — bot.md / user.md surfaces
   // are no longer part of the data dir. The Config UI edits memory-config.json
-  // directly; past-fact surfaces live in memory.sqlite.
+  // directly; past-fact surfaces live in the PGlite memory DB.
 
   if (req.method === 'GET' && path === '/api/memory/entries/active') {
     try {
-      const db = openMemoryDb(true);
-      const rows = db.prepare(`
+      const db = await openMemoryDb();
+      const { rows } = await db.query(`
         SELECT id, element, category, summary, score, last_seen_at
         FROM entries
         WHERE is_root = 1 AND status = 'active'
         ORDER BY score DESC
-      `).all();
-      db.close();
+      `);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, items: rows }));
     } catch (e) {
@@ -1704,7 +1693,7 @@ const server = http.createServer(async (req, res) => {
     if (statusMatch) {
       const id = Number(statusMatch[1]);
       const data = await readBody(req);
-      const VALID = ['active', 'pending', 'demoted', 'processed', 'archived'];
+      const VALID = ['pending', 'active', 'archived'];
       const status = String(data.status ?? '').trim().toLowerCase();
       if (!Number.isInteger(id) || id <= 0 || !VALID.includes(status)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1712,14 +1701,14 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        const db = openMemoryDb();
-        const result = db.prepare(
-          'UPDATE entries SET status = ? WHERE id = ? AND is_root = 1'
-        ).run(status, id);
-        db.close();
-        console.log(`  Entry #${id} → ${status} (changes=${result.changes})`);
+        const db = await openMemoryDb();
+        const result = await db.query(
+          'UPDATE entries SET status = $1 WHERE id = $2 AND is_root = 1',
+          [status, id]
+        );
+        console.log(`  Entry #${id} → ${status} (changes=${result.affectedRows})`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, changes: Number(result.changes ?? 0) }));
+        res.end(JSON.stringify({ ok: true, changes: Number(result.affectedRows ?? 0) }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: e.message }));
@@ -1748,30 +1737,28 @@ const server = http.createServer(async (req, res) => {
     const nowMs = Date.now();
     const sourceRef = `manual:${nowMs}-${process.pid}`;
     try {
-      const db = openMemoryDb();
-      db.exec('BEGIN');
+      const db = await openMemoryDb();
       try {
-        const result = db.prepare(`
-          INSERT INTO entries(ts, role, content, source_ref, session_id)
-          VALUES (?, 'system', ?, ?, NULL)
-        `).run(nowMs, element + ' — ' + summary, sourceRef);
-        const newId = Number(result.lastInsertRowid);
-        db.prepare(`
-          UPDATE entries
-          SET chunk_root = ?, is_root = 1, element = ?, category = ?, summary = ?,
-              status = 'active', score = ?, last_seen_at = ?
-          WHERE id = ?
-        `).run(newId, element, category, summary, GRADE[category], nowMs, newId);
-        db.exec('COMMIT');
+        let newId;
+        await db.transaction(async (tx) => {
+          const ins = await tx.query(`
+            INSERT INTO entries(ts, role, content, source_ref, session_id)
+            VALUES ($1, 'system', $2, $3, NULL)
+            RETURNING id
+          `, [nowMs, element + ' — ' + summary, sourceRef]);
+          newId = Number(ins.rows[0].id);
+          await tx.query(`
+            UPDATE entries
+            SET chunk_root = $1, is_root = 1, element = $2, category = $3, summary = $4,
+                status = 'active', score = $5, last_seen_at = $6
+            WHERE id = $7
+          `, [newId, element, category, summary, GRADE[category], nowMs, newId]);
+        });
         await syncRootEmbedding(db, newId);
         console.log(`  Remembered entry #${newId}: [${category}] ${element}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, id: newId }));
-      } catch (e) {
-        try { db.exec('ROLLBACK'); } catch {}
-        throw e;
       } finally {
-        db.close();
       }
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -1796,8 +1783,7 @@ const server = http.createServer(async (req, res) => {
     _backfillInProgress = true;
     let db;
     try {
-      db = openMemoryDb();
-      try { db.exec('PRAGMA busy_timeout = 30000'); } catch {}
+      db = await openMemoryDb();
       const memoryConfig = readMemoryConfig() || {};
       console.log(`[backfill] start window=${requestedWindow}`);
       const result = await runFullBackfill(db, {
@@ -1817,7 +1803,6 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: err.message }));
     } finally {
-      try { db?.close?.(); } catch {}
       _backfillInProgress = false;
     }
     return;
@@ -1837,19 +1822,12 @@ const server = http.createServer(async (req, res) => {
     }
     let db;
     try {
-      db = openMemoryDb();
-      db.exec('PRAGMA busy_timeout = 30000');
-      const preCount = db.prepare('SELECT COUNT(*) c FROM entries').get().c;
-      db.exec('BEGIN');
-      try {
-        db.prepare('DELETE FROM entries').run();
-        try { db.prepare('DELETE FROM entries_fts').run(); } catch {}
-        try { db.prepare('DELETE FROM vec_entries').run(); } catch {}
-        db.exec('COMMIT');
-      } catch (e) {
-        try { db.exec('ROLLBACK'); } catch {}
-        throw e;
-      }
+      db = await openMemoryDb();
+      const { rows: countRows } = await db.query('SELECT COUNT(*) AS c FROM entries');
+      const preCount = Number(countRows[0].c);
+      await db.transaction(async (tx) => {
+        await tx.query('DELETE FROM entries');
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, deleted: preCount }));
     } catch (err) {
@@ -1857,7 +1835,6 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: err.message }));
     } finally {
-      try { db?.close?.(); } catch {}
     }
     return;
   }

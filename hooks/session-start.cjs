@@ -6,7 +6,6 @@ const os = require('os');
 const http = require('http');
 const net = require('net');
 const { spawn } = require('child_process');
-const { DatabaseSync } = require('../lib/sqlite-bridge.cjs');
 const { resolvePluginData } = require(path.join(__dirname, '..', 'lib', 'plugin-paths.cjs'));
 const { readSection } = require(path.join(__dirname, '..', 'lib', 'config-cjs.cjs'));
 
@@ -96,19 +95,12 @@ function emit(additionalContext) {
   }));
 }
 
-function openMemoryDb() {
+async function openMemoryPg() {
   try {
-    const dbPath = path.join(DATA_DIR, 'memory.sqlite');
-    if (!fs.existsSync(dbPath)) return null;
-    // WAL is already pinned to the file by src/memory/lib/memory.mjs init.
-    // Apply busy_timeout per-connection so concurrent SessionStart hooks
-    // (5 recap slots fire within ~23ms) wait briefly instead of failing
-    // immediately when a writer holds the lock during checkpoint.
-    const db = new DatabaseSync(dbPath, { readOnly: true });
-    try { db.exec('PRAGMA busy_timeout = 2000'); } catch {}
-    return db;
+    const mem = await import('../src/memory/lib/memory.mjs');
+    return await mem.openDatabase(DATA_DIR, Number(process.env.MIXDOG_EMBED_DIMS || 1024));
   } catch (e) {
-    process.stderr.write(`[session-start] open memory.sqlite failed: ${e.message}\n`);
+    process.stderr.write(`[session-start] open memory db failed: ${e.message}\n`);
     return null;
   }
 }
@@ -132,24 +124,25 @@ function formatTsShort(ts) {
 // Single source of truth: lib/text-utils.cjs (also imported by memory-extraction.mjs).
 const { cleanMemoryText: cleanText } = require(path.join(PLUGIN_ROOT, 'lib', 'text-utils.cjs'));
 
-// Read user-curated core memory lines from the core_entries sqlite table.
+// Read user-curated core memory lines from the core_entries table.
 // projectId: null = COMMON only, '__ALL_PROJECTS__' = every non-NULL pool, string = specific pool.
-function readUserCoreMemoryLines(coreDb, projectId = null) {
+async function readUserCoreMemoryLines(coreDb, projectId = null) {
   try {
     if (!coreDb) return [];
     let rows;
     if (projectId === '__ALL_PROJECTS__') {
-      rows = coreDb.prepare(
+      rows = (await coreDb.query(
         `SELECT summary FROM core_entries WHERE project_id IS NOT NULL ORDER BY project_id ASC, id ASC`
-      ).all();
+      )).rows;
     } else if (projectId === null) {
-      rows = coreDb.prepare(
+      rows = (await coreDb.query(
         `SELECT summary FROM core_entries WHERE project_id IS NULL ORDER BY id ASC`
-      ).all();
+      )).rows;
     } else {
-      rows = coreDb.prepare(
-        `SELECT summary FROM core_entries WHERE project_id = ? ORDER BY id ASC`
-      ).all(projectId);
+      rows = (await coreDb.query(
+        `SELECT summary FROM core_entries WHERE project_id = $1 ORDER BY id ASC`,
+        [projectId]
+      )).rows;
     }
     return rows.map(r => String(r.summary || '').trim()).filter(Boolean);
   } catch (e) {
@@ -180,24 +173,24 @@ function resolveCwdScope(cwd) {
   return null;
 }
 
-function buildContext(db, cwd) {
+async function buildContext(db, cwd) {
   try {
     const projectId = resolveCwdScope(cwd || process.cwd());
-    const rows = db.prepare(`
+    const rows = (await db.query(`
       SELECT element, category, summary
       FROM entries
-      WHERE is_root = 1 AND status = 'active' AND (project_id IS NULL${projectId !== null ? " OR project_id = ?" : " OR project_id IS NOT NULL"})
+      WHERE is_root = 1 AND status = 'active' AND (project_id IS NULL${projectId !== null ? " OR project_id = $1" : " OR project_id IS NOT NULL"})
       ORDER BY score DESC, last_seen_at DESC
-    `).all(...(projectId !== null ? [projectId] : []));
+    `, projectId !== null ? [projectId] : [])).rows;
     const dbLines = rows
       .map(r => String(r.summary || '').trim())
       .filter(Boolean);
-    const coreDb = openMemoryDb();
+    const coreDb = await openMemoryPg();
     const userLines = [
-      ...readUserCoreMemoryLines(coreDb),
+      ...(await readUserCoreMemoryLines(coreDb)),
       ...(projectId !== null
-        ? readUserCoreMemoryLines(coreDb, projectId)
-        : readUserCoreMemoryLines(coreDb, '__ALL_PROJECTS__')),
+        ? (await readUserCoreMemoryLines(coreDb, projectId))
+        : (await readUserCoreMemoryLines(coreDb, '__ALL_PROJECTS__'))),
     ];
     const seen = new Set();
     const lines = [];
@@ -236,25 +229,25 @@ function buildContext(db, cwd) {
 // (oldest → newest), trimmed from the front so the rendered block fits the
 // SessionStart hook output cap (10,000 chars total — leaves margin for the
 // JSON wrapper around additionalContext; header "## Recap\n" reserved).
-function buildRecapData(db, cwd) {
+async function buildRecapData(db, cwd) {
   const out = { lines: [] };
   try {
     const projectId = resolveCwdScope(cwd || process.cwd());
     const rows = projectId !== null
-      ? db.prepare(`
+      ? (await db.query(`
           SELECT id, ts, summary
           FROM entries
-          WHERE is_root = 1 AND (project_id IS NULL OR project_id = ?)
+          WHERE is_root = 1 AND (project_id IS NULL OR project_id = $1)
           ORDER BY ts DESC, id DESC
           LIMIT 20
-        `).all(projectId)
-      : db.prepare(`
+        `, [projectId])).rows
+      : (await db.query(`
           SELECT id, ts, summary
           FROM entries
           WHERE is_root = 1
           ORDER BY ts DESC, id DESC
           LIMIT 20
-        `).all();
+        `)).rows;
     if (rows.length === 0) return out;
 
     const rendered = rows.map(r => {
@@ -839,13 +832,13 @@ async function runCorePart() {
     teeStderr(`[session-start] core skipped: cycle1 await failed reason=${r.reason}\n`);
     return;
   }
-  const db = openMemoryDb();
+  const db = await openMemoryPg();
   if (!db) return;
   try {
-    const ctx = buildContext(db, _event.cwd || process.cwd());
+    const ctx = await buildContext(db, _event.cwd || process.cwd());
     if (ctx) emit(ctx);
-  } finally {
-    try { db.close(); } catch {}
+  } catch (e) {
+    process.stderr.write(`[session-start] core build failed: ${e.message}\n`);
   }
 }
 
@@ -859,14 +852,14 @@ async function runRecapPart() {
     teeStderr(`[session-start] recap skipped: cycle1 await failed reason=${r.reason}\n`);
     return;
   }
-  const db = openMemoryDb();
+  const db = await openMemoryPg();
   if (!db) return;
   try {
-    const recapData = buildRecapData(db, _event.cwd || process.cwd());
+    const recapData = await buildRecapData(db, _event.cwd || process.cwd());
     const lines = (recapData && recapData.lines) || [];
     if (lines.length > 0) emit(`## Recap\n${lines.join('\n')}`);
-  } finally {
-    try { db.close(); } catch {}
+  } catch (e) {
+    process.stderr.write(`[session-start] recap build failed: ${e.message}\n`);
   }
 }
 

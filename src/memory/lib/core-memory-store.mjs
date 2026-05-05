@@ -1,9 +1,9 @@
-// User-curated core memory store — sqlite-backed via core_entries table (schema v9).
+// User-curated core memory store — PGlite-backed via core_entries table.
 // Per-project entries distinguished by project_id column (NULL = COMMON).
 // Independent of the entries table (cycle1/cycle2/prune/rebuild do not touch core_entries).
 // Surfaced into the SessionStart Core Memory section by the session-start hook.
 
-import { getDatabase, openDatabase } from './memory.mjs'
+import { getDatabase } from './memory.mjs'
 
 const VALID_CAT = new Set([
   'rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue',
@@ -22,21 +22,18 @@ function _getDb(dataDir) {
   return db
 }
 
-export function listCore(dataDir, projectId = null) {
+export async function listCore(dataDir, projectId = null) {
   const db = _getDb(dataDir)
+  const cols = `id, element, summary, category, project_id, created_at, updated_at`
   if (projectId === null) {
-    return db.prepare(
-      `SELECT id, element, summary, category, project_id, created_at, updated_at
-       FROM core_entries WHERE project_id IS NULL ORDER BY id ASC`
-    ).all()
+    const r = await db.query(`SELECT ${cols} FROM core_entries WHERE project_id IS NULL ORDER BY id ASC`)
+    return r.rows
   }
-  return db.prepare(
-    `SELECT id, element, summary, category, project_id, created_at, updated_at
-     FROM core_entries WHERE project_id = ? ORDER BY id ASC`
-  ).all(projectId)
+  const r = await db.query(`SELECT ${cols} FROM core_entries WHERE project_id = $1 ORDER BY id ASC`, [projectId])
+  return r.rows
 }
 
-export function addCore(dataDir, { element, summary, category }, projectId = null) {
+export async function addCore(dataDir, { element, summary, category }, projectId = null) {
   const el = trimOrNull(element)
   const sm = trimOrNull(summary) ?? el
   if (!el || !sm) throw new Error('add requires element and summary')
@@ -46,21 +43,22 @@ export function addCore(dataDir, { element, summary, category }, projectId = nul
   }
   const db = _getDb(dataDir)
   const now = Date.now()
-  const result = db.prepare(
+  const r = await db.query(
     `INSERT INTO core_entries(element, summary, category, project_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(el, sm, cat, projectId, now, now)
-  const id = Number(result.lastInsertRowid)
-  return { id, element: el, summary: sm, category: cat, project_id: projectId, created_at: now, updated_at: now }
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, element, summary, category, project_id, created_at, updated_at`,
+    [el, sm, cat, projectId, now, now],
+  )
+  return r.rows[0]
 }
 
-export function editCore(dataDir, id, patch, projectId = null) {
+export async function editCore(dataDir, id, patch, projectId = null) {
   const numId = Number(id)
   if (!Number.isInteger(numId) || numId <= 0) throw new Error('integer id > 0 required')
   const db = _getDb(dataDir)
   const cur = projectId === null
-    ? db.prepare(`SELECT * FROM core_entries WHERE id = ? AND project_id IS NULL`).get(numId)
-    : db.prepare(`SELECT * FROM core_entries WHERE id = ? AND project_id = ?`).get(numId, projectId)
+    ? (await db.query(`SELECT * FROM core_entries WHERE id = $1 AND project_id IS NULL`, [numId])).rows[0]
+    : (await db.query(`SELECT * FROM core_entries WHERE id = $1 AND project_id = $2`, [numId, projectId])).rows[0]
   if (!cur) throw new Error(`no entry with id=${numId}`)
   const newElement = trimOrNull(patch.element) ?? cur.element
   const newSummary = trimOrNull(patch.summary) ?? cur.summary
@@ -73,21 +71,21 @@ export function editCore(dataDir, id, patch, projectId = null) {
     throw new Error('no change')
   }
   const now = Date.now()
-  db.prepare(
-    `UPDATE core_entries SET element = ?, summary = ?, category = ?, updated_at = ? WHERE id = ?`
-  ).run(newElement, newSummary, newCategory, now, numId)
+  await db.query(
+    `UPDATE core_entries SET element = $1, summary = $2, category = $3, updated_at = $4 WHERE id = $5`,
+    [newElement, newSummary, newCategory, now, numId],
+  )
   return { ...cur, element: newElement, summary: newSummary, category: newCategory, updated_at: now }
 }
 
-export function deleteCore(dataDir, id, projectId = null) {
+export async function deleteCore(dataDir, id, projectId = null) {
   const numId = Number(id)
   if (!Number.isInteger(numId) || numId <= 0) throw new Error('integer id > 0 required')
   const db = _getDb(dataDir)
   const cur = projectId === null
-    ? db.prepare(`SELECT * FROM core_entries WHERE id = ? AND project_id IS NULL`).get(numId)
-    : db.prepare(`SELECT * FROM core_entries WHERE id = ? AND project_id = ?`).get(numId, projectId)
+    ? (await db.query(`SELECT * FROM core_entries WHERE id = $1 AND project_id IS NULL`, [numId])).rows[0]
+    : (await db.query(`SELECT * FROM core_entries WHERE id = $1 AND project_id = $2`, [numId, projectId])).rows[0]
   if (!cur) throw new Error(`no entry with id=${numId}`)
-  db.prepare(`DELETE FROM core_entries WHERE id = ?`).run(numId)
+  await db.query(`DELETE FROM core_entries WHERE id = $1`, [numId])
   return cur
 }
-// Per-project entries are read via listCore(dataDir, projectId).

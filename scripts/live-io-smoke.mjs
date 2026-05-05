@@ -4,7 +4,8 @@ import { basename, dirname, join, resolve } from 'path';
 import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { performance } from 'perf_hooks';
-import { DatabaseSync } from '../lib/sqlite-bridge.mjs';
+import { openDatabase, closeDatabase } from '../src/memory/lib/memory.mjs';
+import { buildFtsQuery } from '../src/memory/lib/memory-text-utils.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
@@ -1358,63 +1359,49 @@ function truncateLine(text, max = 420) {
 }
 
 function ftsQueryFor(text) {
-    const tokens = String(text || '')
-        .match(/[A-Za-z0-9_.:-]{3,}|[\p{Script=Hangul}]{2,}/gu);
-    const picked = [...new Set(tokens || [String(text || '').trim()].filter(Boolean))].slice(0, 8);
-    return picked.map((token) => `"${String(token).replace(/"/g, '""')}"`).join(' OR ');
+    return buildFtsQuery(text)
 }
 
-function openMemoryDbReadOnly() {
-    ensureLocalPluginEnv();
-    const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
-    try {
-        const db = new DatabaseSync(dbPath, { readOnly: true });
-        try { db.exec('PRAGMA busy_timeout = 2000'); } catch {}
-        try {
-            db.prepare('SELECT count(*) AS n FROM sqlite_master').get();
-            return db;
-        } catch {
-            try { db.close(); } catch {}
-        }
-    } catch {}
-    return new DatabaseSync(`file:${dbPath}?mode=ro&immutable=1`, { readOnly: true });
-}
-
-function searchMemoryRows(db, query, limit) {
+async function searchMemoryRows(db, query, limit) {
     const clean = String(query || '').trim();
     if (!clean) {
-        return db.prepare(`
+        const { rows } = await db.query(`
             SELECT id, ts, role, content, element, category, summary, status, score
             FROM entries
             ORDER BY ts DESC
-            LIMIT ?
-        `).all(limit);
+            LIMIT $1
+        `, [limit]);
+        return rows;
     }
     const ftsQuery = ftsQueryFor(clean);
     if (ftsQuery) {
         try {
-            const rows = db.prepare(`
+            const { rows } = await db.query(`
                 SELECT e.id, e.ts, e.role, e.content, e.element, e.category, e.summary, e.status, e.score,
-                       bm25(entries_fts) AS bm25
-                FROM entries_fts
-                JOIN entries e ON e.id = entries_fts.rowid
-                WHERE entries_fts MATCH ?
-                ORDER BY bm25(entries_fts)
-                LIMIT ?
-            `).all(ftsQuery, limit);
+                       ts_rank_cd(e.search_tsv, to_tsquery('simple', $1)) AS bm25
+                FROM entries e
+                WHERE e.search_tsv @@ to_tsquery('simple', $1)
+                ORDER BY bm25 DESC
+                LIMIT $2
+            `, [ftsQuery, limit]);
             if (rows.length > 0) return rows;
         } catch {}
     }
     const tokens = String(clean).split(/\s+/).map((s) => s.trim()).filter((s) => s.length >= 2).slice(0, 8);
     if (tokens.length === 0) return [];
     const where = tokens.map(() => '(content LIKE ? OR summary LIKE ? OR element LIKE ?)').join(' OR ');
-    return db.prepare(`
+    const likeWhere = tokens.map((_, i) => {
+        const b = i * 3;
+        return `(content LIKE $${b+1} OR summary LIKE $${b+2} OR element LIKE $${b+3})`;
+    }).join(' OR ');
+    const { rows: likeRows } = await db.query(`
         SELECT id, ts, role, content, element, category, summary, status, score
         FROM entries
-        WHERE ${where}
+        WHERE ${likeWhere}
         ORDER BY ts DESC
-        LIMIT ?
-    `).all(...tokens.flatMap((token) => [`%${token}%`, `%${token}%`, `%${token}%`]), limit);
+        LIMIT $${tokens.length * 3 + 1}
+    `, [...tokens.flatMap((token) => [`%${token}%`, `%${token}%`, `%${token}%`]), limit]);
+    return likeRows;
 }
 
 async function liveMemorySearch(args = {}) {
@@ -1424,9 +1411,9 @@ async function liveMemorySearch(args = {}) {
     const limit = Math.min(10, Math.max(1, Number(args.limit) || 5));
     let db = null;
     try {
-        db = openMemoryDbReadOnly();
-        const sections = queries.map((query) => {
-            const rows = searchMemoryRows(db, query, limit);
+        db = await openDatabase(process.env.CLAUDE_PLUGIN_DATA, Number(process.env.MIXDOG_EMBED_DIMS ?? 1024));
+        const sections = await Promise.all(queries.map(async (query) => {
+            const rows = await searchMemoryRows(db, query, limit);
             const body = rows.length > 0
                 ? rows.map((row, index) => [
                     `${index + 1}. id=${row.id} ts=${new Date(Number(row.ts) || 0).toISOString()} category=${row.category || 'unknown'} status=${row.status || 'unknown'}`,
@@ -1436,12 +1423,12 @@ async function liveMemorySearch(args = {}) {
                 ].filter(Boolean).join('\n')).join('\n')
                 : '(no memory hits)';
             return `### Query: ${query || '(latest)'}\n${body}`;
-        });
+        }));
         return { content: [{ type: 'text', text: sections.join('\n\n') }] };
     } catch (err) {
         return { content: [{ type: 'text', text: `memory_search failed: ${err?.message || err}` }], isError: true };
     } finally {
-        try { db?.close(); } catch {}
+        try { if (db) await closeDatabase(process.env.CLAUDE_PLUGIN_DATA); } catch {}
     }
 }
 
@@ -1496,33 +1483,32 @@ async function seedRecallMemoryIfNeeded(cases) {
         const id = Number(serviceText.match(/\bid=(\d+)/)?.[1] || 0);
         return [{ id: Number.isFinite(id) && id > 0 ? id : null, element: RECALL_TARGET, via: 'service' }];
     }
-    const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
     let db = null;
     try {
-        db = new DatabaseSync(dbPath);
-        try { db.exec('PRAGMA busy_timeout = 5000'); } catch {}
+        db = await openDatabase(process.env.CLAUDE_PLUGIN_DATA, Number(process.env.MIXDOG_EMBED_DIMS ?? 1024));
         const nowMs = Date.now();
         const sourceRef = `live-smoke:${nowMs}-${process.pid}`;
-        db.exec('BEGIN');
-        const result = db.prepare(`
-            INSERT INTO entries(ts, role, content, source_ref, session_id)
-            VALUES (?, 'system', ?, ?, NULL)
-        `).run(nowMs, `${RECALL_TARGET} - ${summary}`, sourceRef);
-        const id = Number(result.lastInsertRowid);
-        db.prepare(`
-            UPDATE entries
-            SET chunk_root = ?, is_root = 1, element = ?, category = 'fact', summary = ?,
-            status = 'active', score = 1.6, last_seen_at = ?
-        WHERE id = ?
-        `).run(id, RECALL_TARGET, summary, nowMs, id);
-        db.exec('COMMIT');
-        db.close();
+        let id = null;
+        await db.transaction(async (tx) => {
+            const { rows } = await tx.query(`
+                INSERT INTO entries(ts, role, content, source_ref, session_id)
+                VALUES ($1, 'system', $2, $3, NULL)
+                RETURNING id
+            `, [nowMs, `${RECALL_TARGET} - ${summary}`, sourceRef]);
+            id = Number(rows[0].id);
+            await tx.query(`
+                UPDATE entries
+                SET chunk_root = $1, is_root = 1, element = $2, category = 'fact', summary = $3,
+                    status = 'active', score = 1.6, last_seen_at = $4
+                WHERE id = $5
+            `, [id, RECALL_TARGET, summary, nowMs, id]);
+        });
+        await closeDatabase(process.env.CLAUDE_PLUGIN_DATA);
         return [{ id, element: RECALL_TARGET, via: 'db' }];
     } catch (err) {
         recallSeedReady = false;
         recallSeedError = err instanceof Error ? err.message : String(err);
-        try { db?.exec('ROLLBACK'); } catch {}
-        try { db?.close(); } catch {}
+        try { if (db) await closeDatabase(process.env.CLAUDE_PLUGIN_DATA); } catch {}
         return [];
     }
 }
@@ -1540,22 +1526,18 @@ async function cleanupRecallSeeds(seeds) {
         }
     }
     ensureLocalPluginEnv();
-    const dbPath = join(process.env.CLAUDE_PLUGIN_DATA, 'memory.sqlite');
     let db = null;
-    try {
-        db = new DatabaseSync(dbPath);
-        try { db.exec('PRAGMA busy_timeout = 5000'); } catch {}
-    } catch { return; }
+    try { db = await openDatabase(process.env.CLAUDE_PLUGIN_DATA, Number(process.env.MIXDOG_EMBED_DIMS ?? 1024)); } catch { return; }
     for (const seed of seeds) {
         const id = typeof seed === 'number' ? seed : Number(seed?.id || 0);
         if (!Number.isFinite(id) || id <= 0) continue;
         try {
-            db.prepare(`UPDATE entries SET status = 'archived' WHERE id = ?`).run(id);
+            await db.query(`UPDATE entries SET status = 'archived' WHERE id = $1`, [id]);
         } catch {
             // best-effort cleanup; benchmark result should not hinge on it
         }
     }
-    try { db.close(); } catch {}
+    try { await closeDatabase(process.env.CLAUDE_PLUGIN_DATA); } catch {}
 }
 
 function classifyRunError(err) {

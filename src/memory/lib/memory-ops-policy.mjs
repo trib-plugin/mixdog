@@ -114,10 +114,10 @@ export function resolveBackfillSinceMs(windowValue, now = Date.now()) {
   return null
 }
 
-export function countUnclassified(db) {
+export async function countUnclassified(db) {
   if (!db) return 0
   try {
-    const row = db.prepare(`SELECT COUNT(*) c FROM entries WHERE chunk_root IS NULL`).get()
+    const row = (await db.query(`SELECT COUNT(*) c FROM entries WHERE chunk_root IS NULL`, [])).rows[0]
     return Number(row?.c ?? 0)
   } catch {
     return 0
@@ -192,7 +192,7 @@ export async function runFullBackfill(db, {
   await Promise.all(workers)
 
   let cycle1Iters = 0
-  let prevUnclassified = countUnclassified(db)
+  let prevUnclassified = await countUnclassified(db)
   while (prevUnclassified > 0 && cycle1Iters < FULL_BACKFILL_MAX_ITERS) {
     let result
     try {
@@ -203,7 +203,7 @@ export async function runFullBackfill(db, {
     }
     cycle1Iters += 1
     if (Number(result?.processed ?? 0) === 0) break
-    const nextUnclassified = countUnclassified(db)
+    const nextUnclassified = await countUnclassified(db)
     if (nextUnclassified >= prevUnclassified) break
     prevUnclassified = nextUnclassified
   }
@@ -216,7 +216,7 @@ export async function runFullBackfill(db, {
     process.stderr.write(`[backfill] cycle2 error: ${err.message}\n`)
   }
 
-  const unclassified = countUnclassified(db)
+  const unclassified = await countUnclassified(db)
   return {
     window: normalizedWindow,
     scope: normalizedScope,

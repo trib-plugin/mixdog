@@ -104,12 +104,12 @@ function createSemaphore(limit) {
   }
 }
 
-function countPendingRows(db) {
+async function countPendingRows(db) {
   try {
-    const r = db.prepare(
+    const result = await db.query(
       `SELECT COUNT(*) AS c FROM entries WHERE chunk_root IS NULL AND session_id IS NOT NULL`,
-    ).get()
-    return Number(r?.c ?? 0)
+    )
+    return Number(result.rows[0]?.c ?? 0)
   } catch {
     return null
   }
@@ -121,7 +121,7 @@ export async function runCycle1(db, config = {}, options = {}) {
     return {
       processed: 0, chunks: 0, skipped: 0, sessions: 0,
       skippedInFlight: true,
-      pendingRows: countPendingRows(db),
+      pendingRows: await countPendingRows(db),
     }
   }
   const p = (async () => _runCycle1Impl(db, config, options))()
@@ -134,7 +134,7 @@ export async function runCycle1(db, config = {}, options = {}) {
 }
 
 async function _runCycle1Impl(db, config = {}, options = {}) {
-  const pendingRowsAtStart = countPendingRows(db)
+  const pendingRowsAtStart = await countPendingRows(db)
   const batchSize = Math.max(1, Number(config.batch_size ?? 100))
   // Fallback chain handles flat config + nested cycle1 wrap shapes.
   const minBatch = Math.max(1, Number(config?.min_batch ?? config?.cycle1?.min_batch ?? CYCLE1_MIN_BATCH))
@@ -150,13 +150,15 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
 
   // Time-ordered fetch split into per-session sub-windows; [sess:] markers reinforce the SQL grouping.
   const fetchLimit = sessionCap * batchSize
-  const rowsDesc = db.prepare(`
-    SELECT id, ts, role, content, session_id, source_ref, project_id
-    FROM entries
-    WHERE chunk_root IS NULL AND session_id IS NOT NULL
-    ORDER BY ts DESC, id DESC
-    LIMIT ?
-  `).all(fetchLimit)
+  const fetchResult = await db.query(
+    `SELECT id, ts, role, content, session_id, source_ref, project_id
+     FROM entries
+     WHERE chunk_root IS NULL AND session_id IS NOT NULL
+     ORDER BY ts DESC, id DESC
+     LIMIT $1`,
+    [fetchLimit],
+  )
+  const rowsDesc = fetchResult.rows
 
   if (rowsDesc.length < minBatch) {
     void flushEmbeddingDirty(db).catch(err => {
@@ -197,17 +199,6 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
       _offset += size
     }
   }
-
-  const updateRoot = db.prepare(`
-    UPDATE entries
-    SET chunk_root = ?, is_root = 1, element = ?, category = ?, summary = ?,
-        status = 'pending', project_id = ?,
-        last_seen_at = CAST(strftime('%s','now') AS INTEGER) * 1000
-    WHERE id = ?
-  `)
-  const updateMember = db.prepare(`
-    UPDATE entries SET chunk_root = ?, project_id = ? WHERE id = ? AND id != ?
-  `)
 
   async function processWindow(rows, windowIdx) {
     if (rows.length === 0) {
@@ -303,22 +294,32 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
       const projectId = inferChunkProjectId(members)
 
       try {
-        db.exec('BEGIN')
-        updateRoot.run(rootId, element, category, summary, projectId, rootId)
-        for (const mid of memberIds) {
-          if (mid === rootId) continue
-          updateMember.run(rootId, projectId, mid, rootId)
-        }
-        db.exec('COMMIT')
+        await db.transaction(async (tx) => {
+          await tx.query(
+            `UPDATE entries
+             SET chunk_root = $1, is_root = 1, element = $2, category = $3, summary = $4,
+                 status = 'pending', project_id = $5,
+                 last_seen_at = $7
+             WHERE id = $6`,
+            [rootId, element, category, summary, projectId, rootId, Date.now()],
+          )
+          for (const mid of memberIds) {
+            if (mid === rootId) continue
+            await tx.query(
+              `UPDATE entries SET chunk_root = $1, project_id = $2 WHERE id = $3 AND id != $4`,
+              [rootId, projectId, mid, rootId],
+            )
+          }
+        })
         committedChunks += 1
         committedMembers += memberIds.length
         for (const mid of memberIds) {
           usedIds.add(mid)
           committedRowIds.add(mid)
         }
-        markEmbeddingDirty(db, rootId)
+        // markEmbeddingDirty is async (db transaction); await to ensure commit before flush
+        await markEmbeddingDirty(db, rootId)
       } catch (err) {
-        try { db.exec('ROLLBACK') } catch {}
         process.stderr.write(`[cycle1] chunk commit failed (root=${rootId}): ${err.message}\n`)
         skippedChunks += 1
         for (const mid of memberIds) failedRowIds.push(mid)

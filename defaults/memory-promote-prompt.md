@@ -6,7 +6,7 @@ Example of what your response must look like (one verdict per Entry id, plain te
 9001|archived
 9002|active
 9003|archived
-9004|fixed
+9004|archived
 9005|merge|9001|9002,9003|consolidated rule|merged summary
 9006|update|new element|new summary
 ```
@@ -29,7 +29,6 @@ Per-status valid verbs (verbs outside the table are rejected):
 |---|---|
 | `pending` | `active` (promote to long-term) · `archived` (reject) |
 | `active` | `active` (keep) · `archived` (drift / superseded) · `update` · `merge` |
-| `fixed` | `fixed` (keep — user-injected, protected) · `update` · `merge` (NEVER `archived`) |
 
 The first character of your response must be a digit.
 
@@ -65,7 +64,7 @@ Long-term essential memory holds ONLY:
 - Recurring procedure or workflow gate the user invokes repeatedly
 - Operational know-how that would force re-discovery if lost
 
-Anything outside A/B → **archived** (or **pending** retained only if uncertain mid-batch). When in doubt → **archived**. Promotion is exceptional.
+Anything outside A/B → **archived**. When in doubt → **archived**. Promotion is exceptional.
 
 ---
 
@@ -102,11 +101,10 @@ Use these labels to distinguish A vs B candidates. Membership in a concept does 
 |---|---|---|
 | `pending` | `archived` (when in doubt) | none |
 | `active` | `active` (keep) only with affirmative justification; otherwise `archived` | none |
-| `fixed` | `fixed` (keep) | `archived`, `demote` (silently rejected) |
 
 `active` for an `active` entry requires affirmative justification: name which A/B category and what behavior would degrade if gone. If you cannot — **archived**.
 
-If 2+ rows in the same project_id encode the same concept with different wording — `merge` into one durable root. Never merge across project_id boundaries; never merge a `fixed` entry as the loser side.
+If 2+ rows in the same project_id encode the same concept with different wording — `merge` into one durable root. Never merge across project_id boundaries.
 
 ---
 
