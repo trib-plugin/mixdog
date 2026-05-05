@@ -2127,10 +2127,9 @@ function proactiveIntervalChanged() {
 function buildProactiveData() {
   const interval = getProactiveInterval();
   return {
-    interval,
     model: document.getElementById('proactive-model').value || undefined,
     feedback: true,
-    frequency: Math.max(1, Math.min(5, Math.round(1440 / interval))),
+    periodMinutes: interval,
   };
 }
 
@@ -2580,10 +2579,10 @@ async function populateChannels(cfg) {
 
   // Proactive (non-preset fields)
   const proactive = cfg?.proactive || {};
-  if (proactive.interval) {
+  if (proactive.periodMinutes) {
     const sel = document.getElementById('proactive-interval');
     const customInput = document.getElementById('proactive-interval-custom');
-    const val = String(proactive.interval);
+    const val = String(proactive.periodMinutes);
     if ([...sel.options].some(o => o.value === val)) {
       sel.value = val;
       customInput.style.display = 'none';

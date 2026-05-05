@@ -94,9 +94,7 @@ function tzSnapshot(now, tz) {
     dow: dowMap[parts.weekday] ?? now.getDay(),
   };
 }
-// Proactive period: read directly from proactive.periodMinutes (required).
-// The legacy 1..5 frequency integer mapping (FREQUENCY_MAP) has been removed.
-// Callers must set an explicit periodMinutes in the proactive config.
+// Proactive period: read from proactive.periodMinutes (required positive number).
 class Scheduler {
   nonInteractive;
   interactive;
@@ -588,7 +586,7 @@ ${Scheduler.INSTANCE_UUID}`;
   proactivePeriodMs() {
     const minutes = this.proactive?.periodMinutes;
     if (!minutes || !Number.isFinite(Number(minutes)) || Number(minutes) <= 0) {
-      throw new Error(`proactive.periodMinutes must be a positive number (got ${JSON.stringify(minutes)}). The legacy frequency integer (1..5) is no longer supported.`);
+      throw new Error(`proactive.periodMinutes must be a positive number (got ${JSON.stringify(minutes)})`);
     }
     return Number(minutes) * 6e4;
   }

@@ -31,7 +31,7 @@ const DEFAULT_CONFIG = {
 // shape when the file has missing sections.
 const CONFIG_DEFAULTS = {
   quiet: { schedule: "23:00-09:00", holidays: false },
-  proactive: { enabled: true, idleMinutes: 30, model: "sonnet-mid", respectQuiet: true },
+  proactive: { enabled: true, idleMinutes: 30, periodMinutes: 60, model: "sonnet-mid", respectQuiet: true },
   schedules: { respectQuiet: true },
   webhook: { respectQuiet: false }
 };
