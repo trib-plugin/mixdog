@@ -1225,10 +1225,18 @@ async function handleMemoryAction(args) {
   }
 
   if (action === 'backfill') {
+    // Whole-action mutex (transport-agnostic). _cycle1InFlight only protects
+    // cycle1; ingest workers + cycle2 can still overlap if a second backfill
+    // kicks in (timeout-retry, parallel callers, /api/tool vs /mcp vs
+    // /admin/backfill). Sentinel is set synchronously before any await so a
+    // burst of concurrent calls cannot all pass the check.
+    if (_backfillInFlight) {
+      return { text: 'backfill already in progress', isError: true }
+    }
     const window = args.window != null ? String(args.window) : '7d'
     const scope = args.scope != null ? String(args.scope) : 'all'
     const limit = args.limit != null ? Math.max(1, Number(args.limit)) : null
-    const result = await runFullBackfill(db, {
+    const promise = runFullBackfill(db, {
       window,
       scope,
       limit,
@@ -1238,6 +1246,13 @@ async function handleMemoryAction(args) {
       runCycle1: (dbArg, cycle1Config = {}, options = {}) => _awaitCycle1Run(cycle1Config, options),
       runCycle2,
     })
+    _backfillInFlight = promise
+    let result
+    try {
+      result = await promise
+    } finally {
+      if (_backfillInFlight === promise) _backfillInFlight = null
+    }
     await setCycleLastRun('cycle2', Date.now())
     return {
       text: `backfill: window=${result.window} scope=${result.scope} files=${result.files} ingested=${result.ingested} cycle1_iters=${result.cycle1_iters} promoted=${result.promoted} unclassified=${result.unclassified}`,
@@ -1666,6 +1681,27 @@ function sendError(res, msg, status = 500) {
   sendJson(res, { error: msg }, status)
 }
 
+// Origin/Referer guard for /admin/* mutation routes. Memory-service binds
+// 127.0.0.1, but browser DNS-rebinding or a stray cross-origin fetch could
+// still reach destructive endpoints (purge, backfill, entry mutations).
+// Server-to-server callers (setup-server, hooks) issue raw http.request
+// without a browser Origin/Referer, so absent headers pass; any non-loopback
+// Origin/Referer is rejected. Mirrors setup-server.mjs isAllowedOrigin.
+function isLocalOrigin(req) {
+  const LOOP = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i
+  const origin = req.headers.origin || ''
+  const referer = req.headers.referer || ''
+  if (origin && !LOOP.test(origin)) return false
+  if (referer && !LOOP.test(referer)) return false
+  return true
+}
+
+// Whole-action backfill mutex. memory-cycle1's _cycle1InFlight only protects
+// cycle1; ingest workers (memory-ops-policy.mjs) and cycle2 can still overlap
+// if a second backfill kicks in (e.g. setup-server timeout + retry). Track the
+// in-flight promise here and reject overlaps with 409.
+let _backfillInFlight = null
+
 const httpServer = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/session-reset') {
     _bootTimestamp = Date.now()
@@ -1692,7 +1728,175 @@ const httpServer = http.createServer(async (req, res) => {
     return
   }
 
+  if (req.method === 'GET' && req.url === '/admin/entries/active') {
+    try {
+      const { rows } = await db.query(`
+        SELECT id, element, category, summary, score, last_seen_at
+        FROM entries
+        WHERE is_root = 1 AND status = 'active'
+        ORDER BY score DESC
+      `)
+      sendJson(res, { ok: true, items: rows })
+    } catch (e) { sendJson(res, { ok: false, error: e.message }, 500) }
+    return
+  }
+
+  if (req.method === 'POST' && req.url === '/admin/entries/status') {
+    if (!isLocalOrigin(req)) {
+      sendJson(res, { ok: false, error: 'forbidden: cross-origin' }, 403)
+      return
+    }
+    try {
+      const body = await readBody(req)
+      const id = Number(body.id)
+      const status = String(body.status ?? '').trim().toLowerCase()
+      const VALID = ['pending', 'active', 'archived']
+      if (!Number.isInteger(id) || id <= 0 || !VALID.includes(status)) {
+        sendJson(res, { ok: false, error: 'valid id and status required' }, 400)
+        return
+      }
+      const result = await db.query(
+        `UPDATE entries SET status = $1 WHERE id = $2 AND is_root = 1`,
+        [status, id]
+      )
+      sendJson(res, { ok: true, changes: Number(result.affectedRows ?? 0) })
+    } catch (e) { sendJson(res, { ok: false, error: e.message }, 500) }
+    return
+  }
+
+  if (req.method === 'POST' && req.url === '/admin/entries/add') {
+    if (!isLocalOrigin(req)) {
+      sendJson(res, { ok: false, error: 'forbidden: cross-origin' }, 403)
+      return
+    }
+    try {
+      const body = await readBody(req)
+      const result = await handleMemoryAction({
+        action: 'manage',
+        op: 'add',
+        element: body.element,
+        summary: body.summary,
+        category: body.category,
+        cwd: body.cwd,
+      })
+      if (result.isError) {
+        sendJson(res, { ok: false, error: result.text }, 400)
+        return
+      }
+      const idMatch = String(result.text || '').match(/id=(\d+)/)
+      const newId = idMatch ? Number(idMatch[1]) : null
+      sendJson(res, { ok: true, id: newId, text: result.text })
+    } catch (e) { sendJson(res, { ok: false, error: e.message }, 500) }
+    return
+  }
+
+  if (req.method === 'POST' && req.url === '/admin/backfill') {
+    if (!isLocalOrigin(req)) {
+      sendJson(res, { ok: false, error: 'forbidden: cross-origin' }, 403)
+      return
+    }
+    let body
+    try { body = await readBody(req) }
+    catch (e) { sendJson(res, { ok: false, error: e.message }, Number(e?.statusCode) || 500); return }
+    try {
+      const result = await handleMemoryAction({
+        action: 'backfill',
+        window: body.window,
+        scope: body.scope,
+        limit: body.limit,
+      })
+      if (result.isError) {
+        // 'backfill already in progress' → 409, other failures → 500
+        const status = result.text === 'backfill already in progress' ? 409 : 500
+        sendJson(res, { ok: false, error: result.text }, status)
+        return
+      }
+      sendJson(res, { ok: true, text: result.text })
+    } catch (e) {
+      sendJson(res, { ok: false, error: e.message }, 500)
+    }
+    return
+  }
+
+  if (req.method === 'POST' && req.url === '/admin/purge') {
+    if (!isLocalOrigin(req)) {
+      sendJson(res, { ok: false, error: 'forbidden: cross-origin' }, 403)
+      return
+    }
+    try {
+      const body = await readBody(req)
+      if (body?.confirm !== 'DELETE ALL MEMORY') {
+        sendJson(res, { ok: false, error: 'confirm must be exactly "DELETE ALL MEMORY"' }, 400)
+        return
+      }
+      const { rows: countRows } = await db.query(`SELECT COUNT(*) AS c FROM entries`)
+      const preCount = Number(countRows[0].c)
+      await db.transaction(async (tx) => {
+        await tx.query(`DELETE FROM entries`)
+      })
+      sendJson(res, { ok: true, deleted: preCount })
+    } catch (e) { sendJson(res, { ok: false, error: e.message }, 500) }
+    return
+  }
+
+  if (req.method === 'POST' && req.url === '/session-start/core-memory') {
+    try {
+      const body = await readBody(req)
+      const cwd = typeof body.cwd === 'string' && body.cwd ? body.cwd : process.cwd()
+      const projectId = resolveProjectId(cwd)
+      const dbRows = (await db.query(`
+        SELECT element, category, summary
+        FROM entries
+        WHERE is_root = 1 AND status = 'active' AND (project_id IS NULL${projectId !== null ? " OR project_id = $1" : " OR project_id IS NOT NULL"})
+        ORDER BY score DESC, last_seen_at DESC
+      `, projectId !== null ? [projectId] : [])).rows
+      const commonRows = (await db.query(
+        `SELECT summary FROM core_entries WHERE project_id IS NULL ORDER BY id ASC`
+      )).rows
+      const scopedRows = projectId !== null
+        ? (await db.query(
+            `SELECT summary FROM core_entries WHERE project_id = $1 ORDER BY id ASC`,
+            [projectId]
+          )).rows
+        : (await db.query(
+            `SELECT summary FROM core_entries WHERE project_id IS NOT NULL ORDER BY project_id ASC, id ASC`
+          )).rows
+      const dbLines = dbRows.map(r => String(r.summary || '').trim()).filter(Boolean)
+      const userLines = [
+        ...commonRows.map(r => String(r.summary || '').trim()).filter(Boolean),
+        ...scopedRows.map(r => String(r.summary || '').trim()).filter(Boolean),
+      ]
+      sendJson(res, { ok: true, projectId, dbLines, userLines })
+    } catch (e) { sendError(res, e.message) }
+    return
+  }
+
+  if (req.method === 'POST' && req.url === '/session-start/recap') {
+    try {
+      const body = await readBody(req)
+      const cwd = typeof body.cwd === 'string' && body.cwd ? body.cwd : process.cwd()
+      const projectId = resolveProjectId(cwd)
+      const rows = projectId !== null
+        ? (await db.query(`
+            SELECT id, ts, summary FROM entries
+            WHERE is_root = 1 AND (project_id IS NULL OR project_id = $1)
+            ORDER BY ts DESC, id DESC LIMIT 20
+          `, [projectId])).rows
+        : (await db.query(`
+            SELECT id, ts, summary FROM entries
+            WHERE is_root = 1
+            ORDER BY ts DESC, id DESC LIMIT 20
+          `)).rows
+      sendJson(res, { ok: true, projectId, rows })
+    } catch (e) { sendError(res, e.message) }
+    return
+  }
+
   if (req.method === 'POST' && req.url === '/api/tool') {
+    if (!isLocalOrigin(req)) {
+      sendJson(res, { content: [{ type: 'text', text: 'forbidden: cross-origin' }], isError: true }, 403)
+      return
+    }
     try {
       const body = await readBody(req)
       const result = await handleToolCall(body.name, body.arguments ?? {})
@@ -1704,6 +1908,10 @@ const httpServer = http.createServer(async (req, res) => {
   }
 
   if (req.url === '/mcp') {
+    if (!isLocalOrigin(req)) {
+      sendJson(res, { error: 'forbidden: cross-origin' }, 403)
+      return
+    }
     try {
       if (req.method === 'POST') {
         const httpMcp = createHttpMcpServer()
@@ -1730,6 +1938,13 @@ const httpServer = http.createServer(async (req, res) => {
 
   if (req.method !== 'POST') {
     sendJson(res, { error: 'Method not allowed' }, 405)
+    return
+  }
+
+  // Tail block handles /entry and /ingest-transcript — both mutate the DB,
+  // so apply the same cross-origin guard as /admin/* routes.
+  if (!isLocalOrigin(req)) {
+    sendError(res, 'forbidden: cross-origin', 403)
     return
   }
 

@@ -9,11 +9,7 @@ import https from 'https';
 import { DEFAULT_MAINTENANCE, DEFAULT_PRESETS, getPluginData } from '../src/agent/orchestrator/config.mjs';
 import { resolvePluginData } from '../src/shared/plugin-paths.mjs';
 import { ensureDataSeeds } from '../src/shared/seed.mjs';
-import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memory-cycle.mjs';
-import { runFullBackfill } from '../src/memory/lib/memory-ops-policy.mjs';
-import { cleanMemoryText, openDatabase, getMetaValue, setMetaValue } from '../src/memory/lib/memory.mjs';
-import { cwdFromTranscriptPath } from '../src/memory/index.mjs';
-import { resolveProjectId } from '../src/memory/lib/project-id-resolver.mjs';
+import { tmpdir } from 'os';
 import { readSection, writeSection } from '../src/shared/config.mjs';
 import { updateSection } from '../src/shared/config.mjs';
 import { applyDefaults as applyChannelsDefaults } from '../src/channels/lib/config.mjs';
@@ -584,61 +580,50 @@ function mergeSearchConfig(existing, data) {
   return config;
 }
 
-// -- Memory PGlite --
+// -- Memory service HTTP client --
+// Setup-server runs in its own process (forked from launch.mjs). Opening
+// PGlite directly would conflict with the memory-worker's exclusive lock —
+// route every memory operation through the worker's HTTP endpoints instead.
 
-async function openMemoryDb(_readonly = false) {
-  return await openDatabase(DATA_DIR, Number(process.env.MIXDOG_EMBED_DIMS ?? 1024));
+function getMemoryServicePort() {
+  try {
+    const portFile = join(tmpdir(), 'mixdog-memory', 'memory-port');
+    const v = Number(readFileSync(portFile, 'utf8').trim());
+    return Number.isFinite(v) && v > 0 ? v : 3350;
+  } catch {
+    return 3350;
+  }
 }
 
-// -- Memory backfill (UI trigger) --
-
-let _backfillInProgress = false;
-
-async function ingestTranscriptForBackfill(db, transcriptPath, { cwd } = {}) {
-  if (!existsSync(transcriptPath)) return 0;
-  let content;
-  try { content = readFileSync(transcriptPath, 'utf8'); } catch { return 0; }
-  const parts = transcriptPath.split(/[\\/]/);
-  const sessionUuid = (parts[parts.length - 1] || '').replace(/\.jsonl$/, '');
-  const resolvedCwd = typeof cwd === 'string' && cwd ? cwd : cwdFromTranscriptPath(transcriptPath);
-  const projectId = resolveProjectId(typeof resolvedCwd === 'string' && resolvedCwd ? resolvedCwd : process.cwd());
-  const lines = content.split('\n').filter(Boolean);
-  let count = 0;
-  for (let i = 0; i < lines.length; i++) {
-    let parsed;
-    try { parsed = JSON.parse(lines[i]); } catch { continue; }
-    const role = parsed?.message?.role;
-    if (role !== 'user' && role !== 'assistant') continue;
-    const rawContent = parsed?.message?.content;
-    let text = '';
-    if (typeof rawContent === 'string') text = rawContent;
-    else if (Array.isArray(rawContent)) {
-      for (const item of rawContent) {
-        if (typeof item === 'string') { text = item; break; }
-        if (item?.type === 'text' && typeof item.text === 'string') { text = item.text; break; }
-      }
-    }
-    if (!text || !text.trim()) continue;
-    const cleaned = cleanMemoryText(text);
-    if (!cleaned) continue;
-    const tsRaw = parsed.timestamp ?? parsed.ts ?? Date.now();
-    let tsMs;
-    if (typeof tsRaw === 'number' && Number.isFinite(tsRaw)) {
-      tsMs = tsRaw < 1e12 ? tsRaw * 1000 : tsRaw;
-    } else {
-      const parsedTs = Date.parse(String(tsRaw));
-      tsMs = Number.isFinite(parsedTs) ? parsedTs : Date.now();
-    }
-    const sourceRef = `transcript:${sessionUuid}#${i + 1}`;
-    try {
-      const result = await db.query(
-        `INSERT INTO entries(ts, role, content, source_ref, session_id, project_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING`,
-        [tsMs, role, cleaned, sourceRef, sessionUuid, projectId]
-      );
-      if (result.affectedRows > 0) count += 1;
-    } catch {}
-  }
-  return count;
+function memoryServiceCall(method, urlPath, body, timeoutMs = 600000) {
+  return new Promise((resolve, reject) => {
+    const port = getMemoryServicePort();
+    const payload = body ? JSON.stringify(body) : null;
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: urlPath,
+      method,
+      headers: payload
+        ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+        : {},
+      timeout: Math.max(1, timeoutMs),
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let parsed;
+        try { parsed = JSON.parse(text); }
+        catch (e) { reject(new Error(`memory-service ${urlPath} invalid JSON: ${e.message}`)); return; }
+        resolve({ statusCode: res.statusCode, body: parsed });
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(new Error('memory-service timeout')); });
+    if (payload) req.write(payload);
+    req.end();
+  });
 }
 
 const WINDOWS_BROWSER_CANDIDATES = [
@@ -1667,15 +1652,9 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && path === '/api/memory/entries/active') {
     try {
-      const db = await openMemoryDb();
-      const { rows } = await db.query(`
-        SELECT id, element, category, summary, score, last_seen_at
-        FROM entries
-        WHERE is_root = 1 AND status = 'active'
-        ORDER BY score DESC
-      `);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, items: rows }));
+      const r = await memoryServiceCall('GET', '/admin/entries/active', null, 30000);
+      res.writeHead(r.statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(r.body));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: e.message }));
@@ -1701,14 +1680,10 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        const db = await openMemoryDb();
-        const result = await db.query(
-          'UPDATE entries SET status = $1 WHERE id = $2 AND is_root = 1',
-          [status, id]
-        );
-        console.log(`  Entry #${id} → ${status} (changes=${result.affectedRows})`);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, changes: Number(result.affectedRows ?? 0) }));
+        const r = await memoryServiceCall('POST', '/admin/entries/status', { id, status }, 30000);
+        console.log(`  Entry #${id} → ${status} (changes=${r.body?.changes ?? '?'})`);
+        res.writeHead(r.statusCode, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(r.body));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: e.message }));
@@ -1724,42 +1699,15 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const data = await readBody(req);
-    const element = String(data.element ?? '').trim();
-    const summary = String(data.summary ?? '').trim();
-    const category = String(data.category ?? 'fact').trim().toLowerCase();
-    const VALID_CATS = ['rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue'];
-    if (!element || !summary || !VALID_CATS.includes(category)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'element, summary, and valid category required' }));
-      return;
-    }
-    const GRADE = { rule: 2.0, constraint: 1.9, decision: 1.8, fact: 1.6, goal: 1.5, preference: 1.4, task: 1.1, issue: 1.0 };
-    const nowMs = Date.now();
-    const sourceRef = `manual:${nowMs}-${process.pid}`;
     try {
-      const db = await openMemoryDb();
-      try {
-        let newId;
-        await db.transaction(async (tx) => {
-          const ins = await tx.query(`
-            INSERT INTO entries(ts, role, content, source_ref, session_id)
-            VALUES ($1, 'system', $2, $3, NULL)
-            RETURNING id
-          `, [nowMs, element + ' — ' + summary, sourceRef]);
-          newId = Number(ins.rows[0].id);
-          await tx.query(`
-            UPDATE entries
-            SET chunk_root = $1, is_root = 1, element = $2, category = $3, summary = $4,
-                status = 'active', score = $5, last_seen_at = $6
-            WHERE id = $7
-          `, [newId, element, category, summary, GRADE[category], nowMs, newId]);
-        });
-        await syncRootEmbedding(db, newId);
-        console.log(`  Remembered entry #${newId}: [${category}] ${element}`);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, id: newId }));
-      } finally {
-      }
+      const r = await memoryServiceCall('POST', '/admin/entries/add', {
+        element: data.element,
+        summary: data.summary,
+        category: data.category,
+      }, 30000);
+      if (r.body?.ok) console.log(`  Remembered entry #${r.body.id}: ${r.body.text || ''}`);
+      res.writeHead(r.statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(r.body));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: e.message }));
@@ -1773,37 +1721,24 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: false, error: 'forbidden: cross-origin' }));
       return;
     }
-    if (_backfillInProgress) {
-      res.writeHead(409, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'backfill already in progress' }));
-      return;
-    }
     const data = await readBody(req);
     const requestedWindow = data.window || '7d';
-    _backfillInProgress = true;
-    let db;
     try {
-      db = await openMemoryDb();
-      const memoryConfig = readMemoryConfig() || {};
       console.log(`[backfill] start window=${requestedWindow}`);
-      const result = await runFullBackfill(db, {
+      // Backfill iterates transcripts and runs cycle1/cycle2 — long, no fixed
+      // upper bound. Pass a generous timeout (1h) and let memory-service's
+      // _cycle1InFlight guard serialise overlapping requests.
+      const r = await memoryServiceCall('POST', '/admin/backfill', {
         window: requestedWindow,
         scope: 'all',
-        config: memoryConfig,
-        ingestTranscriptFile: (fp, opts) => ingestTranscriptForBackfill(db, fp, opts),
-        cwdFromTranscriptPath,
-        runCycle1,
-        runCycle2,
-      });
-      console.log(`[backfill] done files=${result.files} ingested=${result.ingested} cycle1_iters=${result.cycle1_iters} promoted=${result.promoted} unclassified=${result.unclassified}`);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, result }));
+      }, 3_600_000);
+      console.log(`[backfill] ${r.body?.text || JSON.stringify(r.body)}`);
+      res.writeHead(r.statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(r.body));
     } catch (err) {
       console.error(`[backfill] failed: ${err.message}`);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: err.message }));
-    } finally {
-      _backfillInProgress = false;
     }
     return;
   }
@@ -1815,26 +1750,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const data = await readBody(req);
-    if (data?.confirm !== 'DELETE ALL MEMORY') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'confirm must be exactly "DELETE ALL MEMORY"' }));
-      return;
-    }
-    let db;
     try {
-      db = await openMemoryDb();
-      const { rows: countRows } = await db.query('SELECT COUNT(*) AS c FROM entries');
-      const preCount = Number(countRows[0].c);
-      await db.transaction(async (tx) => {
-        await tx.query('DELETE FROM entries');
-      });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, deleted: preCount }));
+      const r = await memoryServiceCall('POST', '/admin/purge', {
+        confirm: data?.confirm,
+      }, 60000);
+      res.writeHead(r.statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(r.body));
     } catch (err) {
       console.error(`[memory delete] failed: ${err.message}`);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: err.message }));
-    } finally {
     }
     return;
   }
