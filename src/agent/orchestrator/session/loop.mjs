@@ -612,8 +612,10 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         if (!response.toolCalls?.length) {
             // Fix C: if the response is prose-only and matches future-tense
             // narration heuristic (language-neutral), inject one retry prompt.
+            // Structured text roles (cycle1/cycle2) intentionally return no tools.
             const _narrativeRetryDone = opts._narrativeRetryDone || false;
-            if (!_narrativeRetryDone && response.content) {
+            const noToolRole = sessionRef?.role === 'cycle1-agent' || sessionRef?.role === 'cycle2-agent';
+            if (!noToolRole && !_narrativeRetryDone && response.content) {
                 const _c = response.content;
                 // Language-neutral: short content + no trailing question + no
                 // embedded tool_use markers → likely narration without action.
