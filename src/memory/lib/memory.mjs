@@ -7,7 +7,6 @@ import { mkdirSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { cleanMemoryText } from './memory-extraction.mjs'
 
-const SCHEMA_VERSION = 2
 const dbs = new Map()
 
 export { cleanMemoryText }
@@ -203,13 +202,10 @@ export async function init(db, dims) {
   await db.exec(`CREATE INDEX mv_hot_active_score ON mv_hot_active(score DESC)`)
 
   await db.query(`INSERT INTO meta(key, value) VALUES ($1, $2::jsonb)`, ['embedding.current_dims', JSON.stringify(String(dimCount))])
-  await db.query(`INSERT INTO meta(key, value) VALUES ($1, $2::jsonb)`, ['boot.schema_version', JSON.stringify(String(SCHEMA_VERSION))])
   await db.query(`INSERT INTO meta(key, value) VALUES ($1, $2::jsonb)`, ['boot.schema_bootstrap_complete', JSON.stringify('1')])
 }
 
-// Idempotent. trajectories is auxiliary (agent orchestrator log) and does
-// not participate in SCHEMA_VERSION; future aux tables follow the same
-// IF NOT EXISTS pattern.
+// Idempotent. trajectories is auxiliary (agent orchestrator log).
 // All DDL uses CREATE TABLE/INDEX IF NOT EXISTS — safe to call on every open();
 // subsequent runs are O(1) catalog checks with no additional fsync overhead.
 export async function ensureTrajectoryTable(db) {
@@ -255,20 +251,6 @@ export async function openDatabase(dataDir, dims) {
   // pg_trgm default (0.3). PGlite uses a single backend, so this affects all
   // subsequent queries on this handle.
   try { await db.query(`SELECT set_limit(0.10)`) } catch {}
-  if (!isNewFile && (await isBootstrapComplete(db))) {
-    // Existing DB: enforce schema version compatibility. We do not yet ship an
-    // in-place v1→v2 migration; instead fail-fast with a clear remediation
-    // path so a stale DB is never silently used against incompatible code.
-    const versionRaw = await getMetaValue(db, 'boot.schema_version', null)
-    const version = Number(JSON.parse(versionRaw ?? 'null')) || 0
-    if (version !== SCHEMA_VERSION) {
-      try { await db.close() } catch {}
-      throw new Error(
-        `memory: pgdata at ${key} is schema v${version || '?'}, code expects v${SCHEMA_VERSION}. ` +
-        `Delete pgdata and reinit before booting.`,
-      )
-    }
-  }
   await ensureTrajectoryTable(db)
   dbs.set(key, db)
   return db
