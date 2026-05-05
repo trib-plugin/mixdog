@@ -98,9 +98,34 @@ const _releaseLock = () => {
   } catch {}
 }
 process.on('exit', _releaseLock)
-for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGBREAK']) {
+// Do NOT call process.exit() directly on SIGTERM/SIGINT — that preempts the
+// graceful shutdown chain in server-main.mjs (PGlite close, worker ACK, etc.).
+// _releaseLock is registered on 'exit' above so it always runs; the signal
+// handlers here just ensure the lock file is released even when server-main's
+// shutdown() calls process.exit(), which itself fires 'exit'. SIGHUP/SIGBREAK
+// are non-standard on Windows; keep them as exit-only guards.
+for (const sig of ['SIGHUP', 'SIGBREAK']) {
   try { process.on(sig, () => { _releaseLock(); process.exit(0) }) } catch {}
 }
+// SIGTERM and SIGINT: let server-main's handlers own graceful shutdown.
+// _releaseLock fires automatically via 'exit' when server-main calls process.exit().
+
+// ── Graceful stdin-EOF shutdown (Blocker 1) ─────────────────────────
+// run-mcp.mjs (supervisor) closes the child stdin pipe as its primary graceful-
+// shutdown signal. Detect EOF here and forward into server-main's shutdown()
+// chain, which handles PGlite close + worker ACKs before process.exit(). The
+// handler is registered early (before server-main loads) so no boot window is
+// missed; server-main re-registers on 'end' / 'close' as belt-and-braces.
+process.stdin.resume() // keep stdin open so 'end' fires when pipe is closed
+process.stdin.once('end', () => {
+  // server-main shutdown() is not yet loaded here — set a flag so server-main
+  // picks it up, or if the dynamic import already completed, call directly.
+  if (typeof globalThis.__mixdogShutdownFromStdin === 'function') {
+    globalThis.__mixdogShutdownFromStdin()
+  } else {
+    globalThis.__mixdogStdinEnded = true
+  }
+})
 
 // ── Beacon HTTP server ───────────────────────────────────────────────
 // startOwnerHttpServer adopts this server as-is and attaches the real handler.

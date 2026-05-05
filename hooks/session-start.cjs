@@ -643,12 +643,18 @@ async function requestCycle1(timeoutMs, opts = {}) {
     'backend-not-ready',
     'beacon-booting',
   ]);
+  // memory-degraded is NOT transient: restart cap exceeded or PGlite PANIC.
+  // Retrying 30 times would only delay the session by ~8 seconds with no benefit.
+  const NON_TRANSIENT_BOOT_BODY_REASONS = new Set([
+    'memory-degraded',
+  ]);
   const TRANSIENT_TOP_REASONS = new Set([
     'connect-refused',
     'no-active-instance',
   ]);
   const isTransientBootFailure = (r) => {
     if (!r || r.ok) return false;
+    if (r.bodyReason && NON_TRANSIENT_BOOT_BODY_REASONS.has(r.bodyReason)) return false;
     if (r.bodyReason && TRANSIENT_BOOT_BODY_REASONS.has(r.bodyReason)) return true;
     if (TRANSIENT_TOP_REASONS.has(r.reason)) return true;
     // 503 + missing body — boot-race before stub JSON; treat as transient.

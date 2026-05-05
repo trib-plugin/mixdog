@@ -239,6 +239,7 @@ server.setNotificationHandler(ChannelPermissionRequestNotificationSchema, async 
 const workers = new Map() // name → { proc, ready, pending }
 const WORKER_MAX_RESTARTS = 3
 const workerRestarts = new Map() // name → count
+const workerIntentionalStop = new Set() // names where parent initiated shutdown; suppress respawn
 
 // Cached bridge-llm factory import — loaded on first agent_ipc_request and
 // reused thereafter. The agent module must be loaded before the first call
@@ -320,7 +321,22 @@ function spawnWorker(name) {
   proc.on('message', msg => {
     if (msg.type === 'ready') {
       process.stderr.write(`[boot-time] tag=worker-ready name=${name} tMs=${Date.now()}\n`)
+      if (msg.degraded) {
+        log(`worker ${name} signalled degraded on boot: ${msg.error || 'unknown'}`)
+        // Treat init failures as permanent (no retries): init errors indicate
+        // unrecoverable state (e.g. pgdata corruption, missing schema) that
+        // will not heal across restarts. Mark restart count at cap immediately
+        // so the 'exit' handler skips respawn. This avoids 3 pointless retries
+        // that each take several seconds and leave pgdata in a worse state.
+        // Transient network / port-bind errors are expected to NOT send
+        // degraded:true — they crash the worker without a 'ready' signal, so
+        // the normal restart counter handles them.
+        workerRestarts.set(name, WORKER_MAX_RESTARTS + 1)  // permanent — no retry
+        try { entry._rejectReady(new Error(`worker ${name} degraded: ${msg.error || 'init failed'}`)) } catch {}
+        return
+      }
       entry.ready = true
+      workerIntentionalStop.delete(name)
       try { entry._resolveReady() } catch {}
       log(`worker ${name} ready (pid=${proc.pid})`)
       return
@@ -381,9 +397,16 @@ function spawnWorker(name) {
     }
   })
 
+  // Attach 'exit' before 'error' so a synchronous spawn-fail sees 'exit'
+  // before 'error' — prevents dangling exit handler on early-fail path.
   proc.on('exit', (code) => {
     log(`worker ${name} exited (code=${code})`)
     workers.delete(name)
+    // Intentional stop: parent sent shutdown IPC/SIGTERM — do not respawn.
+    if (workerIntentionalStop.has(name)) {
+      log(`worker ${name} stopped intentionally — skipping respawn`)
+      return
+    }
     if (!entry.ready) {
       try { entry._rejectReady(new Error(`worker ${name} exited before ready (code=${code})`)) } catch {}
     }
@@ -1115,6 +1138,50 @@ setImmediate(spawnStatusServer)
 // ── Shutdown ────────────────────────────────────────────────────────
 const isWin = process.platform === 'win32'
 let shuttingDown = false
+const WORKER_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 8000  // child must be < parent (10s) to avoid race
+
+async function gracefulKillWorker(name, entry) {
+  const pid = entry.proc.pid
+  workerIntentionalStop.add(name)
+  // Step 1: request clean shutdown via IPC (preferred) or SIGTERM simulation.
+  // On Windows, Node child_process.kill('SIGTERM') sends a real SIGTERM only
+  // on newer Node; for reliability we prefer IPC message on win32.
+  let shutdownRequested = false
+  if (entry.proc.connected) {
+    try {
+      entry.proc.send({ type: 'shutdown' })
+      shutdownRequested = true
+      log(`shutdown: sent IPC {type:"shutdown"} to worker ${name} (pid=${pid})`)
+    } catch {}
+  }
+  if (!shutdownRequested) {
+    try {
+      entry.proc.kill('SIGTERM')
+      log(`shutdown: sent SIGTERM to worker ${name} (pid=${pid})`)
+    } catch {}
+  }
+  // Step 2: wait for clean exit (process.exit fires 'exit' which deletes from workers).
+  const exitP = new Promise(resolve => entry.proc.once('exit', resolve))
+  const timedOut = await Promise.race([
+    exitP.then(() => false),
+    new Promise(resolve => setTimeout(() => resolve(true), WORKER_GRACEFUL_SHUTDOWN_TIMEOUT_MS)),
+  ])
+  if (!timedOut) {
+    log(`shutdown: worker ${name} exited cleanly (pid=${pid}) — path=graceful`)
+    return
+  }
+  // Step 3: timeout expired — force kill as last resort.
+  log(`shutdown: worker ${name} did not exit within ${WORKER_GRACEFUL_SHUTDOWN_TIMEOUT_MS}ms — forcing kill (pid=${pid}) path=force`)
+  try {
+    if (isWin && pid) {
+      const { execSync: _ek } = await import('node:child_process')
+      _ek(`taskkill /F /PID ${pid}`, { stdio: 'ignore', windowsHide: true, timeout: 5000 })
+    } else {
+      entry.proc.kill('SIGKILL')
+    }
+  } catch {}
+}
+
 async function shutdown(reason) {
   if (shuttingDown) return
   shuttingDown = true
@@ -1140,18 +1207,10 @@ async function shutdown(reason) {
     // Belt-and-braces: unlink the advertisement file if child didn't.
     try { unlinkSync(STATUS_ADVERTISE_PATH) } catch {}
   }
-  // Kill workers — Windows needs taskkill for reliable cleanup
+  // Graceful worker shutdown: IPC/SIGTERM → wait → force kill only as last resort.
+  // Avoids taskkill /F /T which bypasses PGlite close and corrupts pgdata.
   for (const [name, entry] of workers) {
-    const pid = entry.proc.pid
-    try {
-      if (isWin && pid) {
-        const { execSync: _execSync2 } = await import('node:child_process')
-        _execSync2(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', windowsHide: true, timeout: 5000 })
-      } else {
-        entry.proc.kill('SIGTERM')
-      }
-      log(`shutdown: killed worker ${name} (pid=${pid})`)
-    } catch {}
+    await gracefulKillWorker(name, entry)
   }
   // Kill tracked bridge CLI processes
   try {
@@ -1170,3 +1229,9 @@ process.stdin.on('close', () => shutdown('stdin close'))
 server.onclose = () => shutdown('transport closed')
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
+
+// Wire prelude's stdin-ended flag (set before server-main loaded).
+globalThis.__mixdogShutdownFromStdin = () => shutdown('stdin end (prelude)')
+if (globalThis.__mixdogStdinEnded) {
+  shutdown('stdin end (prelude-early)')
+}

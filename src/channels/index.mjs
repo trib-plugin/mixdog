@@ -808,7 +808,14 @@ async function ownerRequestHandler(req, res) {
               reason = 'ipc-error';
             } else if (/timed out/i.test(msg)) {
               reason = 'memory-timeout';
-            } else if (/worker memory (not available|exited unexpectedly)|not a worker process/i.test(msg)) {
+            } else if (msg.includes('restart cap exceeded') || msg.includes('degraded')) {
+              // Permanent degraded state: restart cap hit or boot-time init failure.
+              // Use a distinct reason so callers can fail-fast without retrying.
+              // NOTE: checked before 'not available' — the error message
+              // "worker memory not available (restart cap exceeded)" contains both
+              // substrings and must land in 'memory-degraded', not 'worker-unavailable'.
+              reason = 'memory-degraded';
+            } else if (msg.includes('worker memory not available') || msg.includes('worker memory exited unexpectedly') || msg.includes('not a worker process')) {
               reason = 'worker-unavailable';
             }
             const transient = Boolean(reason);
@@ -2561,7 +2568,33 @@ async function stop() {
 }
 // ── IPC worker mode ──────────────────────────────────────────────
 if (_isWorkerMode && process.send) {
+  // SIGTERM/SIGINT/IPC shutdown handler — mirrors src/memory/index.mjs pattern.
+  // Cleans up in-progress webhook/scheduler state, removes runtime files, then exits.
+  let _channelsStopInFlight = false
+  const _channelsShutdownHandler = async (sig) => {
+    if (_channelsStopInFlight) {
+      process.stderr.write(`[channels-worker] ${sig} — shutdown already in flight, ignoring\n`)
+      return
+    }
+    _channelsStopInFlight = true
+    process.stderr.write(`[channels-worker] received ${sig} — shutting down cleanly\n`)
+    try { await stop() } catch (e) {
+      process.stderr.write(`[channels-worker] stop() error on ${sig}: ${e && (e.message || e)}\n`)
+    }
+    try { cleanupInstanceRuntimeFiles(INSTANCE_ID) } catch {}
+    try { clearServerPid() } catch {}
+    process.exit(0)
+  }
+  process.on('SIGTERM', () => _channelsShutdownHandler('SIGTERM'))
+  process.on('SIGINT',  () => _channelsShutdownHandler('SIGINT'))
+
   process.on('message', async (msg) => {
+    // Parent-initiated graceful shutdown — mirrors memory worker IPC pattern.
+    if (msg && msg.type === 'shutdown') {
+      process.stderr.write('[channels-worker] received IPC shutdown — calling stop()\n')
+      _channelsShutdownHandler('IPC:shutdown')
+      return
+    }
     // Silent-to-agent lifecycle forward — parent (server.mjs) asks the
     // channels worker to post status pings to the active bridge Discord
     // channel without the Lead-notify hop. Best-effort: unknown channel or

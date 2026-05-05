@@ -210,6 +210,8 @@ export async function init(db, dims) {
 // Idempotent. trajectories is auxiliary (agent orchestrator log) and does
 // not participate in SCHEMA_VERSION; future aux tables follow the same
 // IF NOT EXISTS pattern.
+// All DDL uses CREATE TABLE/INDEX IF NOT EXISTS — safe to call on every open();
+// subsequent runs are O(1) catalog checks with no additional fsync overhead.
 export async function ensureTrajectoryTable(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS trajectories (

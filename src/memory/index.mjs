@@ -1856,7 +1856,41 @@ function _startHttpServer() {
 }
 
 if (process.env.MIXDOG_WORKER_MODE === '1' && process.send) {
+  // SIGTERM/SIGINT handler for worker mode: call stop() (closes PGlite, fsyncs,
+  // removes port file) then exit(0). Prevents taskkill /F from bypassing PGlite
+  // close and leaving pgdata in an inconsistent checkpoint state.
+  let _stopInFlight = false
+  const _workerSignalHandler = (sig) => {
+    if (_stopInFlight) {
+      process.stderr.write(`[memory-worker] ${sig} — stop already in flight, ignoring\n`)
+      return
+    }
+    _stopInFlight = true
+    process.stderr.write(`[memory-worker] received ${sig} — calling stop() for clean shutdown\n`)
+    const _exitTimer = setTimeout(() => {
+      process.stderr.write(`[memory-worker] stop() timed out after 6000ms — forcing exit(2)\n`)
+      process.exit(2)
+    }, 6000)
+    stop().then(() => {
+      clearTimeout(_exitTimer)
+      process.stderr.write(`[memory-worker] stop() complete — exiting cleanly\n`)
+      process.exit(0)
+    }).catch((e) => {
+      clearTimeout(_exitTimer)
+      process.stderr.write(`[memory-worker] stop() error on ${sig}: ${e && (e.message || e)}\n`)
+      process.exit(1)
+    })
+  }
+  process.on('SIGTERM', () => _workerSignalHandler('SIGTERM'))
+  process.on('SIGINT',  () => _workerSignalHandler('SIGINT'))
+
   process.on('message', async (msg) => {
+    // Handle parent-initiated graceful shutdown IPC message.
+    if (msg.type === 'shutdown') {
+      process.stderr.write('[memory-worker] received IPC shutdown — calling stop()\n')
+      _workerSignalHandler('IPC:shutdown')
+      return
+    }
     if (msg.type !== 'call' || !msg.callId) return
     try {
       const result = await handleToolCall(msg.name, msg.args || {})
@@ -1866,7 +1900,11 @@ if (process.env.MIXDOG_WORKER_MODE === '1' && process.send) {
     }
   })
   init().catch(e => {
-    process.stderr.write(`[memory-worker] init failed: ${e.message}\n`)
+    process.stderr.write(`[memory-worker] init failed: ${e && (e.message || e)}\n`)
+    // Signal degraded state to parent before exiting so it records the failure
+    // rather than treating this as a normal pre-ready crash.
+    try { process.send({ type: 'ready', degraded: true, error: e?.message || String(e) }) } catch {}
+    process.exit(1)
   })
 }
 

@@ -28,16 +28,36 @@ const __localRoot = join(__dirname, '..');
 
 // Read installed_plugins.json each boot so dev-sync --restart picks up new code
 // without forcing client reconnect. Falls back to own cache dir on any error.
+let _manifestLock = false
 function _resolveLatestPluginRoot() {
   try {
+    // Manifest lock: reject path refresh while a previous spawn is in flight.
+    // A half-written installed_plugins.json (cache swap during execution) must
+    // fail loud rather than crash silently with a corrupted child path.
+    if (_manifestLock) {
+      process.stderr.write('[run-mcp] WARN: _resolveLatestPluginRoot called while manifest lock held — using fallback\n')
+      return __localRoot
+    }
+    _manifestLock = true
     const manifestPath = join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
     const data = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (!data || typeof data !== 'object' || !data.plugins) {
+      process.stderr.write('[run-mcp] WARN: installed_plugins.json has unexpected shape — using fallback\n')
+      _manifestLock = false
+      process.stderr.write('[run-mcp] manifest-lock-fallback: using boot pluginRoot as-is\n')
+      return __localRoot
+    }
     const entry = data?.plugins?.['mixdog@trib-plugin']?.[0];
     if (entry?.installPath) {
       const latest = entry.installPath.replace(/\\/g, '/');
-      if (fs.existsSync(latest)) return latest;
+      if (fs.existsSync(latest)) {
+        _manifestLock = false
+        return latest
+      }
     }
   } catch {}
+  _manifestLock = false
+  process.stderr.write('[run-mcp] manifest-lock-fallback: manifest read failed — using boot pluginRoot as-is\n')
   return __localRoot;
 }
 const pluginRoot = _resolveLatestPluginRoot();
@@ -392,10 +412,6 @@ function spawnChild() {
     stdoutBuf = drainBuffer(stdoutBuf, handleChildLine);
   });
 
-  proc.on('error', (err) => {
-    process.stderr.write(`[run-mcp] child spawn error: ${err && err.message}\n`);
-  });
-
   proc.on('exit', (code, signal) => {
     // Clear proc immediately so SIGTERM / killChild sees proc=null and exits
     // cleanly rather than sending SIGTERM to a dead process handle.
@@ -454,6 +470,10 @@ function spawnChild() {
       }));
     }, CRASH_BACKOFF_MS);
   });
+
+  proc.on('error', (err) => {
+    process.stderr.write(`[run-mcp] child spawn error: ${err && err.message}\n`);
+  });
 }
 
 function killChild() {
@@ -465,14 +485,44 @@ function killChild() {
     process.exit(0);
     return;
   }
-  if (isWin && proc.pid) {
-    try {
-      execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: 'ignore', windowsHide: true, timeout: 5000 });
-    } catch {}
-  } else {
-    proc.kill('SIGTERM');
+  // Graceful shutdown: close stdin (EOF) + SIGINT → child detects EOF and shuts down gracefully.
+  // Bun children spawned via spawn() have no IPC channel, so SIGTERM offers no graceful-close
+  // guarantee (on Windows it maps directly to SIGKILL). Closing stdin lets server.mjs detect
+  // the EOF via its stdin 'end' listener and initiate its own clean shutdown before the parent
+  // times out and force-kills.
+  const GRACEFUL_TIMEOUT_MS = 10000;
+  const pid = proc.pid;
+  try {
+    // Close child's stdin — EOF signals graceful shutdown to server.mjs
+    proc.stdin.end();
+    process.stderr.write(`[run-mcp] closed child stdin (pid=${pid}) — signalling graceful shutdown\n`);
+  } catch (e) {
+    process.stderr.write(`[run-mcp] stdin.end() failed (pid=${pid}): ${e && e.message}\n`);
   }
-  // process.exit is called by proc's 'exit' handler once the child terminates.
+  // Also send SIGINT (Ctrl+C simulation) on non-Windows; on Windows skip (no reliable delivery)
+  if (!isWin) {
+    try { proc.kill('SIGINT'); } catch {}
+  }
+  // Wait up to GRACEFUL_TIMEOUT_MS for clean exit; force-kill only if timeout expires.
+  let exited = false;
+  const forceTimer = setTimeout(() => {
+    if (exited) return;
+    process.stderr.write(`[run-mcp] child did not exit within ${GRACEFUL_TIMEOUT_MS}ms — forcing kill (pid=${pid}) path=force\n`);
+    try {
+      if (isWin && pid) {
+        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', windowsHide: true, timeout: 5000 });
+      } else {
+        proc.kill('SIGKILL');
+      }
+    } catch {}
+  }, GRACEFUL_TIMEOUT_MS);
+  proc.once('exit', (code, signal) => {
+    exited = true;
+    clearTimeout(forceTimer);
+    process.stderr.write(`[run-mcp] child exited cleanly (pid=${pid} code=${code} signal=${signal}) path=graceful\n`);
+    process.exit(code || 0);
+  });
+  // process.exit is called by the proc 'exit' handler above once the child terminates.
 }
 
 process.on('SIGTERM', killChild);
