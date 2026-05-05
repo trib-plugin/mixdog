@@ -1224,14 +1224,12 @@ async function shutdown(reason) {
   process.exit(0)
 }
 
-process.stdin.on('end', () => shutdown('stdin end'))
-process.stdin.on('close', () => shutdown('stdin close'))
 server.onclose = () => shutdown('transport closed')
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
 
-// Wire prelude's stdin-ended flag (set before server-main loaded).
-globalThis.__mixdogShutdownFromStdin = () => shutdown('stdin end (prelude)')
-if (globalThis.__mixdogStdinEnded) {
-  shutdown('stdin end (prelude-early)')
+// Wire prelude's supervisor-control flag (set before server-main loaded).
+globalThis.__mixdogShutdownFromSupervisor = () => shutdown('supervisor control')
+if (globalThis.__mixdogSupervisorShutdownRequested) {
+  shutdown('supervisor control (early)')
 }

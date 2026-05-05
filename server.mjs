@@ -110,22 +110,38 @@ for (const sig of ['SIGHUP', 'SIGBREAK']) {
 // SIGTERM and SIGINT: let server-main's handlers own graceful shutdown.
 // _releaseLock fires automatically via 'exit' when server-main calls process.exit().
 
-// ── Graceful stdin-EOF shutdown (Blocker 1) ─────────────────────────
-// run-mcp.mjs (supervisor) closes the child stdin pipe as its primary graceful-
-// shutdown signal. Detect EOF here and forward into server-main's shutdown()
-// chain, which handles PGlite close + worker ACKs before process.exit(). The
-// handler is registered early (before server-main loads) so no boot window is
-// missed; server-main re-registers on 'end' / 'close' as belt-and-braces.
-process.stdin.resume() // keep stdin open so 'end' fires when pipe is closed
-process.stdin.once('end', () => {
-  // server-main shutdown() is not yet loaded here — set a flag so server-main
-  // picks it up, or if the dynamic import already completed, call directly.
-  if (typeof globalThis.__mixdogShutdownFromStdin === 'function') {
-    globalThis.__mixdogShutdownFromStdin()
-  } else {
-    globalThis.__mixdogStdinEnded = true
+// ── Graceful supervisor-control shutdown (fd-3) ──────────────────
+// Supervisor (run-mcp.mjs) sends "shutdown\n" or closes fd-3 to request
+// graceful shutdown. fd-3 is dedicated to lifecycle control and is
+// independent of MCP stdio transport — so transient stdin events from
+// the MCP host can never trigger shutdown. Registered before
+// server-main loads so no boot window is missed; server-main re-reads
+// __mixdogSupervisorShutdownRequested when its shutdown() is wired.
+const SUPERVISOR_CONTROL_FD = Number(process.env.MIXDOG_SUPERVISOR_CONTROL_FD || '0') || 0;
+if (SUPERVISOR_CONTROL_FD > 0) {
+  try {
+    const ctrl = fs.createReadStream(null, { fd: SUPERVISOR_CONTROL_FD });
+    ctrl.setEncoding('utf8');
+    let ctrlBuf = '';
+    const fire = () => {
+      if (typeof globalThis.__mixdogShutdownFromSupervisor === 'function') {
+        globalThis.__mixdogShutdownFromSupervisor();
+      } else {
+        globalThis.__mixdogSupervisorShutdownRequested = true;
+      }
+    };
+    ctrl.on('data', (chunk) => {
+      ctrlBuf += chunk;
+      if (ctrlBuf.includes('shutdown')) fire();
+    });
+    ctrl.on('end', fire);
+    ctrl.on('error', (e) => {
+      process.stderr.write(`[server.mjs] supervisor control fd error: ${e && e.message}\n`);
+    });
+  } catch (e) {
+    process.stderr.write(`[server.mjs] supervisor control fd setup failed: ${e && e.message}\n`);
   }
-})
+}
 
 // ── Beacon HTTP server ───────────────────────────────────────────────
 // startOwnerHttpServer adopts this server as-is and attaches the real handler.

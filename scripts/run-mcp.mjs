@@ -390,12 +390,13 @@ function spawnChild() {
   process.stderr.write(`[boot-time] tag=run-mcp-spawn-server tMs=${Date.now()}\n`);
   proc = spawn('bun', [childServerPath], {
     cwd: childPluginRoot,
-    stdio: ['pipe', 'pipe', 'inherit'],
+    stdio: ['pipe', 'pipe', 'inherit', 'pipe'],
     env: {
       ...process.env,
       UV_THREADPOOL_SIZE: '2',
       CLAUDE_PLUGIN_ROOT: childPluginRoot,
       CLAUDE_PLUGIN_DATA: dataDir,
+      MIXDOG_SUPERVISOR_CONTROL_FD: '3',
     },
     ...(isWin ? { windowsHide: true } : {}),
   });
@@ -485,19 +486,22 @@ function killChild() {
     process.exit(0);
     return;
   }
-  // Graceful shutdown: close stdin (EOF) + SIGINT → child detects EOF and shuts down gracefully.
-  // Bun children spawned via spawn() have no IPC channel, so SIGTERM offers no graceful-close
-  // guarantee (on Windows it maps directly to SIGKILL). Closing stdin lets server.mjs detect
-  // the EOF via its stdin 'end' listener and initiate its own clean shutdown before the parent
-  // times out and force-kills.
+  // Graceful shutdown: write "shutdown\n" to fd-3 control pipe → child detects the command and
+  // shuts down gracefully. fd-3 is dedicated to lifecycle control and independent of MCP stdio
+  // transport — so transient stdin events from the MCP host can never trigger shutdown.
   const GRACEFUL_TIMEOUT_MS = 10000;
   const pid = proc.pid;
   try {
-    // Close child's stdin — EOF signals graceful shutdown to server.mjs
-    proc.stdin.end();
-    process.stderr.write(`[run-mcp] closed child stdin (pid=${pid}) — signalling graceful shutdown\n`);
+    const ctrlFd = proc.stdio && proc.stdio[3];
+    if (ctrlFd && typeof ctrlFd.end === 'function') {
+      ctrlFd.end('shutdown\n');
+      process.stderr.write(`[run-mcp] sent shutdown to control fd (pid=${pid}) — signalling graceful shutdown\n`);
+    } else {
+      process.stderr.write(`[run-mcp] WARN: control fd unavailable (pid=${pid}) — falling back to SIGTERM\n`);
+      try { proc.kill('SIGTERM'); } catch {}
+    }
   } catch (e) {
-    process.stderr.write(`[run-mcp] stdin.end() failed (pid=${pid}): ${e && e.message}\n`);
+    process.stderr.write(`[run-mcp] control fd write failed (pid=${pid}): ${e && e.message}\n`);
   }
   // Also send SIGINT (Ctrl+C simulation) on non-Windows; on Windows skip (no reliable delivery)
   if (!isWin) {
@@ -533,7 +537,21 @@ process.stdin.on('data', (chunk) => {
   stdinBuf += chunk;
   stdinBuf = drainBuffer(stdinBuf, handleClientLine);
 });
-process.stdin.on('end', killChild);
-process.stdin.on('close', killChild);
-
 spawnChild();
+
+// Parent (Claude Code) death watchdog — replaces the old stdin-EOF
+// lifecycle signal that was prone to transient close during boot.
+// process.kill(pid, 0) probes liveness without sending a signal.
+const initialPpid = process.ppid;
+if (initialPpid && initialPpid !== 1) {
+  const parentWatch = setInterval(() => {
+    try {
+      process.kill(initialPpid, 0);
+    } catch {
+      process.stderr.write(`[run-mcp] parent pid=${initialPpid} no longer alive — initiating graceful shutdown\n`);
+      clearInterval(parentWatch);
+      killChild();
+    }
+  }, 1000);
+  parentWatch.unref();
+}
