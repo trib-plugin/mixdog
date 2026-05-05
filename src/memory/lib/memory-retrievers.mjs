@@ -1,7 +1,7 @@
 const VALID_CATEGORIES_SET = new Set([
   'rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue',
 ])
-const VALID_STATUS_SET = new Set(['active', 'pending', 'demoted', 'processed', 'archived'])
+const VALID_STATUS_SET = new Set(['pending', 'active', 'fixed', 'archived'])
 
 export function retrieveEntries(db, filters = {}) {
   const where = []

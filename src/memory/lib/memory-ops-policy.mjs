@@ -211,7 +211,7 @@ export async function runFullBackfill(db, {
   let promoted = 0
   try {
     const c2 = await runCycle2(db, config?.cycle2 || {}, {})
-    promoted = Number(c2?.phase1?.added ?? 0) + Number(c2?.phase2?.promoted ?? 0)
+    promoted = Number(c2?.promoted ?? 0)
   } catch (err) {
     process.stderr.write(`[backfill] cycle2 error: ${err.message}\n`)
   }

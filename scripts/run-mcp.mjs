@@ -24,7 +24,26 @@ import { execSync, spawn, spawnSync } from 'child_process';
 import * as os from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pluginRoot = join(__dirname, '..');
+const __localRoot = join(__dirname, '..');
+
+// Read installed_plugins.json each boot so dev-sync --restart picks up new code
+// without forcing client reconnect. Falls back to own cache dir on any error.
+function _resolveLatestPluginRoot() {
+  try {
+    const manifestPath = join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
+    const data = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const entry = data?.plugins?.['mixdog@trib-plugin']?.[0];
+    if (entry?.installPath) {
+      const latest = entry.installPath.replace(/\\/g, '/');
+      if (fs.existsSync(latest)) return latest;
+    }
+  } catch {}
+  return __localRoot;
+}
+const pluginRoot = _resolveLatestPluginRoot();
+if (pluginRoot !== __localRoot) {
+  process.stderr.write(`[run-mcp] supervisor proxying to latest cache: ${pluginRoot} (own=${__localRoot})\n`);
+}
 const serverPath = join(pluginRoot, 'server.mjs');
 const pluginPkg  = join(pluginRoot, 'package.json');
 const pluginLock = join(pluginRoot, 'bun.lock');
@@ -226,16 +245,8 @@ if (!fs.existsSync(probe)) {
 
 const isWin = process.platform === 'win32';
 
-// ─── Proxy supervisor ──────────────────────────────────────────────────────
-//
-// Goal: child kills (dev-sync --restart, crash) MUST NOT force the MCP client
-// (Claude Code) to reconnect. The proxy parses NDJSON JSON-RPC from both
-// sides, caches the client's initialize/initialized so any fresh child can be
-// silently re-handshaken, and answers in-flight requests with a retry-able
-// error when the child they were sent to disappears.
-//
-// Boundaries: child stderr is inherited (logs flow through unchanged). Only
-// stdin (client → child) and stdout (child → client) carry JSON-RPC.
+// Proxy supervisor: parses NDJSON JSON-RPC, caches initialize so child kills
+// are silent to the client; in-flight requests get a retry-able error on child death.
 
 const CRASH_WINDOW_MS    = 10_000;
 const CRASH_MAX_RESTARTS = 5;
@@ -347,14 +358,23 @@ function drainBuffer(buf, onLine) {
 }
 
 function spawnChild() {
+  // Re-resolve pluginRoot on EVERY child spawn so dev-sync --restart
+  // (kills only child) picks up the new cache path. Boot-time pluginRoot
+  // is used for one-shot install / symlink / version warn; everything
+  // child-facing must come from the live manifest each spawn.
+  const childPluginRoot = _resolveLatestPluginRoot();
+  const childServerPath = join(childPluginRoot, 'server.mjs');
+  if (childPluginRoot !== pluginRoot) {
+    process.stderr.write(`[run-mcp] child spawn path refreshed: ${childPluginRoot} (boot=${pluginRoot})\n`);
+  }
   process.stderr.write(`[boot-time] tag=run-mcp-spawn-server tMs=${Date.now()}\n`);
-  proc = spawn('bun', [serverPath], {
-    cwd: pluginRoot,
+  proc = spawn('bun', [childServerPath], {
+    cwd: childPluginRoot,
     stdio: ['pipe', 'pipe', 'inherit'],
     env: {
       ...process.env,
       UV_THREADPOOL_SIZE: '2',
-      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      CLAUDE_PLUGIN_ROOT: childPluginRoot,
       CLAUDE_PLUGIN_DATA: dataDir,
     },
     ...(isWin ? { windowsHide: true } : {}),

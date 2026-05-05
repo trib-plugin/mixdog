@@ -364,12 +364,9 @@ function _isSimpleIdentifierLookup(prompt) {
     const words = text.split(/\s+/).filter(Boolean);
     if (words.length > 12) return false;
     if (/\b(list|propose|evaluate|identify|trace|review|audit|summarize|design|implement|refactor|analyze|compare|suggest|recommend|walkthrough|walk\s+through)\b/i.test(text)) return false;
-    // CJK imperative / verb denylist — same intent in Korean / Japanese /
-    // Chinese. Mirrors the English denylist above so long instructions in
-    // any of those languages also fall through to the LLM path.
-    if (/(분석|검토|구현|수정|정리|리팩토|리뷰|감사|요약|설계|비교|추천|평가|조사|확인|작성|개선|보고)/.test(text)) return false;
-    if (/(分析|検討|実装|修正|整理|レビュー|要約|設計|比較|推薦|評価|調査|確認)/.test(text)) return false;
-    if (/(分析|检查|实现|修改|整理|审查|总结|设计|比较|推荐|评价|调查|确认)/.test(text)) return false;
+    // Script-neutral CJK gate: any Hangul / CJK Unified / kana character signals
+    // a potentially complex instruction; fast-path must not short-circuit these.
+    if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/.test(text)) return false;
     return true;
 }
 
@@ -1207,7 +1204,10 @@ export function markSessionDone(id) {
     entry.lastError = null;
     entry.askStartedAt = null;
     entry.toolStartedAt = null;
-    entry.updatedAt = Date.now();
+    const doneTs = Date.now();
+    entry.doneAt = doneTs;
+    entry.lastProgressAt = doneTs;
+    entry.updatedAt = doneTs;
 }
 export function markSessionError(id, msg) {
     if (!id) return;
@@ -1216,7 +1216,10 @@ export function markSessionError(id, msg) {
     entry.lastError = msg ? String(msg).slice(0, 200) : null;
     entry.askStartedAt = null;
     entry.toolStartedAt = null;
-    entry.updatedAt = Date.now();
+    const errTs = Date.now();
+    entry.doneAt = errTs;
+    entry.lastProgressAt = errTs;
+    entry.updatedAt = errTs;
 }
 export function getSessionRuntime(id) {
     return id ? (_runtimeState.get(id) || null) : null;
@@ -1229,6 +1232,56 @@ export function getSessionRuntime(id) {
 export function forEachSessionRuntime() {
     return _runtimeState.entries();
 }
+
+// --- Incremental metric persistence (fix A) ---
+// Per-session idempotency tracking: sessionId → Set of seen iterationIndex keys.
+const _metricSeenIter = new Map();
+
+/**
+ * Persist incremental usage delta immediately after each provider.send iteration.
+ * Idempotency key `sessionId:iterationIndex` ensures a retry of the same iteration
+ * index overwrites instead of double-counting.
+ */
+export function persistIterationMetrics(delta) {
+    if (!delta || !delta.sessionId) return;
+    const { sessionId, iterationIndex, deltaInput, deltaOutput, ts } = delta;
+    let seen = _metricSeenIter.get(sessionId);
+    if (!seen) {
+        seen = new Set();
+        _metricSeenIter.set(sessionId, seen);
+    }
+    const ikey = `${sessionId}:${iterationIndex}`;
+    const isReplay = seen.has(ikey);
+    seen.add(ikey);
+    const session = loadSession(sessionId);
+    if (!session || session.closed) return;
+    if (!isReplay) {
+        session.totalInputTokens = (session.totalInputTokens || 0) + (deltaInput || 0);
+        session.totalOutputTokens = (session.totalOutputTokens || 0) + (deltaOutput || 0);
+        session.tokensCumulative = (session.tokensCumulative || 0) + (deltaInput || 0) + (deltaOutput || 0);
+    }
+    session.lastIterationIndex = iterationIndex;
+    session.lastStreamDeltaAt = ts || Date.now();
+    session.updatedAt = session.lastStreamDeltaAt;
+    try { saveSession(session, { expectedGeneration: session.generation }); } catch { /* ignore */ }
+}
+
+/** Force-flush session metrics to disk. Used by watchdog terminal-reap (fix B). */
+export function flushSessionMetrics(sessionId) {
+    if (!sessionId) return;
+    const session = loadSession(sessionId);
+    if (!session) return;
+    session.updatedAt = Date.now();
+    try { saveSession(session, { expectedGeneration: session.generation }); } catch { /* ignore */ }
+}
+
+/** Mark session hidden so listSessions() filters it out (runtime-only). */
+export function hideSessionFromList(sessionId) {
+    if (!sessionId) return;
+    const entry = _runtimeState.get(sessionId);
+    if (entry) entry.listHidden = true;
+}
+
 export function getSessionAbortSignal(sessionId) {
     return _runtimeState.get(sessionId)?.controller?.signal ?? null;
 }
@@ -1409,6 +1462,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                     effort: session.effort || null,
                     fast: session.fast === true,
                     sessionId,
+                    onUsageDelta: (d) => persistIterationMetrics(d),
                     promptCacheKey: session.promptCacheKey || sessionId,
                     // Provider-scoped cache key (mixdog-codex, mixdog-claude…).
                     // Distinct from sessionId — providers that pool sockets
@@ -1608,7 +1662,9 @@ export function getSession(id) {
     return loadSession(id);
 }
 export function listSessions() {
-    return listStoredSessions();
+    const sessions = listStoredSessions();
+    const hiddenIds = new Set([..._runtimeState.entries()].filter(([, e]) => e.listHidden).map(([id]) => id));
+    return hiddenIds.size ? sessions.filter(s => !hiddenIds.has(s.id)) : sessions;
 }
 // --- Clear messages (keep system prompt + provider/model/cwd) ---
 export function clearSessionMessages(sessionId) {

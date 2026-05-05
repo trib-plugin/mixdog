@@ -42,7 +42,7 @@ import {
 } from './lib/memory.mjs'
 import { configureEmbedding, embedText, getEmbeddingDims } from './lib/embedding-provider.mjs'
 import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
-import { runCycle1, runCycle2, parseInterval, syncRootEmbedding, runPromotePhase, applySimpleStatus, applyUpdate, applyMerge } from './lib/memory-cycle.mjs'
+import { runCycle1, runCycle2, runUnifiedGate, parseInterval, syncRootEmbedding, applySimpleStatus, applyUpdate, applyMerge } from './lib/memory-cycle.mjs'
 import { searchRelevantHybrid } from './lib/memory-recall-store.mjs'
 import { retrieveEntries } from './lib/memory-retrievers.mjs'
 import { resetEmbeddingIndex, pruneOldEntries } from './lib/memory-maintenance-store.mjs'
@@ -88,7 +88,7 @@ const MEMORY_INSTRUCTIONS_TEXT = (() => {
 })()
 
 const PROXY_TOOL_DEFS = [
-  { name: 'memory', description: 'Memory operations. User-curated core list (separate JSON, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
+  { name: 'memory', description: 'Memory operations. User-curated core list (sqlite core_entries table, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
 ]
 
 function readPortFile() {
@@ -1089,18 +1089,25 @@ function renderEntryLines(rows) {
 }
 
 function entryStats() {
-  const total = db.prepare(`SELECT COUNT(*) c FROM entries`).get().c
-  const roots = db.prepare(`SELECT COUNT(*) c FROM entries WHERE is_root = 1`).get().c
-  const unclassified = db.prepare(`SELECT COUNT(*) c FROM entries WHERE chunk_root IS NULL`).get().c
-  const byStatus = db.prepare(`
-    SELECT status, COUNT(*) c FROM entries WHERE is_root = 1 GROUP BY status
-  `).all()
-  const byCategory = db.prepare(`
-    SELECT category, COUNT(*) c FROM entries
-    WHERE is_root = 1 AND status = 'active'
-    GROUP BY category ORDER BY c DESC
-  `).all()
-  return { total, roots, unclassified, byStatus, byCategory }
+  const stmtTotal      = db.prepare(`SELECT COUNT(*) c FROM entries`)
+  const stmtRoots      = db.prepare(`SELECT COUNT(*) c FROM entries WHERE is_root = 1`)
+  const stmtUnchunked  = db.prepare(`SELECT COUNT(*) c FROM entries WHERE chunk_root IS NULL`)
+  const stmtPhase1     = db.prepare(`SELECT COUNT(*) c FROM entries WHERE is_root = 1 AND status = 'pending'`)
+  const stmtByStatus   = db.prepare(`SELECT status, COUNT(*) c FROM entries WHERE is_root = 1 GROUP BY status`)
+  const stmtByCategory = db.prepare(`SELECT category, COUNT(*) c FROM entries WHERE is_root = 1 AND status = 'active' GROUP BY category ORDER BY c DESC`)
+  let total, roots, unchunked_leaves, phase1_pending_roots, byStatus, byCategory
+  db.exec('BEGIN')
+  try {
+    total               = stmtTotal.get().c
+    roots               = stmtRoots.get().c
+    unchunked_leaves    = stmtUnchunked.get().c
+    phase1_pending_roots = stmtPhase1.get().c
+    byStatus            = stmtByStatus.all()
+    byCategory          = stmtByCategory.all()
+  } finally {
+    db.exec('COMMIT')
+  }
+  return { total, roots, unchunked_leaves, phase1_pending_roots, byStatus, byCategory }
 }
 
 async function handleMemoryAction(args) {
@@ -1114,10 +1121,11 @@ async function handleMemoryAction(args) {
     const vecReady = Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE name='vec_entries'`).get())
     const lastCycle1Ago = last.cycle1 ? `${Math.round((Date.now() - last.cycle1) / 60000)}m ago` : 'never'
     const lastCycle2Ago = last.cycle2 ? `${Math.round((Date.now() - last.cycle2) / 60000)}m ago` : 'never'
+    const activeCap = config?.cycle2?.active_cap ?? 300  // fallback: CYCLE2_ACTIVE_CAP default
     const lines = [
-      `entries: total=${stats.total} roots=${stats.roots} unclassified=${stats.unclassified}`,
-      `status: ${stats.byStatus.map(r => `${r.status ?? 'NULL'}:${r.c}`).join(', ') || 'empty'}`,
-      `categories(active): ${stats.byCategory.map(r => `${r.category ?? 'NULL'}:${r.c}`).join(', ') || 'empty'}`,
+      `entries: total=${stats.total} roots=${stats.roots} unchunked_leaves=${stats.unchunked_leaves} pending_roots=${stats.phase1_pending_roots}`,
+      `status: ${stats.byStatus.map(r => `${r.status ?? '?'}:${r.c}`).join(', ') || 'empty'}`,
+      `categories(active): ${stats.byCategory.map(r => `${r.category ?? 'NULL'}:${r.c}`).join(', ') || 'empty'} active_cap=${activeCap}`,
       `vec_entries: ${vecReady ? 'ready' : 'missing'} dims=${dims}`,
       `bootstrap: ${isBootstrapComplete(db) ? 'complete' : 'incomplete'}`,
       `last_cycle1: ${lastCycle1Ago}`,
@@ -1157,19 +1165,18 @@ async function handleMemoryAction(args) {
   if (action === 'cycle2' || action === 'sleep') {
     const result = await runCycle2(db, config?.cycle2 || {})
     setCycleLastRun('cycle2', Date.now())
-    const p1 = result?.phase1 || {}
-    const p2 = result?.phase2 || {}
-    const p3 = result?.phase3 || {}
     const counts = {
-      promoted: (p1.added || 0) + (p2.promoted || 0),
-      demoted: p3.demoted || 0,
-      archived: p3.archived || 0,
-      merged: p3.merged || 0,
-      updated: p3.updated || 0,
-      phase2_kept: p2.kept || 0,
-      phase3_kept: p3.kept || 0,
-      processed: p2.processed || 0,
-      pending: p1.pending || 0,
+      promoted: result?.promoted || 0,
+      archived: result?.archived || 0,
+      demoted: result?.demoted || 0,
+      merged: result?.merged || 0,
+      updated: result?.updated || 0,
+      kept: result?.kept || 0,
+      fixed_kept: result?.fixed_kept || 0,
+      rejected_verb: result?.rejected_verb || 0,
+      cascade_drop: result?.cascade?.dropped || 0,
+      phase_merge: result?.phase_merge?.merged || 0,
+      phase4_archived: result?.phase4?.archived || 0,
     }
     const parts = Object.entries(counts).filter(([, v]) => v > 0).map(([k, v]) => `${k}=${v}`)
     return { text: `cycle2 ${parts.length ? parts.join(' ') : 'noop'}` }
@@ -1191,9 +1198,14 @@ async function handleMemoryAction(args) {
     db.prepare(`
       UPDATE entries
       SET element = NULL, category = NULL, summary = NULL,
-          status = NULL, score = NULL, last_seen_at = NULL,
+          status = 'pending', score = NULL, last_seen_at = NULL,
           embedding = NULL, summary_hash = NULL
-      WHERE is_root = 1 OR (chunk_root IS NULL)
+      WHERE is_root = 1
+    `).run()
+    db.prepare(`
+      UPDATE entries
+      SET status = NULL
+      WHERE is_root = 0
     `).run()
     const r1 = await _awaitCycle1Run(config?.cycle1 || {})
     const r2 = await runCycle2(db, config?.cycle2 || {})
@@ -1236,7 +1248,7 @@ async function handleMemoryAction(args) {
       return { text: 'manage requires op: "add" | "edit" | "delete"', isError: true }
     }
     const VALID_CAT = new Set(['rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue'])
-    const VALID_STATUS = new Set(['active', 'archived'])
+    const VALID_STATUS = new Set(['pending', 'active', 'fixed', 'archived'])
 
     if (op === 'add') {
       const element = String(args.element ?? '').trim()
@@ -1262,7 +1274,7 @@ async function handleMemoryAction(args) {
         db.prepare(`
           UPDATE entries
           SET chunk_root = ?, is_root = 1, element = ?, category = ?, summary = ?,
-              status = 'active', score = ?, last_seen_at = ?
+              status = 'fixed', score = ?, last_seen_at = ?
           WHERE id = ?
         `).run(newId, element, category, summary, score, nowMs, newId)
         db.exec('COMMIT')
@@ -1421,55 +1433,46 @@ async function handleMemoryAction(args) {
 
   if (action === 'retro_eval_active') {
     if (args.confirm !== 'REEVAL ACTIVE') {
-      return { text: 'retro_eval_active requires confirm: "REEVAL ACTIVE" (heavy LLM batch op — reviews all active roots through the phase3 rubric)', isError: true }
+      return { text: 'retro_eval_active requires confirm: "REEVAL ACTIVE" (heavy LLM batch op — reviews all active roots through the unified gate)', isError: true }
     }
     const RETRO_BATCH = 50
     const cycle2Config = config?.cycle2 || {}
     const allActive = db.prepare(
-      `SELECT id, element, category, summary, score, last_seen_at, project_id
+      `SELECT id, element, category, summary, score, last_seen_at, project_id, status
        FROM entries WHERE is_root = 1 AND status = 'active'
        ORDER BY reviewed_at ASC, id ASC`,
     ).all()
     const total = allActive.length
-    let archived = 0, demoted = 0, kept = 0, updated = 0, merged = 0, errors = 0
+    let archived = 0, kept = 0, updated = 0, merged = 0, errors = 0
     const nowMs = Date.now()
     for (let offset = 0; offset < total; offset += RETRO_BATCH) {
       const batch = allActive.slice(offset, offset + RETRO_BATCH)
       const batchIds = batch.map(r => Number(r.id))
       const activeContext = db.prepare(
-        `SELECT id, element, category, summary, score, last_seen_at, project_id
-         FROM entries WHERE is_root = 1 AND status = 'active'
-         ORDER BY last_seen_at DESC, score DESC, id ASC LIMIT 200`,
+        `SELECT id, element, category, summary, score, last_seen_at, project_id, status
+         FROM entries WHERE is_root = 1 AND status IN ('active','fixed')
+         ORDER BY score DESC, last_seen_at DESC, id ASC LIMIT 200`,
       ).all()
-      const activeCountRow = db.prepare(`SELECT COUNT(*) AS total FROM entries WHERE is_root = 1 AND status = 'active'`).get()
-      const activeCountTotal = activeCountRow?.total ?? 0
-      let phaseResult
+      let gateResult
       try {
-        phaseResult = await runPromotePhase(
-          db, 'phase3_active_review', batch, activeContext, cycle2Config, {},
-          { ACTIVE_COUNT: String(activeCountTotal), ACTIVE_CAP: 200 },
-        )
+        gateResult = await runUnifiedGate(db, batch, activeContext, cycle2Config, { activeCap: 200 })
       } catch (err) {
-        process.stderr.write(`[retro_eval_active] runPromotePhase failed (offset=${offset}): ${err.message}\n`)
+        process.stderr.write(`[retro_eval_active] runUnifiedGate failed (offset=${offset}): ${err.message}\n`)
         errors += batch.length
         continue
       }
-      // #3: parse failure — count as errors, do not touchReviewed (rows retry next time)
-      if (phaseResult?.parseOk === false || phaseResult?.actions === null) {
+      if (gateResult?.parseOk === false || gateResult?.actions === null) {
         errors += batch.length
         continue
       }
-      const actions = phaseResult?.actions ?? []
+      const actions = gateResult?.actions ?? []
       const allowed = new Set(batchIds)
-      const rejectedIds = phaseResult?.rejectedIds ?? new Set()
-      // #5: build successIds = batchIds minus rejectedIds; only touch those
-      const successIds = new Set(batchIds.filter(id => !rejectedIds.has(id)))
-      // #4: touchReviewed here so all-omit batches still advance the cursor
+      const rejected = gateResult?.rejected ?? new Set()
+      const successIds = new Set(batchIds.filter(id => !rejected.has(id)))
       const touch = db.prepare(`UPDATE entries SET reviewed_at = ? WHERE id = ?`)
       for (const id of successIds) {
         try { touch.run(nowMs, id) } catch {}
       }
-      // No actions returned: every entry in successIds is kept as-is (omit = keep).
       if (!actions.length) { kept += batch.filter(r => successIds.has(Number(r.id))).length; continue }
       const acted = new Set()
       for (const act of actions) {
@@ -1479,13 +1482,12 @@ async function handleMemoryAction(args) {
           acted.add(eid)
           if (act.action === 'archived') {
             if (applySimpleStatus(db, eid, 'archived')) archived += 1
-          } else if (act.action === 'demote') {
-            if (applySimpleStatus(db, eid, 'demoted')) demoted += 1
+          } else if (act.action === 'active') {
+            // active → active is a keep verdict from the gate.
+            kept += 1
           } else if (act.action === 'update') {
-            // #6: count updates separately, not as kept
             if (await applyUpdate(db, eid, act.element, act.summary)) updated += 1
           } else if (act.action === 'merge') {
-            // #2: mirror cycle2 phase3 merge behavior
             const targetId = Number(act?.target_id)
             const sourceIds = Array.isArray(act?.source_ids) ? act.source_ids : []
             if (!Number.isFinite(targetId) || !allowed.has(targetId)) {
@@ -1518,10 +1520,10 @@ async function handleMemoryAction(args) {
           errors += 1
         }
       }
-      // Entries in successIds but not acted-upon are kept (includes omit/no-op actions).
+      // Entries in successIds but not acted-upon (omit / no-op) are kept.
       kept += batch.filter(r => successIds.has(Number(r.id)) && !acted.has(Number(r.id))).length
     }
-    return { text: `retro_eval_active: total=${total} archived=${archived} demoted=${demoted} kept=${kept} updated=${updated} merged=${merged} errors=${errors}` }
+    return { text: `retro_eval_active: total=${total} archived=${archived} kept=${kept} updated=${updated} merged=${merged} errors=${errors}` }
   }
 
   return { text: `unknown memory action: ${action}`, isError: true }
@@ -1537,7 +1539,7 @@ const TOOL_DEFS = [
     name: 'memory',
     title: 'Memory Cycle',
     annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    description: 'Memory operations. User-curated core list (separate JSON, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.',
+    description: 'Memory operations. User-curated core list (sqlite core_entries table, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1547,12 +1549,12 @@ const TOOL_DEFS = [
         element: { type: 'string', description: 'Short headline / canonical name. Required for add ops (core/manage); optional for edit.' },
         summary: { type: 'string', description: 'Long-form description. Required for add ops (falls back to element if omitted); optional for edit.' },
         category: { type: 'string', enum: ['rule','constraint','decision','fact','goal','preference','task','issue'], description: 'Entry category. Default fact for add; optional for edit.' },
-        status: { type: 'string', enum: ['active','archived'], description: 'Lifecycle state. manage edit only (archive replaces the old forget action). Not used by core.' },
+        status: { type: 'string', enum: ['pending','active','fixed','archived'], description: 'Lifecycle state. manage edit only. fixed = user-injected, protected from cycle2 archival. Not used by core.' },
         maxDays: { type: 'number', description: 'Age threshold in days for the prune action. Default 30, minimum 1. Ignored elsewhere.' },
         window: { type: 'string', description: 'Time window for backfill: 1d, 3d, 7d, 30d, all' },
         limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
         confirm: { type: 'string', description: 'Required for destructive actions: "DELETE ALL MEMORY" for purge, "PRUNE OLD ENTRIES" for prune, "REBUILD MEMORY" for rebuild. Must match exactly.' },
-        project_id: { type: 'string', description: 'Optional project pool selector for action=\'core\'. Omit/null → COMMON (core-memory.json). Set to slug like \'tempest1033/GamerScroll\' → project-memory/<safe>.json.' },
+        project_id: { type: 'string', description: 'Optional project pool selector for action=\'core\'. Omit/null → COMMON (project_id IS NULL in core_entries). Set to slug like \'tempest1033/GamerScroll\' → scoped rows in core_entries.' },
       },
       required: ['action'],
     },

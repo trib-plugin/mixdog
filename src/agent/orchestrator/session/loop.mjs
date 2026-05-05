@@ -595,9 +595,50 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         // Provider may have returned despite an abort (SDKs that don't honour
         // signal) — bail before processing any of its output.
         throwIfAborted();
-        // No tool calls — done
-        if (!response.toolCalls?.length)
+        // Incremental metric persistence (fix A): push per-iteration token delta
+        // immediately so watchdog / list_sessions sees live totals mid-turn.
+        if (sessionId && opts.onUsageDelta && response.usage) {
+            try {
+                opts.onUsageDelta({
+                    sessionId,
+                    iterationIndex: iterations,
+                    deltaInput: response.usage.inputTokens || 0,
+                    deltaOutput: response.usage.outputTokens || 0,
+                    ts: Date.now(),
+                });
+            } catch { /* best-effort — never break the loop */ }
+        }
+        // No tool calls — check for narrative-only turn (fix C) then break.
+        if (!response.toolCalls?.length) {
+            // Fix C: if the response is prose-only and matches future-tense
+            // narration heuristic (language-neutral), inject one retry prompt.
+            const _narrativeRetryDone = opts._narrativeRetryDone || false;
+            if (!_narrativeRetryDone && response.content) {
+                const _c = response.content;
+                // Language-neutral: short content + no trailing question + no
+                // embedded tool_use markers → likely narration without action.
+                const _isNarrativeOnly = (
+                    _c.length < 800 &&
+                    !_c.trimEnd().endsWith('?') &&
+                    !_c.includes('<tool_use') &&
+                    !_c.includes('"type":"tool_use"')
+                );
+                if (_isNarrativeOnly) {
+                    // Append tail user message and continue for one extra iteration.
+                    messages.push({
+                        role: 'assistant',
+                        content: response.content,
+                    });
+                    messages.push({
+                        role: 'user',
+                        content: 'You ended the previous turn with intent text but no tool_use blocks. Emit tool_use blocks now. No narration, no preamble.',
+                    });
+                    opts._narrativeRetryDone = true;
+                    continue;
+                }
+            }
             break;
+        }
         const calls = response.toolCalls;
         toolCallsTotal += calls.length;
         // Per-turn batch shape — one row per assistant turn so trace
@@ -672,7 +713,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                     const permissionBlocked = isBlockedByPermission(call.name, toolKind, effectivePermission);
                     const noToolRole = sessionRef?.role === 'cycle1-agent' || sessionRef?.role === 'cycle2-agent';
                     if (noToolRole) {
-                        result = `Error: tool "${call.name}" is not available in role "${sessionRef.role}". This role must output JSON only — re-emit the JSON without any tool call.`;
+                        result = `Error: tool "${call.name}" is not available in role "${sessionRef.role}". Tools listed in your schema are blocked for this role — ignore them. Re-emit the answer as pipe-separated text per the role's output format (first character a digit, NO tool_use blocks, NO JSON, NO prose, NO apology).`;
                         toolEndedAt = Date.now();
                     } else if (isBlockedHiddenWrapperCall(call.name, sessionRef)) {
                         result = `Error: tool "${call.name}" is the wrapper your role (${sessionRef?.role || 'hidden'}) backs. Calling it would spawn another hidden agent of the same kind — use the role's direct tool (memory_search / web_search / find_symbol+grep+read) instead.`;

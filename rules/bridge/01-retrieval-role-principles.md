@@ -2,7 +2,7 @@
 
 ## Output
 
-- **Match the caller's language** in the answer body.
+- **Answer body**: English (retrieval roles are Lead's internal backends — see `shared/00-language.md`). Cited content keeps its source-data language verbatim (memory entry text, code excerpts, web snippets).
 - **Synthesize prose** — no raw card / snippet dump. Cite inline:
   - codebase → `path:line`
   - memory → source marker (recall-agent output only; do not echo internal ids)

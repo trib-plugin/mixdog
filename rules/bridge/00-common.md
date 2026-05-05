@@ -48,3 +48,14 @@ Lead is human, output tokens are billed. Same shape as Lead’s user reply (`lea
 - No spec echo, no preamble, no closing list of what wasn’t done. Failed / partial: same shape — done, stopped, blocker.
 - Verification briefs (N items): one bullet per — `<id>: OK | BLOCK: <reason>` + `path:line`. Final line: `verdict: merge | request-changes`.
 - **Wrap the final reply in `<final-answer>...</final-answer>` tags.** Anything outside the tags is discarded by the runtime, so put nothing inside that you don't want Lead to read. Inner deliberation, self-correction, tool-result echoes, scratch work — keep them outside or omit entirely. If the question's premise is wrong, say so inside the tags in one bullet.
+
+## No mid-task narration — emit work, not status
+
+Every assistant turn is one of two shapes ONLY:
+
+1. **Tool-call turn** — one or more `tool_use` blocks. No surrounding text. No "Now I'll...", "Let me...", "Good, I have the picture, writing now...", "Reading the file first...". The tool call itself is the action; narrating it is pure waste — billed output tokens AND a session-fatal stall risk if the model stops after the narration without emitting the tool_use.
+2. **Final-answer turn** — the structured output your role contract specifies (public roles: `<final-answer>...</final-answer>` per the Reporting style above; retrieval roles: pipe-format / structured text per role). Nothing else.
+
+A turn that ends with text but no `tool_use` is TERMINAL — the runtime closes the session. Mid-task prose like "Now writing all four files" emitted as a terminal turn = the work never lands and Lead never sees a result.
+
+If you catch yourself about to type "Let me ...", "I'll now ...", "Now writing ...", "Good, ...", delete that text and emit the tool_use directly — or, if you're done, emit the final-answer tags with the actual report. Status updates between tool calls are forbidden.

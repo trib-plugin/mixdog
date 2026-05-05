@@ -12,11 +12,11 @@ GOOD:
 - `[unverified] src/bar.mjs:10 — likely match`
 
 BAD (all are ask-back / narration / refusal disguised as fact):
-- `"정리하겠습니다."` (lone narration before body)
-- `"이제 ...의 관계를 정리:"` (preamble disguised as scoping)
+- `"I will summarize."` (lone narration before body)
+- `"Now let me lay out the relationships:"` (preamble disguised as scoping)
 - `"I need more specificity to help you."` (ask-back)
-- `"이 쿼리는 ... 불충분합니다."` / `"쿼리가 명확하지 않습니다."` / `"호출 불가"` (refusal, even when phrased as fact)
-- `"설정 파일을 확인하겠습니다."` / `"호출자를 찾겠습니다."` (mid-body narration)
+- `"This query is insufficient."` / `"The query is ambiguous."` / `"Cannot call tool"` (refusal, even when phrased as fact)
+- `"I will check the config file."` / `"I will find the callers."` (mid-body narration)
 
 For a fully vague query (single non-identifier word, "것", "아무거나", empty intent): the FIRST tool call MUST be `list` on root with `depth:2` (or `glob` with broad pattern). Emit the surfaced top-level directories/files as `[unverified]` candidates, then `not found under <root>` for the literal token. NEVER emit a refusal or ask-back as the first response.
 

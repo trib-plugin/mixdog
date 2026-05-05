@@ -132,62 +132,28 @@ function formatTsShort(ts) {
 // Single source of truth: lib/text-utils.cjs (also imported by memory-extraction.mjs).
 const { cleanMemoryText: cleanText } = require(path.join(PLUGIN_ROOT, 'lib', 'text-utils.cjs'));
 
-// Returns a safe filename stem for projectId, or null if the value is
-// dangerous (path traversal or backslash injection).
-function safeFilenameOrNull(projectId) {
-  if (projectId === null || projectId === undefined) return null;
-  const s = String(projectId);
-  if (s.includes('..') || s.includes('\\')) return null;
-  return s.replace(/\//g, '__');
-}
-
-function readUserCoreMemoryLines(projectId = null) {
+// Read user-curated core memory lines from the core_entries sqlite table.
+// projectId: null = COMMON only, '__ALL_PROJECTS__' = every non-NULL pool, string = specific pool.
+function readUserCoreMemoryLines(coreDb, projectId = null) {
   try {
-    let filePath;
-    if (projectId !== null) {
-      const stem = safeFilenameOrNull(projectId);
-      if (stem === null) return [];
-      filePath = path.join(DATA_DIR, 'project-memory', stem + '.json');
+    if (!coreDb) return [];
+    let rows;
+    if (projectId === '__ALL_PROJECTS__') {
+      rows = coreDb.prepare(
+        `SELECT summary FROM core_entries WHERE project_id IS NOT NULL ORDER BY project_id ASC, id ASC`
+      ).all();
+    } else if (projectId === null) {
+      rows = coreDb.prepare(
+        `SELECT summary FROM core_entries WHERE project_id IS NULL ORDER BY id ASC`
+      ).all();
     } else {
-      filePath = path.join(DATA_DIR, 'core-memory.json');
+      rows = coreDb.prepare(
+        `SELECT summary FROM core_entries WHERE project_id = ? ORDER BY id ASC`
+      ).all(projectId);
     }
-    if (!fs.existsSync(filePath)) return [];
-    const raw = fs.readFileSync(filePath, 'utf8');
-    if (!raw.trim()) return [];
-    const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.entries)) return [];
-    return parsed.entries
-      .map(e => String(e.summary || '').trim())
-      .filter(Boolean);
+    return rows.map(r => String(r.summary || '').trim()).filter(Boolean);
   } catch (e) {
-    process.stderr.write(`[session-start] core-memory.json read failed: ${e.message}\n`);
-    return [];
-  }
-}
-
-function readAllProjectMemoryLines() {
-  try {
-    const dir = path.join(DATA_DIR, 'project-memory');
-    if (!fs.existsSync(dir)) return [];
-    const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
-    const lines = [];
-    for (const f of files) {
-      // Prefer project_id stored in file; fall back to filename decode for old files.
-      let resolvedId = null;
-      try {
-        const raw = fs.readFileSync(path.join(dir, f), 'utf8');
-        const parsed = raw.trim() ? JSON.parse(raw) : null;
-        if (parsed && 'project_id' in parsed) {
-          resolvedId = parsed.project_id;
-        } else {
-          resolvedId = f.slice(0, -5).replace(/__/g, '/');
-        }
-      } catch {}
-      const entries = readUserCoreMemoryLines(resolvedId);
-      for (const l of entries) lines.push(l);
-    }
-    return lines;
-  } catch {
+    process.stderr.write(`[session-start] core_entries read failed: ${e.message}\n`);
     return [];
   }
 }
@@ -220,15 +186,19 @@ function buildContext(db, cwd) {
     const rows = db.prepare(`
       SELECT element, category, summary
       FROM entries
-      WHERE is_root = 1 AND status = 'active'${projectId !== null ? " AND (project_id IS NULL OR project_id = ?)" : ''}
+      WHERE is_root = 1 AND status = 'active' AND (project_id IS NULL${projectId !== null ? " OR project_id = ?" : " OR project_id IS NOT NULL"})
       ORDER BY score DESC, last_seen_at DESC
     `).all(...(projectId !== null ? [projectId] : []));
     const dbLines = rows
       .map(r => String(r.summary || '').trim())
       .filter(Boolean);
-    const userLines = projectId !== null
-      ? [...readUserCoreMemoryLines(), ...readUserCoreMemoryLines(projectId)]
-      : [...readUserCoreMemoryLines(), ...readAllProjectMemoryLines()];
+    const coreDb = openMemoryDb();
+    const userLines = [
+      ...readUserCoreMemoryLines(coreDb),
+      ...(projectId !== null
+        ? readUserCoreMemoryLines(coreDb, projectId)
+        : readUserCoreMemoryLines(coreDb, '__ALL_PROJECTS__')),
+    ];
     const seen = new Set();
     const lines = [];
     // userLines are user-curated and small — always include unconditionally.

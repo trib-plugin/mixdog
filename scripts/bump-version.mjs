@@ -120,7 +120,7 @@ if (dryRun) {
   const pluginJsonPath = path.join(ROOT, '.claude-plugin', 'plugin.json');
 
   const pkgCurrent = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version || '(unknown)';
-  process.stdout.write(`dry-run: package.json: ${pkgCurrent} → ${newVersion}\n`);
+  process.stdout.write(`dry-run: package.json: ${pkgCurrent} -> ${newVersion}\n`);
 
   if (fs.existsSync(pkgLockPath)) {
     const lockCurrent = JSON.parse(fs.readFileSync(pkgLockPath, 'utf8')).version || '(unknown)';
@@ -129,7 +129,7 @@ if (dryRun) {
 
   if (fs.existsSync(pluginJsonPath)) {
     const pluginCurrent = JSON.parse(fs.readFileSync(pluginJsonPath, 'utf8')).version || '(unknown)';
-    process.stdout.write(`dry-run: .claude-plugin/plugin.json: ${pluginCurrent} → ${newVersion}\n`);
+    process.stdout.write(`dry-run: .claude-plugin/plugin.json: ${pluginCurrent} -> ${newVersion}\n`);
   }
 
   process.stdout.write('dry-run complete (no files written).\n');
@@ -166,13 +166,24 @@ try {
   }
 
   const pluginJsonPath = path.join(ROOT, '.claude-plugin', 'plugin.json');
-  if (fs.existsSync(pluginJsonPath)) {
-    const plugin = readJson(pluginJsonPath);
-    plugin.version = newVersion;
-    writeJson(pluginJsonPath, plugin);
-    touched.push('plugin.json');
-  } else {
-    process.stderr.write('Notice: .claude-plugin/plugin.json not found — skipped.\n');
+  if (!fs.existsSync(pluginJsonPath)) {
+    process.stderr.write('Error: .claude-plugin/plugin.json not found — required target missing. Aborting.\n');
+    process.exit(1);
+  }
+  const plugin = readJson(pluginJsonPath);
+  plugin.version = newVersion;
+  writeJson(pluginJsonPath, plugin);
+  touched.push('plugin.json');
+
+  // ── Final assert: re-read all written files and confirm versions match ───
+  const assertErrors = [];
+  const pkgActual = readJson(pkgPath).version;
+  if (pkgActual !== newVersion) assertErrors.push(`package.json has ${pkgActual}, expected ${newVersion}`);
+  const pluginActual = readJson(pluginJsonPath).version;
+  if (pluginActual !== newVersion) assertErrors.push(`.claude-plugin/plugin.json has ${pluginActual}, expected ${newVersion}`);
+  if (assertErrors.length > 0) {
+    process.stderr.write(`Error: post-write version mismatch:\n  ${assertErrors.join('\n  ')}\n`);
+    process.exit(1);
   }
 
   process.stdout.write(`bumped to ${newVersion}: ${touched.join(', ')}\n`);

@@ -24,18 +24,18 @@ READ-ONLY past-context retriever. Single tool: `memory_search`. Forbidden: all o
 
 | phrasing | period |
 |---|---|
-| 지금 / 현재 / 방금 / 몇분전 / 방금 전 / 조금 전 / 좀 전 / 얼마 전 / 잠깐 전 / right now / just now / this minute / a few minutes ago / a moment ago / moments ago / a little while ago | `1h` |
-| 오늘 / today / this hour / today's session / 이번 세션 | `today` |
-| 어제 / yesterday | `yesterday` |
-| 이번주 / this week | `this_week` |
-| 지난주 / last week | `last_week` (no widen) |
-| 최근 며칠 / 지난 며칠 / 며칠간 / 이틀 / 사흘 / 나흘 / recent days / past few days | `3d` |
-| 이번달 / 지난달 / this month / last month | `30d` |
-| 최근 / recent / lately | omit |
-| 이어서 / 계속 / 지금까지 / 진행 상황 / 현재 작업 / continuing / pick up where left off / current work / current status | `today` (vague-time continuation — narrows window to current calendar day; freshness decay is **skipped** for `today` per engine rule; results sorted ts DESC by default) |
-| 세션 시작 이후 / since session start | `1h` (<1h) else `1d` |
-| 세션 시작 이전 / pre-boot / before this session | `last` |
-| 전체 / everything | `all` |
+| right now / just now / this minute / a few minutes ago / a moment ago / moments ago / a little while ago | `1h` |
+| today / this hour / today's session / this session | `today` |
+| yesterday | `yesterday` |
+| this week | `this_week` |
+| last week | `last_week` (no widen) |
+| recent days / past few days / last few days | `3d` |
+| this month / last month | `30d` |
+| recent / lately | omit |
+| continuing / pick up where left off / current work / current status | `today` (vague-time continuation — narrows window to current calendar day; freshness decay is **skipped** for `today` per engine rule; results sorted ts DESC by default) |
+| since session start | `1h` (<1h) else `1d` |
+| pre-boot / before this session | `last` |
+| everything | `all` |
 
 Same time words any language → map by meaning. To surface unclassified raw turns (source quotes, exact recent wording), pass `includeRaw: true` in the `memory_search` args — the engine fetches raw rows for the requested `period` window and merges them into results. Do NOT rely on time-bucket auto-trigger; `includeRaw` is caller-driven only.
 
@@ -45,12 +45,12 @@ Same time words any language → map by meaning. To surface unclassified raw tur
 
 | Caller | 1st args |
 |---|---|
-| "이번 세션 적용한 memory 패치 수" | `{ query: "memory 패치", period: "today" }` |
-| "방금 수정한 파일" | `{ query: "수정한 파일", period: "1h" }` |
-| "어제 push한 버전" | `{ query: "push 버전", period: "yesterday" }` |
-| "지난주 cwd 패치" | `{ query: "cwd 패치", period: "last_week" }` (no widen) |
-| "isSafePath 제거" | `{ query: "isSafePath 제거" }` (omit period) |
-| "v0.1.250 이전 결정" | `{ query: "v0.1.250 이전 결정" }` (version anchor; omit period) |
+| "how many memory patches this session" | `{ query: "memory patch", period: "today" }` |
+| "file I just edited" | `{ query: "edited file", period: "1h" }` |
+| "version pushed yesterday" | `{ query: "push version", period: "yesterday" }` |
+| "cwd patch last week" | `{ query: "cwd patch", period: "last_week" }` (no widen) |
+| "isSafePath removal" | `{ query: "isSafePath removal" }` (omit period) |
+| "decisions before v0.1.250" | `{ query: "decisions before v0.1.250" }` (version anchor; omit period) |
 
 Every `⟨#NNNN⟩` anchor used INTERNALLY for grounding MUST come from THIS query slot's `memory_search` payload — never sibling array slot, never training memory. Anchors are grounding-only; **never echo them in the final answer** (full policy in the ID rule below). The "MUST come from this slot" constraint applies at grounding time, not at output time — there is no output-time citation form for anchors.
 

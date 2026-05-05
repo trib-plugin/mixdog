@@ -1,5 +1,5 @@
 import { DatabaseSync } from '../../../lib/sqlite-bridge.mjs'
-import { mkdirSync, existsSync } from 'fs'
+import { mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync, renameSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { cleanMemoryText } from './memory-extraction.mjs'
 
@@ -67,7 +67,7 @@ export function init(db, dims) {
         CHECK (category IS NULL OR category IN
           ('rule','constraint','decision','fact','goal','preference','task','issue')),
         CHECK (status IS NULL OR status IN
-          ('active','pending','demoted','processed','archived'))
+          ('pending','active','fixed','archived'))
       );
 
       CREATE TRIGGER trg_chunk_root_must_be_root
@@ -115,7 +115,7 @@ export function init(db, dims) {
       -- ORDER BY last_seen_at ASC, score DESC.
       CREATE INDEX idx_roots_active_old
         ON entries(status, last_seen_at ASC, score DESC)
-        WHERE is_root = 1 AND status IN ('active', 'processed');
+        WHERE is_root = 1 AND status = 'active';
       CREATE INDEX idx_entries_project
         ON entries(project_id) WHERE project_id IS NOT NULL;
       CREATE INDEX idx_entries_reviewed_at
@@ -170,10 +170,22 @@ export function init(db, dims) {
     `)
 
     db.exec(`CREATE VIRTUAL TABLE vec_entries USING vec0(embedding float[${dimCount}])`)
+    db.exec(`
+      CREATE TABLE core_entries (
+        id          INTEGER PRIMARY KEY,
+        element     TEXT NOT NULL,
+        summary     TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        project_id  TEXT,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+      CREATE INDEX core_entries_project_idx ON core_entries(project_id);
+    `)
 
     const metaInsert = db.prepare(`INSERT INTO meta(key, value) VALUES (?, ?)`)
     metaInsert.run('embedding.current_dims', String(dimCount))
-    metaInsert.run('boot.schema_version', '8')
+    metaInsert.run('boot.schema_version', '12')
     metaInsert.run('boot.schema_bootstrap_complete', '1')
 
     db.exec('COMMIT')
@@ -205,7 +217,7 @@ export function openDatabase(dataDir, dims) {
   if (isNewFile || !isBootstrapComplete(db)) {
     init(db, dims)
   }
-  migrateIfNeeded(db)
+  migrateIfNeeded(db, key)
   dbs.set(key, db)
   return db
 }
@@ -217,7 +229,7 @@ export function openDatabase(dataDir, dims) {
  * state, and "duplicate column" errors on retry are swallowed so a
  * previously-half-applied migration still lands `schema_version`.
  */
-function migrateIfNeeded(db) {
+function migrateIfNeeded(db, dataDir = null) {
   const current = Number(getMetaValue(db, 'boot.schema_version', '1')) || 1
   if (current < 2) {
     try {
@@ -355,6 +367,247 @@ function migrateIfNeeded(db) {
     setMetaValue(db, 'boot.schema_version', '8')
     process.stderr.write(`[memory] schema migrated to v8 (idx_entries_phase_sweep)\n`)
   }
+  if (current < 9) {
+    // v9: migrate user-curated core memory from JSON files to core_entries table.
+    // Table is also created in bootstrap for fresh databases.
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS core_entries (
+          id          INTEGER PRIMARY KEY,
+          element     TEXT NOT NULL,
+          summary     TEXT NOT NULL,
+          category    TEXT NOT NULL,
+          project_id  TEXT,
+          created_at  INTEGER NOT NULL,
+          updated_at  INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS core_entries_project_idx ON core_entries(project_id);
+      `)
+    } catch (e) {
+      process.stderr.write(`[memory] schema v9 table creation failed: ${e.message}\n`)
+      return
+    }
+
+    // Idempotent data migration: skip if already migrated or no dataDir.
+    const alreadyMigrated = getMetaValue(db, 'core_migrated_v9') === '1'
+    if (!alreadyMigrated && dataDir) {
+      const backupTs = Date.now()
+      const backupDir = join(dataDir, `.legacy-core-backup-${backupTs}`)
+      const log = []
+      let migrationOk = false
+
+      const insertStmt = db.prepare(
+        `INSERT INTO core_entries(element, summary, category, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
+      )
+
+      function migrateFileEntries(filePath, entries, projectId) {
+        for (const e of entries) {
+          const el = String(e.element || '').trim()
+          const sm = String(e.summary || e.element || '').trim()
+          const cat = String(e.category || 'fact').toLowerCase()
+          if (!el) continue
+          const res = insertStmt.run(el, sm, cat, projectId, Number(e.created_at) || backupTs, Number(e.updated_at) || backupTs)
+          log.push({ legacyPath: filePath, legacyId: e.id, newId: Number(res.lastInsertRowid), project_id: projectId, ts: backupTs })
+        }
+      }
+
+      db.exec('BEGIN')
+      try {
+        // Migrate core-memory.json (COMMON, project_id=NULL)
+        const skippedFiles = []
+        const commonPath = join(dataDir, 'core-memory.json')
+        if (existsSync(commonPath)) {
+          try {
+            const raw = readFileSync(commonPath, 'utf8')
+            if (raw.trim()) {
+              const parsed = JSON.parse(raw)
+              if (parsed && Array.isArray(parsed.entries)) {
+                migrateFileEntries(commonPath, parsed.entries, null)
+              }
+            }
+          } catch (e) { skippedFiles.push(`core-memory.json (${e.message})`) }
+        }
+
+        // Migrate project-memory/*.json
+        const projDir = join(dataDir, 'project-memory')
+        if (existsSync(projDir)) {
+          let files = []
+          try { files = readdirSync(projDir).filter(f => f.endsWith('.json')) } catch {}
+          for (const f of files) {
+            const filePath = join(projDir, f)
+            try {
+              const raw = readFileSync(filePath, 'utf8')
+              if (raw.trim()) {
+                const parsed = JSON.parse(raw)
+                if (parsed && Array.isArray(parsed.entries)) {
+                  const projectId = (parsed && 'project_id' in parsed && parsed.project_id != null)
+                    ? parsed.project_id
+                    : f.slice(0, -5).replace(/__/g, '/')
+                  migrateFileEntries(filePath, parsed.entries, projectId)
+                }
+              }
+            } catch (e) { skippedFiles.push(`${f} (${e.message})`) }
+          }
+        }
+
+        // Set migration flag inside the same transaction.
+        db.prepare(`INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+          .run('core_migrated_v9', '1')
+        db.exec('COMMIT')
+        migrationOk = true
+        process.stderr.write(`[memory] schema v9: migrated ${log.length} core entries to sqlite\n`)
+        if (skippedFiles.length > 0) {
+          process.stderr.write(`[memory] v9 migration skipped ${skippedFiles.length} files: ${skippedFiles.map(f => f.split(' (')[0]).join(', ')}\n`)
+        }
+      } catch (e) {
+        try { db.exec('ROLLBACK') } catch {}
+        process.stderr.write(`[memory] schema v9 data migration failed: ${e.message}\n`)
+        return
+      }
+
+      // Write backup log + move JSON files (after successful DB commit).
+      if (migrationOk) {
+        try {
+          mkdirSync(backupDir, { recursive: true })
+          const migrationLogPath = join(backupDir, 'migration.log')
+          writeFileSync(migrationLogPath, JSON.stringify(log, null, 2), 'utf8')
+          if (skippedFiles.length > 0) {
+            const skipNote = `\n\n// skipped files:\n${skippedFiles.map(f => `// ${f}`).join('\n')}\n`
+            writeFileSync(migrationLogPath, skipNote, { flag: 'a', encoding: 'utf8' })
+          }
+          const commonPath2 = join(dataDir, 'core-memory.json')
+          if (existsSync(commonPath2)) {
+            try { renameSync(commonPath2, join(backupDir, 'core-memory.json')) } catch {}
+          }
+          const projDir2 = join(dataDir, 'project-memory')
+          if (existsSync(projDir2)) {
+            mkdirSync(join(backupDir, 'project-memory'), { recursive: true })
+            let files2 = []
+            try { files2 = readdirSync(projDir2).filter(f => f.endsWith('.json')) } catch {}
+            for (const f of files2) {
+              try { renameSync(join(projDir2, f), join(backupDir, 'project-memory', f)) } catch {}
+            }
+          }
+        } catch (e) {
+          process.stderr.write(`[memory] schema v9 backup/move failed (non-fatal): ${e.message}\n`)
+        }
+      }
+    }
+
+    setMetaValue(db, 'boot.schema_version', '9')
+    process.stderr.write(`[memory] schema migrated to v9 (core_entries)\n`)
+  }
+  if (current < 10) {
+    // v10: promoted_at captures the timestamp when a root first became 'active'.
+    // Unlike last_seen_at (refreshed on every recall hit) and reviewed_at (updated
+    // by phase3 keep cycles), promoted_at is set once on first promotion and never
+    // overwritten — enabling true staleness detection independent of write-backs.
+    try {
+      db.exec(`ALTER TABLE entries ADD COLUMN promoted_at INTEGER`)
+    } catch (e) {
+      if (!/duplicate column name/i.test(String(e?.message))) {
+        process.stderr.write(`[memory] schema v10 migration failed: ${e.message}\n`)
+        return
+      }
+    }
+    // Backfill existing actives: use the EARLIEST known timestamp (`ts` is the
+    // entry's original creation moment). Using last_seen_at would inherit the
+    // refresh inflation we are trying to escape; ts is immutable and reflects
+    // true age so age-decay correctly catches long-stuck entries.
+    try {
+      db.exec(`
+        UPDATE entries
+        SET promoted_at = COALESCE(ts, reviewed_at, last_seen_at)
+        WHERE is_root = 1 AND status = 'active' AND promoted_at IS NULL
+      `)
+    } catch (e) {
+      process.stderr.write(`[memory] schema v10 backfill failed: ${e.message}\n`)
+    }
+    try {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_entries_promoted_at
+          ON entries(promoted_at ASC)
+          WHERE is_root = 1 AND status = 'active'
+      `)
+    } catch (e) {
+      process.stderr.write(`[memory] schema v10 index failed: ${e.message}\n`)
+    }
+    setMetaValue(db, 'boot.schema_version', '10')
+    process.stderr.write(`[memory] schema migrated to v10 (promoted_at)\n`)
+  }
+  if (current < 11) {
+    // v11: re-backfill promoted_at using `ts` instead of last_seen_at. v10
+    // initially used last_seen_at which is refresh-inflated by recall hits;
+    // ts is immutable so it reflects true entry age and age-decay correctly
+    // archives long-stuck issues/decisions even if recently touched.
+    try {
+      db.exec(`
+        UPDATE entries
+        SET promoted_at = COALESCE(ts, reviewed_at, last_seen_at)
+        WHERE is_root = 1 AND status = 'active'
+      `)
+    } catch (e) {
+      process.stderr.write(`[memory] schema v11 re-backfill failed: ${e.message}\n`)
+    }
+    setMetaValue(db, 'boot.schema_version', '11')
+    process.stderr.write(`[memory] schema migrated to v11 (promoted_at re-backfill from ts)\n`)
+  }
+  if (current < 12) {
+    // v12: collapse status enum to {pending, active, fixed, archived}.
+    // - NULL / 'demoted' / 'processed' rows fold into 'pending' (re-evaluable).
+    // - 'fixed' is a new status reserved for user-injected entries that the
+    //   LLM cannot archive (only update/merge by user explicit action).
+    // The CHECK constraint sits in the table DDL and SQLite cannot ALTER it
+    // in place; rewrite via writable_schema temp toggle.
+    try {
+      db.exec(`
+        UPDATE entries
+        SET status = 'pending'
+        WHERE is_root = 1 AND (status IS NULL OR status IN ('demoted','processed'))
+      `)
+    } catch (e) {
+      process.stderr.write(`[memory] schema v12 status backfill failed: ${e.message}\n`)
+      return
+    }
+    try {
+      const row = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='entries'`).get()
+      const oldSql = String(row?.sql ?? '')
+      // Target only the enum tuple so we sidestep nested-paren regex bugs.
+      const oldEnumTuple = `'active','pending','demoted','processed','archived'`
+      const newEnumTuple = `'pending','active','fixed','archived'`
+      if (oldSql.includes(oldEnumTuple)) {
+        const newSql = oldSql.replace(oldEnumTuple, newEnumTuple)
+        const verRow = db.prepare(`PRAGMA schema_version`).get()
+        const oldVer = Number(verRow?.schema_version ?? 0)
+        db.exec(`PRAGMA writable_schema = 1`)
+        db.prepare(`UPDATE sqlite_master SET sql = ? WHERE type='table' AND name='entries'`).run(newSql)
+        db.exec(`PRAGMA writable_schema = 0`)
+        // Force schema reload so the new CHECK takes effect for live prepares.
+        db.exec(`PRAGMA schema_version = ${oldVer + 1}`)
+        const ic = db.prepare(`PRAGMA integrity_check`).get()
+        const icVal = ic && (ic.integrity_check ?? Object.values(ic)[0])
+        if (icVal && icVal !== 'ok') {
+          process.stderr.write(`[memory] schema v12 integrity_check warning: ${icVal}\n`)
+        }
+      } else {
+        process.stderr.write(`[memory] schema v12: legacy CHECK enum tuple not found — skipping rewrite (already at v12 shape?)\n`)
+      }
+    } catch (e) {
+      process.stderr.write(`[memory] schema v12 CHECK rewrite failed: ${e.message}\n`)
+    }
+    try {
+      db.exec(`DROP INDEX IF EXISTS idx_roots_active_old`)
+      db.exec(`
+        CREATE INDEX idx_roots_active_old
+          ON entries(status, last_seen_at ASC, score DESC)
+          WHERE is_root = 1 AND status = 'active'
+      `)
+    } catch (e) {
+      process.stderr.write(`[memory] schema v12 index rebuild failed: ${e.message}\n`)
+    }
+    setMetaValue(db, 'boot.schema_version', '12')
+    process.stderr.write(`[memory] schema migrated to v12 (status enum collapse + fixed)\n`)
+  }
 }
 
 export function isBootstrapComplete(db) {
@@ -389,4 +642,10 @@ export function closeDatabase(dataDir) {
   if (!db) return
   try { db.close() } catch {}
   dbs.delete(key)
+}
+
+export function getDatabase(dataDir) {
+  if (!dataDir) return null
+  const key = resolve(dataDir)
+  return dbs.get(key) ?? null
 }

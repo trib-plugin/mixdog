@@ -340,7 +340,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Memory operations. User-curated core list (separate JSON, untouched by cycles): action:\"core\" with op:\"add\"|\"edit\"|\"delete\"|\"list\". Entries-table CRUD (cycle-managed): action:\"manage\" with op:\"add\"|\"edit\"|\"delete\". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.",
+    "description": "Memory operations. User-curated core list (sqlite core_entries table, untouched by cycles): action:\"core\" with op:\"add\"|\"edit\"|\"delete\"|\"list\". Entries-table CRUD (cycle-managed): action:\"manage\" with op:\"add\"|\"edit\"|\"delete\". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -360,7 +360,7 @@
             "rebuild_classifications",
             "purge"
           ],
-          "description": "Operation. `core` = user-curated JSON list (merged into SessionStart Core Memory section). `manage` = entries-table per-row CRUD. Others = batch/maintenance."
+          "description": "Operation. `core` = user-curated core list (sqlite core_entries table, merged into SessionStart Core Memory section). `manage` = entries-table per-row CRUD. Others = batch/maintenance."
         },
         "op": {
           "type": "string",
@@ -407,7 +407,7 @@
         },
         "project_id": {
           "type": "string",
-          "description": "Optional project pool selector for action='core'. Omit/null → COMMON (core-memory.json). Set to slug like 'tempest1033/GamerScroll' → project-memory/<safe>.json."
+          "description": "Optional project pool selector for action='core'. Omit/null → COMMON (project_id IS NULL in core_entries). Set to slug like 'tempest1033/GamerScroll' → scoped rows in core_entries."
         }
       },
       "required": [

@@ -24,6 +24,11 @@
  */
 
 import { getHiddenRole } from './orchestrator/internal-roles.mjs';
+import { flushSessionMetrics, hideSessionFromList } from './orchestrator/session/manager.mjs';
+
+// How long a terminal-stage session must sit idle before the watchdog
+// flushes metrics and hides it from list_sessions output.
+const TERMINAL_REAP_MS = 120_000;
 
 const TICK_MS = 30_000;
 // DEFAULT_THRESHOLD_S — runtime envelope constant for roles not declared in
@@ -100,6 +105,11 @@ export function inspectBridgeEntry(entry, thresholdSeconds = DEFAULT_THRESHOLD_S
         return { verdict: 'stall', staleSeconds, stage, reason: 'tool-runtime-fallback', toolName: entry.lastToolCall || null };
     }
     if (stage === 'idle' || stage === 'done' || stage === 'error' || stage === 'cancelling') {
+        // Terminal stages never abort, but may need flush+hide after 120s (fix B).
+        const progressRef = entry.lastProgressAt || entry.doneAt || entry.updatedAt;
+        if (progressRef && (now - progressRef) >= TERMINAL_REAP_MS) {
+            return { verdict: 'terminal-reap', staleSeconds: Math.round((now - progressRef) / 1000), stage };
+        }
         return { verdict: 'skip' };
     }
     const ref = entry.lastStreamDeltaAt || entry.askStartedAt;
@@ -140,11 +150,24 @@ export function startBridgeStallWatchdog(params) {
     let fired = false;
     let handle = null;
 
+    // Track which sessions have already been reaped to avoid repeat flushes.
+    let _reaped = false;
+
     const tick = () => {
-        if (fired) return;
         let entry = null;
         try { entry = getRuntime(); } catch { entry = null; }
         const res = inspectBridgeEntry(entry, thresholdSeconds, Date.now(), role);
+
+        // Fix B: terminal-reap path — flush metrics + hide, no abort.
+        if (res.verdict === 'terminal-reap' && !_reaped) {
+            _reaped = true;
+            try { flushSessionMetrics(sessionId); } catch { /* best-effort */ }
+            try { hideSessionFromList(sessionId); } catch { /* best-effort */ }
+            if (handle) { clearInterval(handle); handle = null; }
+            return;
+        }
+
+        if (fired) return;
         if (res.verdict !== 'stall') return;
         fired = true;
         const iter = (() => {

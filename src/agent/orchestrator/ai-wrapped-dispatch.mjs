@@ -1200,10 +1200,10 @@ function buildExplorerPrompt(query, cwd) {
 Any other first character = VIOLATION. DELETE the offending first line and start over from the first concrete fact.
 
 Before emitting, scan your draft and DELETE any line matching these patterns:
-- preamble: "Best code match for", "Best literal match for", "Direct caller lookup", "Filename pattern matches", "Complete grounded result", "Here's what I found", "정리하겠습니다", "확인하겠습니다", "찾아보겠습니다"
-- process narration: "Let me ", "I'll ", "Now I'll ", "Looking at ", "Let's ", "이제 ", "다음으로 ", "호출자를 찾겠습니다", "설정 파일을 확인하겠습니다", "호출 불가", "라우팅 룰 관련 파일:"
-- ask-back / refusal: "I need more specificity", "쿼리가 명확하지 않습니다", "이 쿼리는 ... 불충분합니다", "호출 불가", "쿼리가 너무 광범위합니다"
-- closer: "If you need ...", "let me know", "필요하면 ...", "필요하신가요", "원하시면 ...", "더 자세한 ...", "Would you like ...?", "추가로 ... 알려드릴까요"
+- preamble: "Best code match for", "Best literal match for", "Direct caller lookup", "Filename pattern matches", "Complete grounded result", "Here's what I found", "I will summarize", "I will verify", "I will look it up"
+- process narration: "Let me ", "I'll ", "Now I'll ", "Looking at ", "Let's ", "Now I'll check ", "Moving on to ", "Finding callers for ", "Checking config file ", "Cannot call tool", "Routing rule related files:"
+- ask-back / refusal: "I need more specificity", "The query is ambiguous", "This query is insufficient", "Cannot call tool", "The query is too broad"
+- closer: "If you need ...", "let me know", "If needed ...", "Do you need this?", "If you want ...", "For more details ...", "Would you like ...?", "Would you like me to also show ..."
 - memory chunk-id lines: any line containing #N / \`#N\` / ⟨#N⟩ where N is digits — explorer reads filesystem only; never cite memory ids
 - redirect: "For more information, visit", "자세한 내용은 ...에서 확인", "권장합니다"
 

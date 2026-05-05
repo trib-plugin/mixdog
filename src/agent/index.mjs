@@ -1,6 +1,6 @@
 import { initProviders, warmupCatalogs } from './orchestrator/providers/registry.mjs';
 import { runWithCwdOverride, pwd } from '../shared/user-cwd.mjs';
-import { createSession, askSession, listSessions, closeSession, findSessionByScopeKey, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge, forEachSessionRuntime } from './orchestrator/session/manager.mjs';
+import { createSession, askSession, listSessions, closeSession, findSessionByScopeKey, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge, forEachSessionRuntime, hideSessionFromList } from './orchestrator/session/manager.mjs';
 import { ToolLoopAbortError } from './orchestrator/tool-loop-guard.mjs';
 import { StreamStalledAbortError, startWatchdog as startStreamWatchdog } from './orchestrator/session/stream-watchdog.mjs';
 import { startBridgeStallWatchdog } from './bridge-stall-watchdog.mjs';
@@ -1118,7 +1118,18 @@ export async function handleToolCall(name, args, opts = {}) {
               updateSessionStatus(activeSession.id, 'error');
             }
           } finally {
-            try { stallWatch.stop(); } catch { /* idempotent */ }
+            // Do NOT stop stallWatch here unconditionally — stopping it before
+            // the 120s terminal-reap window prevents terminal-stale sessions
+            // from ever being hidden. Instead, schedule a deferred hide so
+            // listSessions() stops returning the completed bridge session after
+            // 120s. stallWatch.stop() is kept for the explicit close path only
+            // (handled inside the watchdog itself on abort).
+            try {
+              const _finalSessionId = activeSession.id;
+              setTimeout(() => {
+                try { hideSessionFromList(_finalSessionId); } catch { /* ignore */ }
+              }, 120_000);
+            } catch { /* ignore */ }
             // Detach request-abort listener — IIFE has settled, further
             // aborts on the MCP request have nothing to tear down. Harmless
             // if already removed via { once: true } on fire.

@@ -27,6 +27,7 @@ the only one who can fix them.
 ## Decision sequence
 
 1. Explicit URL → call `web_search` with the URL as `keywords` (backend scrapes). ONE call. Output ONLY facts present in the scraped page text — no training-memory synthesis, no `추가 정보` / `관련 페이지` / `참고` / `For implementation examples` filler. Per-bullet self-check: "is this fact in the page?" — no → OMIT or `[scraped page does not state X]`. Cite URL + access date inline. STOP.
+1. Explicit URL → call `web_search` with the URL as `keywords` (backend scrapes). ONE call. Output ONLY facts present in the scraped page text — no training-memory synthesis, no `additional info` / `related pages` / `see also` / `For implementation examples` filler. Per-bullet self-check: "is this fact in the page?" — no → OMIT or `[scraped page does not state X]`. Cite URL + access date inline. STOP.
 2. GitHub `owner/repo` lookup → call `web_search` with `keywords: "<owner>/<repo>"` and `site: "github.com"`. The backend has no GitHub-specific path — a generic web search of github.com is the route. ONE call. STOP.
 3. Free-form text → one focused call with appropriate `site` / `type` filters. If the result is weak (0–1 useful hits), refine the query (sharpen terms, adjust filters) and retry once. Do not retry with the same query.
 
