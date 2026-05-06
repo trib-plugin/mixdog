@@ -14,39 +14,38 @@ $PGVECTOR_VERSION = '0.8.2'
 $TARGET_OS        = $env:TARGET_OS   ?? 'win32'
 $TARGET_ARCH      = $env:TARGET_ARCH ?? 'x64'
 
-# Auto-detect the highest available preinstalled PG ≥ 16 on the runner.
-# windows-2022 image historically ships PG 14/15/16 but exact subdirectory
-# names vary (e.g. "16", "16.4"). Pick the highest numeric major.
+# Auto-detect highest preinstalled PG ≥ 16 OR install via chocolatey.
 $PgInstallRoot = 'C:\Program Files\PostgreSQL'
-if (-not (Test-Path $PgInstallRoot)) {
-    Write-Error "ASSERT FAILED: $PgInstallRoot not found. Runner image must include PostgreSQL."
-    Write-Host "Listing C:\Program Files\ for diagnosis:"
-    Get-ChildItem 'C:\Program Files\' -Directory | Select-Object Name
-    exit 1
-}
 
-$PgCandidates = Get-ChildItem $PgInstallRoot -Directory |
-    Where-Object { $_.Name -match '^(\d+)' } |
-    Sort-Object { [int]([regex]::Match($_.Name, '^(\d+)').Groups[1].Value) } -Descending
-
-if ($PgCandidates.Count -eq 0) {
-    Write-Error "ASSERT FAILED: no numeric PostgreSQL versions found under $PgInstallRoot"
-    Get-ChildItem $PgInstallRoot | Select-Object Name
-    exit 1
-}
-
-$PgRoot = $null
-foreach ($cand in $PgCandidates) {
-    $major = [int]([regex]::Match($cand.Name, '^(\d+)').Groups[1].Value)
-    if ($major -ge 16 -and (Test-Path "$($cand.FullName)\bin\pg_config.exe")) {
-        $PgRoot = $cand.FullName
-        break
+function Find-PgRoot {
+    if (-not (Test-Path $PgInstallRoot)) { return $null }
+    $cands = Get-ChildItem $PgInstallRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^(\d+)' } |
+        Sort-Object { [int]([regex]::Match($_.Name, '^(\d+)').Groups[1].Value) } -Descending
+    foreach ($c in $cands) {
+        $major = [int]([regex]::Match($c.Name, '^(\d+)').Groups[1].Value)
+        if ($major -ge 16 -and (Test-Path "$($c.FullName)\bin\pg_config.exe")) {
+            return $c.FullName
+        }
     }
+    return $null
 }
+
+$PgRoot = Find-PgRoot
 if (-not $PgRoot) {
-    Write-Error "ASSERT FAILED: no preinstalled PG ≥ 16 with pg_config.exe found under $PgInstallRoot"
-    Get-ChildItem $PgInstallRoot | Select-Object Name
-    exit 1
+    Write-Host "==> No preinstalled PG ≥ 16 found. Installing via chocolatey..."
+    if (Test-Path $PgInstallRoot) {
+        Write-Host "Existing PG dirs (none usable):"
+        Get-ChildItem $PgInstallRoot -Directory -ErrorAction SilentlyContinue | Select-Object Name
+    }
+    choco install postgresql16 --version=16.4.0 --params '/Password:postgres' -y --no-progress 2>&1 | Out-Host
+    if ($LASTEXITCODE -ne 0) { Write-Error "choco install postgresql16 failed (exit $LASTEXITCODE)"; exit 1 }
+    $PgRoot = Find-PgRoot
+    if (-not $PgRoot) {
+        Write-Error "ASSERT FAILED: chocolatey install completed but PG ≥ 16 still not found under $PgInstallRoot"
+        Get-ChildItem $PgInstallRoot -Directory -ErrorAction SilentlyContinue | Select-Object Name
+        exit 1
+    }
 }
 
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
