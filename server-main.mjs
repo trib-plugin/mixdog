@@ -237,9 +237,11 @@ server.setNotificationHandler(ChannelPermissionRequestNotificationSchema, async 
 
 // ── Worker process management ──────────────────────────────────────
 const workers = new Map() // name → { proc, ready, pending }
-const WORKER_MAX_RESTARTS = 3
-const workerRestarts = new Map() // name → count
+const WORKER_RESTART_WARN_AFTER = 3 // log [WARN] once attempt count crosses this; no hard cap
+const WORKER_MAX_BACKOFF_MS = 60_000
+const workerRestarts = new Map() // name → count (telemetry + backoff exponent + warn threshold)
 const workerIntentionalStop = new Set() // names where parent initiated shutdown; suppress respawn
+const workerPermanentlyDegraded = new Set() // worker self-declared unrecoverable (init reported degraded:true); suppress respawn
 
 // Cached bridge-llm factory import — loaded on first agent_ipc_request and
 // reused thereafter. The agent module must be loaded before the first call
@@ -331,12 +333,13 @@ function spawnWorker(name) {
         // Transient network / port-bind errors are expected to NOT send
         // degraded:true — they crash the worker without a 'ready' signal, so
         // the normal restart counter handles them.
-        workerRestarts.set(name, WORKER_MAX_RESTARTS + 1)  // permanent — no retry
+        workerPermanentlyDegraded.add(name)  // permanent — exit handler skips respawn
         try { entry._rejectReady(new Error(`worker ${name} degraded: ${msg.error || 'init failed'}`)) } catch {}
         return
       }
       entry.ready = true
       workerIntentionalStop.delete(name)
+      workerRestarts.delete(name)  // stable boot resets the backoff/warn counter
       try { entry._resolveReady() } catch {}
       log(`worker ${name} ready (pid=${proc.pid})`)
       return
@@ -413,14 +416,19 @@ function spawnWorker(name) {
     for (const p of entry.pending) {
       p.reject(new Error(`worker ${name} exited unexpectedly`))
     }
+    if (workerPermanentlyDegraded.has(name)) {
+      log(`worker ${name} permanently degraded — skipping respawn`)
+      return
+    }
     const count = (workerRestarts.get(name) || 0) + 1
     workerRestarts.set(name, count)
-    if (count <= WORKER_MAX_RESTARTS) {
-      log(`restarting worker ${name} (attempt ${count}/${WORKER_MAX_RESTARTS})`)
-      setTimeout(() => spawnWorker(name), 1000)
+    const backoffMs = Math.min(1000 * Math.pow(2, Math.min(count - 1, 6)), WORKER_MAX_BACKOFF_MS)
+    if (count <= WORKER_RESTART_WARN_AFTER) {
+      log(`restarting worker ${name} (attempt ${count}, backoff ${backoffMs}ms)`)
     } else {
-      log(`worker ${name} exceeded max restarts, marking degraded`)
+      log(`[WARN] worker ${name} repeated restart (attempt ${count}, backoff ${backoffMs}ms) — investigate root cause`)
     }
+    setTimeout(() => spawnWorker(name), backoffMs)
   })
 
   proc.on('error', (err) => {
@@ -447,16 +455,16 @@ async function callWorker(name, toolName, args) {
   // surfaces here as a normal throw with the original 'exited before ready'
   // message preserved.
   if (!entry) {
-    if ((workerRestarts.get(name) || 0) > WORKER_MAX_RESTARTS) {
-      throw new Error(`worker ${name} not available (restart cap exceeded)`)
+    if (workerPermanentlyDegraded.has(name)) {
+      throw new Error(`worker ${name} not available (permanently degraded)`)
     }
     const deadline = Date.now() + WORKER_NO_ENTRY_GRACE_MS
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 100))
       entry = workers.get(name)
       if (entry) break
-      if ((workerRestarts.get(name) || 0) > WORKER_MAX_RESTARTS) {
-        throw new Error(`worker ${name} not available (restart cap exceeded)`)
+      if (workerPermanentlyDegraded.has(name)) {
+        throw new Error(`worker ${name} not available (permanently degraded)`)
       }
     }
     if (!entry) {
