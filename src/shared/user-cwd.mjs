@@ -9,16 +9,10 @@
  * user-cwd.mjs — shared helper to resolve the user's working directory
  * from the persisted user-cwd.txt sentinel file.
  *
- * Extracted from builtin.mjs so server-main.mjs can call the same primitive
- * before dispatching to executeBuiltinTool, without circular-import risk.
- *
- * v2: Claude Code-style single-source-of-truth model.
+ * Single-source-of-truth model:
  *   - captureOriginalUserCwd() reads user-cwd.txt ONCE at first call and freezes.
  *   - AsyncLocalStorage override (runWithCwdOverride) isolates concurrent worker cwds.
- *   - pwd() = override ?? originalCwd (mirrors Claude Code's cwd.ts pattern).
- *   - resolveDefaultUserCwd() kept as back-compat alias for getOriginalCwd().
- *   - invalidateUserCwdCache() kept as no-op (capture-once semantics make
- *     re-reads unsafe; the value is frozen after first read by design).
+ *   - pwd() = override ?? originalCwd.
  */
 
 import { AsyncLocalStorage } from 'async_hooks'
@@ -72,16 +66,3 @@ export function runWithCwdOverride(cwd, fn) {
 export function pwd() {
   return _cwdOverride.getStore() ?? getOriginalCwd()
 }
-
-/**
- * Back-compat alias for existing callers that import resolveDefaultUserCwd.
- * Returns the frozen original cwd (same as getOriginalCwd()).
- */
-export function resolveDefaultUserCwd() { return getOriginalCwd() }
-
-/**
- * No-op kept for back-compat. capture-once semantics make re-reads unsafe;
- * the frozen value is the single source of truth for this process lifetime.
- * One live importer: src/agent/orchestrator/tools/builtin.mjs (imported but not called).
- */
-export function invalidateUserCwdCache() { /* no-op: capture-once semantics */ }

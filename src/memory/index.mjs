@@ -125,36 +125,17 @@ async function runProxyMode(port) {
         signal: controller.signal,
       })
       clearTimeout(timer)
-      // Normalise the upstream response so the proxy always emits a
-      // valid MCP envelope. Older /api/tool versions could return
-      // bare {text|error|ok} shapes, which broke MCP clients that
-      // require a content[] array. Pass through anything already in
-      // canonical form; wrap legacy / error / non-200 shapes.
       const json = await res.json().catch(() => null)
       if (!res.ok || !json) {
         const detail = json ? JSON.stringify(json).slice(0, 500) : `HTTP ${res.status}`
         return { content: [{ type: 'text', text: `proxy error: ${detail}` }], isError: true }
       }
       if (Array.isArray(json.content)) {
-        // Canonical envelope shape, but caller may still signal failure
-        // via `ok:false` / `isError:true` / `error`. Force isError to
-        // true in those cases so MCP clients don't read the failure as
-        // a successful no-op.
-        if (json.error || json.isError === true || json.ok === false) {
-          return { ...json, isError: true }
-        }
+        if (json.error || json.isError === true) return { ...json, isError: true }
         return json
       }
-      const fallbackText = typeof json === 'string'
-        ? json
-        : (json.text || json.error || json.message || JSON.stringify(json))
-      return {
-        content: [{ type: 'text', text: String(fallbackText) }],
-        // Legacy `{ ok: false, text: "..." }` shape carries error
-        // intent in `ok` rather than a dedicated error key, so honour
-        // either signal when deciding isError.
-        isError: Boolean(json.error || json.isError || json.ok === false),
-      }
+      const detail = typeof json === 'string' ? json : JSON.stringify(json).slice(0, 500)
+      return { content: [{ type: 'text', text: `proxy error: malformed response: ${detail}` }], isError: true }
     } catch (err) {
       return { content: [{ type: 'text', text: `proxy error: ${err.message}` }], isError: true }
     }

@@ -143,7 +143,7 @@ async function cmdBridge(args) {
     // === Lane-based session resolution ===
     let session = null;
 
-    // Explicit session ID always wins (backwards compat)
+    // Explicit session ID always wins.
     if (explicitSession) {
         session = resumeSession(explicitSession);
         if (session) await ensureMcpConnected(config);

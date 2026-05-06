@@ -2,7 +2,7 @@
  * Unified config reader/writer.
  * Single file: mixdog-config.json with sections: channels, agent, memory, search.
  */
-import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, statSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs'
 import { join, dirname } from 'path'
 import { resolvePluginData } from './plugin-paths.mjs'
 
@@ -11,7 +11,6 @@ const DATA_DIR = resolvePluginData()
 const CONFIG_PATH = join(DATA_DIR, 'mixdog-config.json')
 
 const GENERATED_KEY = '_generated'
-const GENERATED_MARKER = 'from mixdog-config.json — edits will be overwritten on next boot'
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value)
@@ -23,32 +22,24 @@ export function stripGeneratedMarker(data) {
   return rest
 }
 
-// Legacy file paths for one-time migration
-export const LEGACY_FILES = {
-  channels: 'config.json',
-  agent: 'agent-config.json',
-  memory: 'memory-config.json',
-  search: 'search-config.json',
-}
-
 function readJsonFile(path) {
   let raw
   try {
     raw = readFileSync(path, 'utf8')
   } catch (err) {
-    if (err.code === 'ENOENT') return null  // file missing — normal first-run
+    if (err.code === 'ENOENT') return null
     process.stderr.write(`[config] readJsonFile: unexpected read error for ${path}: ${err.message}\n`)
     return null
   }
   try {
     return JSON.parse(raw)
   } catch (err) {
-    // Parse failure on mixdog-config.json: quarantine and abort merge.
+    // Quarantine a malformed mixdog-config.json so the next boot starts fresh
+    // instead of looping on a broken file.
     if (path === CONFIG_PATH) {
       const corrupt = `${path}.corrupt-${Date.now()}`
       try { renameSync(path, corrupt) } catch {}
       process.stderr.write(`[config] mixdog-config.json is malformed (${err.message}). Renamed to ${corrupt}. Restore it or delete to start fresh.\n`)
-      return null  // readAll will fall through to legacy migration on next read
     }
     return null
   }
@@ -62,51 +53,7 @@ function writeJsonFile(path, data) {
 }
 
 function readAll() {
-  const existing = readJsonFile(CONFIG_PATH)
-  if (!existing) {
-    // First run or quarantined config: migrate every legacy file at once,
-    // then rename legacy files so they don't re-trigger migration.
-    const merged = {}
-    for (const [section, filename] of Object.entries(LEGACY_FILES)) {
-      const legacyPath = join(DATA_DIR, filename)
-      const legacy = readJsonFile(legacyPath)
-      if (legacy) {
-        merged[section] = stripGeneratedMarker(legacy)
-        // Rename to .legacy-migrated-<ts>.json so it never re-triggers.
-        try {
-          renameSync(legacyPath, `${legacyPath}.legacy-migrated-${Date.now()}.json`)
-        } catch {}
-      }
-    }
-    if (Object.keys(merged).length > 0) {
-      writeJsonFile(CONFIG_PATH, merged)
-    }
-    return merged
-  }
-  // Backfill: mixdog-config.json exists but one or more sections are missing or
-  // empty AND a legacy file is still present (not yet renamed). Migrate those
-  // remaining sections, then rename the legacy file. Idempotent: once renamed,
-  // the legacy file is gone and this loop is a no-op on subsequent boots.
-  let touched = false
-  for (const [section, filename] of Object.entries(LEGACY_FILES)) {
-    const cur = existing[section]
-    const empty = cur == null
-      || (isPlainObject(cur) && Object.keys(cur).length === 0)
-    if (!empty) continue
-    const legacyPath = join(DATA_DIR, filename)
-    const legacy = readJsonFile(legacyPath)
-    if (!legacy) continue
-    const stripped = stripGeneratedMarker(legacy)
-    if (isPlainObject(stripped) && Object.keys(stripped).length === 0) continue
-    existing[section] = stripped
-    touched = true
-    // Rename legacy file after absorbing its content.
-    try {
-      renameSync(legacyPath, `${legacyPath}.legacy-migrated-${Date.now()}.json`)
-    } catch {}
-  }
-  if (touched) writeJsonFile(CONFIG_PATH, existing)
-  return existing
+  return readJsonFile(CONFIG_PATH) ?? {}
 }
 
 function writeAll(data) {

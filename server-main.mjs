@@ -27,7 +27,7 @@ import { createRequire } from 'module'
 import { resolvePluginData } from './src/shared/plugin-paths.mjs'
 import { ensureDataSeeds } from './src/shared/seed.mjs'
 import { readSection } from './src/shared/config.mjs'
-import { resolveDefaultUserCwd as _resolveDefaultUserCwd, captureOriginalUserCwd, pwd } from './src/shared/user-cwd.mjs'
+import { captureOriginalUserCwd, pwd } from './src/shared/user-cwd.mjs'
 
 // ── Environment ──────────────────────────────────────────────────────
 // Claude Code normally injects CLAUDE_PLUGIN_ROOT / CLAUDE_PLUGIN_DATA

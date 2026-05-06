@@ -1,7 +1,7 @@
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { DiscordBackend } from "../backends/discord.mjs";
-import { readSection, updateSection, CONFIG_PATH as MIXDOG_CONFIG_PATH, stripGeneratedMarker } from "../../shared/config.mjs";
+import { readSection, updateSection, CONFIG_PATH as MIXDOG_CONFIG_PATH } from "../../shared/config.mjs";
 if (!process.env.CLAUDE_PLUGIN_DATA) {
   process.stderr.write(
     "mixdog: CLAUDE_PLUGIN_DATA not set.\n  This plugin must be run through Claude Code.\n"
@@ -41,10 +41,6 @@ function applyDefaults(config) {
   out.proactive = { ...CONFIG_DEFAULTS.proactive, ...(out.proactive || {}) };
   out.schedules = { ...CONFIG_DEFAULTS.schedules, ...(out.schedules || {}) };
   out.webhook = { ...CONFIG_DEFAULTS.webhook, ...(out.webhook || {}) };
-  // Migration: if legacy bot.quiet.schedule exists (via loadBotConfig merge at
-  // callsite) and the new top-level quiet.schedule was missing, the merge above
-  // already filled it from the default. Callers that need legacy-aware
-  // migration should pass the copied value in before applyDefaults runs.
   return out;
 }
 /**
@@ -103,28 +99,7 @@ function isInQuietWindow(cfg, now = new Date()) {
 }
 function loadConfig() {
   try {
-    // Migration: if mixdog-config.json exists but has no channels section yet,
-    // check whether the root-level JSON looks like a flat channels config
-    // (has discord / channelsConfig keys). If so, move it into channels section.
-    let raw;
-    try {
-      const rootJson = stripGeneratedMarker(JSON.parse(readFileSync(CONFIG_FILE, "utf8")));
-      if (
-        rootJson &&
-        typeof rootJson === "object" &&
-        !("channels" in rootJson) &&
-        ("discord" in rootJson || "channelsConfig" in rootJson || "backend" in rootJson)
-      ) {
-        // Flat legacy root — migrate to sections.channels and re-read.
-        const { channels: _drop, agent, memory, search, modules, ...channelsData } = rootJson;
-        updateSection("channels", () => channelsData);
-        raw = channelsData;
-      } else {
-        raw = readSection("channels");
-      }
-    } catch {
-      raw = readSection("channels");
-    }
+    let raw = readSection("channels");
     raw = raw && typeof raw === "object" ? raw : {};
     const items = raw.schedules?.items;
     if (items && Array.isArray(items)) {

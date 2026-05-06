@@ -395,19 +395,13 @@ export { INSTRUCTIONS as instructions };
 
 export async function init() {
   const config = loadConfig();
-  // External MCP servers only. Self-MCP loopback (mcpServers.mixdog /
-  // mcpServers["trib-plugin"])
-  // is rejected — agent exposes the plugin's own tools (search,
-  // memory_search, ...) in-process via the context injected by server.mjs;
-  // no network round-trip, no self-spawn. The static tools.json manifest
-  // guarantees the tool surface, so the prior FATAL check is obsolete.
+  // External MCP servers only. Plugin's own tools are injected in-process
+  // via the context from server.mjs; a self-ref entry would self-spawn or
+  // partially loop back through HTTP, so strip on ingress.
   const rawServers = (config.mcpServers && typeof config.mcpServers === 'object') ? config.mcpServers : {};
   const externalServers = {};
   for (const [name, cfg] of Object.entries(rawServers)) {
-    if (name === 'mixdog' || name === 'trib-plugin') {
-      process.stderr.write(`[mcp] dropping legacy self-ref mcpServers.mixdog / mcpServers["trib-plugin"] entry (in-process tool bridge is used instead)\n`);
-      continue;
-    }
+    if (name === 'mixdog' || name === 'trib-plugin') continue;
     externalServers[name] = cfg;
   }
   // Run independent init steps in parallel: provider registry + external

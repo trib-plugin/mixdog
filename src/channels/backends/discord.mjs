@@ -181,17 +181,14 @@ class DiscordBackend {
       process.stderr.write(`mixdog discord: gateway connected as ${c.user.tag}
 `);
       try {
-        // Wipe all global application commands. Legacy "claude2bot" slash
-        // commands were registered by a prior bot version and never removed —
-        // `commands.set([])` globally clears them. Current code registers no
-        // global commands (all guild-scoped), so this is safe.
+        // Plugin registers no global commands; clear the global slot so any
+        // pre-existing entry from prior installs is not surfaced to users.
         await c.application?.commands.set([]);
         process.stderr.write(`mixdog discord: global application commands cleared
 `);
 
-        // Replace each guild's command set with just /stop. Unlike create(),
-        // set() overwrites — any lingering guild-scoped legacy commands are
-        // dropped on the next bot boot.
+        // Replace each guild's command set with just /stop. set() overwrites,
+        // so the desired set is the only one that survives.
         const desiredCommands = [
           { name: "stop", description: "Stop the current Claude Code response" },
         ];

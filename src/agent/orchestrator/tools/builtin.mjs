@@ -23,7 +23,7 @@ const execAsync = promisify(exec);
 // Helper extracted to src/shared/user-cwd.mjs so server-main.mjs can import
 // the same primitive without circular-import risk.
 // ---------------------------------------------------------------------------
-import { resolveDefaultUserCwd as _resolveDefaultUserCwd, pwd } from '../../../shared/user-cwd.mjs';
+import { pwd } from '../../../shared/user-cwd.mjs';
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
 // implementation that handles CSI + OSC + DCS edge cases; older runtimes

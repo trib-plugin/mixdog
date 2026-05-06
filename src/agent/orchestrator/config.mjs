@@ -1,14 +1,11 @@
-import { readFileSync, existsSync, renameSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { resolvePluginData } from '../../shared/plugin-paths.mjs';
-import { readSection, updateSection, stripGeneratedMarker } from '../../shared/config.mjs';
+import { readSection, updateSection } from '../../shared/config.mjs';
 
-/**
- * Back-compat alias. Delegates to the shared `resolvePluginData()` helper
- * so every caller converges on the same resolution rules (env → ROOT-derived
- * → static fallback).
- */
+// Thin wrapper around resolvePluginData so callers in this orchestrator tree
+// can import a single helper without reaching into shared/.
 export function getPluginData() {
     return resolvePluginData();
 }
@@ -40,9 +37,7 @@ export const DEFAULT_MAINTENANCE = Object.freeze({
 });
 
 // Map short Anthropic family labels to the full model ids used by the API.
-// Honors ANTHROPIC_DEFAULT_{OPUS|SONNET|HAIKU}_MODEL env overrides. Used
-// both for seed presets below and for legacy (`type: 'native'`) migration
-// inside normalizePreset.
+// Honors ANTHROPIC_DEFAULT_{OPUS|SONNET|HAIKU}_MODEL env overrides.
 const ANTHROPIC_FAMILY_MODEL = Object.freeze({
     opus: 'claude-opus-4-7',
     sonnet: 'claude-sonnet-4-6',
@@ -56,17 +51,8 @@ function resolveAnthropicFamilyModel(family) {
     return ANTHROPIC_FAMILY_MODEL[key] || null;
 }
 
-function isLegacyPresetShape(p) {
-    if (!p || typeof p !== 'object') return false;
-    if (p.type === 'native') return true;
-    if (p.type === 'bridge' && !p.provider && ['opus', 'sonnet', 'haiku'].includes(String(p.model || '').toLowerCase())) return true;
-    return false;
-}
-
-// Seed presets written when agent-config.json does not yet exist. Keyed by
-// preset.name so workflow/maintenance references stay consistent with the
-// resolve-by-name lookup in presetKey(). All presets are bridge-typed with
-// an explicit provider — the legacy `type: 'native'` shortcut is gone.
+// Seed presets keyed by preset.name so workflow/maintenance references stay
+// consistent with the resolve-by-name lookup in presetKey().
 export const DEFAULT_PRESETS = Object.freeze([
     Object.freeze({ id: 'haiku', name: 'HAIKU', type: 'bridge', provider: 'anthropic-oauth', model: resolveAnthropicFamilyModel('haiku'), tools: 'full' }),
     Object.freeze({ id: 'sonnet-mid', name: 'SONNET MID', type: 'bridge', provider: 'anthropic-oauth', model: resolveAnthropicFamilyModel('sonnet'), effort: 'medium', tools: 'full' }),
@@ -119,53 +105,14 @@ function persistAgentConfig(config) {
     updateSection('agent', () => config);
 }
 
-/**
- * One-time migration: if a legacy mcp-tools.json sits next to config.json,
- * merge its `mcpServers` into config.json and rename the legacy file to .bak.
- * Skipped silently if config.json already has `mcpServers`.
- */
-function migrateMcpToolsFile() {
-    const legacyPath = join(getPluginData(), 'mcp-tools.json');
-    if (!existsSync(legacyPath))
-        return;
-    let configRaw = readSection('agent');
-    if (!hasKeys(configRaw)) return;
-    if (configRaw.mcpServers && Object.keys(configRaw.mcpServers).length > 0) {
-        // Already migrated — leave the legacy file alone for the user to clean up
-        return;
-    }
-    let legacyRaw = {};
-    try {
-        legacyRaw = JSON.parse(readFileSync(legacyPath, 'utf-8'));
-    }
-    catch {
-        return;
-    }
-    const legacyServers = legacyRaw.mcpServers || legacyRaw;
-    if (!legacyServers || typeof legacyServers !== 'object' || Object.keys(legacyServers).length === 0) {
-        return;
-    }
-    configRaw.mcpServers = legacyServers;
-    try {
-        updateSection('agent', (current) => ({ ...current, ...configRaw }));
-        renameSync(legacyPath, legacyPath + '.bak');
-        process.stderr.write(`[mixdog-agent] Migrated mcp-tools.json -> config.json (backup at ${legacyPath}.bak)\n`);
-    }
-    catch (err) {
-        process.stderr.write(`[mixdog-agent] mcp-tools.json migration failed: ${err}\n`);
-    }
-}
 export function loadConfig() {
-    migrateMcpToolsFile();
     const sectionRaw = readSection('agent');
     if (hasKeys(sectionRaw)) {
         try {
             let raw = sectionRaw;
-            // If config has an 'agent' section, use it (unified config format)
             if (raw.agent && raw.agent.providers) {
                 raw = raw.agent;
             }
-            // user-workflow.json is managed by setup UI; no auto-seeding here
             const defaults = buildDefaultConfig();
             // Deep-merge provider subkeys: unknown per-provider values are
             // preserved through save/load so future fields round-trip
@@ -181,38 +128,18 @@ export function loadConfig() {
                 }
             }
             const rawMaint = { ...(raw.maintenance || {}) };
-            // One-time migration: drop legacy self-ref mcpServers.mixdog /
-            // mcpServers["trib-plugin"].
-            // Plugin tools are injected in-process via agent's toolExecutor
-            // (see orchestrator/internal-tools); a self-ref entry causes
-            // self-spawn recursion or partial HTTP loopback, both broken.
+            // Self-ref guard: mcpServers.mixdog / mcpServers["trib-plugin"]
+            // would self-spawn through the in-process tool bridge. Strip on
+            // ingress so user-edited configs cannot brick the agent boot.
             const mcpServers = (raw.mcpServers && typeof raw.mcpServers === 'object') ? { ...raw.mcpServers } : {};
             if (mcpServers['mixdog'] || mcpServers['trib-plugin']) {
                 delete mcpServers['mixdog'];
                 delete mcpServers['trib-plugin'];
                 raw.mcpServers = mcpServers;
-                try {
-                    persistAgentConfig(raw);
-                    process.stderr.write(`[config] migrated: removed legacy self-ref mcpServers.mixdog / mcpServers["trib-plugin"]\n`);
-                } catch (e) {
-                    process.stderr.write(`[config] self-ref migration persist failed: ${e.message}\n`);
-                }
+                try { persistAgentConfig(raw); } catch {}
             }
-            // One-time migration: legacy `type: 'native'` presets → bridge
-            // with explicit anthropic-oauth provider + full model id.
             const rawPresets = Array.isArray(raw.presets) ? raw.presets : [];
             const normalizedPresets = rawPresets.map(p => normalizePreset(p)).filter(Boolean);
-            const hadLegacy = rawPresets.some(p => isLegacyPresetShape(p));
-            if (hadLegacy) {
-                try {
-                    const migrated = { ...raw, presets: normalizedPresets };
-                    persistAgentConfig(migrated);
-                    raw = migrated;
-                    process.stderr.write(`[config] migrated: ${rawPresets.filter(p => isLegacyPresetShape(p)).length} legacy preset(s) → bridge\n`);
-                } catch (e) {
-                    process.stderr.write(`[config] native→bridge migration persist failed: ${e.message}\n`);
-                }
-            }
             return {
                 providers: mergedProviders,
                 mcpServers,
@@ -221,8 +148,6 @@ export function loadConfig() {
                 maintenance: { ...DEFAULT_MAINTENANCE, ...rawMaint },
                 agentMaintenance: { enabled: true, interval: '1h', ...raw.agentMaintenance },
                 trajectory: { enabled: true, ...raw.trajectory },
-                // Top-level extension blocks preserved through save/load so
-                // future keys round-trip without schema updates here.
                 bridge: raw.bridge && typeof raw.bridge === 'object' ? raw.bridge : {},
             };
         }
@@ -286,25 +211,14 @@ export function saveConfig(config) {
 }
 // --- Preset helpers ---
 // preset shape: { id, name, type: 'bridge', provider, model, effort?, fast?, tools? }
-// Legacy inputs with `type: 'native'` + short family model (haiku/sonnet/opus)
-// are auto-migrated to { type: 'bridge', provider: 'anthropic-oauth', model: <full id> }.
 function presetKey(p) { return p?.id || p?.name || ''; }
 function normalizePreset(preset) {
     if (!preset || typeof preset !== 'object')
         return null;
     const id = String(preset.id || preset.name || '').trim();
     const name = String(preset.name || preset.id || '').trim();
-    let model = String(preset.model || '').trim();
-    let provider = String(preset.provider || '').trim();
-
-    // Legacy migration: flip to bridge, fill anthropic-oauth provider,
-    // expand short family model (haiku/sonnet/opus) to the full API id.
-    if (isLegacyPresetShape(preset)) {
-        if (!provider) provider = 'anthropic-oauth';
-        const resolved = resolveAnthropicFamilyModel(model);
-        if (resolved) model = resolved;
-    }
-
+    const model = String(preset.model || '').trim();
+    const provider = String(preset.provider || '').trim();
     if (!name || !model || !provider) return null;
     const out = { id, name, type: 'bridge', provider, model };
     if (preset.effort)

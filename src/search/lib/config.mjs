@@ -94,11 +94,6 @@ export function writeJson(filePath, value) {
   }
 }
 
-function normalizeLegacyConfig(config) {
-  if (!config) return DEFAULT_CONFIG
-  return config
-}
-
 function hasKeys(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0
 }
@@ -118,25 +113,24 @@ export function loadConfig() {
       '  use /setup to change provider priority and crawl defaults.\n',
     )
   }
-  const resolved = normalizeLegacyConfig(config || DEFAULT_CONFIG)
   return {
     ...DEFAULT_CONFIG,
-    ...resolved,
+    ...config,
     rawSearch: {
       ...DEFAULT_CONFIG.rawSearch,
-      ...(resolved?.rawSearch || {}),
+      ...(config?.rawSearch || {}),
       credentials: {
         ...DEFAULT_CONFIG.rawSearch.credentials,
-        ...(resolved?.rawSearch?.credentials || {}),
+        ...(config?.rawSearch?.credentials || {}),
       },
     },
     crawl: {
       ...DEFAULT_CONFIG.crawl,
-      ...(resolved?.crawl || {}),
+      ...(config?.crawl || {}),
     },
     siteRules: {
       ...DEFAULT_CONFIG.siteRules,
-      ...(resolved?.siteRules || {}),
+      ...(config?.siteRules || {}),
     },
   }
 }
@@ -188,9 +182,5 @@ export function getRequestTimeoutMs(config) {
 }
 
 export function getFirecrawlApiKey(config) {
-  return (
-    getRawProviderApiKey(config, 'firecrawl') ||
-    config.firecrawlApiKey ||
-    ''
-  )
+  return getRawProviderApiKey(config, 'firecrawl') || ''
 }

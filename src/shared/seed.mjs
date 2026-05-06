@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs';
-import { dirname, join, basename } from 'path';
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { DEFAULT_PRESETS, DEFAULT_MAINTENANCE } from '../agent/orchestrator/config.mjs';
 
@@ -13,14 +13,6 @@ const DEFAULTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '
 // surfaces — the bare CLAUDE.md outside the managed block, project repo
 // files, etc. — are never touched. `existsSync()` gates every write so a
 // second boot never overwrites user edits.
-//
-// Migration-safe: if any legacy config file is still present in dataDir
-// (config.json, agent-config.json, memory-config.json, search-config.json),
-// seed is skipped entirely for that key. shared/config.mjs readAll() will
-// absorb the legacy files on the first config read and write mixdog-config.json
-// with real user data — seeding defaults on top of that would lose the
-// migrated content.
-const LEGACY_FILENAMES = new Set(['config.json', 'agent-config.json', 'memory-config.json', 'search-config.json']);
 
 //
 // Seed bodies are thunks so dynamic content (DEFAULT_PRESETS pulling
@@ -58,18 +50,6 @@ export function ensureDataSeeds(dataDir) {
     if (!dataDir) return { created: [], skipped: [] };
     const created = [];
     const skipped = [];
-    // Guard: if any legacy config file exists, skip ALL seeds so that
-    // shared/config.mjs migration runs first (on the next config read) and
-    // produces mixdog-config.json from real user data instead of defaults.
-    let legacyPresent = false;
-    try {
-        for (const entry of readdirSync(dataDir)) {
-            if (LEGACY_FILENAMES.has(basename(entry))) { legacyPresent = true; break; }
-        }
-    } catch { /* dataDir not yet created — no legacy files */ }
-    if (legacyPresent) {
-        return { created, skipped: Object.keys(SEEDS) };
-    }
     for (const [rel, bodyFn] of Object.entries(SEEDS)) {
         const full = join(dataDir, rel);
         if (existsSync(full)) {

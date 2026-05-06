@@ -260,10 +260,6 @@ function searchProviderKeysMissing() {
       const v = entry.apiKey ?? ''
       if (typeof v === 'string' && v.trim().length > 0) return false
     }
-    // Legacy top-level firecrawlApiKey field (mirrors getFirecrawlApiKey at
-    // src/search/lib/config.mjs which checks cfg.firecrawlApiKey).
-    const legacyFirecrawl = raw?.firecrawlApiKey
-    if (typeof legacyFirecrawl === 'string' && legacyFirecrawl.trim().length > 0) return false
     // Config has no credentials — also accept env-var credentials.
     // Delegates to getRawProviderCredentialSource (search/lib/config.mjs)
     // which owns the provider→env-key mapping table.
