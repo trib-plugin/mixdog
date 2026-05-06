@@ -8,7 +8,7 @@
 set -euo pipefail
 
 PG_VERSION="16.4"
-PGVECTOR_VERSION="0.7.4"
+PGVECTOR_VERSION="0.8.2"
 TARGET_OS="${TARGET_OS:-linux}"
 TARGET_ARCH="${TARGET_ARCH:-x64}"
 
@@ -96,8 +96,10 @@ curl -fsSL "https://raw.githubusercontent.com/postgres/postgres/REL_16_STABLE/CO
 cp "$BUILD_DIR/pgvector/LICENSE" "$RUNTIME_DIR/LICENSE.pgvector"
 
 echo "==> Creating tarball: $OUTPUT_NAME"
-cd "$BUILD_DIR"
-tar czf "$DIST_DIR/$OUTPUT_NAME" -C "$BUILD_DIR" runtime/
+# Tarball layout: bin/, lib/, share/ at root (no runtime/ prefix). The fetcher
+# extracts into runtime-{ver}/, so prefix must be omitted to land directly in
+# runtime-{ver}/{bin,lib,share}/.
+tar czf "$DIST_DIR/$OUTPUT_NAME" -C "$RUNTIME_DIR" .
 
 echo "==> Generating sha256 sidecar"
 cd "$DIST_DIR"

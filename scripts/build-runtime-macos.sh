@@ -8,7 +8,7 @@
 set -euo pipefail
 
 PG_VERSION="16.4"
-PGVECTOR_VERSION="0.7.4"
+PGVECTOR_VERSION="0.8.2"
 TARGET_OS="${TARGET_OS:-darwin}"
 # Detect arch from uname if not explicitly set
 TARGET_ARCH="${TARGET_ARCH:-$(uname -m | sed 's/x86_64/x64/' | sed 's/arm64/arm64/')}"
@@ -89,7 +89,7 @@ cp "$BUILD_DIR/pgvector/LICENSE" "$RUNTIME_DIR/LICENSE.pgvector"
 
 echo "==> Creating tarball: $OUTPUT_NAME"
 cd "$BUILD_DIR"
-tar czf "$DIST_DIR/$OUTPUT_NAME" -C "$BUILD_DIR" runtime/
+tar czf "$DIST_DIR/$OUTPUT_NAME" -C "$RUNTIME_DIR" .
 
 echo "==> Generating sha256 sidecar"
 cd "$DIST_DIR"

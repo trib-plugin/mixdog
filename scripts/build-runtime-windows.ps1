@@ -8,7 +8,7 @@
 $ErrorActionPreference = 'Stop'
 
 $PG_VERSION     = '16.4'
-$PGVECTOR_VERSION = '0.7.4'
+$PGVECTOR_VERSION = '0.8.2'
 # EDB installer version string (major.minor.patch-build)
 # TODO: Verify the current EDB Windows zip URL at https://www.enterprisedb.com/download-postgresql-binaries
 # and update $EDB_ZIP_URL if the build number suffix changes.
@@ -102,8 +102,12 @@ if (Test-Path "$PgVectorDir\LICENSE") {
 }
 
 Write-Host "==> Creating tarball: $OutputName"
-# Use tar.exe (ships with Windows 10/Server 2019+; available on windows-2022 runners)
-& tar -czf "$DistDir\$OutputName" -C "$BuildDir" runtime/
+# bsdtar (Windows tar.exe) requires forward slashes for -C target on Windows
+# paths; backslashes cause "Couldn't visit directory". Layout: bin/lib/share at
+# root (no runtime/ prefix), matching Linux/macOS scripts and fetcher contract.
+$DistDirFwd    = $DistDir.Replace('\', '/')
+$RuntimeDirFwd = $RuntimeDir.Replace('\', '/')
+& tar -czf "$DistDirFwd/$OutputName" -C "$RuntimeDirFwd" .
 if ($LASTEXITCODE -ne 0) { Write-Error "tar failed" }
 
 Write-Host "==> Generating sha256 sidecar"
