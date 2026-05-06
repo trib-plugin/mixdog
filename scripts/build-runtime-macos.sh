@@ -148,21 +148,42 @@ bundle_dylib() {
     chmod u+w "$dest_real"
     SCAN_QUEUE+=("$dest_real")
   fi
+
   local src_dir
   src_dir="$(dirname "$real")"
+
+  # Sibling-pass: bundle every other .dylib real file in the same Homebrew
+  # Cellar lib dir. Modern Homebrew packages use @rpath/libfoo refs between
+  # sibling libs (libicui18n → @rpath/libicudata.78.dylib); otool walk alone
+  # skips @* deps, so bundling siblings catches them deterministically.
+  while IFS= read -r sibling; do
+    local sibling_real
+    sibling_real="$(realpath "$sibling" 2>/dev/null || echo "$sibling")"
+    local sibling_dest="$RUNTIME_DIR/lib/$(basename "$sibling_real")"
+    if [[ -f "$sibling_real" && ! -f "$sibling_dest" ]]; then
+      cp -L "$sibling_real" "$sibling_dest"
+      chmod u+w "$sibling_dest"
+      SCAN_QUEUE+=("$sibling_dest")
+    fi
+  done < <(find "$src_dir" -maxdepth 1 -type f -name '*.dylib' 2>/dev/null)
+
+  # Reconstruct symlink chains for every real file we just bundled from this
+  # dir (libfoo.dylib → libfoo.N.dylib → libfoo.N.M.dylib).
   while IFS= read -r -d '' link; do
     local link_target
     link_target="$(readlink "$link")"
     local resolved="$src_dir/$link_target"
     local resolved_norm
     resolved_norm="$(cd "$(dirname "$resolved")" 2>/dev/null && pwd)/$(basename "$resolved")" || true
-    if [[ "$resolved_norm" == "$real" ]]; then
+    local resolved_basename
+    resolved_basename="$(basename "$resolved_norm")"
+    if [[ -f "$RUNTIME_DIR/lib/$resolved_basename" ]]; then
       local dest_link="$RUNTIME_DIR/lib/$(basename "$link")"
-      [[ ! -e "$dest_link" ]] && ln -s "$(basename "$real")" "$dest_link"
+      [[ ! -e "$dest_link" ]] && ln -s "$resolved_basename" "$dest_link"
     fi
   done < <(find "$src_dir" -maxdepth 1 -type l -print0 2>/dev/null)
-  # Loop exits when `read` returns 1 at EOF; without an explicit return, the
-  # function's exit status would be 1 and trip set -e in the caller.
+  # Explicit success — trailing `read` at EOF returns 1 which would otherwise
+  # propagate as the function's exit status and trip set -e in the caller.
   return 0
 }
 
