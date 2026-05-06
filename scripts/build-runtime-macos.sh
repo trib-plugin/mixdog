@@ -7,6 +7,22 @@
 # fresh macOS without Homebrew. Final smoke: initdb + CREATE EXTENSION vector +
 # distance query.
 
+# macOS ships bash 3.2; this script uses bash 4+ features (declare -A). Re-exec
+# under Homebrew's bash 5 if we're running on the system bash.
+if [[ "${BASH_VERSION%%.*}" -lt 4 ]]; then
+  if [[ ! -x /opt/homebrew/bin/bash && ! -x /usr/local/bin/bash ]]; then
+    if command -v brew >/dev/null 2>&1; then
+      brew install bash
+    else
+      echo "FAIL: bash 4+ required, brew not available" >&2
+      exit 1
+    fi
+  fi
+  if   [[ -x /opt/homebrew/bin/bash ]]; then exec /opt/homebrew/bin/bash "$0" "$@"
+  elif [[ -x /usr/local/bin/bash   ]]; then exec /usr/local/bin/bash   "$0" "$@"
+  fi
+fi
+
 set -euo pipefail
 
 PG_VERSION="16.4"
@@ -33,31 +49,38 @@ export CPPFLAGS="-I${BREW_PREFIX}/opt/readline/include -I${BREW_PREFIX}/opt/open
 export LDFLAGS="-L${BREW_PREFIX}/opt/readline/lib -L${BREW_PREFIX}/opt/openssl@3/lib -L${BREW_PREFIX}/opt/icu4c/lib"
 export PKG_CONFIG_PATH="${BREW_PREFIX}/opt/openssl@3/lib/pkgconfig:${BREW_PREFIX}/opt/icu4c/lib/pkgconfig"
 
-echo "==> Downloading PostgreSQL $PG_VERSION source"
-cd "$BUILD_DIR"
-curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.gz" \
-  -o "postgresql-${PG_VERSION}.tar.gz"
-rm -rf "postgresql-${PG_VERSION}"
-tar xzf "postgresql-${PG_VERSION}.tar.gz"
+if [[ -x "$STAGE_DIR/bin/postgres" ]]; then
+  echo "==> Cache hit: PG already built at $STAGE_DIR — skipping configure/make"
+  unset TARGET_OS TARGET_ARCH
+else
+  echo "==> Downloading PostgreSQL $PG_VERSION source"
+  cd "$BUILD_DIR"
+  if [[ ! -f "postgresql-${PG_VERSION}.tar.gz" ]]; then
+    curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.gz" \
+      -o "postgresql-${PG_VERSION}.tar.gz"
+  fi
+  rm -rf "postgresql-${PG_VERSION}"
+  tar xzf "postgresql-${PG_VERSION}.tar.gz"
 
-echo "==> Configuring PostgreSQL"
-cd "postgresql-${PG_VERSION}"
-./configure \
-  --prefix="$STAGE_DIR" \
-  --without-perl \
-  --without-python \
-  --without-tcl \
-  --with-openssl \
-  --with-icu \
-  --with-readline \
-  --enable-thread-safety \
-  CFLAGS="-O2"
+  echo "==> Configuring PostgreSQL"
+  cd "postgresql-${PG_VERSION}"
+  ./configure \
+    --prefix="$STAGE_DIR" \
+    --without-perl \
+    --without-python \
+    --without-tcl \
+    --with-openssl \
+    --with-icu \
+    --with-readline \
+    --enable-thread-safety \
+    CFLAGS="-O2"
 
-echo "==> Building PostgreSQL"
-unset TARGET_OS TARGET_ARCH
-make -j"$(sysctl -n hw.logicalcpu)"
-make install
-make -C contrib/pgcrypto install
+  echo "==> Building PostgreSQL"
+  unset TARGET_OS TARGET_ARCH
+  make -j"$(sysctl -n hw.logicalcpu)"
+  make install
+  make -C contrib/pgcrypto install
+fi
 
 PG_CONFIG="$STAGE_DIR/bin/pg_config"
 export PATH="$STAGE_DIR/bin:$PATH"
@@ -66,16 +89,20 @@ echo "==> Stripping macOS binaries"
 find "$STAGE_DIR/bin" -type f -exec strip -S -x {} \; 2>/dev/null || true
 find "$STAGE_DIR/lib" -name '*.dylib' -type f -exec strip -S -x {} \; 2>/dev/null || true
 
-echo "==> Cloning pgvector $PGVECTOR_VERSION"
-cd "$BUILD_DIR"
-rm -rf pgvector
-git clone --branch "v${PGVECTOR_VERSION}" --depth 1 \
-  https://github.com/pgvector/pgvector.git pgvector
+if [[ -f "$STAGE_DIR/lib/postgresql/vector.dylib" ]]; then
+  echo "==> Cache hit: pgvector already installed — skipping clone/build"
+else
+  echo "==> Cloning pgvector $PGVECTOR_VERSION"
+  cd "$BUILD_DIR"
+  rm -rf pgvector
+  git clone --branch "v${PGVECTOR_VERSION}" --depth 1 \
+    https://github.com/pgvector/pgvector.git pgvector
 
-echo "==> Building pgvector"
-cd pgvector
-make PG_CONFIG="$PG_CONFIG" -j"$(sysctl -n hw.logicalcpu)"
-make PG_CONFIG="$PG_CONFIG" install
+  echo "==> Building pgvector"
+  cd pgvector
+  make PG_CONFIG="$PG_CONFIG" -j"$(sysctl -n hw.logicalcpu)"
+  make PG_CONFIG="$PG_CONFIG" install
+fi
 
 echo "==> Assembling runtime layout"
 rm -rf "$RUNTIME_DIR"

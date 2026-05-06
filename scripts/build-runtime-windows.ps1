@@ -26,60 +26,82 @@ if (Test-Path $RuntimeDir) { Remove-Item -Recurse -Force $RuntimeDir }
 New-Item -ItemType Directory -Force -Path $BuildDir, $DistDir,
   "$RuntimeDir\bin", "$RuntimeDir\lib", "$RuntimeDir\share" | Out-Null
 
-Write-Host "==> Downloading EnterpriseDB PostgreSQL $PG_VERSION Windows zip"
-$ZipPath = "$BuildDir\pgsql.zip"
-if (-not (Test-Path $ZipPath)) {
-    Invoke-WebRequest -Uri $EDB_ZIP_URL -OutFile $ZipPath -UseBasicParsing
-}
-
-Write-Host "==> Extracting PostgreSQL zip"
-Expand-Archive -Path $ZipPath -DestinationPath $BuildDir -Force
 $PgBin    = "$StageDir\bin"
 $PgConfig = "$PgBin\pg_config.exe"
+
+if (Test-Path "$PgBin\postgres.exe") {
+    Write-Host "==> Cache hit: EDB PG already extracted at $StageDir — skipping download/extract"
+} else {
+    Write-Host "==> Downloading EnterpriseDB PostgreSQL $PG_VERSION Windows zip"
+    $ZipPath = "$BuildDir\pgsql.zip"
+    if (-not (Test-Path $ZipPath)) {
+        Invoke-WebRequest -Uri $EDB_ZIP_URL -OutFile $ZipPath -UseBasicParsing
+    }
+    Write-Host "==> Extracting PostgreSQL zip"
+    Expand-Archive -Path $ZipPath -DestinationPath $BuildDir -Force
+}
 
 if (-not (Test-Path $PgConfig)) {
     Write-Error "pg_config.exe not found at $PgConfig — check EDB zip structure."
     exit 1
 }
 
-Write-Host "==> Cloning pgvector $PGVECTOR_VERSION"
 $PgVectorDir = "$BuildDir\pgvector"
-if (Test-Path $PgVectorDir) { Remove-Item -Recurse -Force $PgVectorDir }
-git clone --branch "v$PGVECTOR_VERSION" --depth 1 `
-    https://github.com/pgvector/pgvector.git $PgVectorDir
+$VectorDllStageBin = "$StageDir\bin\vector.dll"
+$VectorDllStageLib = "$StageDir\lib\vector.dll"
 
-Write-Host "==> Building pgvector (MSVC/nmake)"
-Push-Location $PgVectorDir
-try {
-    $VsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    $VcVarsAll = & $VsWhere -latest -find 'VC\Auxiliary\Build\vcvarsall.bat' 2>$null | Select-Object -First 1
-    if (-not $VcVarsAll) {
-        Write-Error "vswhere could not locate vcvarsall.bat — Visual Studio Build Tools required."
-        exit 1
+if ((Test-Path $VectorDllStageBin) -or (Test-Path $VectorDllStageLib)) {
+    Write-Host "==> Cache hit: pgvector already installed in $StageDir — skipping clone/build"
+} else {
+    Write-Host "==> Cloning pgvector $PGVECTOR_VERSION"
+    if (Test-Path $PgVectorDir) { Remove-Item -Recurse -Force $PgVectorDir }
+    git clone --branch "v$PGVECTOR_VERSION" --depth 1 `
+        https://github.com/pgvector/pgvector.git $PgVectorDir
+
+    Write-Host "==> Building pgvector (MSVC/nmake — build only, install is manual)"
+    # We skip `nmake install` because EDB's pg_config returns baked-in paths
+    # like C:\Program Files\PostgreSQL\14\... which don't exist on a clean
+    # runner and don't match our $StageDir. Build only, then copy artifacts
+    # directly from $PgVectorDir to $StageDir below.
+    Push-Location $PgVectorDir
+    try {
+        $VsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        $VcVarsAll = & $VsWhere -latest -find 'VC\Auxiliary\Build\vcvarsall.bat' 2>$null | Select-Object -First 1
+        if (-not $VcVarsAll) {
+            Write-Error "vswhere could not locate vcvarsall.bat — Visual Studio Build Tools required."
+            exit 1
+        }
+        $BuildCmd = "`"$VcVarsAll`" amd64 && nmake /F Makefile.win PG_CONFIG=`"$PgConfig`""
+        cmd /c $BuildCmd
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "pgvector nmake build failed (exit $LASTEXITCODE)"
+            exit 1
+        }
+    } finally {
+        Pop-Location
     }
-    $BuildCmd = "`"$VcVarsAll`" amd64 && nmake /F Makefile.win PG_CONFIG=`"$PgConfig`" && nmake /F Makefile.win install PG_CONFIG=`"$PgConfig`""
-    cmd /c $BuildCmd
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "pgvector nmake build failed (exit $LASTEXITCODE)"
-        exit 1
-    }
-} finally {
-    Pop-Location
+
+    Write-Host "==> Manually staging pgvector artifacts → $StageDir"
+    # Build artifacts produced in $PgVectorDir; copy to staging deterministically.
+    $StageExtDir = "$StageDir\share\extension"
+    New-Item -ItemType Directory -Force -Path $StageExtDir | Out-Null
+    Copy-Item "$PgVectorDir\vector.dll"     "$StageDir\lib\"   -Force
+    Copy-Item "$PgVectorDir\vector.control" $StageExtDir       -Force
+    Copy-Item "$PgVectorDir\sql\vector--*.sql" $StageExtDir    -Force
+    Copy-Item "$PgVectorDir\sql\vector.sql"    "$StageExtDir\vector--$PGVECTOR_VERSION.sql" -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host "==> Verifying pgvector install destinations"
-# Makefile.win uses pg_config-derived paths → installs into EDB pgsql\ tree.
-# Verify the canonical artifacts landed where expected before runtime assembly.
+Write-Host "==> Verifying pgvector stage outputs"
 $VectorControlStage = "$StageDir\share\extension\vector.control"
 $VectorSqlStage     = "$StageDir\share\extension\vector--$PGVECTOR_VERSION.sql"
 $VectorDllStageLib  = "$StageDir\lib\vector.dll"
 $VectorDllStageBin  = "$StageDir\bin\vector.dll"
 if (-not (Test-Path $VectorControlStage)) {
-    Write-Error "ASSERT FAILED: pgvector did not install vector.control to $VectorControlStage"
+    Write-Error "ASSERT FAILED: vector.control not found at $VectorControlStage"
     exit 1
 }
 if (-not (Test-Path $VectorSqlStage)) {
-    Write-Error "ASSERT FAILED: pgvector did not install vector--$PGVECTOR_VERSION.sql"
+    Write-Error "ASSERT FAILED: vector--$PGVECTOR_VERSION.sql not found at $VectorSqlStage"
     exit 1
 }
 if (-not ((Test-Path $VectorDllStageLib) -or (Test-Path $VectorDllStageBin))) {

@@ -31,43 +31,54 @@ mkdir -p "$BUILD_DIR" "$STAGE_DIR" "$DIST_DIR" "$RUNTIME_DIR"/{bin,lib,share}
 # ---------------------------------------------------------------------------
 SUDO=""
 if [[ "$(id -u)" -ne 0 ]]; then SUDO="sudo"; fi
+# Export rather than inline-assign before $SUDO: when SUDO is empty (root),
+# `$SUDO DEBIAN_FRONTEND=... apt-get` would parse the env-assignment as a
+# command name and fail with "command not found".
+export DEBIAN_FRONTEND=noninteractive
 
 echo "==> Installing build dependencies"
 $SUDO apt-get update -qq
-$SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+$SUDO apt-get install -y --no-install-recommends \
   build-essential libreadline-dev zlib1g-dev libssl-dev \
   libicu-dev libxml2-dev libzstd-dev liblz4-dev \
   pkg-config curl git ca-certificates patchelf file \
   bsdmainutils
 
-echo "==> Downloading PostgreSQL $PG_VERSION source"
-cd "$BUILD_DIR"
-curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.gz" \
-  -o "postgresql-${PG_VERSION}.tar.gz"
-rm -rf "postgresql-${PG_VERSION}"
-tar xzf "postgresql-${PG_VERSION}.tar.gz"
+if [[ -x "$STAGE_DIR/bin/postgres" ]]; then
+  echo "==> Cache hit: PG already built at $STAGE_DIR — skipping configure/make"
+  unset TARGET_OS TARGET_ARCH
+else
+  echo "==> Downloading PostgreSQL $PG_VERSION source"
+  cd "$BUILD_DIR"
+  if [[ ! -f "postgresql-${PG_VERSION}.tar.gz" ]]; then
+    curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.gz" \
+      -o "postgresql-${PG_VERSION}.tar.gz"
+  fi
+  rm -rf "postgresql-${PG_VERSION}"
+  tar xzf "postgresql-${PG_VERSION}.tar.gz"
 
-echo "==> Configuring PostgreSQL"
-cd "postgresql-${PG_VERSION}"
-./configure \
-  --prefix="$STAGE_DIR" \
-  --without-perl \
-  --without-python \
-  --without-tcl \
-  --with-openssl \
-  --with-libxml \
-  --with-icu \
-  --with-readline \
-  --enable-thread-safety \
-  CFLAGS="-O2"
+  echo "==> Configuring PostgreSQL"
+  cd "postgresql-${PG_VERSION}"
+  ./configure \
+    --prefix="$STAGE_DIR" \
+    --without-perl \
+    --without-python \
+    --without-tcl \
+    --with-openssl \
+    --with-libxml \
+    --with-icu \
+    --with-readline \
+    --enable-thread-safety \
+    CFLAGS="-O2"
 
-echo "==> Building PostgreSQL"
-# PG Makefile.global has its own TARGET_ARCH var; env-passed TARGET_ARCH=x64
-# would collide as a make-variable override and leak into compile commands.
-unset TARGET_OS TARGET_ARCH
-make -j"$(nproc)"
-make install
-make -C contrib/pgcrypto install
+  echo "==> Building PostgreSQL"
+  # PG Makefile.global has its own TARGET_ARCH var; env-passed TARGET_ARCH=x64
+  # would collide as a make-variable override and leak into compile commands.
+  unset TARGET_OS TARGET_ARCH
+  make -j"$(nproc)"
+  make install
+  make -C contrib/pgcrypto install
+fi
 
 PG_CONFIG="$STAGE_DIR/bin/pg_config"
 export PATH="$STAGE_DIR/bin:$PATH"
@@ -76,16 +87,20 @@ echo "==> Stripping PostgreSQL binaries"
 find "$STAGE_DIR" -name '*.so*' -type f -exec strip --strip-debug {} \; 2>/dev/null || true
 find "$STAGE_DIR/bin" -type f -exec strip --strip-all {} \; 2>/dev/null || true
 
-echo "==> Cloning pgvector $PGVECTOR_VERSION"
-cd "$BUILD_DIR"
-rm -rf pgvector
-git clone --branch "v${PGVECTOR_VERSION}" --depth 1 \
-  https://github.com/pgvector/pgvector.git pgvector
+if [[ -f "$STAGE_DIR/lib/postgresql/vector.so" ]]; then
+  echo "==> Cache hit: pgvector already installed — skipping clone/build"
+else
+  echo "==> Cloning pgvector $PGVECTOR_VERSION"
+  cd "$BUILD_DIR"
+  rm -rf pgvector
+  git clone --branch "v${PGVECTOR_VERSION}" --depth 1 \
+    https://github.com/pgvector/pgvector.git pgvector
 
-echo "==> Building pgvector"
-cd pgvector
-make PG_CONFIG="$PG_CONFIG" -j"$(nproc)"
-make PG_CONFIG="$PG_CONFIG" install
+  echo "==> Building pgvector"
+  cd pgvector
+  make PG_CONFIG="$PG_CONFIG" -j"$(nproc)"
+  make PG_CONFIG="$PG_CONFIG" install
+fi
 
 echo "==> Assembling runtime layout"
 rm -rf "$RUNTIME_DIR"
