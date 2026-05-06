@@ -1,68 +1,58 @@
 # build-runtime-windows.ps1 — Build PostgreSQL 16 + pgvector runtime on Windows.
-# Uses EnterpriseDB Windows binary zip (community license) as the PG base.
-# Builds pgvector from source via MSVC/nmake. Bulk-copies bin/* (.exe + .dll) so
-# all runtime DLLs ship next to postgres.exe — no PATH gymnastics for fresh users.
-# Final smoke: initdb + pg_ctl start + CREATE EXTENSION vector + distance query.
+# Uses windows-2022 GHA runner's preinstalled PostgreSQL 16 (consistent
+# pg_config + postgres.exe from same package) — avoids EDB zip's split-version
+# packaging bug that linked pgvector against PG 14 ABI.
+# Builds pgvector from source via MSVC/nmake, then assembles a self-contained
+# runtime tree (bin + lib + share at root). Final smoke: initdb + CREATE
+# EXTENSION vector + distance query.
 # Produces: dist\mixdog-runtime-win32-x64-pg{pgver}-pgvector{vecver}.tar.gz
 
 $ErrorActionPreference = 'Stop'
 
 $PG_VERSION       = '16.4'
 $PGVECTOR_VERSION = '0.8.2'
-$EDB_ZIP_URL      = "https://get.enterprisedb.com/postgresql/postgresql-${PG_VERSION}-1-windows-x64-binaries.zip"
 $TARGET_OS        = $env:TARGET_OS   ?? 'win32'
 $TARGET_ARCH      = $env:TARGET_ARCH ?? 'x64'
+
+# Use the runner's preinstalled PG 16 — this MUST exist on windows-2022.
+$PgRoot = 'C:\Program Files\PostgreSQL\16'
+if (-not (Test-Path $PgRoot)) {
+    Write-Error "ASSERT FAILED: $PgRoot not found. windows-2022 runner image must include PostgreSQL 16."
+    exit 1
+}
 
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir    = (Resolve-Path "$ScriptDir\..").Path
 $BuildDir   = "$RootDir\build\runtime-win32-$TARGET_ARCH"
-$StageDir   = "$BuildDir\pgsql"          # EDB zip extracts to a 'pgsql' subdirectory
 $DistDir    = "$RootDir\dist"
 $RuntimeDir = "$BuildDir\runtime"
 
+$PgBin    = "$PgRoot\bin"
+$PgConfig = "$PgBin\pg_config.exe"
+
 $OutputName = "mixdog-runtime-${TARGET_OS}-${TARGET_ARCH}-pg${PG_VERSION}-pgvector${PGVECTOR_VERSION}.tar.gz"
+
+Write-Host "==> Using preinstalled PG: $PgRoot"
+& $PgConfig --version
+$RealVersion = (& $PgConfig --version) -replace 'PostgreSQL ', ''
+Write-Host "  pg_config reports version: $RealVersion"
 
 if (Test-Path $RuntimeDir) { Remove-Item -Recurse -Force $RuntimeDir }
 New-Item -ItemType Directory -Force -Path $BuildDir, $DistDir,
   "$RuntimeDir\bin", "$RuntimeDir\lib", "$RuntimeDir\share" | Out-Null
 
-$PgBin    = "$StageDir\bin"
-$PgConfig = "$PgBin\pg_config.exe"
-
-if (Test-Path "$PgBin\postgres.exe") {
-    Write-Host "==> Cache hit: EDB PG already extracted at $StageDir — skipping download/extract"
-} else {
-    Write-Host "==> Downloading EnterpriseDB PostgreSQL $PG_VERSION Windows zip"
-    $ZipPath = "$BuildDir\pgsql.zip"
-    if (-not (Test-Path $ZipPath)) {
-        Invoke-WebRequest -Uri $EDB_ZIP_URL -OutFile $ZipPath -UseBasicParsing
-    }
-    Write-Host "==> Extracting PostgreSQL zip"
-    Expand-Archive -Path $ZipPath -DestinationPath $BuildDir -Force
-}
-
-if (-not (Test-Path $PgConfig)) {
-    Write-Error "pg_config.exe not found at $PgConfig — check EDB zip structure."
-    exit 1
-}
-
+Write-Host "==> Cloning pgvector $PGVECTOR_VERSION"
 $PgVectorDir = "$BuildDir\pgvector"
-$VectorDllStageBin = "$StageDir\bin\vector.dll"
-$VectorDllStageLib = "$StageDir\lib\vector.dll"
+$VectorDllBuilt = "$PgVectorDir\vector.dll"
 
-if ((Test-Path $VectorDllStageBin) -or (Test-Path $VectorDllStageLib)) {
-    Write-Host "==> Cache hit: pgvector already installed in $StageDir — skipping clone/build"
+if (Test-Path $VectorDllBuilt) {
+    Write-Host "  Cache hit: vector.dll already built at $VectorDllBuilt"
 } else {
-    Write-Host "==> Cloning pgvector $PGVECTOR_VERSION"
     if (Test-Path $PgVectorDir) { Remove-Item -Recurse -Force $PgVectorDir }
     git clone --branch "v$PGVECTOR_VERSION" --depth 1 `
         https://github.com/pgvector/pgvector.git $PgVectorDir
 
-    Write-Host "==> Building pgvector (MSVC/nmake — build only, install is manual)"
-    # We skip `nmake install` because EDB's pg_config returns baked-in paths
-    # like C:\Program Files\PostgreSQL\14\... which don't exist on a clean
-    # runner and don't match our $StageDir. Build only, then copy artifacts
-    # directly from $PgVectorDir to $StageDir below.
+    Write-Host "==> Building pgvector (MSVC/nmake against system PG 16)"
     Push-Location $PgVectorDir
     try {
         $VsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -80,65 +70,46 @@ if ((Test-Path $VectorDllStageBin) -or (Test-Path $VectorDllStageLib)) {
     } finally {
         Pop-Location
     }
-
-    Write-Host "==> Manually staging pgvector artifacts → $StageDir"
-    # Build artifacts produced in $PgVectorDir; copy to staging deterministically.
-    $StageExtDir = "$StageDir\share\extension"
-    New-Item -ItemType Directory -Force -Path $StageExtDir | Out-Null
-    Copy-Item "$PgVectorDir\vector.dll"     "$StageDir\lib\"   -Force
-    Copy-Item "$PgVectorDir\vector.control" $StageExtDir       -Force
-    Copy-Item "$PgVectorDir\sql\vector--*.sql" $StageExtDir    -Force
-    Copy-Item "$PgVectorDir\sql\vector.sql"    "$StageExtDir\vector--$PGVECTOR_VERSION.sql" -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host "==> Verifying pgvector stage outputs"
-$VectorControlStage = "$StageDir\share\extension\vector.control"
-$VectorSqlStage     = "$StageDir\share\extension\vector--$PGVECTOR_VERSION.sql"
-$VectorDllStageLib  = "$StageDir\lib\vector.dll"
-$VectorDllStageBin  = "$StageDir\bin\vector.dll"
-if (-not (Test-Path $VectorControlStage)) {
-    Write-Error "ASSERT FAILED: vector.control not found at $VectorControlStage"
-    exit 1
-}
-if (-not (Test-Path $VectorSqlStage)) {
-    Write-Error "ASSERT FAILED: vector--$PGVECTOR_VERSION.sql not found at $VectorSqlStage"
-    exit 1
-}
-if (-not ((Test-Path $VectorDllStageLib) -or (Test-Path $VectorDllStageBin))) {
-    Write-Error "ASSERT FAILED: vector.dll not found in $StageDir\lib\ or $StageDir\bin\"
-    exit 1
-}
-Write-Host "  pgvector stage outputs verified"
-
-Write-Host "==> Assembling runtime layout — bulk copy ALL .exe + .dll from EDB bin"
-# EDB ships runtime DLLs in pgsql\bin\: libcrypto-3-x64, libssl-3-x64, libpq,
-# libintl-9, libiconv-2, libxml2, libxslt, icu67*, libwinpthread-1, libecpg,
-# libecpg_compat, libpgtypes, liblz4, libzstd, etc. They MUST land next to
-# postgres.exe so the Windows loader resolves them without PATH manipulation.
+Write-Host "==> Assembling runtime layout — copy bin (.exe + .dll), lib, share from $PgRoot"
+# Copy ALL .exe + .dll from PG bin so postgres.exe + libpq.dll + libcrypto/libssl/
+# libintl/libiconv/icu*/libxml2/libxslt/libwinpthread/libecpg/libpgtypes etc. all
+# ship together. PG 16 install layout puts these all in bin\.
 Copy-Item "$PgBin\*.exe","$PgBin\*.dll" "$RuntimeDir\bin\" -Force
 
-Write-Host "==> Copying lib/ and share/"
-Copy-Item -Recurse -Force "$StageDir\lib\*"   "$RuntimeDir\lib\"   -ErrorAction SilentlyContinue
-Copy-Item -Recurse -Force "$StageDir\share\*" "$RuntimeDir\share\" -ErrorAction SilentlyContinue
+# lib\: PG extension modules (incl. contrib like pgcrypto.dll). vector.dll
+# placed here below — PG looks for $libdir/<ext>.dll which resolves to lib\.
+Copy-Item -Recurse -Force "$PgRoot\lib\*"   "$RuntimeDir\lib\"   -ErrorAction SilentlyContinue
+# share\: extension SQL/control, locale, timezone data, conf samples.
+Copy-Item -Recurse -Force "$PgRoot\share\*" "$RuntimeDir\share\" -ErrorAction SilentlyContinue
+
+Write-Host "==> Manually staging pgvector artifacts (avoid pg_config-derived install paths)"
+$RuntimeExtDir = "$RuntimeDir\share\extension"
+New-Item -ItemType Directory -Force -Path $RuntimeExtDir | Out-Null
+Copy-Item "$PgVectorDir\vector.dll"        "$RuntimeDir\lib\"  -Force
+Copy-Item "$PgVectorDir\vector.control"    $RuntimeExtDir      -Force
+Copy-Item "$PgVectorDir\sql\vector--*.sql" $RuntimeExtDir      -Force
 
 Write-Host "==> Asserting runtime layout"
-# vector.dll MUST stay in lib\ — PG resolves $libdir/vector at runtime to
-# pkglibdir which find_my_exec() derives as <bindir>/../lib. Moving to bin\
-# breaks `CREATE EXTENSION vector` with "could not access $libdir/vector".
 $VectorControl = "$RuntimeDir\share\extension\vector.control"
 if (-not (Test-Path $VectorControl)) { Write-Error "ASSERT FAILED: $VectorControl not found"; exit 1 }
 $VectorSql = "$RuntimeDir\share\extension\vector--$PGVECTOR_VERSION.sql"
 if (-not (Test-Path $VectorSql))     { Write-Error "ASSERT FAILED: $VectorSql not found"; exit 1 }
 if (-not (Test-Path "$RuntimeDir\lib\vector.dll")) {
-    Write-Error "ASSERT FAILED: vector.dll not found in lib\ (PG looks for `$libdir/vector` here)"
+    Write-Error "ASSERT FAILED: vector.dll not found in lib\"
     exit 1
 }
 Write-Host "  PASS runtime layout"
 
 # Licenses
-Copy-Item "$StageDir\doc\postgresql\COPYRIGHT" "$RuntimeDir\LICENSE.postgresql" -ErrorAction SilentlyContinue
+if (Test-Path "$PgRoot\doc\postgresql\COPYRIGHT") {
+    Copy-Item "$PgRoot\doc\postgresql\COPYRIGHT" "$RuntimeDir\LICENSE.postgresql" -Force
+} elseif (Test-Path "$PgRoot\doc\COPYRIGHT") {
+    Copy-Item "$PgRoot\doc\COPYRIGHT" "$RuntimeDir\LICENSE.postgresql" -Force
+}
 if (Test-Path "$PgVectorDir\LICENSE") {
-    Copy-Item "$PgVectorDir\LICENSE" "$RuntimeDir\LICENSE.pgvector"
+    Copy-Item "$PgVectorDir\LICENSE" "$RuntimeDir\LICENSE.pgvector" -Force
 }
 
 Write-Host "==> Self-contained smoke test (initdb + CREATE EXTENSION vector + distance query)"
@@ -175,9 +146,6 @@ finally {
 }
 
 Write-Host "==> Creating tarball: $OutputName"
-# bsdtar (Windows tar.exe) requires forward slashes for -C target on Windows
-# paths; backslashes cause "Couldn't visit directory". Layout: bin/lib/share at
-# root (no runtime/ prefix), matching Linux/macOS scripts and fetcher contract.
 $DistDirFwd    = $DistDir.Replace('\', '/')
 $RuntimeDirFwd = $RuntimeDir.Replace('\', '/')
 & tar -czf "$DistDirFwd/$OutputName" -C "$RuntimeDirFwd" .

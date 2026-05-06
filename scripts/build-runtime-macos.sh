@@ -118,6 +118,10 @@ cp -a "$STAGE_DIR/share"/. "$RUNTIME_DIR/share/" 2>/dev/null || true
 # module under lib/postgresql/ (dlopen-loaded). Recursive otool closure.
 # ---------------------------------------------------------------------------
 echo "==> Bundling foreign Homebrew dynamic libraries"
+# Trace the bundling pass — last failure happened silently here. set -x prints
+# each command; ERR trap prints failing line if set -e fires.
+set -x
+trap 'rc=$?; set +x; echo "FAIL: bundling step exited $rc at line ${LINENO} (BASH_COMMAND: $BASH_COMMAND)" >&2; exit $rc' ERR
 
 FOREIGN_PREFIXES=("${BREW_PREFIX}/opt" "/opt/homebrew" "/usr/local/Cellar" "/opt/local")
 is_foreign() {
@@ -167,17 +171,20 @@ while [[ ${#SCAN_QUEUE[@]} -gt 0 ]]; do
   current="${SCAN_QUEUE[0]}"
   SCAN_QUEUE=("${SCAN_QUEUE[@]:1}")
   real_current="$(realpath "$current" 2>/dev/null || echo "$current")"
-  [[ -n "${SCANNED[$real_current]+x}" ]] && continue
+  if [[ -n "${SCANNED[$real_current]+x}" ]]; then continue; fi
   SCANNED["$real_current"]=1
   while IFS= read -r line; do
     dep="$(echo "$line" | awk '{print $1}')"
-    [[ -z "$dep" || "$dep" == @* ]] && continue
-    [[ "$dep" == /usr/lib/* || "$dep" == /System/Library/* ]] && continue
+    if [[ -z "$dep" || "$dep" == @* ]]; then continue; fi
+    if [[ "$dep" == /usr/lib/* || "$dep" == /System/Library/* ]]; then continue; fi
     if is_foreign "$dep"; then
       bundle_dylib "$dep"
     fi
   done < <(otool -L "$current" 2>/dev/null | tail -n +2)
 done
+
+set +x
+trap - ERR
 
 # ---------------------------------------------------------------------------
 # Rewrite install_names — three Mach-O classes
