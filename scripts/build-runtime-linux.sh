@@ -48,6 +48,10 @@ cd "postgresql-${PG_VERSION}"
   CFLAGS="-O2"
 
 echo "==> Building PostgreSQL (this takes a while)"
+# PG Makefile.global has its own TARGET_ARCH var (used in *.so install paths);
+# our env-passed TARGET_ARCH=x64 collides as a make-variable override and
+# leaks into compile commands. Unset before make.
+unset TARGET_OS TARGET_ARCH
 make -j"$(nproc)"
 make install
 make -C contrib/pgcrypto install

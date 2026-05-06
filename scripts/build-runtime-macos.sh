@@ -51,6 +51,7 @@ cd "postgresql-${PG_VERSION}"
   CFLAGS="-O2"
 
 echo "==> Building PostgreSQL"
+unset TARGET_OS TARGET_ARCH
 make -j"$(sysctl -n hw.logicalcpu)"
 make install
 make -C contrib/pgcrypto install
