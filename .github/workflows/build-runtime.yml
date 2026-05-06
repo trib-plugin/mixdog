@@ -38,10 +38,11 @@ jobs:
           #   arch: arm64
           #   runner: ubuntu-22.04-arm
           #   script: scripts/build-runtime-linux.sh
-          - os: darwin
-            arch: x64
-            runner: macos-13
-            script: scripts/build-runtime-macos.sh
+          # darwin-x64 (macos-13) dropped: GitHub-hosted Intel x64 runner pool
+          # is severely queue-limited as Apple Silicon migration progresses.
+          # Apple Silicon Macs run arm64 natively; Intel Macs can use Rosetta 2
+          # to run the arm64 build with a small perf hit. Re-add via paid
+          # macos-13-large runner if Intel-native support becomes a hard need.
           - os: darwin
             arch: arm64
             runner: macos-14
