@@ -20,14 +20,16 @@ import {
 } from 'fs'
 import { readFile } from 'fs/promises'
 import { join, resolve } from 'path'
+import { fileURLToPath } from 'url'
 import { pipeline } from 'stream/promises'
 import { spawnSync } from 'child_process'
 
-// Bundled fallback manifest shipped alongside the plugin.
-const BUNDLED_MANIFEST_PATH = new URL('../data/runtime-manifest.json', import.meta.url).pathname
+// Bundled fallback manifest shipped alongside the plugin. fileURLToPath required
+// for cross-platform path resolution (URL.pathname returns /C:/... on Windows).
+const BUNDLED_MANIFEST_PATH = fileURLToPath(new URL('../data/runtime-manifest.json', import.meta.url))
 
-// GitHub releases manifest URL (used only when no cached or bundled manifest).
-const MANIFEST_URL = 'https://github.com/mixdog-ai/mixdog/releases/latest/download/runtime-manifest.json'
+// GitHub raw URL fallback — used only when no cached or bundled manifest exists.
+const MANIFEST_URL = 'https://raw.githubusercontent.com/trib-plugin/mixdog/main/src/memory/data/runtime-manifest.json'
 
 // ---------------------------------------------------------------------------
 // Platform key
