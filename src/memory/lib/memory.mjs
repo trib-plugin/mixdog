@@ -3,11 +3,12 @@
 import { PGlite } from '../../../lib/vendored/pglite/dist/index.js'
 import { vector } from '../../../lib/vendored/pglite/dist/vector/index.js'
 import { pg_trgm } from '../../../lib/vendored/pglite/dist/contrib/pg_trgm.js'
-import { mkdirSync, existsSync, renameSync, rmSync } from 'fs'
+import { mkdirSync, existsSync, renameSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { join, resolve } from 'path'
 import { cleanMemoryText } from './memory-extraction.mjs'
 
 const dbs = new Map()
+const opening = new Map()
 
 export { cleanMemoryText }
 
@@ -234,58 +235,174 @@ export async function ensureTrajectoryTable(db) {
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_traj_tool_calls_gin ON trajectories USING GIN (tool_calls_json)`)
 }
 
+// ---------------------------------------------------------------------------
+// core_entries sidecar — best-effort JSON snapshot alongside pgdata.
+// Survives quarantine/rmSync because it lives in dataDir, not inside pgdata.
+// ---------------------------------------------------------------------------
+
+const SIDECAR_COLS = 'id, element, summary, category, project_id, created_at, updated_at'
+
+export async function persistCoreEntriesSidecar(db, dataDir) {
+  const sidecarPath = join(resolve(dataDir), 'core-entries.json')
+  try {
+    const r = await db.query(`SELECT ${SIDECAR_COLS} FROM core_entries ORDER BY id ASC`)
+    const tmp = `${sidecarPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    writeFileSync(tmp, JSON.stringify({ version: 1, entries: r.rows }, null, 2), 'utf8')
+    renameSync(tmp, sidecarPath)
+  } catch (err) {
+    process.stderr.write(`[memory] sidecar persist failed (${err?.message || err}) — continuing\n`)
+  }
+}
+
+async function restoreCoreEntriesFromSidecar(db, dataDir) {
+  const sidecarPath = join(resolve(dataDir), 'core-entries.json')
+  if (!existsSync(sidecarPath)) return
+
+  // --- parse phase ---
+  let entries
+  try {
+    const raw = readFileSync(sidecarPath, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.entries)) {
+      throw new Error('unexpected shape (expected { version: 1, entries: [...] })')
+    }
+    entries = parsed.entries
+  } catch (err) {
+    const corruptPath = `${sidecarPath}.corrupt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2,8)}`
+    try { renameSync(sidecarPath, corruptPath) } catch {}
+    process.stderr.write(
+      `[memory] core-entries.json malformed (${err.message}); renamed to .corrupt-* — manual recovery required, table will be empty until re-tagged\n`,
+    )
+    return
+  }
+
+  if (entries.length === 0) return
+
+  // --- insert phase ---
+  const failures = []
+  for (const e of entries) {
+    try {
+      await db.query(
+        `INSERT INTO core_entries(id, element, summary, category, project_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO UPDATE SET
+           element    = EXCLUDED.element,
+           summary    = EXCLUDED.summary,
+           category   = EXCLUDED.category,
+           project_id = EXCLUDED.project_id,
+           created_at = EXCLUDED.created_at,
+           updated_at = EXCLUDED.updated_at`,
+        [e.id, e.element, e.summary, e.category, e.project_id ?? null, e.created_at, e.updated_at],
+      )
+    } catch (rowErr) {
+      failures.push({ id: e.id, error: rowErr?.message || String(rowErr) })
+    }
+  }
+
+  const restored = entries.length - failures.length
+  if (restored > 0) {
+    process.stderr.write(`[memory] restored ${restored} core_entries from sidecar\n`)
+  }
+
+  if (failures.length > 0) {
+    const shown = failures.slice(0, 10).map(f => f.id).join(', ')
+    const tail = failures.length > 10 ? ` ...and ${failures.length - 10} more` : ''
+    process.stderr.write(
+      `[memory] sidecar restore: ${failures.length} row(s) failed to insert — ids: ${shown}${tail}\n`,
+    )
+    if (restored === 0) {
+      const corruptPath = `${sidecarPath}.corrupt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2,8)}`
+      try { renameSync(sidecarPath, corruptPath) } catch {}
+      process.stderr.write(
+        `[memory] core-entries.json parseable but all rows failed; renamed to .corrupt-* — manual recovery required, table will be empty until re-tagged\n`,
+      )
+    }
+  }
+}
+
 export async function openDatabase(dataDir, dims) {
   const key = resolve(dataDir)
-  const existing = dbs.get(key)
-  if (existing) return existing
-  mkdirSync(key, { recursive: true })
-  const dbPath = join(key, 'pgdata').replace(/\\/g, '/')
-  const pgdataPath = join(key, 'pgdata')
+
+  // Fast path — already resolved.
+  if (dbs.get(key)) return dbs.get(key)
+
+  // Dedupe concurrent callers — return the in-flight Promise if one exists.
+  if (opening.has(key)) return opening.get(key)
 
   // PGlite WAL replay aborts when an ungraceful kill leaves cycle1/cycle2
   // ingestion writes (halfvec embeddings, HNSW maintenance, GIN tsvector)
   // unflushed past the last checkpoint. Recovery is non-deterministic on
   // Windows + Bun; pgdata is treated as expendable cache. Catch the abort,
   // quarantine the broken directory, and re-bootstrap fresh — entries are
-  // regenerable via backfill, core_entries persists in core_entries table
-  // (small, written rarely; if its own page is the abort cause, the user-
-  // visible cost is minimal compared to retry-loop deadlock).
-  let db
-  let bootstrapNeeded = !existsSync(pgdataPath)
-  const tryOpen = async () => {
-    const handle = new PGlite(`file://${dbPath}`, { extensions: { vector, pg_trgm } })
-    await handle.waitReady
-    return handle
-  }
-  try {
-    db = await tryOpen()
-  } catch (err) {
-    process.stderr.write(`[memory] PGlite open failed (${err?.message || err}) — quarantining pgdata and rebootstrapping\n`)
-    if (existsSync(pgdataPath)) {
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-      const quarantine = `${pgdataPath}-aborted-${stamp}`
-      try {
-        renameSync(pgdataPath, quarantine)
-        process.stderr.write(`[memory] quarantined broken pgdata → ${quarantine}\n`)
-      } catch (renameErr) {
-        process.stderr.write(`[memory] rename failed (${renameErr?.message}); falling back to rmSync\n`)
-        rmSync(pgdataPath, { recursive: true, force: true })
-      }
+  // regenerable via backfill; core_entries is protected by the JSON sidecar.
+  const promise = (async () => {
+    mkdirSync(key, { recursive: true })
+    const dbPath = join(key, 'pgdata').replace(/\\/g, '/')
+    const pgdataPath = join(key, 'pgdata')
+
+    let db
+    let bootstrapNeeded = !existsSync(pgdataPath)
+    const tryOpen = async () => {
+      const handle = new PGlite(`file://${dbPath}`, { extensions: { vector, pg_trgm } })
+      await handle.waitReady
+      return handle
     }
-    bootstrapNeeded = true
-    db = await tryOpen()
+    try {
+      db = await tryOpen()
+    } catch (err) {
+      process.stderr.write(`[memory] PGlite open failed (${err?.message || err}) — quarantining pgdata and rebootstrapping\n`)
+      if (existsSync(pgdataPath)) {
+        // Include pid + random suffix to avoid same-ms collisions when multiple
+        // processes quarantine concurrently.
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+        const quarantine = `${pgdataPath}-aborted-${stamp}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+        try {
+          renameSync(pgdataPath, quarantine)
+          process.stderr.write(`[memory] quarantined broken pgdata → ${quarantine}\n`)
+        } catch (renameErr) {
+          process.stderr.write(`[memory] rename failed (${renameErr?.message}); falling back to rmSync\n`)
+          try {
+            rmSync(pgdataPath, { recursive: true, force: true })
+          } catch (rmErr) {
+            process.stderr.write(`[memory] rmSync also failed (${rmErr.message}); next open may still abort — manual cleanup of pgdata required\n`)
+          }
+        }
+      }
+      bootstrapNeeded = true
+      db = await tryOpen()
+    }
+    if (bootstrapNeeded || !(await isBootstrapComplete(db))) {
+      await init(db, dims)
+      // Restore core_entries from sidecar if quarantine wiped pgdata.
+      await restoreCoreEntriesFromSidecar(db, dataDir)
+    }
+    // Pin pg_trgm similarity threshold for the connection so the `%` operator
+    // matches recall-store's documented TRGM_THRESHOLD (0.10) instead of the
+    // pg_trgm default (0.3). PGlite uses a single backend, so this affects all
+    // subsequent queries on this handle.
+    try { await db.query(`SELECT set_limit(0.10)`) } catch {}
+    await ensureTrajectoryTable(db)
+    // Initial sidecar dump for existing users who upgrade (no sidecar yet,
+    // but core_entries already has rows).
+    const sidecarPath = join(key, 'core-entries.json')
+    if (!existsSync(sidecarPath)) {
+      try {
+        const cnt = await db.query(`SELECT COUNT(*) AS n FROM core_entries`)
+        if (Number(cnt.rows[0]?.n) > 0) {
+          await persistCoreEntriesSidecar(db, dataDir)
+        }
+      } catch {}
+    }
+    dbs.set(key, db)
+    return db
+  })()
+
+  opening.set(key, promise)
+  try {
+    return await promise
+  } finally {
+    opening.delete(key)
   }
-  if (bootstrapNeeded || !(await isBootstrapComplete(db))) {
-    await init(db, dims)
-  }
-  // Pin pg_trgm similarity threshold for the connection so the `%` operator
-  // matches recall-store's documented TRGM_THRESHOLD (0.10) instead of the
-  // pg_trgm default (0.3). PGlite uses a single backend, so this affects all
-  // subsequent queries on this handle.
-  try { await db.query(`SELECT set_limit(0.10)`) } catch {}
-  await ensureTrajectoryTable(db)
-  dbs.set(key, db)
-  return db
 }
 
 export function getDatabase(dataDir) {
