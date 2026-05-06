@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-06T13:10:43.255Z",
+  "generated_at": "2026-05-06T13:07:14.628Z",
   "release_tag": "runtime-v0.4.0",
   "pg": {
     "major": 16,
