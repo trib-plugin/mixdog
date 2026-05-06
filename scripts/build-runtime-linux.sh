@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# build-runtime-linux.sh — Build PostgreSQL 16 + pgvector from source on Linux.
+# build-runtime-linux.sh — Build self-contained PostgreSQL 16 + pgvector runtime on Linux.
+# Designed to run inside ubuntu:20.04 container (glibc 2.31 floor) so produced
+# binaries run on every distro from Ubuntu 20.04 / Debian 11 / RHEL 8 forward.
 # Targets the runner's native arch (x64 or arm64).
 # Produces: dist/mixdog-runtime-linux-{arch}-pg{pgver}-pgvector{vecver}.tar.gz
-# NOTE: This script has not been run end-to-end; command sequences are reasonable
-#       but may need minor adjustment on first live run.
+# Bundles foreign dyn deps via ldd transitive closure (binaries + ALL extension
+# modules under lib/postgresql/) + patchelf rpath rewrite. Final smoke: initdb,
+# pg_ctl start, CREATE EXTENSION vector, distance query, stop.
 
 set -euo pipefail
 
@@ -23,16 +26,25 @@ OUTPUT_NAME="mixdog-runtime-${TARGET_OS}-${TARGET_ARCH}-pg${PG_VERSION}-pgvector
 
 mkdir -p "$BUILD_DIR" "$STAGE_DIR" "$DIST_DIR" "$RUNTIME_DIR"/{bin,lib,share}
 
+# ---------------------------------------------------------------------------
+# Build deps. SUDO=sudo iff non-root; inside ubuntu:20.04 container we are root.
+# ---------------------------------------------------------------------------
+SUDO=""
+if [[ "$(id -u)" -ne 0 ]]; then SUDO="sudo"; fi
+
 echo "==> Installing build dependencies"
-sudo apt-get update -qq
-sudo apt-get install -y --no-install-recommends \
+$SUDO apt-get update -qq
+$SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   build-essential libreadline-dev zlib1g-dev libssl-dev \
-  libicu-dev pkg-config curl git ca-certificates
+  libicu-dev libxml2-dev libzstd-dev liblz4-dev \
+  pkg-config curl git ca-certificates patchelf file \
+  bsdmainutils
 
 echo "==> Downloading PostgreSQL $PG_VERSION source"
 cd "$BUILD_DIR"
 curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.gz" \
   -o "postgresql-${PG_VERSION}.tar.gz"
+rm -rf "postgresql-${PG_VERSION}"
 tar xzf "postgresql-${PG_VERSION}.tar.gz"
 
 echo "==> Configuring PostgreSQL"
@@ -44,13 +56,14 @@ cd "postgresql-${PG_VERSION}"
   --without-tcl \
   --with-openssl \
   --with-libxml \
+  --with-icu \
+  --with-readline \
   --enable-thread-safety \
   CFLAGS="-O2"
 
-echo "==> Building PostgreSQL (this takes a while)"
-# PG Makefile.global has its own TARGET_ARCH var (used in *.so install paths);
-# our env-passed TARGET_ARCH=x64 collides as a make-variable override and
-# leaks into compile commands. Unset before make.
+echo "==> Building PostgreSQL"
+# PG Makefile.global has its own TARGET_ARCH var; env-passed TARGET_ARCH=x64
+# would collide as a make-variable override and leak into compile commands.
 unset TARGET_OS TARGET_ARCH
 make -j"$(nproc)"
 make install
@@ -65,6 +78,7 @@ find "$STAGE_DIR/bin" -type f -exec strip --strip-all {} \; 2>/dev/null || true
 
 echo "==> Cloning pgvector $PGVECTOR_VERSION"
 cd "$BUILD_DIR"
+rm -rf pgvector
 git clone --branch "v${PGVECTOR_VERSION}" --depth 1 \
   https://github.com/pgvector/pgvector.git pgvector
 
@@ -74,31 +88,137 @@ make PG_CONFIG="$PG_CONFIG" -j"$(nproc)"
 make PG_CONFIG="$PG_CONFIG" install
 
 echo "==> Assembling runtime layout"
-# Copy essential binaries
-cp -a "$STAGE_DIR/bin/postgres" "$RUNTIME_DIR/bin/"
-cp -a "$STAGE_DIR/bin/pg_ctl" "$RUNTIME_DIR/bin/"
-cp -a "$STAGE_DIR/bin/pg_dump" "$RUNTIME_DIR/bin/"
+rm -rf "$RUNTIME_DIR"
+mkdir -p "$RUNTIME_DIR"/{bin,lib,share}
+cp -a "$STAGE_DIR/bin/postgres"   "$RUNTIME_DIR/bin/"
+cp -a "$STAGE_DIR/bin/pg_ctl"     "$RUNTIME_DIR/bin/"
+cp -a "$STAGE_DIR/bin/pg_dump"    "$RUNTIME_DIR/bin/"
 cp -a "$STAGE_DIR/bin/pg_restore" "$RUNTIME_DIR/bin/"
-cp -a "$STAGE_DIR/bin/psql" "$RUNTIME_DIR/bin/"
-cp -a "$STAGE_DIR/bin/initdb" "$RUNTIME_DIR/bin/"
+cp -a "$STAGE_DIR/bin/psql"       "$RUNTIME_DIR/bin/"
+cp -a "$STAGE_DIR/bin/initdb"     "$RUNTIME_DIR/bin/"
 
-# Shared libraries
-cp -a "$STAGE_DIR/lib"/* "$RUNTIME_DIR/lib/" 2>/dev/null || true
+cp -a "$STAGE_DIR/lib"/.   "$RUNTIME_DIR/lib/"   2>/dev/null || true
+cp -a "$STAGE_DIR/share"/. "$RUNTIME_DIR/share/" 2>/dev/null || true
 
-# Share/data
-cp -a "$STAGE_DIR/share"/* "$RUNTIME_DIR/share/" 2>/dev/null || true
+# ---------------------------------------------------------------------------
+# Bundle foreign dyn deps — seed from binaries AND every extension module
+# under lib/postgresql/. dlopen-loaded modules (extensions) need the same
+# treatment as direct binary deps; missing them = runtime "ERROR: could not
+# load library" on CREATE EXTENSION.
+# ---------------------------------------------------------------------------
+echo "==> Bundling foreign dynamic dependencies (binaries + extensions)"
 
-# Include PostgreSQL LICENSE
+KEEP_RE='^(linux-vdso|ld-linux|libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libnsl\.so|libresolv\.so)'
+
+collect_deps() {
+  ldd "$1" 2>/dev/null \
+    | awk '/=>/{print $3}' \
+    | grep -Ev "$KEEP_RE" \
+    | grep -E '^/' \
+    | sort -u
+}
+
+declare -A SEEN
+declare -a QUEUE
+# Seeds: binaries + every .so under lib/postgresql/ (extensions, contrib mods).
+for seed in "$RUNTIME_DIR/bin/postgres" "$RUNTIME_DIR/bin/psql" \
+            "$RUNTIME_DIR/bin/pg_ctl"; do
+  [[ -f "$seed" ]] && QUEUE+=("$seed")
+done
+while IFS= read -r -d '' ext; do
+  QUEUE+=("$ext")
+done < <(find "$RUNTIME_DIR/lib/postgresql" -name '*.so' -print0 2>/dev/null)
+
+declare -a FOREIGN
+while [[ ${#QUEUE[@]} -gt 0 ]]; do
+  current="${QUEUE[0]}"
+  QUEUE=("${QUEUE[@]:1}")
+  while IFS= read -r dep; do
+    real="$(readlink -f "$dep")"
+    [[ -n "${SEEN[$real]+x}" ]] && continue
+    SEEN[$real]=1
+    FOREIGN+=("$dep")
+    QUEUE+=("$dep")
+  done < <(collect_deps "$current")
+done
+
+echo "  bundling ${#FOREIGN[@]} foreign libraries"
+for so_path in "${FOREIGN[@]}"; do
+  real_path="$(readlink -f "$so_path")"
+  real_name="$(basename "$real_path")"
+  if [[ ! -f "$RUNTIME_DIR/lib/$real_name" ]]; then
+    cp -L "$real_path" "$RUNTIME_DIR/lib/$real_name"
+    chmod u+w "$RUNTIME_DIR/lib/$real_name"
+    echo "    + $real_name"
+  fi
+  link="$so_path"
+  while [[ -L "$link" ]]; do
+    link_name="$(basename "$link")"
+    link_target="$(readlink "$link")"
+    if [[ ! -e "$RUNTIME_DIR/lib/$link_name" ]]; then
+      ln -sf "$(basename "$link_target")" "$RUNTIME_DIR/lib/$link_name"
+    fi
+    link="$(dirname "$link")/$link_target"
+  done
+done
+
+echo "==> Stripping static archives from lib/"
+find "$RUNTIME_DIR/lib" -name '*.a' -delete
+
+echo "==> Patching rpath"
+# Binaries: $ORIGIN/../lib (from bin/ to lib/)
+find "$RUNTIME_DIR/bin" -type f -executable | while read -r bin; do
+  if file "$bin" 2>/dev/null | grep -q ELF; then
+    patchelf --set-rpath '$ORIGIN/../lib' "$bin" 2>/dev/null || true
+  fi
+done
+# Top-level lib/*.so*: $ORIGIN
+find "$RUNTIME_DIR/lib" -maxdepth 1 -type f -name '*.so*' | while read -r so; do
+  if file "$so" 2>/dev/null | grep -q ELF; then
+    patchelf --set-rpath '$ORIGIN' "$so" 2>/dev/null || true
+  fi
+done
+# Every extension module under lib/postgresql/: $ORIGIN/.. (=lib/) and $ORIGIN/../.. (=runtime root)
+find "$RUNTIME_DIR/lib/postgresql" -name '*.so' 2>/dev/null | while read -r ext; do
+  if file "$ext" 2>/dev/null | grep -q ELF; then
+    patchelf --set-rpath '$ORIGIN/..:$ORIGIN/../..' "$ext" 2>/dev/null || true
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Self-contained smoke — full PG lifecycle, not just --version
+# ---------------------------------------------------------------------------
+echo "==> Self-contained smoke test (initdb + CREATE EXTENSION vector + distance query)"
+unset LD_LIBRARY_PATH
+SMOKE_DATA="$BUILD_DIR/smoke-pgdata"
+SMOKE_LOG="$BUILD_DIR/smoke-pg.log"
+SMOKE_PORT=55899
+rm -rf "$SMOKE_DATA"
+"$RUNTIME_DIR/bin/postgres" --version || { echo "FAIL: postgres --version"; exit 1; }
+MISSING="$(ldd "$RUNTIME_DIR/bin/postgres" 2>&1 | grep 'not found' || true)"
+if [[ -n "$MISSING" ]]; then echo "FAIL: missing deps in postgres:"; echo "$MISSING"; exit 1; fi
+
+"$RUNTIME_DIR/bin/initdb" -D "$SMOKE_DATA" --auth-local=trust --no-locale -E UTF8 -U postgres > /dev/null
+"$RUNTIME_DIR/bin/pg_ctl" -D "$SMOKE_DATA" -o "-p $SMOKE_PORT -h 127.0.0.1" -l "$SMOKE_LOG" -w start
+trap '"$RUNTIME_DIR/bin/pg_ctl" -D "$SMOKE_DATA" -m fast stop > /dev/null 2>&1 || true' EXIT
+
+"$RUNTIME_DIR/bin/psql" -h 127.0.0.1 -p "$SMOKE_PORT" -U postgres -d postgres -c "CREATE EXTENSION vector;" > /dev/null
+EXTV="$("$RUNTIME_DIR/bin/psql" -h 127.0.0.1 -p "$SMOKE_PORT" -U postgres -d postgres -tAc "SELECT extversion FROM pg_extension WHERE extname='vector';")"
+DIST="$("$RUNTIME_DIR/bin/psql" -h 127.0.0.1 -p "$SMOKE_PORT" -U postgres -d postgres -tAc "SELECT '[1,2,3]'::vector <-> '[1,2,4]'::vector;")"
+echo "  vector extension version: $EXTV"
+echo "  distance query result:    $DIST"
+[[ "$EXTV" == "$PGVECTOR_VERSION" ]] || { echo "FAIL: extversion=$EXTV expected=$PGVECTOR_VERSION"; exit 1; }
+"$RUNTIME_DIR/bin/pg_ctl" -D "$SMOKE_DATA" -m fast stop > /dev/null
+trap - EXIT
+rm -rf "$SMOKE_DATA"
+echo "  PASS smoke (extension load + vector distance)"
+
+# Licenses
 curl -fsSL "https://raw.githubusercontent.com/postgres/postgres/REL_16_STABLE/COPYRIGHT" \
   -o "$RUNTIME_DIR/LICENSE.postgresql"
-
-# Include pgvector LICENSE
 cp "$BUILD_DIR/pgvector/LICENSE" "$RUNTIME_DIR/LICENSE.pgvector"
 
 echo "==> Creating tarball: $OUTPUT_NAME"
-# Tarball layout: bin/, lib/, share/ at root (no runtime/ prefix). The fetcher
-# extracts into runtime-{ver}/, so prefix must be omitted to land directly in
-# runtime-{ver}/{bin,lib,share}/.
 tar czf "$DIST_DIR/$OUTPUT_NAME" -C "$RUNTIME_DIR" .
 
 echo "==> Generating sha256 sidecar"

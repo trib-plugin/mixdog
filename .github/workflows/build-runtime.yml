@@ -1,7 +1,8 @@
-# Build-runtime CI matrix — mixdog 0.4.0 Track C
-# Triggers: workflow_dispatch or tags matching runtime-v*
-# Produces per-platform tarballs + uploads to GH release.
-# Aggregator job assembles runtime-manifest.json and opens auto-PR.
+# Build PG 16.4 + pgvector 0.8.2 runtime tarballs per supported OS.
+# Triggers: workflow_dispatch (default tag runtime-v0.4.0) or push tag runtime-v*.
+# Linux job runs in ubuntu:20.04 container so produced binaries link against
+# glibc 2.31 — works on every distro from Ubuntu 20.04 / Debian 11 forward.
+# Output: per-OS tarballs + manifest uploaded to the release.
 
 name: Build Runtime
 
@@ -17,72 +18,44 @@ on:
       - "runtime-v*"
 
 permissions:
-  contents: write       # upload release assets
-  pull-requests: write  # auto-PR for manifest update
+  contents: write
 
 jobs:
   build:
     name: build-${{ matrix.os }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: linux
-            arch: x64
-            runner: ubuntu-22.04
-            script: scripts/build-runtime-linux.sh
-          # TODO: ubuntu-22.04-arm is not in the free-tier GitHub-hosted runner set.
-          # Uncomment when self-hosted ARM runner or paid tier is available.
-          # - os: linux
-          #   arch: arm64
-          #   runner: ubuntu-22.04-arm
-          #   script: scripts/build-runtime-linux.sh
-          # darwin-x64 (macos-13) dropped: GitHub-hosted Intel x64 runner pool
-          # is severely queue-limited as Apple Silicon migration progresses.
-          # Apple Silicon Macs run arm64 natively; Intel Macs can use Rosetta 2
-          # to run the arm64 build with a small perf hit. Re-add via paid
-          # macos-13-large runner if Intel-native support becomes a hard need.
-          - os: darwin
-            arch: arm64
-            runner: macos-14
-            script: scripts/build-runtime-macos.sh
-          - os: win32
-            arch: x64
-            runner: windows-2022
-            script: scripts/build-runtime-windows.ps1
+          - { os: linux,  arch: x64,   runner: ubuntu-22.04, container: 'ubuntu:20.04', script: scripts/build-runtime-linux.sh   }
+          - { os: darwin, arch: arm64, runner: macos-14,     container: '',             script: scripts/build-runtime-macos.sh   }
+          - { os: win32,  arch: x64,   runner: windows-2022, container: '',             script: scripts/build-runtime-windows.ps1 }
+          # linux-arm64 / darwin-x64 omitted — no free GitHub-hosted runner.
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Make build script executable (unix)
-        if: runner.os != 'Windows'
-        run: chmod +x ${{ matrix.script }}
-
-      - name: Run build script (unix)
+      - name: Build (unix)
         if: runner.os != 'Windows'
         env:
           TARGET_OS: ${{ matrix.os }}
           TARGET_ARCH: ${{ matrix.arch }}
-        run: bash ${{ matrix.script }}
+        run: |
+          chmod +x ${{ matrix.script }}
+          bash ${{ matrix.script }}
+          ls -lh dist/
 
-      - name: Run build script (windows)
+      - name: Build (windows)
         if: runner.os == 'Windows'
         env:
           TARGET_OS: ${{ matrix.os }}
           TARGET_ARCH: ${{ matrix.arch }}
         shell: pwsh
-        run: .\${{ matrix.script }}
-
-      - name: List dist artifacts
-        if: runner.os != 'Windows'
-        run: ls -lh dist/
-
-      - name: List dist artifacts (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Get-ChildItem dist/
+        run: |
+          .\${{ matrix.script }}
+          Get-ChildItem dist/
 
       - name: Upload tarballs to release
         uses: softprops/action-gh-release@v2
@@ -91,19 +64,15 @@ jobs:
           files: |
             dist/mixdog-runtime-*.tar.gz
             dist/mixdog-runtime-*.tar.gz.sha256
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   aggregate:
     name: aggregate-manifest
     needs: build
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "20"
 
@@ -118,18 +87,9 @@ jobs:
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           files: dist/runtime-manifest.json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Open auto-PR to update bundled manifest
-        uses: peter-evans/create-pull-request@v6
+      - name: Publish manifest as workflow artifact
+        uses: actions/upload-artifact@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore: update bundled runtime-manifest.json for ${{ inputs.tag || github.ref_name }}"
-          branch: chore/runtime-manifest-${{ inputs.tag || github.ref_name }}
-          title: "chore: runtime-manifest.json — ${{ inputs.tag || github.ref_name }}"
-          body: |
-            Auto-generated by the build-runtime workflow.
-            Updates `src/memory/data/runtime-manifest.json` with asset URLs and sha256
-            hashes from the ${{ inputs.tag || github.ref_name }} release.
-          add-paths: src/memory/data/runtime-manifest.json
+          name: runtime-manifest
+          path: dist/runtime-manifest.json
