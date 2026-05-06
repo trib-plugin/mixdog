@@ -228,8 +228,10 @@ export async function ensureRuntime(dataDir) {
   const runtimeBaseDir = join(key, 'runtime')
   mkdirSync(runtimeBaseDir, { recursive: true })
 
-  // Always GC stale staging dirs on entry (clean partial extracts from prior crashes).
-  gcRuntimeDir(runtimeBaseDir, null)
+  // Entry GC: always clean staging-* (partial extracts from prior crashes), but
+  // preserve runtime-${currentVer} so a sibling child's just-completed swap is
+  // not wiped. multi-process race protection.
+  gcRuntimeDir(runtimeBaseDir, readActiveVersion(runtimeBaseDir))
 
   const manifest = await loadManifest(key)
   const pkey     = platformKey()
