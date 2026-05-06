@@ -3,7 +3,7 @@
 import { PGlite } from '../../../lib/vendored/pglite/dist/index.js'
 import { vector } from '../../../lib/vendored/pglite/dist/vector/index.js'
 import { pg_trgm } from '../../../lib/vendored/pglite/dist/contrib/pg_trgm.js'
-import { mkdirSync, existsSync } from 'fs'
+import { mkdirSync, existsSync, renameSync, rmSync } from 'fs'
 import { join, resolve } from 'path'
 import { cleanMemoryText } from './memory-extraction.mjs'
 
@@ -240,10 +240,42 @@ export async function openDatabase(dataDir, dims) {
   if (existing) return existing
   mkdirSync(key, { recursive: true })
   const dbPath = join(key, 'pgdata').replace(/\\/g, '/')
-  const isNewFile = !existsSync(join(key, 'pgdata'))
-  const db = new PGlite(`file://${dbPath}`, { extensions: { vector, pg_trgm } })
-  await db.waitReady
-  if (isNewFile || !(await isBootstrapComplete(db))) {
+  const pgdataPath = join(key, 'pgdata')
+
+  // PGlite WAL replay aborts when an ungraceful kill leaves cycle1/cycle2
+  // ingestion writes (halfvec embeddings, HNSW maintenance, GIN tsvector)
+  // unflushed past the last checkpoint. Recovery is non-deterministic on
+  // Windows + Bun; pgdata is treated as expendable cache. Catch the abort,
+  // quarantine the broken directory, and re-bootstrap fresh — entries are
+  // regenerable via backfill, core_entries persists in core_entries table
+  // (small, written rarely; if its own page is the abort cause, the user-
+  // visible cost is minimal compared to retry-loop deadlock).
+  let db
+  let bootstrapNeeded = !existsSync(pgdataPath)
+  const tryOpen = async () => {
+    const handle = new PGlite(`file://${dbPath}`, { extensions: { vector, pg_trgm } })
+    await handle.waitReady
+    return handle
+  }
+  try {
+    db = await tryOpen()
+  } catch (err) {
+    process.stderr.write(`[memory] PGlite open failed (${err?.message || err}) — quarantining pgdata and rebootstrapping\n`)
+    if (existsSync(pgdataPath)) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const quarantine = `${pgdataPath}-aborted-${stamp}`
+      try {
+        renameSync(pgdataPath, quarantine)
+        process.stderr.write(`[memory] quarantined broken pgdata → ${quarantine}\n`)
+      } catch (renameErr) {
+        process.stderr.write(`[memory] rename failed (${renameErr?.message}); falling back to rmSync\n`)
+        rmSync(pgdataPath, { recursive: true, force: true })
+      }
+    }
+    bootstrapNeeded = true
+    db = await tryOpen()
+  }
+  if (bootstrapNeeded || !(await isBootstrapComplete(db))) {
     await init(db, dims)
   }
   // Pin pg_trgm similarity threshold for the connection so the `%` operator
