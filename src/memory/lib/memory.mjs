@@ -4,7 +4,7 @@ import { PGlite } from '../../../lib/vendored/pglite/dist/index.js'
 import { vector } from '../../../lib/vendored/pglite/dist/vector/index.js'
 import { pg_trgm } from '../../../lib/vendored/pglite/dist/contrib/pg_trgm.js'
 import { mkdirSync, existsSync, renameSync, rmSync, readFileSync, writeFileSync } from 'fs'
-import { join, resolve } from 'path'
+import { join, resolve, dirname } from 'path'
 import { cleanMemoryText } from './memory-extraction.mjs'
 
 const dbs = new Map()
@@ -207,26 +207,119 @@ export async function init(db, dims) {
 }
 
 // ---------------------------------------------------------------------------
-// core_entries sidecar — best-effort JSON snapshot alongside pgdata.
-// Survives quarantine/rmSync because it lives in dataDir, not inside pgdata.
+// Table sidecars — best-effort JSON snapshots alongside pgdata.
+// Survive quarantine/rmSync because they live in dataDir, not inside pgdata.
+//
+// Generic helpers: persistTableSidecar / restoreTableSidecar
+// Thin wrappers kept for existing call sites: persistCoreEntriesSidecar /
+// restoreCoreEntriesFromSidecar (internal; not exported).
 // ---------------------------------------------------------------------------
 
-const SIDECAR_COLS = 'id, element, summary, category, project_id, created_at, updated_at'
+// Tables whose column sets need special handling.
+// excludeColumns: generated/computed cols that cannot be inserted back.
+// allowedColumns: allowlist of safe column names for restore (SQL injection guard).
+//   Omit search_tsv (generated) and any col not in the CREATE TABLE schema.
+// castColumns: map of colName → SQL cast suffix applied on restore params.
+// conflictKey: primary-key column for ON CONFLICT (default 'id').
+const TABLE_OPTIONS = {
+  entries: {
+    excludeColumns: new Set(['search_tsv']),
+    allowedColumns: new Set([
+      'id', 'ts', 'role', 'content', 'source_ref', 'session_id', 'project_id',
+      'source_turn', 'chunk_root', 'is_root', 'element', 'category', 'summary',
+      'status', 'score', 'last_seen_at', 'reviewed_at', 'promoted_at',
+      'error_count', 'embedding', 'summary_hash',
+    ]),
+    castColumns: { embedding: '::halfvec(1024)' },
+    conflictKey: 'id',
+    idColumn: 'id',
+  },
+  core_entries: {
+    excludeColumns: new Set(),
+    allowedColumns: new Set([
+      'id', 'element', 'summary', 'category', 'project_id', 'created_at', 'updated_at',
+    ]),
+    castColumns: {},
+    conflictKey: 'id',
+    idColumn: 'id',
+  },
+  meta: {
+    excludeColumns: new Set(),
+    allowedColumns: new Set(['key', 'value']),
+    castColumns: { value: '::jsonb' },
+    conflictKey: 'key',
+    idColumn: null,   // TEXT primary key — no sequence to reset
+  },
+}
 
-export async function persistCoreEntriesSidecar(db, dataDir) {
-  const sidecarPath = join(resolve(dataDir), 'core-entries.json')
-  try {
-    const r = await db.query(`SELECT ${SIDECAR_COLS} FROM core_entries ORDER BY id ASC`)
-    const tmp = `${sidecarPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    writeFileSync(tmp, JSON.stringify({ version: 1, entries: r.rows }, null, 2), 'utf8')
-    renameSync(tmp, sidecarPath)
-  } catch (err) {
-    process.stderr.write(`[memory] sidecar persist failed (${err?.message || err}) — continuing\n`)
+// Module-level per-table mutex. Key: `${dataDir}|${tableName}`.
+// Serialises concurrent persists on the same table so a slow first persist
+// cannot overwrite a fast second persist with stale data.
+const _persistLocks = new Map()
+
+function _sidecarPath(dataDir, tableName) {
+  return join(resolve(dataDir), 'sidecars', `${tableName}.json`)
+}
+
+// Migrate legacy core-entries.json → sidecars/core_entries.json on first boot.
+function _migrateLegacyCoreEntries(dataDir) {
+  const legacyPath = join(resolve(dataDir), 'core-entries.json')
+  const newPath = _sidecarPath(dataDir, 'core_entries')
+  if (existsSync(legacyPath) && !existsSync(newPath)) {
+    try {
+      mkdirSync(dirname(newPath), { recursive: true })
+      renameSync(legacyPath, newPath)
+      process.stderr.write(`[memory] migrated core-entries.json → sidecars/core_entries.json\n`)
+    } catch (err) {
+      process.stderr.write(`[memory] legacy sidecar migration failed (${err?.message}); old path left in place\n`)
+    }
   }
 }
 
-async function restoreCoreEntriesFromSidecar(db, dataDir) {
-  const sidecarPath = join(resolve(dataDir), 'core-entries.json')
+// Generic table sidecar persist. Writes sidecars/<tableName>.json atomically.
+async function _doPersist(db, dataDir, tableName, opts) {
+  const excluded = opts.excludeColumns ?? new Set()
+  const sidecarPath = _sidecarPath(dataDir, tableName)
+  try {
+    mkdirSync(dirname(sidecarPath), { recursive: true })
+    const r = await db.query(`SELECT * FROM ${tableName} ORDER BY 1`)
+    const rows = excluded.size === 0 ? r.rows : r.rows.map(row => {
+      const out = {}
+      for (const [k, v] of Object.entries(row)) {
+        if (!excluded.has(k)) out[k] = v
+      }
+      return out
+    })
+    const tmp = `${sidecarPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    writeFileSync(tmp, JSON.stringify({ version: 1, table: tableName, entries: rows }, null, 2), 'utf8')
+    renameSync(tmp, sidecarPath)
+  } catch (err) {
+    process.stderr.write(`[memory] sidecar persist failed (${tableName}: ${err?.message || err}) — continuing\n`)
+  }
+}
+
+export async function persistTableSidecar(db, dataDir, tableName, options = {}) {
+  const opts = { ...TABLE_OPTIONS[tableName], ...options }
+  const lockKey = `${dataDir}|${tableName}`
+  const prev = _persistLocks.get(lockKey)
+  const next = (prev || Promise.resolve())
+    .catch(() => {})        // swallow prior rejection so queued persist always runs
+    .then(() => _doPersist(db, dataDir, tableName, opts))
+  _persistLocks.set(lockKey, next)
+  try {
+    await next
+  } finally {
+    if (_persistLocks.get(lockKey) === next) _persistLocks.delete(lockKey)
+  }
+}
+
+// Generic table sidecar restore. Reads sidecars/<tableName>.json and upserts.
+export async function restoreTableSidecar(db, dataDir, tableName, options = {}) {
+  const opts = { ...TABLE_OPTIONS[tableName], ...options }
+  const castCols = opts.castColumns ?? {}
+  const conflictKey = opts.conflictKey ?? 'id'
+  const allowed = opts.allowedColumns ?? null   // null = no allowlist (legacy callers)
+  const sidecarPath = _sidecarPath(dataDir, tableName)
   if (!existsSync(sidecarPath)) return
 
   // --- parse phase ---
@@ -235,14 +328,14 @@ async function restoreCoreEntriesFromSidecar(db, dataDir) {
     const raw = readFileSync(sidecarPath, 'utf8')
     const parsed = JSON.parse(raw)
     if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.entries)) {
-      throw new Error('unexpected shape (expected { version: 1, entries: [...] })')
+      throw new Error('unexpected shape (expected { version:1, entries:[...] })')
     }
     entries = parsed.entries
   } catch (err) {
-    const corruptPath = `${sidecarPath}.corrupt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2,8)}`
+    const corruptPath = `${sidecarPath}.corrupt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
     try { renameSync(sidecarPath, corruptPath) } catch {}
     process.stderr.write(
-      `[memory] core-entries.json malformed (${err.message}); renamed to .corrupt-* — manual recovery required, table will be empty until re-tagged\n`,
+      `[memory] ${tableName} sidecar malformed (${err.message}); renamed to .corrupt-*\n`,
     )
     return
   }
@@ -251,44 +344,70 @@ async function restoreCoreEntriesFromSidecar(db, dataDir) {
 
   // --- insert phase ---
   const failures = []
+  let restored = 0
   for (const e of entries) {
     try {
-      await db.query(
-        `INSERT INTO core_entries(id, element, summary, category, project_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (id) DO UPDATE SET
-           element    = EXCLUDED.element,
-           summary    = EXCLUDED.summary,
-           category   = EXCLUDED.category,
-           project_id = EXCLUDED.project_id,
-           created_at = EXCLUDED.created_at,
-           updated_at = EXCLUDED.updated_at`,
-        [e.id, e.element, e.summary, e.category, e.project_id ?? null, e.created_at, e.updated_at],
-      )
+      // R2-1: intersect row keys with allowedColumns to block injected identifiers.
+      const rawCols = Object.keys(e)
+      const cols = allowed ? rawCols.filter(c => allowed.has(c)) : rawCols
+      if (cols.length === 0) continue
+      const params = cols.map((col, i) => `$${i + 1}${castCols[col] || ''}`)
+      const setClauses = cols
+        .filter(col => col !== conflictKey)
+        .map(col => `${col} = EXCLUDED.${col}`)
+      const sql =
+        `INSERT INTO ${tableName}(${cols.join(', ')}) VALUES (${params.join(', ')})` +
+        ` ON CONFLICT (${conflictKey}) DO UPDATE SET ${setClauses.join(', ')}`
+      await db.query(sql, cols.map(col => e[col] ?? null))
+      restored += 1
     } catch (rowErr) {
-      failures.push({ id: e.id, error: rowErr?.message || String(rowErr) })
+      failures.push({ id: e[conflictKey], error: rowErr?.message || String(rowErr) })
     }
   }
 
-  const restored = entries.length - failures.length
   if (restored > 0) {
-    process.stderr.write(`[memory] restored ${restored} core_entries from sidecar\n`)
+    process.stderr.write(`[memory] restored ${restored} ${tableName} rows from sidecar\n`)
   }
 
   if (failures.length > 0) {
     const shown = failures.slice(0, 10).map(f => f.id).join(', ')
     const tail = failures.length > 10 ? ` ...and ${failures.length - 10} more` : ''
     process.stderr.write(
-      `[memory] sidecar restore: ${failures.length} row(s) failed to insert — ids: ${shown}${tail}\n`,
+      `[memory] sidecar restore (${tableName}): ${failures.length} row(s) failed — ids: ${shown}${tail}\n`,
     )
     if (restored === 0) {
-      const corruptPath = `${sidecarPath}.corrupt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2,8)}`
+      const corruptPath = `${sidecarPath}.corrupt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
       try { renameSync(sidecarPath, corruptPath) } catch {}
       process.stderr.write(
-        `[memory] core-entries.json parseable but all rows failed; renamed to .corrupt-* — manual recovery required, table will be empty until re-tagged\n`,
+        `[memory] ${tableName} sidecar parseable but all rows failed; renamed to .corrupt-*\n`,
       )
     }
   }
+
+  // R2-2: After restoring explicit-id rows, bump the sequence so next natural
+  // INSERT doesn't collide. pg_get_serial_sequence avoids hardcoded names.
+  const idCol = opts.idColumn
+  if (idCol && restored > 0) {
+    try {
+      await db.query(
+        `SELECT setval(pg_get_serial_sequence($1, $2), COALESCE((SELECT MAX(${idCol}) FROM ${tableName}), 0))`,
+        [tableName, idCol],
+      )
+    } catch (seqErr) {
+      process.stderr.write(`[memory] sequence reset failed (${tableName}.${idCol}): ${seqErr?.message}\n`)
+    }
+  }
+}
+
+// Thin wrappers — kept for existing call sites in core-memory-store.mjs.
+export async function persistCoreEntriesSidecar(db, dataDir) {
+  _migrateLegacyCoreEntries(dataDir)
+  return persistTableSidecar(db, dataDir, 'core_entries')
+}
+
+async function restoreCoreEntriesFromSidecar(db, dataDir) {
+  _migrateLegacyCoreEntries(dataDir)
+  return restoreTableSidecar(db, dataDir, 'core_entries')
 }
 
 export async function openDatabase(dataDir, dims) {
@@ -346,22 +465,32 @@ export async function openDatabase(dataDir, dims) {
       await init(db, dims)
       // Restore core_entries from sidecar if quarantine wiped pgdata.
       await restoreCoreEntriesFromSidecar(db, dataDir)
+      // Restore entries and meta from sidecars (best-effort; per-table errors skip).
+      try { await restoreTableSidecar(db, dataDir, 'entries') } catch (e) {
+        process.stderr.write(`[memory] entries sidecar restore failed: ${e?.message}\n`)
+      }
+      try { await restoreTableSidecar(db, dataDir, 'meta') } catch (e) {
+        process.stderr.write(`[memory] meta sidecar restore failed: ${e?.message}\n`)
+      }
     }
     // Pin pg_trgm similarity threshold for the connection so the `%` operator
     // matches recall-store's documented TRGM_THRESHOLD (0.10) instead of the
     // pg_trgm default (0.3). PGlite uses a single backend, so this affects all
     // subsequent queries on this handle.
     try { await db.query(`SELECT set_limit(0.10)`) } catch {}
-    // Initial sidecar dump for existing users who upgrade (no sidecar yet,
-    // but core_entries already has rows).
-    const sidecarPath = join(key, 'core-entries.json')
-    if (!existsSync(sidecarPath)) {
-      try {
-        const cnt = await db.query(`SELECT COUNT(*) AS n FROM core_entries`)
-        if (Number(cnt.rows[0]?.n) > 0) {
-          await persistCoreEntriesSidecar(db, dataDir)
-        }
-      } catch {}
+    // Bootstrap dump: for each protected table, if sidecar missing and table
+    // has rows, create initial sidecar (covers existing users upgrading).
+    const _protectedTables = ['core_entries', 'entries', 'meta']
+    for (const tbl of _protectedTables) {
+      const sp = _sidecarPath(dataDir, tbl)
+      if (!existsSync(sp)) {
+        try {
+          const cnt = await db.query(`SELECT COUNT(*) AS n FROM ${tbl}`)
+          if (Number(cnt.rows[0]?.n) > 0) {
+            await persistTableSidecar(db, dataDir, tbl)
+          }
+        } catch {}
+      }
     }
     dbs.set(key, db)
     return db

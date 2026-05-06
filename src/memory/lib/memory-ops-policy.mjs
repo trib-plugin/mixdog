@@ -155,6 +155,7 @@ export async function runFullBackfill(db, {
   scope = 'all',
   limit = null,
   config = {},
+  dataDir = null,
   ingestTranscriptFile,
   cwdFromTranscriptPath,
   runCycle1,
@@ -196,7 +197,7 @@ export async function runFullBackfill(db, {
   while (prevUnclassified > 0 && cycle1Iters < FULL_BACKFILL_MAX_ITERS) {
     let result
     try {
-      result = await runCycle1(db, config?.cycle1 || {}, {})
+      result = await runCycle1(db, config?.cycle1 || {}, {}, dataDir)
     } catch (err) {
       process.stderr.write(`[backfill] cycle1 error (iter=${cycle1Iters}): ${err.message}\n`)
       break
@@ -210,7 +211,7 @@ export async function runFullBackfill(db, {
 
   let promoted = 0
   try {
-    const c2 = await runCycle2(db, config?.cycle2 || {}, {})
+    const c2 = await runCycle2(db, config?.cycle2 || {}, {}, dataDir)
     promoted = Number(c2?.promoted ?? 0)
   } catch (err) {
     process.stderr.write(`[backfill] cycle2 error: ${err.message}\n`)

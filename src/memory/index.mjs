@@ -39,6 +39,7 @@ import {
   getMetaValue,
   setMetaValue,
   cleanMemoryText,
+  persistTableSidecar,
 } from './lib/memory.mjs'
 import { configureEmbedding, embedText, getEmbeddingDims } from './lib/embedding-provider.mjs'
 import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
@@ -299,6 +300,9 @@ async function persistTranscriptOffsets() {
   try {
     const obj = Object.fromEntries(_transcriptOffsets)
     await setMetaValue(db, TRANSCRIPT_OFFSETS_KEY, JSON.stringify(obj))
+    void persistTableSidecar(db, DATA_DIR, 'meta').catch(err => {
+      process.stderr.write(`[memory] meta sidecar persist failed: ${err?.message}\n`)
+    })
   } catch (e) {
     process.stderr.write(`[memory] persist transcript offsets failed: ${e.message}\n`)
   }
@@ -337,6 +341,9 @@ async function setCycleLastRun(kind, ts) {
   const cur = await getCycleLastRun()
   cur[kind] = ts
   await setMetaValue(db, CYCLE_LAST_RUN_KEY, JSON.stringify(cur))
+  void persistTableSidecar(db, DATA_DIR, 'meta').catch(err => {
+    process.stderr.write(`[memory] meta sidecar persist failed: ${err?.message}\n`)
+  })
 }
 
 // Raw-row priority lookup for narrow-window queries. Raw rows (is_root=0,
@@ -576,7 +583,7 @@ const CYCLE1_AUTO_RESTART_COOLDOWN_MS = 5 * 60_000
 function _startCycle1Run(config = {}, options = {}) {
   _cycle1InFlight = (async () => {
     try {
-      const result = await runCycle1(db, config, options)
+      const result = await runCycle1(db, config, options, DATA_DIR)
       // #13: heartbeat (attempt) is always recorded so the overdue check
       // can tell the keeper is alive; success timestamp only advances when
       // the run actually did work. Skipped/in-flight runs do NOT count as
@@ -706,7 +713,6 @@ async function checkCycles() {
       // due branch — falling through would silently re-enter the same
       // failing path within the same tick.
       await setCycleLastRun('cycle1_autoRestart_attempt', now)
-      await setCycleLastRun('cycle1_autoRestart_attempt', now)
       try {
         const result = await _awaitCycle1Run(periodicCycle1Config())
         await setCycleLastRun('cycle1_autoRestart', Date.now())
@@ -733,7 +739,7 @@ async function checkCycles() {
   }
 
   if (now - last.cycle2 >= cycle2Ms) {
-    const result = await runCycle2(db, mainConfig?.cycle2 || {})
+    const result = await runCycle2(db, mainConfig?.cycle2 || {}, {}, DATA_DIR)
     await _finalizeCycle2Run(result)
   }
 }
@@ -1164,7 +1170,7 @@ async function handleMemoryAction(args) {
   }
 
   if (action === 'cycle2' || action === 'sleep') {
-    const result = await runCycle2(db, config?.cycle2 || {})
+    const result = await runCycle2(db, config?.cycle2 || {}, {}, DATA_DIR)
     await _finalizeCycle2Run(result)
     const counts = {
       promoted: result?.promoted || 0,
@@ -1183,7 +1189,7 @@ async function handleMemoryAction(args) {
 
   if (action === 'flush') {
     const r1 = await _awaitCycle1Run(config?.cycle1 || {})
-    const r2 = await runCycle2(db, config?.cycle2 || {})
+    const r2 = await runCycle2(db, config?.cycle2 || {}, {}, DATA_DIR)
     await _finalizeCycle2Run(r2)
     return { text: `flush: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
   }
@@ -1207,7 +1213,7 @@ async function handleMemoryAction(args) {
       WHERE is_root = 0
     `)
     const r1 = await _awaitCycle1Run(config?.cycle1 || {})
-    const r2 = await runCycle2(db, config?.cycle2 || {})
+    const r2 = await runCycle2(db, config?.cycle2 || {}, {}, DATA_DIR)
     await setCycleLastRun('cycle2', Date.now())
     return { text: `rebuild: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
   }
@@ -1238,9 +1244,10 @@ async function handleMemoryAction(args) {
       scope,
       limit,
       config,
+      dataDir: DATA_DIR,
       ingestTranscriptFile,
       cwdFromTranscriptPath,
-      runCycle1: (dbArg, cycle1Config = {}, options = {}) => _awaitCycle1Run(cycle1Config, options),
+      runCycle1: (dbArg, cycle1Config = {}, options = {}, dir) => _awaitCycle1Run(cycle1Config, options),
       runCycle2,
     })
     _backfillInFlight = promise
@@ -1251,6 +1258,10 @@ async function handleMemoryAction(args) {
       if (_backfillInFlight === promise) _backfillInFlight = null
     }
     await setCycleLastRun('cycle2', Date.now())
+    // Batch sidecar dump after backfill success.
+    void persistTableSidecar(db, DATA_DIR, 'entries').catch(err => {
+      process.stderr.write(`[backfill] entries sidecar persist failed: ${err?.message}\n`)
+    })
     return {
       text: `backfill: window=${result.window} scope=${result.scope} files=${result.files} ingested=${result.ingested} cycle1_iters=${result.cycle1_iters} promoted=${result.promoted} unclassified=${result.unclassified}`,
     }
@@ -1295,6 +1306,7 @@ async function handleMemoryAction(args) {
           `, [newId, element, category, summary, score, nowMs, newId])
         })
         await syncRootEmbedding(db, newId)
+        void persistTableSidecar(db, DATA_DIR, 'entries').catch(() => {})
         return { text: `added (id=${newId}): [${category}] ${element} — ${summary.slice(0, 200)}` }
       } catch (e) {
         return { text: `manage add failed: ${e.message}`, isError: true }
@@ -1357,6 +1369,7 @@ async function handleMemoryAction(args) {
           process.stderr.write(`[memory.manage] embedding resync failed (id=${id}): ${e.message}\n`)
         }
       }
+      void persistTableSidecar(db, DATA_DIR, 'entries').catch(() => {})
       return { text: `edited (id=${id}): [${finalCategory}/${finalStatus}] ${finalElement} — ${finalSummary.slice(0, 200)}` }
     }
 
@@ -1374,6 +1387,7 @@ async function handleMemoryAction(args) {
         const result = info.is_root === 1
           ? await db.query(`DELETE FROM entries WHERE id = $1 OR chunk_root = $2`, [id, id])
           : await db.query(`DELETE FROM entries WHERE id = $1`, [id])
+        void persistTableSidecar(db, DATA_DIR, 'entries').catch(() => {})
         return { text: `deleted (id=${id}, rows=${result.affectedRows}): [${info.category ?? '-'}] ${info.element ?? ''}` }
       } catch (e) {
         return { text: `manage delete failed: ${e.message}`, isError: true }
@@ -1554,6 +1568,7 @@ async function handleMemoryAction(args) {
       // Entries in successIds but not acted-upon (omit / no-op) are kept.
       kept += batch.filter(r => successIds.has(Number(r.id)) && !acted.has(Number(r.id))).length
     }
+    void persistTableSidecar(db, DATA_DIR, 'entries').catch(() => {})
     return { text: `retro_eval_active: total=${total} archived=${archived} kept=${kept} updated=${updated} merged=${merged} errors=${errors}` }
   }
 

@@ -1,4 +1,4 @@
-import { cleanMemoryText } from './memory.mjs'
+import { cleanMemoryText, persistTableSidecar } from './memory.mjs'
 import { resolveMaintenancePreset } from '../../shared/llm/index.mjs'
 import { callBridgeLlm } from './agent-ipc.mjs'
 import {
@@ -115,7 +115,7 @@ async function countPendingRows(db) {
   }
 }
 
-export async function runCycle1(db, config = {}, options = {}) {
+export async function runCycle1(db, config = {}, options = {}, dataDir = null) {
   if (_runCycle1InFlight.has(db)) {
     process.stderr.write('[cycle1] skipped: already in flight for this db\n')
     return {
@@ -124,7 +124,7 @@ export async function runCycle1(db, config = {}, options = {}) {
       pendingRows: await countPendingRows(db),
     }
   }
-  const p = (async () => _runCycle1Impl(db, config, options))()
+  const p = (async () => _runCycle1Impl(db, config, options, dataDir))()
   _runCycle1InFlight.set(db, p)
   try {
     return await p
@@ -133,7 +133,7 @@ export async function runCycle1(db, config = {}, options = {}) {
   }
 }
 
-async function _runCycle1Impl(db, config = {}, options = {}) {
+async function _runCycle1Impl(db, config = {}, options = {}, dataDir = null) {
   const pendingRowsAtStart = await countPendingRows(db)
   const batchSize = Math.max(1, Number(config.batch_size ?? 100))
   // Fallback chain handles flat config + nested cycle1 wrap shapes.
@@ -161,15 +161,26 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
   const rowsDesc = fetchResult.rows
 
   if (rowsDesc.length < minBatch) {
-    void flushEmbeddingDirty(db).catch(err => {
-      process.stderr.write(`[cycle1] embedding flush (quick-exit) failed: ${err.message}\n`)
-    })
+    let embeddingStats = { attempted: 0, succeeded: 0, failed: 0, failed_ids: [], deferred: false }
+    try {
+      const flushResult = await flushEmbeddingDirty(db)
+      embeddingStats = {
+        attempted: flushResult.attempted,
+        succeeded: flushResult.succeeded,
+        failed: Array.isArray(flushResult.failed) ? flushResult.failed.length : 0,
+        failed_ids: Array.isArray(flushResult.failed) ? flushResult.failed : [],
+        deferred: flushResult.timedOut === true,
+      }
+      await persistTableSidecar(db, dataDir, tableName)
+    } catch (err) {
+      process.stderr.write(`[cycle1] quick-exit maintenance failed: ${err.message}\n`)
+    }
     return {
       processed: 0, chunks: 0, skipped: 0, sessions: 0,
       skippedInFlight: false,
       pendingRows: pendingRowsAtStart,
       failed_row_ids: [], omitted_row_ids: [], invalid_chunks: [],
-      embedding_dirty: { attempted: 0, succeeded: 0, failed: 0, deferred: true },
+      embedding_dirty: embeddingStats,
     }
   }
 
@@ -368,16 +379,26 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     `[cycle1] windows=${windows.length} rows=${totalRowsConsidered} chunks=${totalChunks} members=${totalMembers} skipped=${totalSkipped}\n`,
   )
 
-  // Fire-and-forget embedding flush — re-entrancy guarded, failures re-queued.
-  void flushEmbeddingDirty(db).then(d => {
+  // R2-6: await embedding flush before sidecar persist so embeddings are captured.
+  let embedStats = { attempted: 0, succeeded: 0, failed: 0, failed_ids: [], deferred: false }
+  try {
+    const d = await flushEmbeddingDirty(db)
+    embedStats = { attempted: d.attempted, succeeded: d.succeeded, failed: d.failed.length, failed_ids: d.failed, deferred: d.timedOut === true }
     if (d.attempted > 0) {
       process.stderr.write(
-        `[cycle1] embedding flush (async) attempted=${d.attempted} ok=${d.succeeded} failed=${d.failed.length}\n`,
+        `[cycle1] embedding flush attempted=${d.attempted} ok=${d.succeeded} failed=${d.failed.length}\n`,
       )
     }
-  }).catch(err => {
-    process.stderr.write(`[cycle1] embedding flush (async) failed: ${err.message}\n`)
-  })
+  } catch (err) {
+    process.stderr.write(`[cycle1] embedding flush failed: ${err.message}\n`)
+  }
+
+  // Batch-level sidecar dump after successful INSERT commits + embedding flush.
+  if (dataDir && totalChunks > 0) {
+    void persistTableSidecar(db, dataDir, 'entries').catch(err => {
+      process.stderr.write(`[cycle1] entries sidecar persist failed: ${err?.message}\n`)
+    })
+  }
 
   return {
     processed: totalMembers,
@@ -389,6 +410,6 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
     failed_row_ids: allFailedRowIds,
     omitted_row_ids: allOmittedRowIds,
     invalid_chunks: allInvalidChunks,
-    embedding_dirty: { attempted: 0, succeeded: 0, failed: 0, failed_ids: [], deferred: true },
+    embedding_dirty: embedStats,
   }
 }

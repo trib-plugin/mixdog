@@ -6,7 +6,7 @@ import { callBridgeLlm } from './agent-ipc.mjs'
 import {
   syncRootEmbedding, deleteRootEmbedding, flushEmbeddingDirty,
 } from './memory-embed.mjs'
-import { refreshHotActive } from './memory.mjs'
+import { refreshHotActive, persistTableSidecar } from './memory.mjs'
 
 export const CYCLE2_ACTIVE_TARGET_CAP = 100
 const TIER1_THRESHOLD = 0.78
@@ -463,7 +463,7 @@ async function sonnetCascade(candidates, rulesDigest, options = {}) {
 
 const _runCycle2InFlight = new WeakMap()
 
-export async function runCycle2(db, config = {}, options = {}) {
+export async function runCycle2(db, config = {}, options = {}, dataDir = null) {
   const partial = {
     promoted: 0, archived: 0, merged: 0, updated: 0, kept: 0, rejected_verb: 0,
     rescore: { updated: 0 },
@@ -477,7 +477,7 @@ export async function runCycle2(db, config = {}, options = {}) {
   }
   const _p = (async () => {
     try {
-      const result = await _runCycle2Impl(db, config, options)
+      const result = await _runCycle2Impl(db, config, options, dataDir)
       return { ok: true, ...result }
     } catch (e) {
       return { ok: false, error: e.message, ...partial }
@@ -488,7 +488,7 @@ export async function runCycle2(db, config = {}, options = {}) {
   finally { _runCycle2InFlight.delete(db) }
 }
 
-async function _runCycle2Impl(db, config = {}, options = {}) {
+async function _runCycle2Impl(db, config = {}, options = {}, dataDir = null) {
   const batchSize = Math.max(1, Number(config.batch_size ?? 50))
   const activeTargetCap = Number.isFinite(Number(config.active_target_cap))
     ? Math.max(1, Number(config.active_target_cap))
@@ -682,16 +682,17 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
     }
   }
 
-  // Async embedding flush (fire-and-forget).
-  void flushEmbeddingDirty(db).then(d => {
+  // R2-7: await embedding flush before sidecar persist so embeddings are captured.
+  try {
+    const d = await flushEmbeddingDirty(db)
     if (d.attempted > 0) {
       process.stderr.write(
-        `[cycle2] embedding flush (async) attempted=${d.attempted} ok=${d.succeeded} failed=${d.failed.length}\n`,
+        `[cycle2] embedding flush attempted=${d.attempted} ok=${d.succeeded} failed=${d.failed.length}\n`,
       )
     }
-  }).catch(err => {
-    process.stderr.write(`[cycle2] embedding flush (async) failed: ${err.message}\n`)
-  })
+  } catch (err) {
+    process.stderr.write(`[cycle2] embedding flush failed: ${err.message}\n`)
+  }
 
   process.stderr.write(
     `[cycle2] rescore=${stats.rescore.updated}` +
@@ -704,6 +705,13 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
   )
 
   try { await refreshHotActive(db) } catch (e) { process.stderr.write('[cycle2] mv refresh failed: ' + e.message + '\n') }
+
+  // Batch-level sidecar dump after promote/archive/merge actions commit.
+  if (dataDir) {
+    void persistTableSidecar(db, dataDir, 'entries').catch(err => {
+      process.stderr.write(`[cycle2] entries sidecar persist failed: ${err?.message}\n`)
+    })
+  }
 
   return stats
 }
