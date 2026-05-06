@@ -303,11 +303,11 @@ async function _runCycle1Impl(db, config = {}, options = {}) {
              WHERE id = $6`,
             [rootId, element, category, summary, projectId, rootId, Date.now()],
           )
-          for (const mid of memberIds) {
-            if (mid === rootId) continue
+          const nonRootIds = memberIds.filter(mid => mid !== rootId)
+          if (nonRootIds.length > 0) {
             await tx.query(
-              `UPDATE entries SET chunk_root = $1, project_id = $2 WHERE id = $3 AND id != $4`,
-              [rootId, projectId, mid, rootId],
+              `UPDATE entries SET chunk_root = $1, project_id = $2 WHERE id = ANY($3::bigint[])`,
+              [rootId, projectId, nonRootIds],
             )
           }
         })

@@ -86,14 +86,20 @@ export async function retrieveEntries(db, filters = {}) {
   const rows = (await db.query(sql, params)).rows
 
   if (filters.includeMembers && rows.length > 0) {
-    for (const r of rows) {
-      r.members = (await db.query(
-        `SELECT id, ts, role, content, session_id, source_turn, project_id
-         FROM entries WHERE chunk_root = $1 AND is_root = 0
-         ORDER BY ts ASC, id ASC`,
-        [r.id],
-      )).rows
+    const rootIds = rows.map(r => r.id)
+    const memRes = (await db.query(
+      `SELECT id, ts, role, content, session_id, source_turn, project_id, chunk_root
+       FROM entries WHERE chunk_root = ANY($1::bigint[]) AND is_root = 0
+       ORDER BY chunk_root, ts ASC, id ASC`,
+      [rootIds],
+    )).rows
+    const byRoot = new Map()
+    for (const m of memRes) {
+      const rid = Number(m.chunk_root)
+      if (!byRoot.has(rid)) byRoot.set(rid, [])
+      byRoot.get(rid).push({ id: m.id, ts: m.ts, role: m.role, content: m.content, session_id: m.session_id, source_turn: m.source_turn, project_id: m.project_id })
     }
+    for (const r of rows) r.members = byRoot.get(Number(r.id)) || []
   }
 
   return rows

@@ -118,13 +118,8 @@ export function buildFtsQuery(text) {
   // Include 2-char Korean tokens (they carry meaning unlike 2-char English)
   const ftsTokens = [...new Set(tokens)].filter(t => t.length >= 3 || (t.length === 2 && /[\uAC00-\uD7AF]/.test(t)))
   if (ftsTokens.length === 0) return ''
-  // Postgres to_tsquery format: tokens joined by ` | ` (OR), each wrapped in single
-  // quotes; tsquery operator chars stripped so user input cannot break the query.
-  return ftsTokens
-    .map(t => t.replace(/[&|!:()<>'"\\\s]/g, ''))
-    .filter(t => t.length > 0)
-    .map(t => `'${t}'`)
-    .join(' | ')
+  // websearch_to_tsquery handles tokenization + OR/AND/quoting itself; pass plain tokens space-joined.
+  return ftsTokens.map(t => t.replace(/["']/g, '')).filter(t => t.length > 0).join(' ')
 }
 
 export function getShortTokensForLike(text) {

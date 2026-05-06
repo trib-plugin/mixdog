@@ -25,6 +25,10 @@ function _getDb(dataDir) {
 export async function listCore(dataDir, projectId = null) {
   const db = _getDb(dataDir)
   const cols = `id, element, summary, category, project_id, created_at, updated_at`
+  if (projectId === '*') {
+    const r = await db.query(`SELECT ${cols} FROM core_entries ORDER BY project_id NULLS FIRST, id ASC`)
+    return r.rows
+  }
   if (projectId === null) {
     const r = await db.query(`SELECT ${cols} FROM core_entries WHERE project_id IS NULL ORDER BY id ASC`)
     return r.rows
@@ -81,8 +85,7 @@ export async function deleteCore(dataDir, id) {
   const numId = Number(id)
   if (!Number.isInteger(numId) || numId <= 0) throw new Error('integer id > 0 required')
   const db = _getDb(dataDir)
-  const cur = (await db.query(`SELECT * FROM core_entries WHERE id = $1`, [numId])).rows[0]
-  if (!cur) throw new Error(`no entry with id=${numId}`)
-  await db.query(`DELETE FROM core_entries WHERE id = $1`, [numId])
-  return cur
+  const r = await db.query(`DELETE FROM core_entries WHERE id = $1 RETURNING *`, [numId])
+  if (r.rows.length === 0) throw new Error(`no entry with id=${numId}`)
+  return r.rows[0]
 }

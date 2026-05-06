@@ -11,13 +11,6 @@ import { refreshHotActive } from './memory.mjs'
 const CYCLE2_ACTIVE_TARGET_CAP = 100
 const TIER1_THRESHOLD = 0.78
 
-function parseVectorText(s) {
-  if (Array.isArray(s)) return s
-  if (typeof s !== 'string' || !s.startsWith('[')) return null
-  const arr = s.slice(1, -1).split(',').map(Number)
-  return arr.every(Number.isFinite) ? arr : null
-}
-
 const TIER2_LOW = 0.65
 const LLM_JUDGE_CAP = 20
 
@@ -212,14 +205,6 @@ export async function applyMerge(db, targetId, sourceIds) {
 
 // ─── phase_merge: cosine-similarity dedup pass ───────────────────────────────
 
-function _cosineSim(a, b) {
-  if (!a || !b || a.length !== b.length) return 0
-  let dot = 0, ma = 0, mb = 0
-  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; ma += a[i] * a[i]; mb += b[i] * b[i] }
-  const denom = Math.sqrt(ma) * Math.sqrt(mb)
-  return denom === 0 ? 0 : dot / denom
-}
-
 function _pickKeeper(a, b) {
   if ((a.score ?? 0) !== (b.score ?? 0)) return (a.score ?? 0) > (b.score ?? 0) ? a : b
   if ((a.last_seen_at ?? 0) !== (b.last_seen_at ?? 0)) return (a.last_seen_at ?? 0) > (b.last_seen_at ?? 0) ? a : b
@@ -246,37 +231,40 @@ async function _llmJudgePair(summaryA, summaryB) {
 }
 
 export async function runPhaseMerge(db, options = {}) {
-  const res = await db.query(
-    `SELECT id, category, summary, score, last_seen_at, status, embedding
-     FROM entries WHERE is_root = 1 AND status = 'active' AND embedding IS NOT NULL
-     ORDER BY score DESC, last_seen_at DESC, id ASC`,
-    [],
+  // PG-side lateral nearest-neighbor via HNSW index — replaces JS O(n²) double loop.
+  const pairRes = await db.query(
+    `WITH active AS (
+       SELECT id, category, summary, score, last_seen_at, status, embedding
+       FROM entries
+       WHERE is_root = 1 AND status = 'active' AND embedding IS NOT NULL
+     )
+     SELECT a.id AS a_id, a.category AS a_category, a.summary AS a_summary, a.score AS a_score, a.last_seen_at AS a_last_seen_at, a.status AS a_status,
+            b.id AS b_id, b.category AS b_category, b.summary AS b_summary, b.score AS b_score, b.last_seen_at AS b_last_seen_at, b.status AS b_status,
+            1 - (a.embedding <=> b.embedding)::float8 AS sim
+     FROM active a
+     CROSS JOIN LATERAL (
+       SELECT id, category, summary, score, last_seen_at, status, embedding
+       FROM active inner_b
+       WHERE inner_b.id != a.id AND inner_b.category = a.category
+       ORDER BY inner_b.embedding <=> a.embedding
+       LIMIT 8
+     ) b
+     WHERE a.id < b.id
+       AND 1 - (a.embedding <=> b.embedding) >= $1
+     ORDER BY sim DESC`,
+    [TIER2_LOW],
   )
-  const rows = res.rows
-
-  if (rows.length < 2) return { merged: 0, llm_calls: 0, tier1_pairs: 0, tier2_pairs: 0 }
-
-  // embedding column is halfvec — PGlite returns a '[v1,v2,…]' string; parse before use.
-  const vecs = rows.map(r => {
-    const vec = parseVectorText(r.embedding)
-    return { ...r, vec }
-  })
 
   const tier1Pairs = []
   const tier2Pairs = []
-
-  for (let i = 0; i < vecs.length; i++) {
-    for (let j = i + 1; j < vecs.length; j++) {
-      const a = vecs[i], b = vecs[j]
-      if (!a.vec || !b.vec) continue
-      if (a.category !== b.category) continue
-      const sim = _cosineSim(a.vec, b.vec)
-      if (sim >= TIER1_THRESHOLD) tier1Pairs.push({ a, b, sim })
-      else if (sim >= TIER2_LOW) tier2Pairs.push({ a, b, sim })
-    }
+  for (const row of pairRes.rows) {
+    const a = { id: row.a_id, category: row.a_category, summary: row.a_summary, score: row.a_score, last_seen_at: row.a_last_seen_at, status: row.a_status }
+    const b = { id: row.b_id, category: row.b_category, summary: row.b_summary, score: row.b_score, last_seen_at: row.b_last_seen_at, status: row.b_status }
+    if (row.sim >= TIER1_THRESHOLD) tier1Pairs.push({ a, b, sim: row.sim })
+    else tier2Pairs.push({ a, b, sim: row.sim })
   }
 
-  tier2Pairs.sort((x, y) => y.sim - x.sim)
+  if (tier1Pairs.length === 0 && tier2Pairs.length === 0) return { merged: 0, llm_calls: 0, tier1_pairs: 0, tier2_pairs: 0 }
 
   let merged = 0
   let llmCalls = 0
@@ -564,6 +552,10 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
 
   // Apply actions.
   if (gateResult.actions) {
+    const reviewedIds = []
+    const cascadeDropArchiveIds = []
+    const plainArchiveIds = []
+
     for (const a of gateResult.actions) {
       const id = Number(a.entry_id)
       if (!Number.isFinite(id)) continue
@@ -573,15 +565,8 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
       try {
         // Cascade override: drop a tentatively-kept entry → archive.
         if (a.action === 'active' && cascadeVerdicts.get(id) === 'drop') {
-          const archRes = await db.query(
-            `UPDATE entries SET status = 'archived' WHERE id = $1 AND is_root = 1`,
-            [id],
-          )
-          if (Number(archRes.affectedRows ?? 0) > 0) {
-            stats.archived += 1
-            stats.cascade.dropped += 1
-          }
-          await db.query(`UPDATE entries SET reviewed_at = $1 WHERE id = $2`, [sweepCursor, id])
+          cascadeDropArchiveIds.push(id)
+          reviewedIds.push(id)
           continue
         }
 
@@ -592,11 +577,7 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
             stats.kept += 1
           }
         } else if (a.action === 'archived') {
-          const archRes = await db.query(
-            `UPDATE entries SET status = 'archived' WHERE id = $1 AND is_root = 1`,
-            [id],
-          )
-          if (Number(archRes.affectedRows ?? 0) > 0) stats.archived += 1
+          plainArchiveIds.push(id)
         } else if (a.action === 'update') {
           if (await applyUpdate(db, id, a.element, a.summary)) stats.updated += 1
         } else if (a.action === 'merge') {
@@ -614,10 +595,23 @@ async function _runCycle2Impl(db, config = {}, options = {}) {
             }
           }
         }
-        await db.query(`UPDATE entries SET reviewed_at = $1 WHERE id = $2`, [sweepCursor, id])
+        reviewedIds.push(id)
       } catch (err) {
         process.stderr.write(`[cycle2] action error (id=${id}): ${err.message}\n`)
       }
+    }
+
+    if (cascadeDropArchiveIds.length > 0) {
+      const r = await db.query(`UPDATE entries SET status = 'archived' WHERE id = ANY($1::bigint[]) AND is_root = 1`, [cascadeDropArchiveIds])
+      stats.cascade.dropped += Number(r.affectedRows ?? 0)
+      stats.archived += Number(r.affectedRows ?? 0)
+    }
+    if (plainArchiveIds.length > 0) {
+      const r = await db.query(`UPDATE entries SET status = 'archived' WHERE id = ANY($1::bigint[]) AND is_root = 1`, [plainArchiveIds])
+      stats.archived += Number(r.affectedRows ?? 0)
+    }
+    if (reviewedIds.length > 0) {
+      await db.query(`UPDATE entries SET reviewed_at = $1 WHERE id = ANY($2::bigint[])`, [sweepCursor, reviewedIds])
     }
   } else if (rows.length > 0) {
     // Parse failure — bump error_count, do not advance reviewed_at.

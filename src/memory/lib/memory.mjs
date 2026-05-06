@@ -201,7 +201,7 @@ export async function init(db, dims) {
   await db.exec(`CREATE INDEX mv_hot_active_tsv  ON mv_hot_active USING GIN (search_tsv)`)
   await db.exec(`CREATE INDEX mv_hot_active_score ON mv_hot_active(score DESC)`)
 
-  await db.query(`INSERT INTO meta(key, value) VALUES ($1, $2::jsonb)`, ['embedding.current_dims', JSON.stringify(String(dimCount))])
+  await db.query(`INSERT INTO meta(key, value) VALUES ($1, $2::jsonb)`, ['embedding.current_dims', JSON.stringify(dimCount)])
   await db.query(`INSERT INTO meta(key, value) VALUES ($1, $2::jsonb)`, ['boot.schema_bootstrap_complete', JSON.stringify('1')])
 }
 

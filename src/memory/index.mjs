@@ -1117,7 +1117,12 @@ async function handleMemoryAction(args) {
   if (action === 'status') {
     const stats = await entryStats()
     const last = await getCycleLastRun()
-    const dims = Number(await getMetaValue(db, 'embedding.current_dims', '0'))
+    let dims = 0
+    try {
+      const raw = await getMetaValue(db, 'embedding.current_dims', null)
+      if (raw != null) dims = Number(JSON.parse(raw))
+      if (!Number.isFinite(dims)) dims = 0
+    } catch { dims = 0 }
     const vecReady = true
     const lastCycle1Ago = last.cycle1 ? `${Math.round((Date.now() - last.cycle1) / 60000)}m ago` : 'never'
     const lastCycle2Ago = last.cycle2 ? `${Math.round((Date.now() - last.cycle2) / 60000)}m ago` : 'never'

@@ -128,10 +128,10 @@ dense AS (SELECT NULL::bigint AS id, NULL::float8 AS sim, NULL::bigint AS dense_
   const sparseCte = ftsQuery ? `
 sparse AS (
   SELECT id,
-         ts_rank_cd(search_tsv, to_tsquery('simple', $2)) AS lex,
-         ROW_NUMBER() OVER (ORDER BY ts_rank_cd(search_tsv, to_tsquery('simple', $2)) DESC) AS sparse_rank
+         ts_rank_cd(search_tsv, websearch_to_tsquery('simple', $2)) AS lex,
+         ROW_NUMBER() OVER (ORDER BY ts_rank_cd(search_tsv, websearch_to_tsquery('simple', $2)) DESC) AS sparse_rank
   FROM entries
-  WHERE is_root = 1 AND search_tsv @@ to_tsquery('simple', $2)
+  WHERE is_root = 1 AND search_tsv @@ websearch_to_tsquery('simple', $2)
     ${filterClause}
   ORDER BY lex DESC
   LIMIT $4
@@ -147,7 +147,7 @@ trgm AS (
          ROW_NUMBER() OVER (ORDER BY ts DESC) AS trgm_rank
   FROM entries
   WHERE is_root = 1
-    AND (content ILIKE '%' || $3 || '%' OR summary ILIKE '%' || $3 || '%' OR element ILIKE '%' || $3 || '%')
+    AND (content ILIKE '%' || $3 || '%' OR element ILIKE '%' || $3 || '%')
     ${filterClause}
   ORDER BY ts DESC
   LIMIT $4
