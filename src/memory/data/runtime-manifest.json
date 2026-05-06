@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-06T12:05:06.540Z",
-  "release_tag": "runtime-v16.4-pgvector0.8.2",
+  "generated_at": "2026-05-06T12:10:33.884Z",
+  "release_tag": "runtime-v16.4-pgvector0.8.2-r2",
   "pg": {
     "major": 16,
     "minor": 4
@@ -11,7 +11,7 @@
   },
   "assets": {
     "win32-x64": {
-      "url": "https://github.com/trib-plugin/mixdog/releases/download/runtime-v16.4-pgvector0.8.2/mixdog-runtime-win32-x64-pg16.4-pgvector0.8.2.tar.gz",
+      "url": "https://github.com/trib-plugin/mixdog/releases/download/runtime-v16.4-pgvector0.8.2-r2/mixdog-runtime-win32-x64-pg16.4-pgvector0.8.2.tar.gz",
       "sha256": "b568a72fbbcfe2e6d74f9b661e0b68db4ba32e497b7db0e96a0e454538901e57",
       "size": 39883670
     },
