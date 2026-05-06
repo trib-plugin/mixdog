@@ -84,7 +84,11 @@ export async function startPg({ runtimeDir, pgdataDir, port: preferredPort = 554
     ], { env, stdio: 'pipe' })
 
     if (r.status !== 0) {
-      throw new Error(`[pg-process] initdb failed: ${r.stderr?.toString() || r.stdout?.toString()}`)
+      const detail = r.error?.message
+        || r.stderr?.toString()
+        || r.stdout?.toString()
+        || `status=${r.status} signal=${r.signal} (no captured output)`
+      throw new Error(`[pg-process] initdb failed: ${detail}`)
     }
 
     // Append mixdog-specific postgresql.conf overrides.

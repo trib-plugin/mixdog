@@ -60,7 +60,7 @@ if (tarballs.length === 0) {
 //    Format: mixdog-runtime-{os}-{arch}-pg{major}.{minor}-pgvector{vec}.tar.gz
 // ---------------------------------------------------------------------------
 const PG_RE = /pg(\d+)\.(\d+)/;
-const VEC_RE = /pgvector([\d.]+)/;
+const VEC_RE = /pgvector(\d+(?:\.\d+)+)/;
 
 let pgMajor = 16, pgMinor = 4, pgvectorVersion = '0.7.4';
 for (const t of tarballs) {
