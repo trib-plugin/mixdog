@@ -22,7 +22,7 @@ const TIER2_LOW = 0.65
 const LLM_JUDGE_CAP = 20
 
 // Status-based verb whitelist. 3-tier policy: pending → active/archived,
-// active → active/archived/update/merge. No fixed tier after v13 migration.
+// active → active/archived/update/merge.
 const STATUS_ALLOWED_VERBS = {
   pending: new Set(['active', 'archived']),
   active:  new Set(['active', 'archived', 'update', 'merge']),

@@ -2115,10 +2115,28 @@ if (process.env.MIXDOG_WORKER_MODE === '1' && process.send) {
     }
   })
   init().catch(e => {
-    process.stderr.write(`[memory-worker] init failed: ${e && (e.message || e)}\n`)
+    let detail
+    try {
+      const parts = []
+      if (e?.name) parts.push(`name=${e.name}`)
+      if (e?.code) parts.push(`code=${e.code}`)
+      if (e?.errno) parts.push(`errno=${e.errno}`)
+      if (e?.syscall) parts.push(`syscall=${e.syscall}`)
+      if (e?.path) parts.push(`path=${e.path}`)
+      if (e?.message) parts.push(`message=${e.message}`)
+      let stringified = null
+      try { stringified = JSON.stringify(e, Object.getOwnPropertyNames(e || {})) } catch {}
+      if (stringified && stringified !== '{}' && stringified !== '"{}"') parts.push(`json=${stringified}`)
+      if (e?.stack) parts.push(`\nstack=\n${e.stack}`)
+      if (parts.length === 0) parts.push(`raw=${typeof e}:${String(e)}`)
+      detail = parts.join(' | ')
+    } catch (logErr) {
+      detail = `(error formatting failed: ${logErr?.message}) raw=${String(e)}`
+    }
+    process.stderr.write(`[memory-worker] init failed: ${detail}\n`)
     // Signal degraded state to parent before exiting so it records the failure
     // rather than treating this as a normal pre-ready crash.
-    try { process.send({ type: 'ready', degraded: true, error: e?.message || String(e) }) } catch {}
+    try { process.send({ type: 'ready', degraded: true, error: detail.slice(0, 800) }) } catch {}
     process.exit(1)
   })
 }

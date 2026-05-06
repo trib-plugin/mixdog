@@ -24,7 +24,7 @@ When ambiguous, pick the higher-grade category that fits (rule > constraint > de
 | contrast | A | B |
 |---|---|---|
 | rule / constraint | rule: "Commit uses `YYYY-MM-DD HH:MM` prefix" | constraint: "Never push to main without approval" |
-| decision / fact | decision: "Use sqlite-vec for vector storage" | fact: "sqlite-vec ships as a virtual table extension" |
+| decision / fact | decision: "Use bridge as the single agent entry point" | fact: "bridge dispatches via role mapping in user-workflow.json" |
 | fact / preference | fact: "User prefers Korean replies" (verified, hard) | preference: "User prefers warm polite tone" (taste) |
 | task / issue | task: "Implement chunk grouping in cycle1" | issue: "vec_memory has 6,000 stale rows" |
 | goal / decision | goal: "Cut LLM cost 50% next quarter" | decision: "Drop semantic_cache to simplify" |

@@ -80,7 +80,7 @@ than one-shot completions.
 
 ### Persistent memory
 
-SQLite + `sqlite-vec` back a hybrid FTS + vector store. Every
+PGlite (embedded Postgres) with `pgvector` and `pg_trgm` backs a hybrid FTS + vector store. Every
 conversation chunk is scored, deduped, and — if durable — promoted to
 core memory. The two-cycle pipeline (chunker → curator) keeps the
 active set compact so recall stays fast across months of sessions.

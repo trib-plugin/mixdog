@@ -56,8 +56,8 @@ Example — input @1–@12 yields three chunks:
   - task: "Add prefix cache warming to session manager."
   - issue: "cycle1 consistently returns cacheRead=0 on openai-oauth."
 - `decision` vs `fact`
-  - decision: "We will use sqlite-vec for vector storage." (chosen path)
-  - fact: "sqlite-vec ships as a virtual table extension." (how it actually works)
+  - decision: "We will use bridge as the single agent entry point." (chosen path)
+  - fact: "bridge dispatches via role mapping in user-workflow.json." (how it actually works)
   - decision: "Moved maintenance LLM to bridge single-path."
   - fact: "Bridge session manager logs usage rows with sourceType/sourceName."
 - `fact` vs `preference`
