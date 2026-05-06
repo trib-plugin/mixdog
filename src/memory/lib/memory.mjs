@@ -427,8 +427,8 @@ export async function closeDatabase(dataDir) {
 
 export async function isBootstrapComplete(db) {
   try {
-    const r = await db.query(`SELECT value FROM meta WHERE key = 'boot.schema_bootstrap_complete'`)
-    return r.rows[0]?.value === '1'
+    const r = await db.query(`SELECT 1 FROM meta WHERE key = 'boot.schema_bootstrap_complete'`)
+    return r.rows.length > 0
   } catch {
     return false
   }
