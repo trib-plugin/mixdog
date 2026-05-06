@@ -121,22 +121,16 @@ Write-Host "==> Copying lib/ and share/"
 Copy-Item -Recurse -Force "$StageDir\lib\*"   "$RuntimeDir\lib\"   -ErrorAction SilentlyContinue
 Copy-Item -Recurse -Force "$StageDir\share\*" "$RuntimeDir\share\" -ErrorAction SilentlyContinue
 
-Write-Host "==> Ensuring vector.dll is on the loader's DLL search path"
-# pgvector Makefile.win installs vector.dll into pgsql\lib by default. Move it
-# to bin\ so postgres.exe finds it without LD_LIBRARY_PATH equivalent.
-$VectorDllLib = "$RuntimeDir\lib\vector.dll"
-$VectorDllBin = "$RuntimeDir\bin\vector.dll"
-if ((Test-Path $VectorDllLib) -and -not (Test-Path $VectorDllBin)) {
-    Move-Item $VectorDllLib $VectorDllBin
-}
-
 Write-Host "==> Asserting runtime layout"
+# vector.dll MUST stay in lib\ — PG resolves $libdir/vector at runtime to
+# pkglibdir which find_my_exec() derives as <bindir>/../lib. Moving to bin\
+# breaks `CREATE EXTENSION vector` with "could not access $libdir/vector".
 $VectorControl = "$RuntimeDir\share\extension\vector.control"
 if (-not (Test-Path $VectorControl)) { Write-Error "ASSERT FAILED: $VectorControl not found"; exit 1 }
 $VectorSql = "$RuntimeDir\share\extension\vector--$PGVECTOR_VERSION.sql"
 if (-not (Test-Path $VectorSql))     { Write-Error "ASSERT FAILED: $VectorSql not found"; exit 1 }
-if (-not ((Test-Path "$RuntimeDir\bin\vector.dll") -or (Test-Path "$RuntimeDir\lib\vector.dll"))) {
-    Write-Error "ASSERT FAILED: vector.dll not found in bin\ or lib\"
+if (-not (Test-Path "$RuntimeDir\lib\vector.dll")) {
+    Write-Error "ASSERT FAILED: vector.dll not found in lib\ (PG looks for `$libdir/vector` here)"
     exit 1
 }
 Write-Host "  PASS runtime layout"

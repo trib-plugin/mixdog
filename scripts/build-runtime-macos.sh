@@ -140,7 +140,8 @@ done < <(find "$RUNTIME_DIR/lib/postgresql" -name '*.dylib' -print0 2>/dev/null)
 bundle_dylib() {
   local src="$1"
   local real
-  real="$(readlink -f "$src" 2>/dev/null || echo "$src")"
+  # macOS BSD readlink lacks -f; use realpath (available since macOS 12.3).
+  real="$(realpath "$src" 2>/dev/null || echo "$src")"
   local dest_real="$RUNTIME_DIR/lib/$(basename "$real")"
   if [[ ! -f "$dest_real" ]]; then
     cp -L "$real" "$dest_real"
@@ -165,7 +166,7 @@ bundle_dylib() {
 while [[ ${#SCAN_QUEUE[@]} -gt 0 ]]; do
   current="${SCAN_QUEUE[0]}"
   SCAN_QUEUE=("${SCAN_QUEUE[@]:1}")
-  real_current="$(readlink -f "$current" 2>/dev/null || echo "$current")"
+  real_current="$(realpath "$current" 2>/dev/null || echo "$current")"
   [[ -n "${SCANNED[$real_current]+x}" ]] && continue
   SCANNED["$real_current"]=1
   while IFS= read -r line; do

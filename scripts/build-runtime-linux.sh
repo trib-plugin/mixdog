@@ -209,21 +209,32 @@ SMOKE_DATA="$BUILD_DIR/smoke-pgdata"
 SMOKE_LOG="$BUILD_DIR/smoke-pg.log"
 SMOKE_PORT=55899
 rm -rf "$SMOKE_DATA"
-"$RUNTIME_DIR/bin/postgres" --version || { echo "FAIL: postgres --version"; exit 1; }
+
+# PG initdb refuses to run as root. Inside ubuntu:20.04 container we are root,
+# so create an unprivileged user and run the smoke under it.
+if [[ "$(id -u)" -eq 0 ]]; then
+  if ! id pguser >/dev/null 2>&1; then useradd -m -s /bin/bash pguser; fi
+  chown -R pguser:pguser "$BUILD_DIR"
+  RUN_AS=(runuser -u pguser --)
+else
+  RUN_AS=()
+fi
+
+"${RUN_AS[@]}" "$RUNTIME_DIR/bin/postgres" --version || { echo "FAIL: postgres --version"; exit 1; }
 MISSING="$(ldd "$RUNTIME_DIR/bin/postgres" 2>&1 | grep 'not found' || true)"
 if [[ -n "$MISSING" ]]; then echo "FAIL: missing deps in postgres:"; echo "$MISSING"; exit 1; fi
 
-"$RUNTIME_DIR/bin/initdb" -D "$SMOKE_DATA" --auth-local=trust --no-locale -E UTF8 -U postgres > /dev/null
-"$RUNTIME_DIR/bin/pg_ctl" -D "$SMOKE_DATA" -o "-p $SMOKE_PORT -h 127.0.0.1" -l "$SMOKE_LOG" -w start
-trap '"$RUNTIME_DIR/bin/pg_ctl" -D "$SMOKE_DATA" -m fast stop > /dev/null 2>&1 || true' EXIT
+"${RUN_AS[@]}" "$RUNTIME_DIR/bin/initdb" -D "$SMOKE_DATA" --auth-local=trust --no-locale -E UTF8 -U postgres > /dev/null
+"${RUN_AS[@]}" "$RUNTIME_DIR/bin/pg_ctl" -D "$SMOKE_DATA" -o "-p $SMOKE_PORT -h 127.0.0.1" -l "$SMOKE_LOG" -w start
+trap '"${RUN_AS[@]}" "$RUNTIME_DIR/bin/pg_ctl" -D "$SMOKE_DATA" -m fast stop > /dev/null 2>&1 || true' EXIT
 
-"$RUNTIME_DIR/bin/psql" -h 127.0.0.1 -p "$SMOKE_PORT" -U postgres -d postgres -c "CREATE EXTENSION vector;" > /dev/null
-EXTV="$("$RUNTIME_DIR/bin/psql" -h 127.0.0.1 -p "$SMOKE_PORT" -U postgres -d postgres -tAc "SELECT extversion FROM pg_extension WHERE extname='vector';")"
-DIST="$("$RUNTIME_DIR/bin/psql" -h 127.0.0.1 -p "$SMOKE_PORT" -U postgres -d postgres -tAc "SELECT '[1,2,3]'::vector <-> '[1,2,4]'::vector;")"
+"${RUN_AS[@]}" "$RUNTIME_DIR/bin/psql" -h 127.0.0.1 -p "$SMOKE_PORT" -U postgres -d postgres -c "CREATE EXTENSION vector;" > /dev/null
+EXTV="$("${RUN_AS[@]}" "$RUNTIME_DIR/bin/psql" -h 127.0.0.1 -p "$SMOKE_PORT" -U postgres -d postgres -tAc "SELECT extversion FROM pg_extension WHERE extname='vector';")"
+DIST="$("${RUN_AS[@]}" "$RUNTIME_DIR/bin/psql" -h 127.0.0.1 -p "$SMOKE_PORT" -U postgres -d postgres -tAc "SELECT '[1,2,3]'::vector <-> '[1,2,4]'::vector;")"
 echo "  vector extension version: $EXTV"
 echo "  distance query result:    $DIST"
 [[ "$EXTV" == "$PGVECTOR_VERSION" ]] || { echo "FAIL: extversion=$EXTV expected=$PGVECTOR_VERSION"; exit 1; }
-"$RUNTIME_DIR/bin/pg_ctl" -D "$SMOKE_DATA" -m fast stop > /dev/null
+"${RUN_AS[@]}" "$RUNTIME_DIR/bin/pg_ctl" -D "$SMOKE_DATA" -m fast stop > /dev/null
 trap - EXIT
 rm -rf "$SMOKE_DATA"
 echo "  PASS smoke (extension load + vector distance)"
