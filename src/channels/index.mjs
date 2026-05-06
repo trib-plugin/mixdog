@@ -907,7 +907,7 @@ function canStealOwnership(active) {
   if (active.instanceId === INSTANCE_ID) return true;
   if (Date.now() - active.updatedAt > ACTIVE_OWNER_STALE_MS) return true;
   try {
-    process.kill(active.pid, 0);
+    process.kill(active.supervisor_pid, 0);
     return false;
   } catch {
     return true;
@@ -920,7 +920,7 @@ function claimBridgeOwnership(reason) {
 function noteStartupHandoff(previous) {
   if (!previous) return;
   if (previous.instanceId === INSTANCE_ID) return;
-  if (previous.pid === process.pid) return;
+  if (previous.supervisor_pid === process.pid) return;
   logOwnership(`startup handoff from ${previous.instanceId}`);
 }
 async function bindPersistedTranscriptIfAny() {

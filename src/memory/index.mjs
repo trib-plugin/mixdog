@@ -39,7 +39,6 @@ import {
   getMetaValue,
   setMetaValue,
   cleanMemoryText,
-  persistTableSidecar,
 } from './lib/memory.mjs'
 import { configureEmbedding, embedText, getEmbeddingDims } from './lib/embedding-provider.mjs'
 import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
@@ -300,9 +299,6 @@ async function persistTranscriptOffsets() {
   try {
     const obj = Object.fromEntries(_transcriptOffsets)
     await setMetaValue(db, TRANSCRIPT_OFFSETS_KEY, JSON.stringify(obj))
-    void persistTableSidecar(db, DATA_DIR, 'meta').catch(err => {
-      process.stderr.write(`[memory] meta sidecar persist failed: ${err?.message}\n`)
-    })
   } catch (e) {
     process.stderr.write(`[memory] persist transcript offsets failed: ${e.message}\n`)
   }
@@ -341,9 +337,6 @@ async function setCycleLastRun(kind, ts) {
   const cur = await getCycleLastRun()
   cur[kind] = ts
   await setMetaValue(db, CYCLE_LAST_RUN_KEY, JSON.stringify(cur))
-  void persistTableSidecar(db, DATA_DIR, 'meta').catch(err => {
-    process.stderr.write(`[memory] meta sidecar persist failed: ${err?.message}\n`)
-  })
 }
 
 // Raw-row priority lookup for narrow-window queries. Raw rows (is_root=0,
@@ -1258,10 +1251,6 @@ async function handleMemoryAction(args) {
       if (_backfillInFlight === promise) _backfillInFlight = null
     }
     await setCycleLastRun('cycle2', Date.now())
-    // Batch sidecar dump after backfill success.
-    void persistTableSidecar(db, DATA_DIR, 'entries').catch(err => {
-      process.stderr.write(`[backfill] entries sidecar persist failed: ${err?.message}\n`)
-    })
     return {
       text: `backfill: window=${result.window} scope=${result.scope} files=${result.files} ingested=${result.ingested} cycle1_iters=${result.cycle1_iters} promoted=${result.promoted} unclassified=${result.unclassified}`,
     }
@@ -1306,7 +1295,6 @@ async function handleMemoryAction(args) {
           `, [newId, element, category, summary, score, nowMs, newId])
         })
         await syncRootEmbedding(db, newId)
-        void persistTableSidecar(db, DATA_DIR, 'entries').catch(() => {})
         return { text: `added (id=${newId}): [${category}] ${element} — ${summary.slice(0, 200)}` }
       } catch (e) {
         return { text: `manage add failed: ${e.message}`, isError: true }
@@ -1369,7 +1357,6 @@ async function handleMemoryAction(args) {
           process.stderr.write(`[memory.manage] embedding resync failed (id=${id}): ${e.message}\n`)
         }
       }
-      void persistTableSidecar(db, DATA_DIR, 'entries').catch(() => {})
       return { text: `edited (id=${id}): [${finalCategory}/${finalStatus}] ${finalElement} — ${finalSummary.slice(0, 200)}` }
     }
 
@@ -1387,7 +1374,6 @@ async function handleMemoryAction(args) {
         const result = info.is_root === 1
           ? await db.query(`DELETE FROM entries WHERE id = $1 OR chunk_root = $2`, [id, id])
           : await db.query(`DELETE FROM entries WHERE id = $1`, [id])
-        void persistTableSidecar(db, DATA_DIR, 'entries').catch(() => {})
         return { text: `deleted (id=${id}, rows=${result.affectedRows}): [${info.category ?? '-'}] ${info.element ?? ''}` }
       } catch (e) {
         return { text: `manage delete failed: ${e.message}`, isError: true }
@@ -1568,7 +1554,6 @@ async function handleMemoryAction(args) {
       // Entries in successIds but not acted-upon (omit / no-op) are kept.
       kept += batch.filter(r => successIds.has(Number(r.id)) && !acted.has(Number(r.id))).length
     }
-    void persistTableSidecar(db, DATA_DIR, 'entries').catch(() => {})
     return { text: `retro_eval_active: total=${total} archived=${archived} kept=${kept} updated=${updated} merged=${merged} errors=${errors}` }
   }
 

@@ -1,4 +1,4 @@
-import { cleanMemoryText, persistTableSidecar } from './memory.mjs'
+import { cleanMemoryText } from './memory.mjs'
 import { resolveMaintenancePreset } from '../../shared/llm/index.mjs'
 import { callBridgeLlm } from './agent-ipc.mjs'
 import {
@@ -171,7 +171,6 @@ async function _runCycle1Impl(db, config = {}, options = {}, dataDir = null) {
         failed_ids: Array.isArray(flushResult.failed) ? flushResult.failed : [],
         deferred: flushResult.timedOut === true,
       }
-      await persistTableSidecar(db, dataDir, tableName)
     } catch (err) {
       process.stderr.write(`[cycle1] quick-exit maintenance failed: ${err.message}\n`)
     }
@@ -391,13 +390,6 @@ async function _runCycle1Impl(db, config = {}, options = {}, dataDir = null) {
     }
   } catch (err) {
     process.stderr.write(`[cycle1] embedding flush failed: ${err.message}\n`)
-  }
-
-  // Batch-level sidecar dump after successful INSERT commits + embedding flush.
-  if (dataDir && totalChunks > 0) {
-    void persistTableSidecar(db, dataDir, 'entries').catch(err => {
-      process.stderr.write(`[cycle1] entries sidecar persist failed: ${err?.message}\n`)
-    })
   }
 
   return {

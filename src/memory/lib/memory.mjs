@@ -1,9 +1,7 @@
-// PGlite-backed memory store. Schema, helpers, and lifecycle.
+// Native-PG-backed memory store. Schema, helpers, and lifecycle.
 
-import { PGlite } from '../../../lib/vendored/pglite/dist/index.js'
-import { vector } from '../../../lib/vendored/pglite/dist/vector/index.js'
-import { pg_trgm } from '../../../lib/vendored/pglite/dist/contrib/pg_trgm.js'
-import { mkdirSync, existsSync, renameSync, rmSync, readFileSync, writeFileSync } from 'fs'
+import { ensurePgInstance } from './pg-adapter.mjs'
+import { mkdirSync, existsSync, readFileSync, renameSync, writeFileSync, statSync } from 'fs'
 import { join, resolve, dirname } from 'path'
 import { cleanMemoryText } from './memory-extraction.mjs'
 
@@ -24,8 +22,7 @@ export async function init(db, dims) {
     throw new Error(`init: dims must be a positive integer, got ${dims}`)
   }
 
-  await db.exec(`CREATE EXTENSION IF NOT EXISTS vector`)
-  await db.exec(`CREATE EXTENSION IF NOT EXISTS pg_trgm`)
+  // Extensions are created once by pg-adapter.bootstrapInstance; skip here.
 
   // Status as a real ENUM type — DB-level enforcement, B-tree friendly.
   await db.exec(`CREATE TYPE entry_status AS ENUM ('pending', 'active', 'archived')`)
@@ -207,207 +204,163 @@ export async function init(db, dims) {
 }
 
 // ---------------------------------------------------------------------------
-// Table sidecars — best-effort JSON snapshots alongside pgdata.
-// Survive quarantine/rmSync because they live in dataDir, not inside pgdata.
+// migrateFromPgliteSidecars — one-shot 0.3.x → 0.4.0 migration
 //
-// Generic helpers: persistTableSidecar / restoreTableSidecar
-// Thin wrappers kept for existing call sites: persistCoreEntriesSidecar /
-// restoreCoreEntriesFromSidecar (internal; not exported).
+// 0.3.x stored sidecars in a subdirectory:
+//   ${dataDir}/sidecars/core_entries.json
+//   ${dataDir}/sidecars/entries.json   (≈2.5 MB, 252 rows + halfvec embeddings)
+//   ${dataDir}/sidecars/meta.json
+//
+// The marker file ${dataDir}/MIGRATED_FROM_PGLITE is written on completion and
+// checked on every subsequent boot for an early return.
 // ---------------------------------------------------------------------------
 
-// Tables whose column sets need special handling.
-// excludeColumns: generated/computed cols that cannot be inserted back.
-// allowedColumns: allowlist of safe column names for restore (SQL injection guard).
-//   Omit search_tsv (generated) and any col not in the CREATE TABLE schema.
-// castColumns: map of colName → SQL cast suffix applied on restore params.
-// conflictKey: primary-key column for ON CONFLICT (default 'id').
-const TABLE_OPTIONS = {
+// Column allowlists used exclusively inside migrateFromPgliteSidecars.
+// SQL injection guard: only known-safe column names are used in INSERT statements.
+const _MIGRATE_COLS = {
   entries: {
-    excludeColumns: new Set(['search_tsv']),
-    allowedColumns: new Set([
+    allowed:     new Set([
       'id', 'ts', 'role', 'content', 'source_ref', 'session_id', 'project_id',
       'source_turn', 'chunk_root', 'is_root', 'element', 'category', 'summary',
       'status', 'score', 'last_seen_at', 'reviewed_at', 'promoted_at',
       'error_count', 'embedding', 'summary_hash',
     ]),
-    castColumns: { embedding: '::halfvec(1024)' },
+    casts:       { embedding: '::halfvec(1024)' },
     conflictKey: 'id',
-    idColumn: 'id',
+    idColumn:    'id',
   },
   core_entries: {
-    excludeColumns: new Set(),
-    allowedColumns: new Set([
-      'id', 'element', 'summary', 'category', 'project_id', 'created_at', 'updated_at',
-    ]),
-    castColumns: {},
+    allowed:     new Set(['id', 'element', 'summary', 'category', 'project_id', 'created_at', 'updated_at']),
+    casts:       {},
     conflictKey: 'id',
-    idColumn: 'id',
+    idColumn:    'id',
   },
   meta: {
-    excludeColumns: new Set(),
-    allowedColumns: new Set(['key', 'value']),
-    castColumns: { value: '::jsonb' },
+    allowed:     new Set(['key', 'value']),
+    casts:       { value: '::jsonb' },
     conflictKey: 'key',
-    idColumn: null,   // TEXT primary key — no sequence to reset
+    idColumn:    null,
   },
 }
 
-// Module-level per-table mutex. Key: `${dataDir}|${tableName}`.
-// Serialises concurrent persists on the same table so a slow first persist
-// cannot overwrite a fast second persist with stale data.
-const _persistLocks = new Map()
+export async function migrateFromPgliteSidecars(db, dataDir) {
+  const dir        = resolve(dataDir)
+  const markerPath = join(dir, 'MIGRATED_FROM_PGLITE')
 
-function _sidecarPath(dataDir, tableName) {
-  return join(resolve(dataDir), 'sidecars', `${tableName}.json`)
-}
+  // Marker present → skip immediately.
+  if (existsSync(markerPath)) return
 
-// Migrate legacy core-entries.json → sidecars/core_entries.json on first boot.
-function _migrateLegacyCoreEntries(dataDir) {
-  const legacyPath = join(resolve(dataDir), 'core-entries.json')
-  const newPath = _sidecarPath(dataDir, 'core_entries')
-  if (existsSync(legacyPath) && !existsSync(newPath)) {
-    try {
-      mkdirSync(dirname(newPath), { recursive: true })
-      renameSync(legacyPath, newPath)
-      process.stderr.write(`[memory] migrated core-entries.json → sidecars/core_entries.json\n`)
-    } catch (err) {
-      process.stderr.write(`[memory] legacy sidecar migration failed (${err?.message}); old path left in place\n`)
-    }
-  }
-}
+  // Sidecar subdir written by 0.3.x PGlite builds.
+  const sidecarsDir = join(dir, 'sidecars')
 
-// Generic table sidecar persist. Writes sidecars/<tableName>.json atomically.
-async function _doPersist(db, dataDir, tableName, opts) {
-  const excluded = opts.excludeColumns ?? new Set()
-  const sidecarPath = _sidecarPath(dataDir, tableName)
-  try {
-    mkdirSync(dirname(sidecarPath), { recursive: true })
-    const r = await db.query(`SELECT * FROM ${tableName} ORDER BY 1`)
-    const rows = excluded.size === 0 ? r.rows : r.rows.map(row => {
-      const out = {}
-      for (const [k, v] of Object.entries(row)) {
-        if (!excluded.has(k)) out[k] = v
-      }
-      return out
-    })
-    const tmp = `${sidecarPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    writeFileSync(tmp, JSON.stringify({ version: 1, table: tableName, entries: rows }, null, 2), 'utf8')
-    renameSync(tmp, sidecarPath)
-  } catch (err) {
-    process.stderr.write(`[memory] sidecar persist failed (${tableName}: ${err?.message || err}) — continuing\n`)
-  }
-}
-
-export async function persistTableSidecar(db, dataDir, tableName, options = {}) {
-  const opts = { ...TABLE_OPTIONS[tableName], ...options }
-  const lockKey = `${dataDir}|${tableName}`
-  const prev = _persistLocks.get(lockKey)
-  const next = (prev || Promise.resolve())
-    .catch(() => {})        // swallow prior rejection so queued persist always runs
-    .then(() => _doPersist(db, dataDir, tableName, opts))
-  _persistLocks.set(lockKey, next)
-  try {
-    await next
-  } finally {
-    if (_persistLocks.get(lockKey) === next) _persistLocks.delete(lockKey)
-  }
-}
-
-// Generic table sidecar restore. Reads sidecars/<tableName>.json and upserts.
-export async function restoreTableSidecar(db, dataDir, tableName, options = {}) {
-  const opts = { ...TABLE_OPTIONS[tableName], ...options }
-  const castCols = opts.castColumns ?? {}
-  const conflictKey = opts.conflictKey ?? 'id'
-  const allowed = opts.allowedColumns ?? null   // null = no allowlist (legacy callers)
-  const sidecarPath = _sidecarPath(dataDir, tableName)
-  if (!existsSync(sidecarPath)) return
-
-  // --- parse phase ---
-  let entries
-  try {
-    const raw = readFileSync(sidecarPath, 'utf8')
-    const parsed = JSON.parse(raw)
-    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.entries)) {
-      throw new Error('unexpected shape (expected { version:1, entries:[...] })')
-    }
-    entries = parsed.entries
-  } catch (err) {
-    const corruptPath = `${sidecarPath}.corrupt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
-    try { renameSync(sidecarPath, corruptPath) } catch {}
-    process.stderr.write(
-      `[memory] ${tableName} sidecar malformed (${err.message}); renamed to .corrupt-*\n`,
-    )
+  // No sidecars directory → fresh install; write marker and return.
+  if (!existsSync(sidecarsDir)) {
+    writeFileSync(markerPath, JSON.stringify({
+      migrated_at:     new Date().toISOString(),
+      source_sizes:    {},
+      ingested_counts: {},
+      note:            'fresh install (no sidecars dir)',
+    }, null, 2), 'utf8')
     return
   }
 
-  if (entries.length === 0) return
+  const sidecarPath = (tbl) => join(sidecarsDir, `${tbl}.json`)
 
-  // --- insert phase ---
-  const failures = []
-  let restored = 0
-  for (const e of entries) {
-    try {
-      // R2-1: intersect row keys with allowedColumns to block injected identifiers.
-      const rawCols = Object.keys(e)
-      const cols = allowed ? rawCols.filter(c => allowed.has(c)) : rawCols
-      if (cols.length === 0) continue
-      const params = cols.map((col, i) => `$${i + 1}${castCols[col] || ''}`)
-      const setClauses = cols
-        .filter(col => col !== conflictKey)
-        .map(col => `${col} = EXCLUDED.${col}`)
-      const sql =
-        `INSERT INTO ${tableName}(${cols.join(', ')}) VALUES (${params.join(', ')})` +
-        ` ON CONFLICT (${conflictKey}) DO UPDATE SET ${setClauses.join(', ')}`
-      await db.query(sql, cols.map(col => e[col] ?? null))
-      restored += 1
-    } catch (rowErr) {
-      failures.push({ id: e[conflictKey], error: rowErr?.message || String(rowErr) })
+  const sourceSizes   = {}
+  const ingestedCounts = {}
+  const existingTables = []
+
+  for (const tbl of ['core_entries', 'entries', 'meta']) {
+    const p = sidecarPath(tbl)
+    if (existsSync(p)) {
+      try { sourceSizes[tbl] = statSync(p).size } catch { sourceSizes[tbl] = null }
+      existingTables.push(tbl)
     }
   }
 
-  if (restored > 0) {
-    process.stderr.write(`[memory] restored ${restored} ${tableName} rows from sidecar\n`)
+  // Fresh install — no legacy sidecars: write marker and return.
+  if (existingTables.length === 0) {
+    writeFileSync(markerPath, JSON.stringify({
+      migrated_at:     new Date().toISOString(),
+      source_sizes:    {},
+      ingested_counts: {},
+      note:            'no legacy sidecars found (sidecars dir exists but empty)',
+    }, null, 2), 'utf8')
+    return
   }
 
-  if (failures.length > 0) {
-    const shown = failures.slice(0, 10).map(f => f.id).join(', ')
-    const tail = failures.length > 10 ? ` ...and ${failures.length - 10} more` : ''
-    process.stderr.write(
-      `[memory] sidecar restore (${tableName}): ${failures.length} row(s) failed — ids: ${shown}${tail}\n`,
+  process.stderr.write(`[memory] 0.3.x→0.4.0 migration: found ${existingTables.join(', ')} sidecars\n`)
+
+  for (const tbl of existingTables) {
+    const opts = _MIGRATE_COLS[tbl] ?? { allowed: null, casts: {}, conflictKey: 'id', idColumn: 'id' }
+    try {
+      // Parse sidecar JSON file.
+      const raw    = readFileSync(sidecarPath(tbl), 'utf8')
+      const parsed = JSON.parse(raw)
+      if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.entries)) {
+        throw new Error(`unexpected shape (expected { version:1, entries:[...] })`)
+      }
+      const rows = parsed.entries
+      if (rows.length === 0) {
+        ingestedCounts[tbl] = 0
+        continue
+      }
+
+      // Insert all rows in a single transaction so a partial failure rolls back
+      // this table's migration (other tables continue independently).
+      await db.transaction(async (tx) => {
+        let inserted = 0
+        for (const e of rows) {
+          const rawCols = Object.keys(e)
+          const cols = opts.allowed ? rawCols.filter(c => opts.allowed.has(c)) : rawCols
+          if (cols.length === 0) continue
+          const params = cols.map((col, i) => `$${i + 1}${opts.casts[col] || ''}`)
+          const setClauses = cols
+            .filter(col => col !== opts.conflictKey)
+            .map(col => `${col} = EXCLUDED.${col}`)
+          const sql =
+            `INSERT INTO ${tbl}(${cols.join(', ')}) VALUES (${params.join(', ')})` +
+            ` ON CONFLICT (${opts.conflictKey}) DO UPDATE SET ${setClauses.join(', ')}`
+          await tx.query(sql, cols.map(col => e[col] ?? null))
+          inserted += 1
+        }
+        // Bump sequence so subsequent natural INSERTs don't collide with restored ids.
+        if (opts.idColumn) {
+          await tx.query(
+            `SELECT setval(pg_get_serial_sequence($1, $2), COALESCE((SELECT MAX(${opts.idColumn}) FROM ${tbl}), 0))`,
+            [tbl, opts.idColumn],
+          )
+        }
+        process.stderr.write(`[memory] migration: ${tbl} inserted ${inserted} rows\n`)
+      })
+
+      // Count committed rows.
+      const r = await db.query(`SELECT COUNT(*) AS n FROM ${tbl}`)
+      ingestedCounts[tbl] = Number(r.rows[0]?.n ?? 0)
+      process.stderr.write(`[memory] migration: ${tbl} ingested ${ingestedCounts[tbl]} rows\n`)
+    } catch (err) {
+      process.stderr.write(`[memory] migration: ${tbl} failed — ${err?.message || err} (continuing)\n`)
+      ingestedCounts[tbl] = null
+    }
+  }
+
+  // Partial-failure guard: if any table threw, do NOT write marker — throw so
+  // openDatabase boot surfaces the issue and the next boot re-attempts migration.
+  const failedTables = existingTables.filter(tbl => ingestedCounts[tbl] === null)
+  if (failedTables.length > 0) {
+    throw new Error(
+      `[memory] migration failed for table(s): ${failedTables.join(', ')} — ` +
+      `marker NOT written; inspect sidecars at ${sidecarsDir} and retry`,
     )
-    if (restored === 0) {
-      const corruptPath = `${sidecarPath}.corrupt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
-      try { renameSync(sidecarPath, corruptPath) } catch {}
-      process.stderr.write(
-        `[memory] ${tableName} sidecar parseable but all rows failed; renamed to .corrupt-*\n`,
-      )
-    }
   }
 
-  // R2-2: After restoring explicit-id rows, bump the sequence so next natural
-  // INSERT doesn't collide. pg_get_serial_sequence avoids hardcoded names.
-  const idCol = opts.idColumn
-  if (idCol && restored > 0) {
-    try {
-      await db.query(
-        `SELECT setval(pg_get_serial_sequence($1, $2), COALESCE((SELECT MAX(${idCol}) FROM ${tableName}), 0))`,
-        [tableName, idCol],
-      )
-    } catch (seqErr) {
-      process.stderr.write(`[memory] sequence reset failed (${tableName}.${idCol}): ${seqErr?.message}\n`)
-    }
-  }
-}
-
-// Thin wrappers — kept for existing call sites in core-memory-store.mjs.
-export async function persistCoreEntriesSidecar(db, dataDir) {
-  _migrateLegacyCoreEntries(dataDir)
-  return persistTableSidecar(db, dataDir, 'core_entries')
-}
-
-async function restoreCoreEntriesFromSidecar(db, dataDir) {
-  _migrateLegacyCoreEntries(dataDir)
-  return restoreTableSidecar(db, dataDir, 'core_entries')
+  // All tables succeeded — write permanent tombstone.
+  writeFileSync(markerPath, JSON.stringify({
+    migrated_at:     new Date().toISOString(),
+    source_sizes:    sourceSizes,
+    ingested_counts: ingestedCounts,
+  }, null, 2), 'utf8')
+  process.stderr.write(`[memory] migration complete → ${markerPath}\n`)
 }
 
 export async function openDatabase(dataDir, dims) {
@@ -419,79 +372,33 @@ export async function openDatabase(dataDir, dims) {
   // Dedupe concurrent callers — return the in-flight Promise if one exists.
   if (opening.has(key)) return opening.get(key)
 
-  // PGlite WAL replay aborts when an ungraceful kill leaves cycle1/cycle2
-  // ingestion writes (halfvec embeddings, HNSW maintenance, GIN tsvector)
-  // unflushed past the last checkpoint. Recovery is non-deterministic on
-  // Windows + Bun; pgdata is treated as expendable cache. Catch the abort,
-  // quarantine the broken directory, and re-bootstrap fresh — entries are
-  // regenerable via backfill; core_entries is protected by the JSON sidecar.
   const promise = (async () => {
     mkdirSync(key, { recursive: true })
-    const dbPath = join(key, 'pgdata').replace(/\\/g, '/')
-    const pgdataPath = join(key, 'pgdata')
 
-    let db
-    let bootstrapNeeded = !existsSync(pgdataPath)
-    const tryOpen = async () => {
-      const handle = new PGlite(`file://${dbPath}`, { extensions: { vector, pg_trgm } })
-      await handle.waitReady
-      return handle
+    // 0.3.x → 0.4.0 archive. PGlite produces native-format pgdata, so heuristics
+    // on internals are unreliable. Sentinel: MIGRATED_FROM_PGLITE absent +
+    // sidecars/ present + archive target absent + pgdata present. Fixed archive
+    // name is self-sentinel; retries and concurrent boots no-op naturally.
+    const sidecarsDir   = join(key, 'sidecars')
+    const pgdataDir     = join(key, 'pgdata')
+    const markerPath    = join(key, 'MIGRATED_FROM_PGLITE')
+    const archiveTarget = join(key, 'pgdata-pglite-archived')
+    if (!existsSync(markerPath) && existsSync(sidecarsDir) && !existsSync(archiveTarget) && existsSync(pgdataDir)) {
+      renameSync(pgdataDir, archiveTarget)
+      process.stderr.write(`[memory] 0.3.x→0.4.0 archive: ${pgdataDir} → ${archiveTarget}\n`)
     }
-    try {
-      db = await tryOpen()
-    } catch (err) {
-      process.stderr.write(`[memory] PGlite open failed (${err?.message || err}) — quarantining pgdata and rebootstrapping\n`)
-      if (existsSync(pgdataPath)) {
-        // Include pid + random suffix to avoid same-ms collisions when multiple
-        // processes quarantine concurrently.
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-        const quarantine = `${pgdataPath}-aborted-${stamp}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
-        try {
-          renameSync(pgdataPath, quarantine)
-          process.stderr.write(`[memory] quarantined broken pgdata → ${quarantine}\n`)
-        } catch (renameErr) {
-          process.stderr.write(`[memory] rename failed (${renameErr?.message}); falling back to rmSync\n`)
-          try {
-            rmSync(pgdataPath, { recursive: true, force: true })
-          } catch (rmErr) {
-            process.stderr.write(`[memory] rmSync also failed (${rmErr.message}); next open may still abort — manual cleanup of pgdata required\n`)
-          }
-        }
-      }
-      bootstrapNeeded = true
-      db = await tryOpen()
-    }
-    if (bootstrapNeeded || !(await isBootstrapComplete(db))) {
+
+    const { db } = await ensurePgInstance(dataDir, { schema: 'memory' })
+
+    const bootstrapNeeded = !(await isBootstrapComplete(db))
+    if (bootstrapNeeded) {
       await init(db, dims)
-      // Restore core_entries from sidecar if quarantine wiped pgdata.
-      await restoreCoreEntriesFromSidecar(db, dataDir)
-      // Restore entries and meta from sidecars (best-effort; per-table errors skip).
-      try { await restoreTableSidecar(db, dataDir, 'entries') } catch (e) {
-        process.stderr.write(`[memory] entries sidecar restore failed: ${e?.message}\n`)
-      }
-      try { await restoreTableSidecar(db, dataDir, 'meta') } catch (e) {
-        process.stderr.write(`[memory] meta sidecar restore failed: ${e?.message}\n`)
-      }
     }
-    // Pin pg_trgm similarity threshold for the connection so the `%` operator
-    // matches recall-store's documented TRGM_THRESHOLD (0.10) instead of the
-    // pg_trgm default (0.3). PGlite uses a single backend, so this affects all
-    // subsequent queries on this handle.
-    try { await db.query(`SELECT set_limit(0.10)`) } catch {}
-    // Bootstrap dump: for each protected table, if sidecar missing and table
-    // has rows, create initial sidecar (covers existing users upgrading).
-    const _protectedTables = ['core_entries', 'entries', 'meta']
-    for (const tbl of _protectedTables) {
-      const sp = _sidecarPath(dataDir, tbl)
-      if (!existsSync(sp)) {
-        try {
-          const cnt = await db.query(`SELECT COUNT(*) AS n FROM ${tbl}`)
-          if (Number(cnt.rows[0]?.n) > 0) {
-            await persistTableSidecar(db, dataDir, tbl)
-          }
-        } catch {}
-      }
-    }
+    // One-shot 0.3.x → 0.4.0 migration; self-skips via MIGRATED_FROM_PGLITE marker.
+    // Runs on every boot so a partial failure on boot N is retried on boot N+1.
+    // (init() is safe to skip on retry — schema/extensions/indexes already exist.)
+    await migrateFromPgliteSidecars(db, dataDir)
+
     dbs.set(key, db)
     return db
   })()

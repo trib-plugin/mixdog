@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "generated_at": "1970-01-01T00:00:00.000Z",
+  "release_tag": "TBD",
+  "_note": "Placeholder values. Real URLs and sha256 hashes are injected via auto-PR by the build-runtime workflow after the first release. Track A runtime-fetcher should surface a clear error when sha256 == 'TBD'.",
+  "pg": {
+    "major": 16,
+    "minor": 4
+  },
+  "pgvector": {
+    "version": "0.7.4"
+  },
+  "assets": {
+    "linux-x64": {
+      "url": "TBD",
+      "sha256": "TBD",
+      "size": 0
+    },
+    "linux-arm64": {
+      "url": "TBD",
+      "sha256": "TBD",
+      "size": 0
+    },
+    "darwin-x64": {
+      "url": "TBD",
+      "sha256": "TBD",
+      "size": 0
+    },
+    "darwin-arm64": {
+      "url": "TBD",
+      "sha256": "TBD",
+      "size": 0
+    },
+    "win32-x64": {
+      "url": "TBD",
+      "sha256": "TBD",
+      "size": 0
+    }
+  }
+}

@@ -10,7 +10,7 @@
  *
  * Routing criteria (all must hold for `discord`):
  *   1. `active-instance.json` exists and has a non-empty `instanceId`
- *   2. `active.pid` is alive (probed via `process.kill(pid, 0)`)
+ *   2. `active.supervisor_pid` is alive (probed via `process.kill(pid, 0)`)
  *   3. Either `active.httpPort` is set, or `bridge-state.json.active === true`
  *
  * Returns: `{ route: 'discord' | 'terminal', httpPort?: number }`
@@ -47,7 +47,7 @@ function isPidAlive(pid) {
 function shouldRoutePermissionToDiscord() {
   const active = readJson(ACTIVE_INSTANCE_FILE);
   if (!active || !active.instanceId) return { route: 'terminal' };
-  if (!isPidAlive(active.pid)) return { route: 'terminal' };
+  if (!isPidAlive(active.supervisor_pid)) return { route: 'terminal' };
 
   const hasHttpPort = typeof active.httpPort === 'number' && active.httpPort > 0;
   const bridgeState = readJson(BRIDGE_STATE_FILE);

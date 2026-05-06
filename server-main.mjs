@@ -1226,6 +1226,13 @@ async function shutdown(reason) {
     const killed = cleanupOrphanedPids()
     if (killed > 0) log(`shutdown: cleaned ${killed} bridge CLI processes`)
   } catch {}
+  // Graceful PG shutdown — fires only on clean shutdown path.
+  // On supervisor-kill path (SIGTERM w/ no time for graceful stop), PG is
+  // left running; next ensurePgInstance call recovers via stale-detection.
+  try {
+    const { stopPgForShutdown } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/memory/lib/supervisor-pg.mjs')).href)
+    await stopPgForShutdown()
+  } catch {}
   for (const mod of modules.values()) {
     if (mod.stop) await mod.stop()
   }

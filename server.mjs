@@ -94,7 +94,7 @@ const _releaseLock = () => {
   try {
     const __af = path.join(os.tmpdir(), 'mixdog', 'active-instance.json')
     const cur = JSON.parse(fs.readFileSync(__af, 'utf-8'))
-    if (cur && cur.pid === process.pid) fs.unlinkSync(__af)
+    if (cur && cur.supervisor_pid === process.pid) fs.unlinkSync(__af)
   } catch {}
 }
 process.on('exit', _releaseLock)
@@ -190,11 +190,11 @@ const __instanceId = String(process.pid)
 try {
   if (fs.existsSync(__activeFile)) {
     const prev = JSON.parse(fs.readFileSync(__activeFile, 'utf-8'))
-    if (prev && prev.pid && prev.pid !== process.pid) {
+    if (prev && prev.supervisor_pid && prev.supervisor_pid !== process.pid) {
       try {
-        process.kill(prev.pid, 0)
+        process.kill(prev.supervisor_pid, 0)
         process.stderr.write(
-          `[server] split-brain warning: active-instance.json points to live PID ${prev.pid} ` +
+          `[server] split-brain warning: active-instance.json points to live PID ${prev.supervisor_pid} ` +
           `but server.lock is ours — overwriting\n`
         )
       } catch { /* dead PID — fine */ }
@@ -207,10 +207,15 @@ const __nowMs = Date.now()
 // POSIX rename is atomic per directory entry; on Windows fs.renameSync uses
 // MoveFileEx with REPLACE_EXISTING which is atomic-equivalent for same-volume.
 const __activeTmp = `${__activeFile}.${process.pid}.tmp`
+// B1: read-modify-write so pg_* fields written by supervisor-pg.mjs survive
+// the initial prelude write. Spread order: cur first so new fields win.
+const __curActive = (() => { try { return JSON.parse(fs.readFileSync(__activeFile, 'utf-8')) } catch { return {} } })()
+const { pid: _legacyPid, startedAt: _legacyStartedAt, ...__curActiveRest } = __curActive ?? {}
 fs.writeFileSync(__activeTmp, JSON.stringify({
+  ...__curActiveRest,
   instanceId: __instanceId,
-  pid: process.pid,
-  startedAt: __nowMs,
+  supervisor_pid: process.pid,
+  supervisor_started_at: __nowMs,
   updatedAt: __nowMs,
   turnEndFile: path.join(__activeDir, `turn-end-${__instanceId}`),
   statusFile: path.join(__activeDir, `status-${__instanceId}.json`),

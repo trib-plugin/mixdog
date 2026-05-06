@@ -6,7 +6,7 @@ import { callBridgeLlm } from './agent-ipc.mjs'
 import {
   syncRootEmbedding, deleteRootEmbedding, flushEmbeddingDirty,
 } from './memory-embed.mjs'
-import { refreshHotActive, persistTableSidecar } from './memory.mjs'
+import { refreshHotActive } from './memory.mjs'
 
 export const CYCLE2_ACTIVE_TARGET_CAP = 100
 const TIER1_THRESHOLD = 0.78
@@ -705,13 +705,6 @@ async function _runCycle2Impl(db, config = {}, options = {}, dataDir = null) {
   )
 
   try { await refreshHotActive(db) } catch (e) { process.stderr.write('[cycle2] mv refresh failed: ' + e.message + '\n') }
-
-  // Batch-level sidecar dump after promote/archive/merge actions commit.
-  if (dataDir) {
-    void persistTableSidecar(db, dataDir, 'entries').catch(err => {
-      process.stderr.write(`[cycle2] entries sidecar persist failed: ${err?.message}\n`)
-    })
-  }
 
   return stats
 }

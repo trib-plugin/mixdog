@@ -1,10 +1,9 @@
-// trace-store.mjs — separate PGlite instance for bridge-trace analytics.
-// Keyed at <dataDir>/pgdata-trace/; isolated from the main memory PG instance.
-// Phase 2: schema simplified (no watermark), insertTraceEvents added.
+// trace-store.mjs — native-PG trace analytics store for mixdog 0.4.0.
+// Uses pg-adapter (schema='trace') so trace_events live in the trace schema.
+// Isolated from memory schema; shares the same PG instance.
 
-import { PGlite } from '../../../lib/vendored/pglite/dist/index.js'
-import { mkdirSync, existsSync, renameSync, rmSync } from 'fs'
-import { join, resolve } from 'path'
+import { ensurePgInstance } from './pg-adapter.mjs'
+import { resolve } from 'path'
 
 const dbs = new Map()
 const opening = new Map()
@@ -45,9 +44,7 @@ async function init(db) {
 
 async function isBootstrapComplete(db) {
   try {
-    const r = await db.query(
-      `SELECT to_regclass('trace_events') AS t`,
-    )
+    const r = await db.query(`SELECT to_regclass('trace.trace_events') AS t`)
     return r.rows[0]?.t != null
   } catch {
     return false
@@ -55,55 +52,19 @@ async function isBootstrapComplete(db) {
 }
 
 // ---------------------------------------------------------------------------
-// openTraceDatabase — mirrors openDatabase pattern from memory.mjs exactly.
+// openTraceDatabase
 // ---------------------------------------------------------------------------
 
 export async function openTraceDatabase(dataDir) {
   const key = resolve(dataDir)
 
-  // Fast path — already resolved.
   if (dbs.get(key)) return dbs.get(key)
-
-  // Dedupe concurrent callers — return the in-flight Promise if one exists.
   if (opening.has(key)) return opening.get(key)
 
-  // PGlite WAL replay aborts on ungraceful kill; treat pgdata-trace as
-  // expendable cache. Quarantine broken dir and re-bootstrap fresh.
   const promise = (async () => {
-    mkdirSync(key, { recursive: true })
-    const pgdataPath = join(key, 'pgdata-trace')
-    const dbPath = pgdataPath.replace(/\\/g, '/')
-
-    let db
-    let bootstrapNeeded = !existsSync(pgdataPath)
-    const tryOpen = async () => {
-      const handle = new PGlite(`file://${dbPath}`)
-      await handle.waitReady
-      return handle
-    }
-    try {
-      db = await tryOpen()
-    } catch (err) {
-      process.stderr.write(`[trace-store] PGlite open failed (${err?.message || err}) — quarantining pgdata-trace and rebootstrapping\n`)
-      if (existsSync(pgdataPath)) {
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-        const quarantine = `${pgdataPath}-aborted-${stamp}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
-        try {
-          renameSync(pgdataPath, quarantine)
-          process.stderr.write(`[trace-store] quarantined broken pgdata-trace → ${quarantine}\n`)
-        } catch (renameErr) {
-          process.stderr.write(`[trace-store] rename failed (${renameErr?.message}); falling back to rmSync\n`)
-          try {
-            rmSync(pgdataPath, { recursive: true, force: true })
-          } catch (rmErr) {
-            process.stderr.write(`[trace-store] rmSync also failed (${rmErr.message}); next open may still abort — manual cleanup of pgdata-trace required\n`)
-          }
-        }
-      }
-      bootstrapNeeded = true
-      db = await tryOpen()
-    }
-    if (bootstrapNeeded || !(await isBootstrapComplete(db))) {
+    // pg-adapter with schema='trace' sets search_path=trace,public per connection.
+    const { db } = await ensurePgInstance(dataDir, { schema: 'trace' })
+    if (!(await isBootstrapComplete(db))) {
       await init(db)
     }
     dbs.set(key, db)
@@ -119,15 +80,16 @@ export async function openTraceDatabase(dataDir) {
 }
 
 // ---------------------------------------------------------------------------
-// closeTraceDatabase — mirrors closeDatabase from memory.mjs
+// closeTraceDatabase
 // ---------------------------------------------------------------------------
 
 export async function closeTraceDatabase(dataDir) {
   const key = resolve(dataDir)
   const db = dbs.get(key)
   if (!db) return
-  try { await db.close() } catch {}
   dbs.delete(key)
+  const { closePgInstance } = await import('./pg-adapter.mjs')
+  await closePgInstance(dataDir, { schema: 'trace' })
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +103,7 @@ export function getTraceDatabase(dataDir) {
 }
 
 // ---------------------------------------------------------------------------
-// insertTraceEvents — batch INSERT for Phase 2 HTTP ingest path.
+// insertTraceEvents — batch INSERT
 // ---------------------------------------------------------------------------
 
 const TRACE_COLS = [
@@ -159,7 +121,6 @@ export async function insertTraceEvents(db, events) {
   let p = 1
 
   for (const ev of events) {
-    // Coerce ts to epoch ms integer
     let ts = ev.ts
     if (typeof ts === 'string') ts = Date.parse(ts)
     ts = Number(ts)

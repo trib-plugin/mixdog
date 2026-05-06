@@ -3,7 +3,7 @@
 // Independent of the entries table (cycle1/cycle2/prune/rebuild do not touch core_entries).
 // Surfaced into the SessionStart Core Memory section by the session-start hook.
 
-import { getDatabase, persistCoreEntriesSidecar } from './memory.mjs'
+import { getDatabase } from './memory.mjs'
 
 const VALID_CAT = new Set([
   'rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue',
@@ -54,7 +54,6 @@ export async function addCore(dataDir, { element, summary, category }, projectId
      RETURNING id, element, summary, category, project_id, created_at, updated_at`,
     [el, sm, cat, projectId, now, now],
   )
-  await persistCoreEntriesSidecar(db, dataDir)
   return r.rows[0]
 }
 
@@ -79,7 +78,6 @@ export async function editCore(dataDir, id, patch) {
     `UPDATE core_entries SET element = $1, summary = $2, category = $3, updated_at = $4 WHERE id = $5`,
     [newElement, newSummary, newCategory, now, numId],
   )
-  await persistCoreEntriesSidecar(db, dataDir)
   return { ...cur, element: newElement, summary: newSummary, category: newCategory, updated_at: now }
 }
 
@@ -89,6 +87,5 @@ export async function deleteCore(dataDir, id) {
   const db = _getDb(dataDir)
   const r = await db.query(`DELETE FROM core_entries WHERE id = $1 RETURNING *`, [numId])
   if (r.rows.length === 0) throw new Error(`no entry with id=${numId}`)
-  await persistCoreEntriesSidecar(db, dataDir)
   return r.rows[0]
 }

@@ -56,9 +56,9 @@ function readActiveInstance() {
     if (!state) return null;
   }
   try {
-    process.kill(state.pid, 0);
+    process.kill(state.supervisor_pid, 0);
   } catch {
-    process.stderr.write(`mixdog: stale active-instance.json (PID ${state.pid} is dead), removing\n`);
+    process.stderr.write(`mixdog: stale active-instance.json (PID ${state.supervisor_pid} is dead), removing\n`);
     removeFileIfExists(ACTIVE_INSTANCE_FILE);
     return null;
   }
@@ -71,8 +71,8 @@ function writeActiveInstance(state) {
 function buildActiveInstanceState(instanceId, meta) {
   return {
     instanceId,
-    pid: process.pid,
-    startedAt: Date.now(),
+    supervisor_pid: process.pid,
+    supervisor_started_at: Date.now(),
     updatedAt: Date.now(),
     turnEndFile: getTurnEndPath(instanceId),
     statusFile: getStatusPath(instanceId),
@@ -84,16 +84,23 @@ function buildActiveInstanceState(instanceId, meta) {
 }
 function refreshActiveInstance(instanceId, meta) {
   const prev = readActiveInstance();
+  const { pid: _legacyPid, startedAt: _legacyStartedAt, ...prevRest } = prev ?? {};
   const next = {
-    ...prev?.instanceId === instanceId ? prev : buildActiveInstanceState(instanceId),
+    ...(prev?.instanceId === instanceId ? prevRest : buildActiveInstanceState(instanceId)),
     updatedAt: Date.now(),
     ...meta?.channelId ? { channelId: meta.channelId } : {},
     ...meta?.transcriptPath ? { transcriptPath: meta.transcriptPath } : {},
     ...meta?.httpPort ? { httpPort: meta.httpPort } : {},
-    ...typeof meta?.backendReady === "boolean" ? { backendReady: meta.backendReady } : {}
+    ...typeof meta?.backendReady === "boolean" ? { backendReady: meta.backendReady } : {},
   };
-  writeActiveInstance(next);
-  return next;
+  // I1: pg_* spread FIRST so newFields above win on conflict (e.g. pg_port refresh).
+  // prev.pg_port='A', meta.httpPort-adjacent pg_port='B' → result.pg_port='B'.
+  const preservedPg = Object.fromEntries(
+    Object.entries(prev ?? {}).filter(([k]) => k.startsWith('pg_'))
+  );
+  const nextWithPg = { ...preservedPg, ...next };
+  writeActiveInstance(nextWithPg);
+  return nextWithPg;
 }
 const SERVER_PID_FILE = join(
   RUNTIME_ROOT,
