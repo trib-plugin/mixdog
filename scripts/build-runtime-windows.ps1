@@ -88,7 +88,12 @@ if (Test-Path $VectorDllBuilt) {
             Write-Error "vswhere could not locate vcvarsall.bat — Visual Studio Build Tools required."
             exit 1
         }
-        $BuildCmd = "`"$VcVarsAll`" amd64 && nmake /F Makefile.win PG_CONFIG=`"$PgConfig`""
+        # CRITICAL: prepend $PgRoot\bin to PATH and set PGROOT inside the cmd
+        # batch. windows-2022 runner has PG 14/15 preinstalled and bare
+        # `pg_config` invocations from inside Makefile.win would otherwise
+        # resolve to PG 14, producing PG14-ABI vector.dll that fails to load
+        # in our PG 16 postgres.exe ("specified procedure could not be found").
+        $BuildCmd = "`"$VcVarsAll`" amd64 && set `"PATH=$PgRoot\bin;%PATH%`" && set `"PGROOT=$PgRoot`" && nmake /F Makefile.win PG_CONFIG=`"$PgConfig`""
         cmd /c $BuildCmd
         if ($LASTEXITCODE -ne 0) {
             Write-Error "pgvector nmake build failed (exit $LASTEXITCODE)"
