@@ -340,7 +340,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Memory operations. User-curated core list (core_entries table, untouched by cycles): action:\"core\" with op:\"add\"|\"edit\"|\"delete\"|\"list\". Entries-table CRUD (cycle-managed): action:\"manage\" with op:\"add\"|\"edit\"|\"delete\". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.",
+    "description": "Memory operations. User-curated core list (core_entries table, untouched by cycles): action:\"core\" with op:\"add\"|\"edit\"|\"delete\"|\"list\". Entries-table CRUD (cycle-managed): action:\"manage\" with op:\"add\"|\"edit\"|\"delete\". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). project_id semantics for `core`: required at add (pass \"common\" for COMMON pool, or project slug like \"owner/repo\"); optional at list (omit = list COMMON); ignored at edit/delete (id alone identifies the row, BIGSERIAL globally unique).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -407,7 +407,7 @@
         },
         "project_id": {
           "type": "string",
-          "description": "Optional project pool selector for action='core'. Omit/null → COMMON (project_id IS NULL in core_entries). Set to slug like 'tempest1033/GamerScroll' → scoped rows in core_entries."
+          "description": "Project pool selector for action='core'. Required at op='add' (pass \"common\" for COMMON pool with project_id IS NULL, or slug like 'owner/repo' for scoped). Optional at op='list' (omit → list COMMON). Ignored at op='edit'/'delete' (id alone identifies the row)."
         }
       },
       "required": [

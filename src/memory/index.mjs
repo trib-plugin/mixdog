@@ -1395,12 +1395,14 @@ async function handleMemoryAction(args) {
     if (!dataDir) return { text: 'core: CLAUDE_PLUGIN_DATA unset', isError: true }
     // Local trim helper — the manage-block trimOrNull at :1403 is scoped to
     // that branch and unreachable from here.
-    const rawProjectId = (() => {
-      if (args.project_id == null) return null
+    // Normalize project_id: 'common' (case-insensitive) or null → null (COMMON pool); non-empty string → slug.
+    const hasProjectIdKey = Object.prototype.hasOwnProperty.call(args, 'project_id')
+    const projectId = (() => {
+      if (!hasProjectIdKey || args.project_id == null) return null
       const s = String(args.project_id).trim()
-      return s === '' ? null : s
+      if (s === '' || s.toLowerCase() === 'common') return null
+      return s
     })()
-    const projectId = rawProjectId || null
     try {
       if (op === 'list') {
         const entries = await listCore(dataDir, projectId)
@@ -1408,15 +1410,18 @@ async function handleMemoryAction(args) {
         return { text: entries.map(e => `id=${e.id} [${e.category}] ${e.element} — ${String(e.summary || '').slice(0, 200)}`).join('\n') }
       }
       if (op === 'add') {
+        if (!hasProjectIdKey) {
+          return { text: 'core add: project_id required — pass "common" for COMMON pool, or project slug like "owner/repo" for scoped pool', isError: true }
+        }
         const entry = await addCore(dataDir, args, projectId)
         return { text: `core added (id=${entry.id}): [${entry.category}] ${entry.element} — ${entry.summary.slice(0, 200)}` }
       }
       if (op === 'edit') {
-        const entry = await editCore(dataDir, args.id, args, projectId)
+        const entry = await editCore(dataDir, args.id, args)
         return { text: `core edited (id=${entry.id}): [${entry.category}] ${entry.element} — ${entry.summary.slice(0, 200)}` }
       }
       if (op === 'delete') {
-        const removed = await deleteCore(dataDir, args.id, projectId)
+        const removed = await deleteCore(dataDir, args.id)
         return { text: `core deleted (id=${removed.id}): [${removed.category}] ${removed.element}` }
       }
     } catch (e) {

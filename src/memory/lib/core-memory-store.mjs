@@ -33,7 +33,8 @@ export async function listCore(dataDir, projectId = null) {
   return r.rows
 }
 
-export async function addCore(dataDir, { element, summary, category }, projectId = null) {
+export async function addCore(dataDir, { element, summary, category }, projectId) {
+  if (projectId === undefined) throw new Error('addCore: projectId required — pass null for COMMON pool, or slug string for scoped pool')
   const el = trimOrNull(element)
   const sm = trimOrNull(summary) ?? el
   if (!el || !sm) throw new Error('add requires element and summary')
@@ -52,13 +53,11 @@ export async function addCore(dataDir, { element, summary, category }, projectId
   return r.rows[0]
 }
 
-export async function editCore(dataDir, id, patch, projectId = null) {
+export async function editCore(dataDir, id, patch) {
   const numId = Number(id)
   if (!Number.isInteger(numId) || numId <= 0) throw new Error('integer id > 0 required')
   const db = _getDb(dataDir)
-  const cur = projectId === null
-    ? (await db.query(`SELECT * FROM core_entries WHERE id = $1 AND project_id IS NULL`, [numId])).rows[0]
-    : (await db.query(`SELECT * FROM core_entries WHERE id = $1 AND project_id = $2`, [numId, projectId])).rows[0]
+  const cur = (await db.query(`SELECT * FROM core_entries WHERE id = $1`, [numId])).rows[0]
   if (!cur) throw new Error(`no entry with id=${numId}`)
   const newElement = trimOrNull(patch.element) ?? cur.element
   const newSummary = trimOrNull(patch.summary) ?? cur.summary
@@ -78,13 +77,11 @@ export async function editCore(dataDir, id, patch, projectId = null) {
   return { ...cur, element: newElement, summary: newSummary, category: newCategory, updated_at: now }
 }
 
-export async function deleteCore(dataDir, id, projectId = null) {
+export async function deleteCore(dataDir, id) {
   const numId = Number(id)
   if (!Number.isInteger(numId) || numId <= 0) throw new Error('integer id > 0 required')
   const db = _getDb(dataDir)
-  const cur = projectId === null
-    ? (await db.query(`SELECT * FROM core_entries WHERE id = $1 AND project_id IS NULL`, [numId])).rows[0]
-    : (await db.query(`SELECT * FROM core_entries WHERE id = $1 AND project_id = $2`, [numId, projectId])).rows[0]
+  const cur = (await db.query(`SELECT * FROM core_entries WHERE id = $1`, [numId])).rows[0]
   if (!cur) throw new Error(`no entry with id=${numId}`)
   await db.query(`DELETE FROM core_entries WHERE id = $1`, [numId])
   return cur
