@@ -8,7 +8,7 @@ import {
 } from './memory-embed.mjs'
 import { refreshHotActive } from './memory.mjs'
 
-const CYCLE2_ACTIVE_TARGET_CAP = 100
+export const CYCLE2_ACTIVE_TARGET_CAP = 100
 const TIER1_THRESHOLD = 0.78
 
 const TIER2_LOW = 0.65
@@ -464,15 +464,25 @@ async function sonnetCascade(candidates, rulesDigest, options = {}) {
 const _runCycle2InFlight = new WeakMap()
 
 export async function runCycle2(db, config = {}, options = {}) {
+  const partial = {
+    promoted: 0, archived: 0, merged: 0, updated: 0, kept: 0, rejected_verb: 0,
+    rescore: { updated: 0 },
+    phase_merge: { merged: 0, llm_calls: 0, tier1_pairs: 0, tier2_pairs: 0 },
+    phase4: { archived: 0 },
+    cascade: { evaluated: 0, dropped: 0 },
+  }
   if (_runCycle2InFlight.has(db)) {
     process.stderr.write('[cycle2] skipped: already in flight for this db\n')
-    return {
-      promoted: 0, archived: 0, merged: 0,
-      updated: 0, kept: 0, rejected_verb: 0,
-      skippedInFlight: true,
-    }
+    return { ok: true, ...partial, skippedInFlight: true }
   }
-  const _p = (async () => _runCycle2Impl(db, config, options))()
+  const _p = (async () => {
+    try {
+      const result = await _runCycle2Impl(db, config, options)
+      return { ok: true, ...result }
+    } catch (e) {
+      return { ok: false, error: e.message, ...partial }
+    }
+  })()
   _runCycle2InFlight.set(db, _p)
   try { return await _p }
   finally { _runCycle2InFlight.delete(db) }

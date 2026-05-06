@@ -42,7 +42,7 @@ import {
 } from './lib/memory.mjs'
 import { configureEmbedding, embedText, getEmbeddingDims } from './lib/embedding-provider.mjs'
 import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
-import { runCycle1, runCycle2, runUnifiedGate, parseInterval, syncRootEmbedding, applySimpleStatus, applyUpdate, applyMerge } from './lib/memory-cycle.mjs'
+import { runCycle1, runCycle2, runUnifiedGate, parseInterval, syncRootEmbedding, applySimpleStatus, applyUpdate, applyMerge, CYCLE2_ACTIVE_TARGET_CAP } from './lib/memory-cycle.mjs'
 import { searchRelevantHybrid } from './lib/memory-recall-store.mjs'
 import { retrieveEntries } from './lib/memory-retrievers.mjs'
 import { resetEmbeddingIndex, pruneOldEntries } from './lib/memory-maintenance-store.mjs'
@@ -318,11 +318,14 @@ async function getCycleLastRun() {
       // failed/skipped runs cannot disguise itself as a healthy keeper.
       cycle1_heartbeat: Number(obj.cycle1_heartbeat) || 0,
       cycle1_autoRestart_attempt: Number(obj.cycle1_autoRestart_attempt) || 0,
+      // Last cycle2 failure message; cleared to '' on success.
+      cycle2_last_error: typeof obj.cycle2_last_error === 'string' ? obj.cycle2_last_error : '',
     }
   } catch {
     return {
       cycle1: 0, cycle2: 0, cycle1_autoRestart: 0,
       cycle1_heartbeat: 0, cycle1_autoRestart_attempt: 0,
+      cycle2_last_error: '',
     }
   }
 }
@@ -648,6 +651,17 @@ function periodicCycle1Config() {
   }
 }
 
+async function _finalizeCycle2Run(result) {
+  if (result.ok) {
+    await setCycleLastRun('cycle2', Date.now())
+    await setCycleLastRun('cycle2_last_error', '')
+    process.stderr.write('[cycle2] completed\n')
+  } else {
+    await setCycleLastRun('cycle2_last_error', result.error || 'unknown error')
+    process.stderr.write(`[cycle2] failed: ${result.error}\n`)
+  }
+}
+
 async function checkCycles() {
   if (mainConfig?.enabled === false) return
 
@@ -716,13 +730,8 @@ async function checkCycles() {
   }
 
   if (now - last.cycle2 >= cycle2Ms) {
-    try {
-      await runCycle2(db, mainConfig?.cycle2 || {})
-      await setCycleLastRun('cycle2', Date.now())
-      process.stderr.write(`[cycle2] completed\n`)
-    } catch (e) {
-      process.stderr.write(`[cycle2] error: ${e.message}\n`)
-    }
+    const result = await runCycle2(db, mainConfig?.cycle2 || {})
+    await _finalizeCycle2Run(result)
   }
 }
 
@@ -1084,10 +1093,10 @@ async function entryStats() {
     const total               = (await tx.query(`SELECT COUNT(*) c FROM entries`)).rows[0].c
     const roots               = (await tx.query(`SELECT COUNT(*) c FROM entries WHERE is_root = 1`)).rows[0].c
     const unchunked_leaves    = (await tx.query(`SELECT COUNT(*) c FROM entries WHERE chunk_root IS NULL`)).rows[0].c
-    const phase1_pending_roots = (await tx.query(`SELECT COUNT(*) c FROM entries WHERE is_root = 1 AND status = 'pending'`)).rows[0].c
+    const cycle2_pending_roots = (await tx.query(`SELECT COUNT(*) c FROM entries WHERE is_root = 1 AND status = 'pending'`)).rows[0].c
     const byStatus            = (await tx.query(`SELECT status, COUNT(*) c FROM entries WHERE is_root = 1 GROUP BY status`)).rows
     const byCategory          = (await tx.query(`SELECT category, COUNT(*) c FROM entries WHERE is_root = 1 AND status = 'active' GROUP BY category ORDER BY c DESC`)).rows
-    return { total, roots, unchunked_leaves, phase1_pending_roots, byStatus, byCategory }
+    return { total, roots, unchunked_leaves, cycle2_pending_roots, byStatus, byCategory }
   })
 }
 
@@ -1107,15 +1116,18 @@ async function handleMemoryAction(args) {
     const vecReady = true
     const lastCycle1Ago = last.cycle1 ? `${Math.round((Date.now() - last.cycle1) / 60000)}m ago` : 'never'
     const lastCycle2Ago = last.cycle2 ? `${Math.round((Date.now() - last.cycle2) / 60000)}m ago` : 'never'
-    const activeCap = config?.cycle2?.active_cap ?? 300  // fallback: CYCLE2_ACTIVE_CAP default
+    const activeTargetCap = Number.isFinite(Number(config?.cycle2?.active_target_cap))
+      ? Number(config?.cycle2?.active_target_cap)
+      : CYCLE2_ACTIVE_TARGET_CAP
     const lines = [
-      `entries: total=${stats.total} roots=${stats.roots} unchunked_leaves=${stats.unchunked_leaves} pending_roots=${stats.phase1_pending_roots}`,
+      `entries: total=${stats.total} roots=${stats.roots} cycle1_raw=${stats.unchunked_leaves} (unchunked leaves) cycle2_pending=${stats.cycle2_pending_roots} (awaiting cycle2 review)`,
       `status: ${stats.byStatus.map(r => `${r.status ?? '?'}:${r.c}`).join(', ') || 'empty'}`,
-      `categories(active): ${stats.byCategory.map(r => `${r.category ?? 'NULL'}:${r.c}`).join(', ') || 'empty'} active_cap=${activeCap}`,
+      `categories(active): ${stats.byCategory.map(r => `${r.category ?? 'NULL'}:${r.c}`).join(', ') || 'empty'} active_target_cap=${activeTargetCap}`,
       `embedding_index: ${vecReady ? 'ready' : 'n/a'} dims=${dims}`,
       `bootstrap: ${isBootstrapComplete(db) ? 'complete' : 'incomplete'}`,
       `last_cycle1: ${lastCycle1Ago}`,
       `last_cycle2: ${lastCycle2Ago}`,
+      ...(last.cycle2_last_error ? [`last_cycle2_error: ${last.cycle2_last_error}`] : []),
     ]
     return { text: lines.join('\n') }
   }
@@ -1150,7 +1162,7 @@ async function handleMemoryAction(args) {
 
   if (action === 'cycle2' || action === 'sleep') {
     const result = await runCycle2(db, config?.cycle2 || {})
-    await setCycleLastRun('cycle2', Date.now())
+    await _finalizeCycle2Run(result)
     const counts = {
       promoted: result?.promoted || 0,
       archived: result?.archived || 0,
@@ -1169,7 +1181,7 @@ async function handleMemoryAction(args) {
   if (action === 'flush') {
     const r1 = await _awaitCycle1Run(config?.cycle1 || {})
     const r2 = await runCycle2(db, config?.cycle2 || {})
-    await setCycleLastRun('cycle2', Date.now())
+    await _finalizeCycle2Run(r2)
     return { text: `flush: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
   }
 

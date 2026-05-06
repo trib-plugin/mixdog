@@ -615,7 +615,9 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             // Structured text roles (cycle1/cycle2) intentionally return no tools.
             const _narrativeRetryDone = opts._narrativeRetryDone || false;
             const noToolRole = sessionRef?.role === 'cycle1-agent' || sessionRef?.role === 'cycle2-agent';
-            if (!noToolRole && !_narrativeRetryDone && response.content) {
+            // Only guard at session start (before any tool has been used). After at least one
+            // tool_use, a text-only response is legitimate synthesis — e.g. recall-agent / explorer.
+            if (!noToolRole && toolCallsTotal === 0 && !_narrativeRetryDone && response.content) {
                 const _c = response.content;
                 // Language-neutral: short content + no trailing question + no
                 // embedded tool_use markers → likely narration without action.

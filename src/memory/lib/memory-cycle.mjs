@@ -6,6 +6,6 @@ export {
 } from './memory-embed.mjs'
 export { runCycle1 } from './memory-cycle1.mjs'
 export {
-  runCycle2, runUnifiedGate, applySimpleStatus, applyUpdate, applyMerge,
+  runCycle2, runUnifiedGate, applySimpleStatus, applyUpdate, applyMerge, CYCLE2_ACTIVE_TARGET_CAP,
   parseInterval,
 } from './memory-cycle2.mjs'

@@ -16,9 +16,11 @@
  */
 
 import { homedir } from 'os'
-import { resolve as resolvePath, isAbsolute, join, relative } from 'path'
+import { resolve as resolvePath, isAbsolute, join, relative, dirname } from 'path'
+import { createHash } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs'
 import { loadConfig, getPluginData } from './config.mjs'
+import { fileURLToPath } from 'url'
 import { getHiddenRole } from './internal-roles.mjs'
 import { readSection } from '../../shared/config.mjs'
 import { resolvePresetName } from './smart-bridge/bridge-llm.mjs'
@@ -35,6 +37,19 @@ import {
   EXPLORE_TRUNCATION_MARKER,
 } from './explore-validator.mjs'
 import { getRawProviderCredentialSource } from '../../search/lib/config.mjs'
+
+// Plugin version — read once at module load from package.json so per-call cost
+// is zero. Included in the query-cache key so cached results are invalidated
+// when the plugin version changes (new prompt templates, tool definitions, etc.).
+const _PLUGIN_VERSION = (() => {
+  try {
+    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '../../../package.json')
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    return String(pkg.version || 'unknown')
+  } catch {
+    return 'unknown'
+  }
+})()
 
 // Fan-out deadline — documented runtime envelope.
 // Default 240 s; override via env FANOUT_DEADLINE_S. 240 s balances
@@ -74,6 +89,25 @@ const ROLE_BY_TOOL = Object.freeze({
   search:  { role: _roleNameForTool('search'),  build: (q, cwd) => _internals.builders.search(q, cwd),  label: _roleNameForTool('search')  || 'search-agent' },
   explore: { role: _roleNameForTool('explore'), build: (q, cwd) => _internals.builders.explore(q, cwd), label: _roleNameForTool('explore') || 'explorer' },
 })
+
+// Prompt-hash cache — computed once per tool at first use from a sentinel
+// build (empty query, no cwd) so the hash reflects the static template body.
+// Avoids per-call crypto work; result is stable for the process lifetime.
+const _promptHashCache = new Map()
+function _promptHashForTool(name) {
+  if (_promptHashCache.has(name)) return _promptHashCache.get(name)
+  try {
+    const spec = ROLE_BY_TOOL[name]
+    // Build with empty query/cwd to capture the static template portion only.
+    // _internals.builders is populated after module init; safe at call time.
+    const templateText = spec ? spec.build('', null) : name
+    const hash = createHash('sha256').update(templateText).digest('hex').slice(0, 16)
+    _promptHashCache.set(name, hash)
+    return hash
+  } catch {
+    return 'nohash'
+  }
+}
 // search-agent output validator. Reviewer-recommended (gpt-5.5):
 // prompt polishing alone hits diminishing returns against LLM phrasing
 // drift; line-allowlist post-filter enforces the output contract
@@ -316,12 +350,15 @@ function normalizeQueryForCache(query) {
 }
 
 function buildQueryCacheKey(tool, query, cwd, brief) {
-  return [
-    tool,
-    brief === false ? 'full' : 'brief',
-    cwd || '',
-    normalizeQueryForCache(query),
-  ].join('|')
+  // promptHash and pluginVersion bind this cache entry to the exact prompt
+  // template + plugin version that produced it. Key-shape change from the
+  // old 4-component key means all prior entries become invisible on read
+  // (miss → recompute), which is the desired purge behavior.
+  const promptHash = _promptHashForTool(tool)
+  return createHash('sha256')
+    .update(JSON.stringify([tool, brief === false ? 'full' : 'brief', cwd || '', _PLUGIN_VERSION, promptHash, normalizeQueryForCache(query)]))
+    .digest('hex')
+    .slice(0, 32)
 }
 
 function normalizeGithubRepoName(repo) {
