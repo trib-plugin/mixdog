@@ -118,10 +118,6 @@ cp -a "$STAGE_DIR/share"/. "$RUNTIME_DIR/share/" 2>/dev/null || true
 # module under lib/postgresql/ (dlopen-loaded). Recursive otool closure.
 # ---------------------------------------------------------------------------
 echo "==> Bundling foreign Homebrew dynamic libraries"
-# Trace the bundling pass — last failure happened silently here. set -x prints
-# each command; ERR trap prints failing line if set -e fires.
-set -x
-trap 'rc=$?; set +x; echo "FAIL: bundling step exited $rc at line ${LINENO} (BASH_COMMAND: $BASH_COMMAND)" >&2; exit $rc' ERR
 
 FOREIGN_PREFIXES=("${BREW_PREFIX}/opt" "/opt/homebrew" "/usr/local/Cellar" "/opt/local")
 is_foreign() {
@@ -165,6 +161,9 @@ bundle_dylib() {
       [[ ! -e "$dest_link" ]] && ln -s "$(basename "$real")" "$dest_link"
     fi
   done < <(find "$src_dir" -maxdepth 1 -type l -print0 2>/dev/null)
+  # Loop exits when `read` returns 1 at EOF; without an explicit return, the
+  # function's exit status would be 1 and trip set -e in the caller.
+  return 0
 }
 
 while [[ ${#SCAN_QUEUE[@]} -gt 0 ]]; do
@@ -182,9 +181,6 @@ while [[ ${#SCAN_QUEUE[@]} -gt 0 ]]; do
     fi
   done < <(otool -L "$current" 2>/dev/null | tail -n +2)
 done
-
-set +x
-trap - ERR
 
 # ---------------------------------------------------------------------------
 # Rewrite install_names — three Mach-O classes

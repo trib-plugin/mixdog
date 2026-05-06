@@ -14,10 +14,38 @@ $PGVECTOR_VERSION = '0.8.2'
 $TARGET_OS        = $env:TARGET_OS   ?? 'win32'
 $TARGET_ARCH      = $env:TARGET_ARCH ?? 'x64'
 
-# Use the runner's preinstalled PG 16 — this MUST exist on windows-2022.
-$PgRoot = 'C:\Program Files\PostgreSQL\16'
-if (-not (Test-Path $PgRoot)) {
-    Write-Error "ASSERT FAILED: $PgRoot not found. windows-2022 runner image must include PostgreSQL 16."
+# Auto-detect the highest available preinstalled PG ≥ 16 on the runner.
+# windows-2022 image historically ships PG 14/15/16 but exact subdirectory
+# names vary (e.g. "16", "16.4"). Pick the highest numeric major.
+$PgInstallRoot = 'C:\Program Files\PostgreSQL'
+if (-not (Test-Path $PgInstallRoot)) {
+    Write-Error "ASSERT FAILED: $PgInstallRoot not found. Runner image must include PostgreSQL."
+    Write-Host "Listing C:\Program Files\ for diagnosis:"
+    Get-ChildItem 'C:\Program Files\' -Directory | Select-Object Name
+    exit 1
+}
+
+$PgCandidates = Get-ChildItem $PgInstallRoot -Directory |
+    Where-Object { $_.Name -match '^(\d+)' } |
+    Sort-Object { [int]([regex]::Match($_.Name, '^(\d+)').Groups[1].Value) } -Descending
+
+if ($PgCandidates.Count -eq 0) {
+    Write-Error "ASSERT FAILED: no numeric PostgreSQL versions found under $PgInstallRoot"
+    Get-ChildItem $PgInstallRoot | Select-Object Name
+    exit 1
+}
+
+$PgRoot = $null
+foreach ($cand in $PgCandidates) {
+    $major = [int]([regex]::Match($cand.Name, '^(\d+)').Groups[1].Value)
+    if ($major -ge 16 -and (Test-Path "$($cand.FullName)\bin\pg_config.exe")) {
+        $PgRoot = $cand.FullName
+        break
+    }
+}
+if (-not $PgRoot) {
+    Write-Error "ASSERT FAILED: no preinstalled PG ≥ 16 with pg_config.exe found under $PgInstallRoot"
+    Get-ChildItem $PgInstallRoot | Select-Object Name
     exit 1
 }
 
