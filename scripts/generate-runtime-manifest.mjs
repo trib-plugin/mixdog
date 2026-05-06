@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -79,11 +80,13 @@ async function fetchSha256(sha256AssetName, downloadUrl) {
   if (sidecar) {
     // Download the sidecar file text
     try {
-      const txt = execSync(
-        `gh release download ${RELEASE_TAG} --repo ${GITHUB_REPOSITORY} --pattern ${sha256AssetName} --dir /tmp/manifest-sha256 --clobber`,
+      const tmpDir = resolve(tmpdir(), 'mixdog-manifest-sha256');
+      mkdirSync(tmpDir, { recursive: true });
+      execSync(
+        `gh release download ${RELEASE_TAG} --repo ${GITHUB_REPOSITORY} --pattern ${sha256AssetName} --dir "${tmpDir}" --clobber`,
         { encoding: 'utf8', env: process.env }
       );
-      const content = readFileSync(`/tmp/manifest-sha256/${sha256AssetName}`, 'utf8').trim();
+      const content = readFileSync(resolve(tmpDir, sha256AssetName), 'utf8').trim();
       // Format: "<hex>  <filename>"
       return content.split(/\s+/)[0];
     } catch (e) {
@@ -106,7 +109,6 @@ for (const tarball of tarballs) {
   const key = `${m[1]}-${m[2]}`; // e.g. "linux-x64"
 
   const sha256Key = `${tarball.name}.sha256`;
-  mkdirSync('/tmp/manifest-sha256', { recursive: true });
   const sha256 = await fetchSha256(sha256Key, tarball.url);
 
   assetsMap[key] = {

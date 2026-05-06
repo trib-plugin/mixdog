@@ -1,16 +1,20 @@
 {
   "schema_version": 1,
-  "generated_at": "1970-01-01T00:00:00.000Z",
-  "release_tag": "TBD",
-  "_note": "Placeholder values. Real URLs and sha256 hashes are injected via auto-PR by the build-runtime workflow after the first release. Track A runtime-fetcher should surface a clear error when sha256 == 'TBD'.",
+  "generated_at": "2026-05-06T11:58:30.121Z",
+  "release_tag": "runtime-v16.4-pgvector0.8.2",
   "pg": {
     "major": 16,
     "minor": 4
   },
   "pgvector": {
-    "version": "0.7.4"
+    "version": "0.8.2."
   },
   "assets": {
+    "win32-x64": {
+      "url": "https://github.com/trib-plugin/mixdog/releases/download/runtime-v16.4-pgvector0.8.2/mixdog-runtime-win32-x64-pg16.4-pgvector0.8.2.tar.gz",
+      "sha256": "b201f3d35e3e513039f07824edcb6b11d42e88ac902145a0018797b6ccd33e75",
+      "size": 39882251
+    },
     "linux-x64": {
       "url": "TBD",
       "sha256": "TBD",
@@ -27,11 +31,6 @@
       "size": 0
     },
     "darwin-arm64": {
-      "url": "TBD",
-      "sha256": "TBD",
-      "size": 0
-    },
-    "win32-x64": {
       "url": "TBD",
       "sha256": "TBD",
       "size": 0
