@@ -1,51 +1,72 @@
-import { appendFileSync, mkdirSync, statSync, renameSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
+import os from 'os';
 import { getPluginData } from './config.mjs';
 import { normalizeUsage } from './smart-bridge/cache-obs.mjs';
 import { isInclusiveProvider } from '../../shared/llm/cost.mjs';
 
-const HISTORY_DIR = join(getPluginData(), 'history');
-const TRACE_PATH = join(HISTORY_DIR, 'bridge-trace.jsonl');
 const WARNED_KEYS = new Set();
 
-// Rotation — bridge-trace grows a few thousand rows per day. Without a cap
-// a single session file reaches hundreds of megabytes over a few months
-// and post-hoc analysis tools start choking on it. Rotate on append when
-// the live file crosses MAX_TRACE_BYTES, and keep at most MAX_ROTATIONS
-// historical shards (older ones are deleted on rotation).
-const MAX_TRACE_BYTES = 20 * 1024 * 1024;  // 20 MB
-const MAX_ROTATIONS = 3;                    // keep last 3 rotated shards
-const ROTATION_CHECK_EVERY_N = 100;         // cheap size check cadence
-let _appendsSinceCheck = 0;
+// ---------------------------------------------------------------------------
+// In-memory buffer + HTTP flush to memory-service /admin/trace-record
+// ---------------------------------------------------------------------------
+let _buffer = [];
+const _BUFFER_MAX = 1000;
+const _FLUSH_INTERVAL_MS = 1000;
+const _FLUSH_BATCH_SIZE = 100;
+let _flushTimer = null;
+let _serviceUrl = null;
 
-function _rotateIfOversized() {
+function _resolveServiceUrl() {
+    if (_serviceUrl) return _serviceUrl;
     try {
-        const stat = statSync(TRACE_PATH);
-        if (stat.size < MAX_TRACE_BYTES) return;
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        const rotated = `${TRACE_PATH}.${ts}`;
-        renameSync(TRACE_PATH, rotated);
-        _pruneOldRotations();
-    } catch (err) {
-        if (err?.code !== 'ENOENT') {
-            // Rotation failure is non-fatal — fall through and keep appending
-            // to the original file; next cycle may succeed.
-        }
+        const portFile = join(os.tmpdir(), 'mixdog-memory', 'memory-port');
+        if (!existsSync(portFile)) return null;
+        const port = Number(readFileSync(portFile, 'utf-8').trim());
+        if (!Number.isFinite(port) || port <= 0) return null;
+        _serviceUrl = `http://127.0.0.1:${port}`;
+        return _serviceUrl;
+    } catch {
+        return null;
     }
 }
 
-function _pruneOldRotations() {
+async function _flush() {
+    _flushTimer = null;
+    if (_buffer.length === 0) return;
+    const url = _resolveServiceUrl();
+    if (!url) {
+        // Service not up yet — keep buffer, retry next timer tick
+        if (!_flushTimer) _flushTimer = setTimeout(_flush, _FLUSH_INTERVAL_MS);
+        return;
+    }
+    const batch = _buffer.splice(0, _FLUSH_BATCH_SIZE);
     try {
-        const base = `${TRACE_PATH.split(/[\\/]/).pop()}.`;
-        const files = readdirSync(HISTORY_DIR)
-            .filter(name => name.startsWith(base))
-            .sort()
-            .reverse(); // newest first (ISO timestamps sort chronologically)
-        for (const name of files.slice(MAX_ROTATIONS)) {
-            try { unlinkSync(join(HISTORY_DIR, name)); } catch { /* ignore */ }
+        const resp = await fetch(`${url}/admin/trace-record`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ events: batch }),
+        });
+        if (!resp.ok) {
+            warnBridgeOnce('bridge-trace:flush-error', `[bridge-trace] /admin/trace-record returned ${resp.status} — dropping batch`);
         }
-    } catch { /* best-effort */ }
+    } catch (err) {
+        warnBridgeOnce('bridge-trace:flush-fetch', `[bridge-trace] flush fetch failed (${err?.message}) — dropping batch`);
+    }
+    if (_buffer.length >= _FLUSH_BATCH_SIZE) {
+        // More pending — schedule another flush immediately
+        setImmediate(_flush);
+    }
+}
+
+function _scheduleFlush(immediate = false) {
+    if (immediate) {
+        if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
+        setImmediate(_flush);
+    } else if (!_flushTimer) {
+        _flushTimer = setTimeout(_flush, _FLUSH_INTERVAL_MS);
+    }
 }
 
 function normalizeSessionId(sessionId) {
@@ -53,26 +74,33 @@ function normalizeSessionId(sessionId) {
 }
 
 function appendBridgeTrace(record = {}) {
-    // Test isolation — when run-all-tests.mjs sets this env, fixture
-    // sessionIds (s1..s7, m1..m3) and other test-driven trace events
-    // would otherwise pollute the production bridge-trace.jsonl, skewing
-    // post-hoc stall / loop analysis. Skip the write entirely.
+    // Test isolation — when run-all-tests.mjs sets this env, skip entirely.
     if (process.env.MIXDOG_BRIDGE_TRACE_DISABLE === '1') return;
     try {
-        mkdirSync(HISTORY_DIR, { recursive: true });
-        if (++_appendsSinceCheck >= ROTATION_CHECK_EVERY_N) {
-            _appendsSinceCheck = 0;
-            if (existsSync(TRACE_PATH)) _rotateIfOversized();
-        }
+        // Coerce ts to epoch ms integer at enqueue time
+        let ts = record.ts || Date.now();
+        if (typeof ts === 'string') ts = Date.parse(ts);
+        ts = Number(ts);
+        if (!Number.isFinite(ts)) ts = Date.now();
+
         const row = {
-            ts: record.ts || new Date().toISOString(),
             ...record,
-            sessionId: normalizeSessionId(record.sessionId),
+            ts,
+            session_id: record.session_id ?? normalizeSessionId(record.sessionId),
+            payload: record.payload ?? {},
         };
-        appendFileSync(TRACE_PATH, `${JSON.stringify(row)}\n`, 'utf8');
+        // Drop actor-facing alias to keep schema tidy
+        delete row.sessionId;
+
+        if (_buffer.length >= _BUFFER_MAX) {
+            _buffer.shift(); // drop oldest
+            warnBridgeOnce('bridge-trace:buffer-full', '[bridge-trace] buffer full (1000) — dropping oldest event');
+        }
+        _buffer.push(row);
+        _scheduleFlush(_buffer.length >= _FLUSH_BATCH_SIZE);
     }
     catch {
-        // Never break bridge execution for telemetry.
+        // Never break bridge execution for telemetry
     }
 }
 

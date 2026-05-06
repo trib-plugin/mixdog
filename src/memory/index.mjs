@@ -51,6 +51,7 @@ import { runFullBackfill } from './lib/memory-ops-policy.mjs'
 import { listCore, addCore, editCore, deleteCore } from './lib/core-memory-store.mjs'
 import { resolveProjectId } from './lib/project-id-resolver.mjs'
 import { resolvePluginData } from '../shared/plugin-paths.mjs'
+import { openTraceDatabase, insertTraceEvents } from './lib/trace-store.mjs'
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || process.argv[2]
   || (() => {
@@ -77,6 +78,8 @@ try { fs.mkdirSync(RUNTIME_DIR, { recursive: true }) } catch {}
 const PORT_FILE = path.join(RUNTIME_DIR, 'memory-port')
 const BASE_PORT = 3350
 const MAX_PORT = 3357
+
+let _traceDb = null
 
 const MEMORY_INSTRUCTIONS_TEXT = (() => {
   try {
@@ -1861,6 +1864,39 @@ const httpServer = http.createServer(async (req, res) => {
     return
   }
 
+  if (req.method === 'POST' && req.url === '/admin/trace-record') {
+    if (!isLocalOrigin(req)) {
+      sendJson(res, { ok: false, error: 'forbidden: cross-origin' }, 403)
+      return
+    }
+    let body
+    try { body = await readBody(req) }
+    catch (e) { sendJson(res, { ok: false, error: e.message }, 400); return }
+    if (!Array.isArray(body?.events)) {
+      sendJson(res, { ok: false, error: 'body.events must be an array' }, 400)
+      return
+    }
+    if (body.events.length > 500) {
+      sendJson(res, { ok: false, error: 'too many events (max 500)' }, 413)
+      return
+    }
+    if (!_traceDb) {
+      try {
+        _traceDb = await openTraceDatabase(DATA_DIR)
+      } catch (e) {
+        sendJson(res, { ok: false, error: `trace DB unavailable: ${e.message}` }, 503)
+        return
+      }
+    }
+    try {
+      const result = await insertTraceEvents(_traceDb, body.events)
+      sendJson(res, { ok: true, inserted: result.inserted })
+    } catch (e) {
+      sendJson(res, { ok: false, error: e.message }, 500)
+    }
+    return
+  }
+
   if (req.method === 'POST' && req.url === '/session-start/core-memory') {
     try {
       const body = await readBody(req)
@@ -1890,6 +1926,29 @@ const httpServer = http.createServer(async (req, res) => {
       ]
       sendJson(res, { ok: true, projectId, dbLines, userLines })
     } catch (e) { sendError(res, e.message) }
+    return
+  }
+
+  if (req.method === 'POST' && req.url === '/admin/shutdown') {
+    if (!isLocalOrigin(req)) {
+      sendJson(res, { ok: false, error: 'forbidden: cross-origin' }, 403)
+      return
+    }
+    sendJson(res, { shutting_down: true }, 202)
+    setImmediate(() => {
+      const watchdog = setTimeout(() => {
+        process.stderr.write('[shutdown] watchdog fired — forcing exit after 8s\n')
+        process.exit(1)
+      }, 8000)
+      watchdog.unref?.()
+      stop()
+        .then(() => { clearTimeout(watchdog); process.exit(0) })
+        .catch(e => {
+          process.stderr.write(`[shutdown] error ${e.message}\n`)
+          clearTimeout(watchdog)
+          process.exit(1)
+        })
+    })
     return
   }
 

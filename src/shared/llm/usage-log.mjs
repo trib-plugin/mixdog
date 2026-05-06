@@ -1,33 +1,16 @@
 /**
- * Unified LLM usage logger — writes to bridge-trace.jsonl.
+ * Unified LLM usage logger.
  *
- * Phase D: Merged llm-usage.jsonl and llm-maintenance.jsonl into
- * bridge-trace.jsonl. All usage records now go to the same trace file
- * with kind:'usage'. Maintenance records carry maintenanceLog:true.
+ * Phase 2: Routes via appendBridgeTrace (HTTP buffer to memory-service)
+ * instead of writing directly to bridge-trace.jsonl.
  *
  * Signature unchanged — callers are unaffected.
  */
 
-import { appendFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import { resolvePluginData } from '../plugin-paths.mjs';
-
-function resolveDataDir() {
-    return resolvePluginData();
-}
-
-const HISTORY_DIR_NAME = 'history';
-let _tracePathResolved = null;
-function getTracePath() {
-    if (_tracePathResolved) return _tracePathResolved;
-    const dir = join(resolveDataDir(), HISTORY_DIR_NAME);
-    try { mkdirSync(dir, { recursive: true }); } catch {}
-    _tracePathResolved = join(dir, 'bridge-trace.jsonl');
-    return _tracePathResolved;
-}
+import { appendBridgeTrace } from '../../agent/orchestrator/bridge-trace.mjs';
 
 /**
- * Append a usage entry to bridge-trace.jsonl.
+ * Append a usage entry to the trace store.
  *
  * @param {object} entry — usage record
  * @param {object} opts
@@ -51,13 +34,13 @@ function warnMissingProviderOnce(key) {
 export function logLlmCall(entry, opts = {}) {
     try {
         if (!entry.provider) warnMissingProviderOnce(entry.model || '?');
-        const row = {
-            ts: entry.ts || new Date().toISOString(),
+        appendBridgeTrace({
+            ts: entry.ts || Date.now(),
             kind: 'usage',
             ...entry,
+            payload: entry.payload ?? {},
             maintenanceLog: opts.maintenance === true ? true : undefined,
-        };
-        appendFileSync(getTracePath(), JSON.stringify(row) + '\n');
+        });
     } catch {
         // Never let logging break the caller.
     }

@@ -206,35 +206,6 @@ export async function init(db, dims) {
   await db.query(`INSERT INTO meta(key, value) VALUES ($1, $2::jsonb)`, ['boot.schema_bootstrap_complete', JSON.stringify('1')])
 }
 
-// Idempotent. trajectories is auxiliary (agent orchestrator log).
-// All DDL uses CREATE TABLE/INDEX IF NOT EXISTS — safe to call on every open();
-// subsequent runs are O(1) catalog checks with no additional fsync overhead.
-export async function ensureTrajectoryTable(db) {
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS trajectories (
-      id              BIGSERIAL PRIMARY KEY,
-      ts              TIMESTAMP NOT NULL DEFAULT NOW(),
-      session_id      TEXT,
-      scope           TEXT,
-      preset          TEXT,
-      model           TEXT,
-      agent_type      TEXT,
-      phase           TEXT,
-      tool_calls_json JSONB,
-      iterations      INTEGER DEFAULT 1,
-      tokens_in       INTEGER DEFAULT 0,
-      tokens_out      INTEGER DEFAULT 0,
-      duration_ms     INTEGER DEFAULT 0,
-      completed       SMALLINT DEFAULT 1,
-      error_message   TEXT,
-      created_at      BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT
-    )
-  `)
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_traj_scope ON trajectories(scope, ts)`)
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_traj_ts ON trajectories(ts)`)
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_traj_tool_calls_gin ON trajectories USING GIN (tool_calls_json)`)
-}
-
 // ---------------------------------------------------------------------------
 // core_entries sidecar — best-effort JSON snapshot alongside pgdata.
 // Survives quarantine/rmSync because it lives in dataDir, not inside pgdata.
@@ -381,7 +352,6 @@ export async function openDatabase(dataDir, dims) {
     // pg_trgm default (0.3). PGlite uses a single backend, so this affects all
     // subsequent queries on this handle.
     try { await db.query(`SELECT set_limit(0.10)`) } catch {}
-    await ensureTrajectoryTable(db)
     // Initial sidecar dump for existing users who upgrade (no sidecar yet,
     // but core_entries already has rows).
     const sidecarPath = join(key, 'core-entries.json')

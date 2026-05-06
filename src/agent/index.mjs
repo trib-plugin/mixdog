@@ -9,7 +9,6 @@ import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPre
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { setInternalToolsProvider, awaitBootReady } from './orchestrator/internal-tools.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
-import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory.mjs';
 import { prepareBridgeSession } from './orchestrator/smart-bridge/session-builder.mjs';
 import { normalizeInputPath } from './orchestrator/tools/builtin.mjs';
 import { traceBridgePreset } from './orchestrator/bridge-trace.mjs';
@@ -416,7 +415,6 @@ export async function init() {
   // serialised in front of it.
   setImmediate(() => warmupCatalogs());
   seedDefaults();
-  void initTrajectoryStore(getPluginData()).catch(() => {});
   startStreamWatchdog(forEachSessionRuntime);
   // Smart Bridge — unified router + cache strategy + profile system.
   // User-role preset mapping comes from user-workflow.json (existing source
@@ -1133,25 +1131,6 @@ export async function handleToolCall(name, args, opts = {}) {
             try { removePending(process.env.CLAUDE_PLUGIN_DATA, jobId); } catch {}
             try { _jobSessionRegistry.delete(jobId); } catch {}
             try { _sessionJobRegistry.delete(activeSession.id); } catch {}
-            try {
-              const cfg = loadConfig();
-              if (cfg.trajectory?.enabled !== false) {
-                void recordTrajectory({
-                  session_id: activeSession.id,
-                  scope: role,
-                  preset: presetName,
-                  model: modelLabel,
-                  agent_type: 'bridge',
-                  tool_calls_json: JSON.stringify(toolCallLog),
-                  iterations: result?.iterations || 1,
-                  tokens_in: result?.usage?.inputTokens || 0,
-                  tokens_out: result?.usage?.outputTokens || 0,
-                  duration_ms: Date.now() - t0,
-                  completed: completed ? 1 : 0,
-                  error_message: errorMessage,
-                }).catch(() => {});
-              }
-            } catch {}
           }
         }))().catch((err) => {
           try { removePending(process.env.CLAUDE_PLUGIN_DATA, jobId); } catch {}
