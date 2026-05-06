@@ -87,10 +87,6 @@ const MEMORY_INSTRUCTIONS_TEXT = (() => {
   }
 })()
 
-const PROXY_TOOL_DEFS = [
-  { name: 'memory', description: 'Memory operations. User-curated core list (core_entries pool, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
-]
-
 function readPortFile() {
   try {
     const port = Number(fs.readFileSync(PORT_FILE, 'utf8').trim())
@@ -117,7 +113,7 @@ async function runProxyMode(port) {
     { name: 'mixdog-memory', version: PLUGIN_VERSION },
     { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS_TEXT },
   )
-  proxyMcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: PROXY_TOOL_DEFS }))
+  proxyMcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS.filter(t => t.name === 'memory') }))
   proxyMcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     try {
       const controller = new AbortController()
@@ -1401,13 +1397,36 @@ async function handleMemoryAction(args) {
       if (!hasProjectIdKey || args.project_id == null) return null
       const s = String(args.project_id).trim()
       if (s === '' || s.toLowerCase() === 'common') return null
+      if (s === '*') return '*'
       return s
     })()
     try {
+      if (projectId === '*' && op !== 'list') {
+        return { text: `core ${op}: project_id "*" only valid for op="list"`, isError: true }
+      }
       if (op === 'list') {
-        const entries = await listCore(dataDir, projectId)
+        if (projectId !== '*') {
+          const entries = await listCore(dataDir, projectId)
+          if (entries.length === 0) return { text: 'core: empty' }
+          return { text: entries.map(e => `id=${e.id} [${e.category}] ${e.element} — ${String(e.summary || '').slice(0, 200)}`).join('\n') }
+        }
+        // Cross-pool listing — group by project_id, COMMON first
+        const entries = await listCore(dataDir, '*')
         if (entries.length === 0) return { text: 'core: empty' }
-        return { text: entries.map(e => `id=${e.id} [${e.category}] ${e.element} — ${String(e.summary || '').slice(0, 200)}`).join('\n') }
+        const groups = new Map()
+        for (const e of entries) {
+          const key = e.project_id ?? null
+          if (!groups.has(key)) groups.set(key, [])
+          groups.get(key).push(e)
+        }
+        const lines = []
+        for (const [key, rows] of groups) {
+          lines.push(`${key === null ? 'COMMON' : key}:`)
+          for (const e of rows) {
+            lines.push(`  id=${e.id} [${e.category}] ${e.element} — ${String(e.summary || '').slice(0, 200)}`)
+          }
+        }
+        return { text: lines.join('\n') }
       }
       if (op === 'add') {
         if (!hasProjectIdKey) {
@@ -1550,7 +1569,7 @@ const TOOL_DEFS = [
     name: 'memory',
     title: 'Memory Cycle',
     annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    description: 'Memory operations. User-curated core list (core_entries pool, untouched by cycles): action:"core" with op:"add"|"edit"|"delete"|"list". Entries-table CRUD (cycle-managed): action:"manage" with op:"add"|"edit"|"delete". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). Pass `project_id` to scope core ops to a specific project pool; omit for COMMON.',
+    description: 'Memory operations. ACTIONS: `core` = user-curated entries (untouched by maintenance cycles; ops: add/edit/delete/list); `manage` = cycle-managed entries-table CRUD (ops: add/edit/delete); `status` = inspection; `sleep`/`cycle1`/`cycle2`/`flush`/`backfill` = maintenance; `prune`/`rebuild`/`rebuild_classifications`/`purge` = destructive (require `confirm` exact-match). CORE op semantics: `list` → project_id="*" lists all pools grouped, slug lists that pool, omit lists COMMON; `add` → project_id REQUIRED ("common" or "owner/repo" slug); `edit`/`delete` → id alone (BIGSERIAL globally unique), project_id ignored. Discipline: before `core add`, run `core list` with project_id="*" to enumerate existing pools and reuse a matching slug rather than create a new one.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1565,7 +1584,7 @@ const TOOL_DEFS = [
         window: { type: 'string', description: 'Time window for backfill: 1d, 3d, 7d, 30d, all' },
         limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
         confirm: { type: 'string', description: 'Required for destructive actions: "DELETE ALL MEMORY" for purge, "PRUNE OLD ENTRIES" for prune, "REBUILD MEMORY" for rebuild. Must match exactly.' },
-        project_id: { type: 'string', description: 'Optional project pool selector for action=\'core\'. Omit/null → COMMON (project_id IS NULL in core_entries). Set to slug like \'tempest1033/GamerScroll\' → scoped rows in core_entries.' },
+        project_id: { type: 'string', description: 'Project pool selector for action=\'core\'. Required at op=\'add\' (pass "common" for COMMON pool, or slug like \'owner/repo\' for scoped). At op=\'list\': omit → list COMMON only; "*" → list all pools grouped by project_id; slug → list that pool. Ignored at op=\'edit\'/\'delete\' (id alone identifies the row).' },
       },
       required: ['action'],
     },

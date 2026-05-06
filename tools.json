@@ -5,7 +5,6 @@
     "annotations": {
       "title": "Discord Reply",
       "readOnlyHint": false,
-      "bridgeHidden": true,
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": true
@@ -61,7 +60,6 @@
     "annotations": {
       "title": "Reaction",
       "readOnlyHint": false,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": true
@@ -97,7 +95,6 @@
     "annotations": {
       "title": "Edit Message",
       "readOnlyHint": false,
-      "bridgeHidden": true,
       "destructiveHint": true,
       "idempotentHint": true,
       "openWorldHint": true
@@ -147,7 +144,6 @@
     "annotations": {
       "title": "Download Attachment",
       "readOnlyHint": true,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": true
@@ -178,7 +174,6 @@
     "annotations": {
       "title": "Fetch",
       "readOnlyHint": true,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": true
@@ -208,7 +203,6 @@
     "annotations": {
       "title": "Schedule Status",
       "readOnlyHint": true,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -226,7 +220,6 @@
     "annotations": {
       "title": "Trigger Schedule",
       "readOnlyHint": false,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": false
@@ -252,7 +245,6 @@
     "annotations": {
       "title": "Schedule Control",
       "readOnlyHint": false,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -291,7 +283,6 @@
     "annotations": {
       "title": "Activate Channel Bridge",
       "readOnlyHint": false,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -317,7 +308,6 @@
     "annotations": {
       "title": "Reload Config",
       "readOnlyHint": false,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -335,12 +325,11 @@
     "annotations": {
       "title": "Memory Cycle",
       "readOnlyHint": false,
-      "bridgeHidden": true,
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Memory operations. User-curated core list (core_entries table, untouched by cycles): action:\"core\" with op:\"add\"|\"edit\"|\"delete\"|\"list\". Entries-table CRUD (cycle-managed): action:\"manage\" with op:\"add\"|\"edit\"|\"delete\". Maintenance: sleep/cycle1/cycle2, flush, status, backfill. Destructive: purge/prune/rebuild (confirm required). project_id semantics for `core`: required at add (pass \"common\" for COMMON pool, or project slug like \"owner/repo\"); optional at list (omit = list COMMON); ignored at edit/delete (id alone identifies the row, BIGSERIAL globally unique).",
+    "description": "Memory operations. ACTIONS: `core` = user-curated entries (untouched by maintenance cycles; ops: add/edit/delete/list); `manage` = cycle-managed entries-table CRUD (ops: add/edit/delete); `status` = inspection; `sleep`/`cycle1`/`cycle2`/`flush`/`backfill` = maintenance; `prune`/`rebuild`/`rebuild_classifications`/`purge` = destructive (require `confirm` exact-match). CORE op semantics: `list` → project_id=\"*\" lists all pools grouped, slug lists that pool, omit lists COMMON; `add` → project_id REQUIRED (\"common\" or \"owner/repo\" slug); `edit`/`delete` → id alone (BIGSERIAL globally unique), project_id ignored. Discipline: before `core add`, run `core list` with project_id=\"*\" to enumerate existing pools and reuse a matching slug rather than create a new one.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -358,13 +347,19 @@
             "prune",
             "rebuild",
             "rebuild_classifications",
-            "purge"
+            "purge",
+            "retro_eval_active"
           ],
-          "description": "Operation. `core` = user-curated core list (core_entries table, merged into SessionStart Core Memory section). `manage` = entries-table per-row CRUD. Others = batch/maintenance."
+          "description": "Operation. `core` = user-curated JSON list (merged into SessionStart Core Memory section). `manage` = entries-table per-row CRUD. Others = batch/maintenance. `retro_eval_active` = one-time batch re-evaluation of all active rows through the phase3 rubric (requires confirm: \"REEVAL ACTIVE\")."
         },
         "op": {
           "type": "string",
-          "enum": ["add", "edit", "delete", "list"],
+          "enum": [
+            "add",
+            "edit",
+            "delete",
+            "list"
+          ],
           "description": "Required when action is core or manage. core supports add/edit/delete/list. manage supports add/edit/delete."
         },
         "id": {
@@ -381,17 +376,30 @@
         },
         "category": {
           "type": "string",
-          "enum": ["rule", "constraint", "decision", "fact", "goal", "preference", "task", "issue"],
+          "enum": [
+            "rule",
+            "constraint",
+            "decision",
+            "fact",
+            "goal",
+            "preference",
+            "task",
+            "issue"
+          ],
           "description": "Entry category. Default fact for add; optional for edit."
         },
         "status": {
           "type": "string",
-          "enum": ["active", "archived"],
-          "description": "Lifecycle state. manage edit only (archive replaces the old `forget` action). Not used by core."
+          "enum": [
+            "pending",
+            "active",
+            "archived"
+          ],
+          "description": "Lifecycle state. manage edit only. Not used by core."
         },
         "maxDays": {
           "type": "number",
-          "description": "Age threshold in days for the `prune` action. Default 30, minimum 1. Ignored elsewhere."
+          "description": "Age threshold in days for the prune action. Default 30, minimum 1. Ignored elsewhere."
         },
         "window": {
           "type": "string",
@@ -407,7 +415,7 @@
         },
         "project_id": {
           "type": "string",
-          "description": "Project pool selector for action='core'. Required at op='add' (pass \"common\" for COMMON pool with project_id IS NULL, or slug like 'owner/repo' for scoped). Optional at op='list' (omit → list COMMON). Ignored at op='edit'/'delete' (id alone identifies the row)."
+          "description": "Project pool selector for action='core'. Required at op='add' (pass \"common\" for COMMON pool, or slug like 'owner/repo' for scoped). At op='list': omit → list COMMON only; \"*\" → list all pools grouped by project_id; slug → list that pool. Ignored at op='edit'/'delete' (id alone identifies the row)."
         }
       },
       "required": [
@@ -490,7 +498,6 @@
     "annotations": {
       "title": "Create Session",
       "readOnlyHint": false,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": true
@@ -561,7 +568,6 @@
     "annotations": {
       "title": "List Sessions",
       "readOnlyHint": true,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -579,7 +585,6 @@
     "annotations": {
       "title": "Close Session",
       "readOnlyHint": false,
-      "bridgeHidden": true,
       "destructiveHint": true,
       "idempotentHint": true,
       "openWorldHint": false
@@ -605,7 +610,6 @@
     "annotations": {
       "title": "List Models",
       "readOnlyHint": true,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
@@ -623,7 +627,6 @@
     "annotations": {
       "title": "Bridge to External Model",
       "readOnlyHint": false,
-      "bridgeHidden": true,
       "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": true
